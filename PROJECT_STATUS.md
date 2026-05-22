@@ -1,219 +1,104 @@
-# 搭一搭（d1d）— 项目进度状态
+# PROJECT_STATUS.md - 搭搭 day 当前状态
 
-> 最后更新：2026-05-18  
-> 当前阶段：Phase 0 完成 / Phase 1 进行中（AI 识别代码完成，已添加 Mock fallback）
-
----
-
-## 一、总体进度
-
-| Phase | 内容 | 进度 | 状态 |
-|-------|------|------|------|
-| Phase 0 | 架构搭建、类型定义、Mock API、空壳页面、数据库建表 | 100% | ✅ 完成 |
-| Phase 1 | 衣服上传 + AI 识别 + 衣橱 CRUD | 95% | 🟡 进行中 |
-| Phase 2 | 穿搭推荐引擎 + 今日页面完整交互 | 0% | 🔴 待开始 |
-| Phase 3 | 衣柜分析 + 历史 + 分享 + 提醒 | 0% | 🔴 待开始 |
-
-### Phase 1 已完成的子步骤
-
-- [x] Step 1. 数据库连接层（Drizzle ORM + postgres.js）
-- [x] Step 1a. Drizzle Schema 定义（8 张表完整映射）
-- [x] Step 1b. User Repository（findUserByOpenid/findUserById/getUserProfile/getUserCapacity/createUser/updateUserProfile）
-- [x] Step 1c. Clothes Repository（getClothesList/getClothingById/getClothesCount/createClothing/updateClothing/archiveClothing/deleteClothing）
-- [x] Step 1d. BFF API 接入数据库（wechat-login / user/profile / user/capacity）
-- [x] Step 2. 图片上传链路（本地存储 + OSS 预留）
-- [x] Step 3. 衣橱 BFF API（clothes CRUD 完整 5 个端点）
-- [x] Step 4. 小程序衣橱页面（列表/上传/详情/编辑）
-- [x] Step 5. AI 衣服识别（SiliconFlow Provider + Mock fallback，自动降级）
+> 最后更新：2026-05-22  
+> 用途：给后续 Codex session 快速接手，减少重复扫描和上下文消耗。  
+> 维护原则：优先记录已确认事实；不确定内容标记为“待确认”。
 
 ---
 
-## 二、模块完成度明细
+## 1. 项目定位
 
-### 2.1 Packages 共享层
-
-| 包 | 已完成 | 待完成 | 完成度 |
-|----|--------|--------|--------|
-| `packages/types` | 全域类型定义（User/Clothing/Outfit/AI/天气/字典/UI Props） | — | ✅ 100% |
-| `packages/utils` | cn/debounce/throttle/formatDate/storage/env/normalizeError | — | ✅ 100% |
-| `packages/api` | ApiClient + 端点函数（user/weather/dict/**clothes**） | outfits/history/share/analysis 端点 | 🟡 70% |
-| `packages/ai` | SiliconFlow Provider + **Mock Provider** + **smartProvider 自动降级** | DeepSeek Provider 完善 | 🟡 90% |
-| `packages/hooks` | useDebounce/useThrottle/useLocalStorage/usePrevious/useIsMounted/useMediaQuery/useAsync/useLoading | — | ✅ 100% |
-| `packages/auth` | AuthProvider + useAuth（Context + localStorage 持久化 + Authorization 自动注入） | — | ✅ 100% |
-| `packages/ui` | Button/Card/Input/Textarea/Modal/Spinner/PageLoading/Skeleton/Navbar/Tabbar/Toast/Empty/ErrorBoundary + Design Tokens | — | ✅ 100% |
-
-### 2.2 Web 应用 (`apps/web`)
-
-| 模块 | 已完成 | 待完成 | 完成度 |
-|------|--------|--------|--------|
-| 项目配置 | Next.js 15 + TailwindCSS + transpilePackages + Drizzle ORM + postgres.js | — | ✅ |
-| 全局布局 | RootLayout + ToastProvider + AuthProvider | — | ✅ |
-| 首页 | 登录/登出 Demo（演示 AuthProvider + UI 组件集成） | 替换为管理后台 | ✅ |
-| 数据库连接 | `src/lib/db/index.ts`（postgres.js 连接池 + Drizzle 实例） | — | ✅ |
-| Drizzle Schema | `src/lib/db/schema.ts`（8 张表完整映射，含 customType 数组） | — | ✅ |
-| Repository | `src/lib/db/repositories/user.ts` + `clothes.ts` | outfits/history/share/reminders/analysis | 🟡 30% |
-| 存储层 | `src/lib/storage/index.ts`（本地存储 + OSS 预留） | — | ✅ |
-| BFF: auth | `POST /api/v1/auth/wechat-login`（✅ 已接入数据库） | 接入微信 code2Session | 🟡 60% |
-| BFF: user | `GET/PUT /api/v1/user/profile`（✅ 已接入数据库）、`GET /api/v1/user/capacity`（✅ 已接入数据库） | — | ✅ 100% |
-| BFF: weather | `GET /api/v1/weather/current`（Mock）、`GET /api/v1/weather/forecast`（Mock） | 接入和风天气 API | 🟡 |
-| BFF: dict | `GET /api/v1/dict/categories/scenes/styles`（硬编码） | 够用 | ✅ |
-| BFF: clothes | `POST /api/v1/clothes`（✅ 上传+**AI识别**）、`GET/PUT/DELETE /api/v1/clothes/[id]`、图片访问 `/uploads/[...path]` | — | ✅ 100% |
-| BFF: outfits | ❌ | 全部待创建 | 🔴 0% |
-| BFF: share | ❌ | 全部待创建 | 🔴 0% |
-| BFF: analysis | ❌ | 全部待创建 | 🔴 0% |
-| BFF: reminders | ❌ | 全部待创建 | 🔴 0% |
-
-### 2.3 小程序应用 (`apps/miniapp`)
-
-| 页面/组件 | 已完成 | 待完成 | 完成度 |
-|-----------|--------|--------|--------|
-| 今日页 | 天气卡片 + 空状态骨架 | 穿搭推荐卡片、场景选择器、换一换、标记穿着、分享入口 | 🟡 20% |
-| 衣橱页 | 容量条 + 分类横滑 + **ClothingGrid 组件** + 上传按钮 + 详情跳转 | AI 识别结果展示 | 🟡 95% |
-| 我的页 | 用户卡片 + 数据统计 + 菜单壳 | 风格偏好、穿搭历史、收藏、衣柜分析、提醒、会员 | 🟡 15% |
-| 首页 | Hello World 废弃壳子 | 删除或替换 | 🟡 — |
-| WeatherCard | 完整（含 Skeleton + 降级数据） | — | ✅ 100% |
-| ClothingGrid | 完整（网格展示、加载骨架、空状态、点击/长按事件） | — | ✅ 100% |
-| userStore | 登录/logout/fetchProfile/setStyles | — | ✅ 90% |
-| 入口 | app.tsx（自动 login）+ app.config.ts（TabBar） | — | ✅ |
-
-**已创建的页面**：
-- ✅ 衣服详情页（`pages/clothing-detail/`）
-- ✅ 添加/编辑衣服页（`pages/clothing-form/`，支持自定义名称/品类/品牌/标签）
-- ❌ 穿搭详情页
-- ❌ 穿搭历史列表页
-- ❌ 衣柜分析报告页
-- ❌ 风格偏好选择页
-- ❌ 分享生成页
-
-### 2.4 数据库
-
-| 内容 | 已完成 | 待完成 | 完成度 |
-|------|--------|--------|--------|
-| PostgreSQL 实例 | Docker 容器 `postgres-dev`（localhost:5432） | — | ✅ 100% |
-| 数据库 | `d1d` 数据库已创建 | — | ✅ 100% |
-| Schema | 8 张表全部建完 + 索引（001_initial_schema.sql 已执行） | — | ✅ 100% |
-| ORM | Drizzle ORM + postgres.js（已安装 + Schema 映射完成） | — | ✅ 100% |
-| Repository | User + Clothes Repository | Outfits/History/Share/Reminders/Analysis | 🟡 30% |
-| 种子数据 | ❌ | 字典/测试数据 | 🔴 0% |
-
-### 2.5 基础设施
-
-| 内容 | 状态 |
-|------|------|
-| CI/CD | ❌ |
-| Docker | ✅ PostgreSQL（postgres-dev） |
-| 单元测试 | ❌ |
-| 集成测试 | ❌ |
-| E2E 测试 | ❌ |
-| 图片 OSS 上传 | ❌ 本地存储可用，OSS 预留 |
-| 环境变量管理 | ✅ .env.local + .env.example |
-| AI 服务 | 🟡 SiliconFlow Provider + Mock fallback（自动降级）|
+- 产品名：搭搭 day。
+- 形态：微信小程序。
+- 核心链路：用户上传衣服到衣柜 -> AI 识别衣物属性 -> 按天气、场景、衣柜生成穿搭推荐。
+- 产品方向：年轻化、AI 感、穿搭潮流风格。
+- 产品边界：轻量日常穿搭助手，不是电商导购。
 
 ---
 
-## 三、AI 衣服识别状态说明
+## 2. 技术栈
 
-### 已完成代码
-
-| 文件 | 内容 |
-|------|------|
-| `packages/types/src/ai.ts` | AI 服务类型定义（RecognizeInput/Output 等） |
-| `packages/ai/src/providers/siliconflow.ts` | SiliconFlow Provider 完整实现 |
-| `packages/ai/src/index.ts` | Provider 导出 |
-| `apps/web/src/app/api/v1/clothes/route.ts` | 上传 API 接入 AI 识别 |
-| `apps/web/.env.local` | SILICONFLOW_API_KEY 配置 |
-
-### 当前状态
-
-**已切换到 `Qwen/Qwen2.5-VL-32B-Instruct` 模型（有赠送额度）**
-
-**新增 Mock Provider 作为 fallback**
-- 当 SiliconFlow API 失败时，自动降级到 Mock 识别
-- Mock 根据用户选择的 category 返回合理的模拟数据
-- 不影响用户体验，可继续开发其他功能
-
-### 如需使用真实 AI 识别
-
-1. **检查 SiliconFlow 账户**
-   - 登录 https://cloud.siliconflow.cn/
-   - 确认账户已实名认证
-   - 检查赠送额度是否充足
-
-2. **使用其他 AI 服务**
-   - 阿里云 DashScope（通义千问 VL）
-   - OpenRouter
-   - 其他支持视觉的 API
+- 仓库：pnpm workspace / monorepo。
+- 根包管理：`pnpm@9.15.0`，根 `package.json` 仍显示 `starter-template` 名称，后续是否改名待确认。
+- 小程序：Taro 4 + React 18 + Zustand，目标平台为微信小程序。
+- 微信能力：`apps/miniapp/project.config.json` 确认 `cloudfunctionRoot` 为 `cloudfunctions/`。
+- 云开发：存在微信云函数，已确认 `generateOutfit` 云函数。
+- AI 模块：衣物识别/推荐相关模块已接入到小程序链路，细节以云函数和页面实现为准。
+- 天气能力：`generateOutfit` 可接收 `event.weather`，并有 fallback weather；真实天气接入状态待确认。
+- Web/BFF、数据库、共享 packages 的当前落地状态：待确认，本次低上下文更新未重新读取。
 
 ---
 
-## 四、待实现 API 端点清单
+## 3. 当前模块状态
 
-### Phase 1 — 衣服管理（已完成）
-
-| 方法 | 路径 | 说明 | 状态 |
-|------|------|------|------|
-| POST | `/api/v1/clothes` | 上传衣服（multipart）+ **AI 识别** | ✅ |
-| GET | `/api/v1/clothes` | 衣服列表（分页/分类筛选/排序） | ✅ |
-| GET | `/api/v1/clothes/[id]` | 衣服详情 | ✅ |
-| PUT | `/api/v1/clothes/[id]` | 更新衣服信息 | ✅ |
-| DELETE | `/api/v1/clothes/[id]` | 删除衣服 | ✅ |
-
-### Phase 2 — 穿搭推荐
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| POST | `/api/v1/outfits/recommend` | 生成穿搭推荐 |
-| GET | `/api/v1/outfits` | 穿搭列表 |
-| GET | `/api/v1/outfits/[id]` | 穿搭详情 |
-| PUT | `/api/v1/outfits/[id]` | 更新穿搭（收藏/标记穿着等） |
-| POST | `/api/v1/outfits/[id]/wear` | 记录穿着历史 |
-
-### Phase 3 — 历史/分析/分享/提醒
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/v1/outfits/history` | 穿搭历史列表 |
-| POST | `/api/v1/outfits/[id]/share` | 生成分享图/文案 |
-| GET | `/api/v1/wardrobe/analysis` | 获取/触发衣柜分析 |
-| GET/PUT | `/api/v1/reminders` | 提醒设置 |
+| 模块 | 状态 | 已确认依据 |
+| --- | --- | --- |
+| 衣柜上传 / 衣物管理 | 部分实现 | `wardrobe` 页面包含衣柜列表、分页、分类、上传入口、删除入口。 |
+| 图片裁剪 / 衣物展示 | 部分实现 | 衣柜页已确认上传前图片压缩；裁剪能力待确认。 |
+| AI 识别衣物属性 | 部分实现 | 衣柜页存在 `recognizeClothAttributes` 和批量上传后确认流程；`recognizeClothing` 云函数文件本次未确认存在。 |
+| 场景选择卡片 UI | 待确认 | 本次未读取到相关页面。 |
+| `generateOutfit` 云函数 | 已实现 | 已确认支持 `generate/detail/favorite/wear/list` 行为。 |
+| 推荐页 / 穿搭展示 | 待确认 | 本次未读取到 `outfit` 页面入口。 |
+| 真实天气接入 | 待确认 | 仅确认推荐云函数支持传入天气和 fallback。 |
+| 收藏穿搭 | 部分实现 | `generateOutfit` 支持 `favorite` 行为和 `isFavorite/favoritedAt` 字段。 |
+| 穿搭历史 / 穿他按钮 | 部分实现 | `generateOutfit` 支持 `wear` 行为、`wornAt/wornDate/isWornToday` 和 `feedback` 记录。具体 UI 待确认。 |
+| 一图多衣 | 设计中 | 已列为后续重要能力，本次未确认实现。 |
+| 多图上传 | 部分实现 | 衣柜页 `chooseMedia` count 为 9，并创建 upload batch。 |
 
 ---
 
-## 五、下一步开发建议
+## 4. 最近关键决策
 
-### 方案 A：继续 Phase 2（穿搭推荐）— 推荐
-
-AI 识别已可用（Mock fallback），可以开始 Phase 2：
-1. 穿搭推荐算法（基于规则/AI）
-2. 今日页面完整交互
-3. Outfit Repository 和 API
-
-### 方案 B：接入其他 AI 服务
-
-如需真实 AI 识别：
-1. 阿里云 DashScope（通义千问 VL）
-2. 创建新的 Provider 文件
-3. 替换 SiliconFlow Provider
-
-### 方案 C：解决 SiliconFlow 权限
-
-1. 检查 SiliconFlow 账户实名认证状态
-2. 确认赠送额度充足
-3. 或充值后使用付费模型
+- 删除衣服不能简单硬删，需要考虑软删除、历史快照或引用关系。
+- 同一套穿搭可以同时存在于收藏记录和穿搭历史。
+- “换一套”不应该无脑保存推荐记录，应该明确用户行为后再入库。
+- AI 点评倾向短点评，后续可考虑详情页直接展示或按钮按需生成。
+- 一张图多件衣服、一次上传多张图片是后续重要能力，需要分阶段改造。
+- 为节省 Codex 额度，后续任务需要小范围读取、最小改动、避免全仓库扫描。
 
 ---
 
-## 六、进度更新记录
+## 5. Git 与验证状态
 
-| 日期 | 更新内容 |
-|------|----------|
-| 2026-05-18（第六轮） | 更新 SiliconFlow 模型为 `Qwen/Qwen2.5-VL-32B-Instruct`；新增 Mock Provider；创建 smartProvider 自动降级机制；AI 识别功能已可用（真实 API + Mock fallback）|
-| 2026-05-18（第五轮） | AI 衣服识别代码全部完成：SiliconFlow Provider 实现、Vision Prompt 设计、JSON Schema 结构化输出、上传 API 接入。测试发现 API Key 视觉模型权限问题（403 Model disabled），待解决 |
-| 2026-05-18（第四轮） | Phase 1 Step 4 补充：添加衣服编辑页（clothing-form），支持自定义名称/品类/品牌/标签编辑；详情页编辑按钮接入 |
-| 2026-05-18（第三轮） | Phase 1 Step 4 完成：小程序衣橱页面实现（ClothingGrid 组件、wardrobe 页面改造、clothing-detail 详情页）；packages/api 新增 clothes 端点函数；app.config.ts 注册新页面 |
-| 2026-05-18（第二轮） | Phase 1 Step 2 完成：本地文件存储抽象层（storage/index.ts）、OSS 预留扩展点；衣服 CRUD API（5 个端点）全部实现并测试通过；图片上传、GET 列表、单件详情、删除（归档）全部正常 |
-| 2026-05-18（第一轮） | Phase 1 Step 1 完成：Drizzle ORM + postgres.js 连接层、Schema 映射、User/Clothes Repository、BFF API 接入数据库（wechat-login/profile/capacity），全部 API 测试通过 |
+- Git 仓库：已初始化。
+- GitHub 远程：`origin` 为 `https://github.com/lemzdo/dada-day-miniapp.git`。
+- 当前分支：`main`。
+- 当前状态：用户说明此前已确认 clean；本次执行 `git status --short` 也为 clean。
+- 本次未运行 `pnpm install`、`pnpm build`、`pnpm typecheck`、`pnpm test`。
+- 历史验证，本次未重新执行：
+  - 曾运行 `pnpm typecheck -- --pretty false`，通过，9 个 workspace successful。
+  - 曾运行 `node --check apps\miniapp\cloudfunctions\generateOutfit\index.js`，通过。
 
 ---
 
-> 本文档应随开发进度持续更新。每次完成一个 Step 后，将对应的复选框从 `- [ ]` 改为 `- [x]`，并在"进度更新记录"中添加一行。
+## 6. 当前开发约束
+
+- 不要全仓库扫描。
+- 每次 Codex 任务优先读取 `PROJECT_STATUS.md`。
+- 小程序端避免引入重型依赖。
+- 云函数保持 Node16 兼容。
+- UI 保持年轻化、干净、圆角卡片、轻 AI 感。
+- 新功能优先最小改动。
+- 修改前先看 `git status --short`，修改后用 `git diff -- <file>` 检查。
+- 不要读取或输出真实 API key / secret / token。
+
+---
+
+## 7. 下一步建议
+
+1. 优先梳理收藏穿搭 / 穿搭历史 / 穿他 的数据模型和状态关系。
+2. 再做 AI 点评 / 推荐语生成。
+3. 再做一图多衣和批量上传的完整体验。
+4. 每完成一个小功能就提交 Git，避免改动堆积。
+
+---
+
+## 8. 后续接手建议
+
+- 先读本文件，再按任务只读必要文件。
+- 如果任务涉及推荐闭环，优先查看：
+  - `apps/miniapp/cloudfunctions/generateOutfit/index.js`
+  - 推荐/今日/穿搭相关页面入口，具体路径待确认。
+- 如果任务涉及衣柜，优先查看：
+  - `apps/miniapp/src/pages/wardrobe/index.tsx`
+  - 衣物详情、上传确认、云函数封装文件，具体路径按任务再确认。
