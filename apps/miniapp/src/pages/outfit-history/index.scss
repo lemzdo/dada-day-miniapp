@@ -1,0 +1,175 @@
+.outfit-history-page {
+  min-height: 100vh;
+  background: #f5f5f5;
+  padding: 24px 0 56px;
+}
+
+.stats-card {
+  margin: 0 24px 24px;
+  background: #fff;
+  border-radius: 24px;
+  padding: 28px 16px;
+  display: flex;
+  justify-content: space-around;
+}
+
+.stat-item {
+  flex: 1;
+  text-align: center;
+}
+
+.stat-num {
+  display: block;
+  font-size: 40px;
+  font-weight: 700;
+  color: #1a1a1a;
+  margin-bottom: 8px;
+}
+
+.stat-label {
+  font-size: 23px;
+  color: #999;
+}
+
+.state-card {
+  margin: 80px 32px 0;
+  padding: 56px 32px;
+  background: #fff;
+  border-radius: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.state-title {
+  font-size: 32px;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 14px;
+}
+
+.state-desc {
+  font-size: 26px;
+  color: #999;
+  text-align: center;
+  line-height: 1.6;
+  margin-bottom: 32px;
+}
+
+.state-action {
+  padding: 18px 42px;
+  border-radius: 999px;
+  background: #1a1a1a;
+}
+
+.state-action-text {
+  font-size: 26px;
+  color: #fff;
+  font-weight: 600;
+}
+
+.history-list {
+  min-height: 200px;
+}
+
+.history-card {
+  margin: 0 24px 20px;
+  padding: 24px;
+  background: #fff;
+  border-radius: 24px;
+  display: flex;
+  gap: 22px;
+}
+
+.history-date {
+  flex-shrink: 0;
+  width: 104px;
+  height: 104px;
+  border-radius: 22px;
+  background: #f4f4f4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.date-text {
+  font-size: 30px;
+  font-weight: 700;
+  color: #1a1a1a;
+  margin-bottom: 6px;
+}
+
+.date-year {
+  font-size: 21px;
+  color: #999;
+}
+
+.history-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.history-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+.history-title {
+  font-size: 31px;
+  font-weight: 650;
+  color: #1a1a1a;
+}
+
+.detail-hint {
+  flex-shrink: 0;
+  font-size: 22px;
+  color: #999;
+}
+
+.history-meta,
+.history-weather {
+  display: block;
+  font-size: 24px;
+  color: #888;
+  margin-top: 8px;
+}
+
+.history-footer {
+  margin-top: 18px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+
+.satisfaction-text {
+  font-size: 24px;
+  color: #555;
+}
+
+.rate-btn {
+  flex-shrink: 0;
+  padding: 10px 22px;
+  border-radius: 999px;
+  background: #f2f2f2;
+}
+
+.rate-text {
+  font-size: 23px;
+  color: #1a1a1a;
+  font-weight: 600;
+}
+
+.loading-row {
+  padding: 24px 0;
+  text-align: center;
+}
+
+.loading-text {
+  font-size: 24px;
+  color: #999;
+}

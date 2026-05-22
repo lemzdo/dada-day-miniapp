@@ -1,0 +1,176 @@
+.favorite-outfits-page {
+  min-height: 100vh;
+  background: #f5f5f5;
+  padding: 24px 0 56px;
+}
+
+.state-card {
+  margin: 96px 32px 0;
+  padding: 56px 32px;
+  background: #fff;
+  border-radius: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.state-title {
+  font-size: 32px;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 14px;
+}
+
+.state-desc {
+  font-size: 26px;
+  color: #999;
+  text-align: center;
+  line-height: 1.6;
+  margin-bottom: 32px;
+}
+
+.state-action {
+  padding: 18px 42px;
+  border-radius: 999px;
+  background: #1a1a1a;
+}
+
+.state-action-text {
+  font-size: 26px;
+  color: #fff;
+  font-weight: 600;
+}
+
+.favorite-list {
+  min-height: 200px;
+}
+
+.favorite-card {
+  margin: 0 24px 22px;
+  padding: 26px;
+  background: #fff;
+  border-radius: 24px;
+}
+
+.favorite-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 20px;
+  margin-bottom: 22px;
+}
+
+.favorite-title-wrap {
+  flex: 1;
+  min-width: 0;
+}
+
+.favorite-title {
+  display: block;
+  font-size: 32px;
+  font-weight: 650;
+  color: #1a1a1a;
+  margin-bottom: 10px;
+}
+
+.favorite-meta {
+  display: block;
+  font-size: 24px;
+  color: #888;
+}
+
+.favorite-badge {
+  flex-shrink: 0;
+  padding: 8px 18px;
+  border-radius: 999px;
+  background: #ffe8e8;
+  color: #d94a4a;
+  font-size: 22px;
+
+  &.incomplete {
+    background: #fff4f2;
+    color: #c2412d;
+  }
+}
+
+.deleted-notice {
+  padding: 14px 16px;
+  background: #fff4f2;
+  border-radius: 12px;
+  margin-bottom: 20px;
+}
+
+.deleted-notice-text {
+  font-size: 24px;
+  color: #c2412d;
+}
+
+.favorite-info {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-bottom: 24px;
+}
+
+.info-pill {
+  min-width: 132px;
+  padding: 16px 18px;
+  border-radius: 18px;
+  background: #f7f7f7;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 8px;
+
+  &.worn {
+    background: #f0f0f0;
+  }
+}
+
+.info-num {
+  font-size: 30px;
+  font-weight: 700;
+  color: #1a1a1a;
+}
+
+.info-label {
+  font-size: 23px;
+  color: #777;
+}
+
+.favorite-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  padding-top: 20px;
+  border-top: 1px solid #f0f0f0;
+}
+
+.detail-text {
+  font-size: 25px;
+  color: #666;
+}
+
+.unfavorite-btn {
+  flex-shrink: 0;
+  padding: 12px 24px;
+  border-radius: 999px;
+  background: #f2f2f2;
+}
+
+.unfavorite-text {
+  font-size: 24px;
+  color: #333;
+  font-weight: 600;
+}
+
+.loading-row {
+  padding: 24px 0;
+  text-align: center;
+}
+
+.loading-text {
+  font-size: 24px;
+  color: #999;
+}

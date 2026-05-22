@@ -1,0 +1,268 @@
+.clothing-detail-page {
+  min-height: 100vh;
+  background: #f5f5f5;
+  padding-bottom: 160px;
+
+  &.loading {
+    .skeleton-image {
+      width: 100%;
+      height: 600rpx;
+      background: #e0e0e0;
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+
+    .skeleton-content {
+      padding: 32rpx;
+
+      .skeleton-line {
+        height: 40rpx;
+        background: #e0e0e0;
+        border-radius: 8rpx;
+        margin-bottom: 20rpx;
+        animation: pulse 1.5s ease-in-out infinite;
+
+        &.short {
+          width: 60%;
+        }
+      }
+    }
+  }
+
+  &.error {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 600rpx;
+
+    .error-text {
+      font-size: 28rpx;
+      color: #999;
+    }
+  }
+}
+
+.image-section {
+  width: 100%;
+  height: 600rpx;
+  background: #e0e0e0;
+
+  .clothing-image {
+    width: 100%;
+    height: 100%;
+  }
+}
+
+.info-card {
+  margin: 24rpx;
+  background: #fff;
+  border-radius: 24rpx;
+  padding: 32rpx;
+}
+
+.ai-status-card {
+  margin: 24rpx;
+  background: #fff;
+  border-radius: 24rpx;
+  padding: 28rpx 32rpx;
+
+  &.failed {
+    border: 2rpx solid rgba(255, 107, 107, 0.32);
+  }
+
+  .ai-status-title {
+    display: block;
+    font-size: 30rpx;
+    font-weight: 600;
+    color: #1a1a1a;
+    margin-bottom: 10rpx;
+  }
+
+  .ai-status-desc {
+    display: block;
+    font-size: 26rpx;
+    color: #666;
+    line-height: 1.5;
+  }
+
+  .retry-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 20rpx;
+    padding: 14rpx 24rpx;
+    border-radius: 999rpx;
+    background: #1a1a1a;
+
+    .retry-text {
+      font-size: 26rpx;
+      color: #fff;
+    }
+  }
+}
+
+.info-section {
+  margin-bottom: 40rpx;
+
+  &:last-child {
+    margin-bottom: 0;
+  }
+
+  .section-title {
+    font-size: 28rpx;
+    font-weight: 600;
+    color: #1a1a1a;
+    margin-bottom: 20rpx;
+    display: block;
+  }
+}
+
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 24rpx;
+
+  .info-item {
+    .info-label {
+      font-size: 24rpx;
+      color: #999;
+      margin-bottom: 8rpx;
+      display: block;
+    }
+
+    .info-value {
+      font-size: 28rpx;
+      color: #333;
+      font-weight: 500;
+    }
+  }
+}
+
+.color-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16rpx;
+
+  .color-item {
+    display: flex;
+    align-items: center;
+    gap: 12rpx;
+    padding: 12rpx 20rpx;
+    background: #f5f5f5;
+    border-radius: 40rpx;
+
+    .color-dot {
+      width: 32rpx;
+      height: 32rpx;
+      border-radius: 50%;
+      border: 2rpx solid rgba(0, 0, 0, 0.1);
+    }
+
+    .color-name {
+      font-size: 26rpx;
+      color: #333;
+    }
+
+    .color-ratio {
+      font-size: 22rpx;
+      color: #999;
+    }
+  }
+}
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16rpx;
+
+  .tag-item {
+    padding: 12rpx 24rpx;
+    background: #f0f0f0;
+    border-radius: 32rpx;
+
+    &.scene {
+      background: #e8f4f8;
+    }
+
+    &.season {
+      background: #fff3e0;
+    }
+
+    .tag-text {
+      font-size: 26rpx;
+      color: #333;
+    }
+  }
+}
+
+.custom-name {
+  font-size: 28rpx;
+  color: #333;
+  padding: 20rpx;
+  background: #f5f5f5;
+  border-radius: 12rpx;
+}
+
+.action-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 24rpx 32rpx;
+  padding-bottom: calc(24rpx + env(safe-area-inset-bottom));
+  background: #fff;
+  display: flex;
+  gap: 24rpx;
+  box-shadow: 0 -4rpx 20rpx rgba(0, 0, 0, 0.05);
+
+  .action-btn {
+    flex: 1;
+    height: 88rpx;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 44rpx;
+
+    &.edit {
+      background: #1a1a1a;
+
+      .btn-text {
+        color: #fff;
+      }
+    }
+
+    &.delete {
+      background: #fff;
+      border: 2rpx solid #ff6b6b;
+
+      .btn-text {
+        color: #ff6b6b;
+      }
+    }
+
+    &.recognize {
+      background: #f5f5f5;
+
+      &.disabled {
+        opacity: 0.65;
+      }
+
+      .btn-text {
+        color: #333;
+      }
+    }
+
+    .btn-text {
+      font-size: 30rpx;
+      font-weight: 500;
+    }
+  }
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}

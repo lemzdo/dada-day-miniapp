@@ -1,0 +1,4 @@
+﻿import type { ClothingCategory, SceneTag } from "./clothes";
+import type { WeatherSnapshot } from "./weather";
+
+export type TimeOfDay = "morning" | "afternoon" | "evening" | "all_day";

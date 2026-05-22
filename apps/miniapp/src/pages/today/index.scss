@@ -1,0 +1,329 @@
+.today-page {
+  min-height: 100vh;
+  background: #f5f5f5;
+  padding-bottom: 48px;
+}
+
+// ── 场景选择器 ───────────────────────────────────────────────
+
+.scene-section {
+  display: flex;
+  width: 100%;
+  padding: 14rpx 16rpx 12rpx;
+  box-sizing: border-box;
+  background: #f7f7f8;
+}
+
+.scene-card {
+  width: 25%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  box-sizing: border-box;
+}
+
+.scene-card-image {
+  width: 152rpx;
+  height: 152rpx;
+  display: block;
+  pointer-events: none;
+}
+
+.scene-card-label {
+  margin-top: 4rpx;
+  font-size: 24rpx;
+  line-height: 30rpx;
+  color: #333;
+  text-align: center;
+  pointer-events: none;
+}
+
+.scene-card.active .scene-card-label {
+  font-weight: 600;
+  color: #111;
+}
+
+// ── 穿搭推荐区 ───────────────────────────────────────────────
+
+.outfit-section {
+  margin: 0 24px;
+  background: #fff;
+  border-radius: 16px;
+  padding: 24px;
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.section-title {
+  font-size: 32px;
+  font-weight: 600;
+  color: #1a1a1a;
+}
+
+.section-hint {
+  font-size: 24px;
+  color: #999;
+}
+
+// ── 加载中 ───────────────────────────────────────────────────
+
+.loading-state {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 80px 0;
+}
+
+.loading-text {
+  font-size: 28px;
+  color: #999;
+}
+
+// ── 空状态 ────────────────────────────────────────────────────
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 48px 0;
+}
+
+.empty-icon {
+  font-size: 80px;
+  margin-bottom: 24px;
+}
+
+.empty-text {
+  font-size: 28px;
+  color: #666;
+  margin-bottom: 8px;
+}
+
+.empty-desc {
+  font-size: 24px;
+  color: #999;
+  margin-bottom: 32px;
+}
+
+.empty-action {
+  padding: 16px 48px;
+  background: #1a1a1a;
+  border-radius: 32px;
+}
+
+.action-text {
+  font-size: 28px;
+  color: #fff;
+  font-weight: 500;
+}
+
+// ── 穿搭卡片 ─────────────────────────────────────────────────
+
+.outfit-card {
+  background: #f9f9f9;
+  border-radius: 16px;
+  padding: 24px;
+}
+
+.outfit-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.outfit-title {
+  font-size: 32px;
+  font-weight: 600;
+  color: #1a1a1a;
+}
+
+.favorite-badge {
+  font-size: 32px;
+}
+
+.deleted-notice {
+  padding: 14px 16px;
+  background: #fff4f2;
+  border-radius: 12px;
+  margin-bottom: 20px;
+}
+
+.deleted-notice-text {
+  font-size: 24px;
+  color: #c2412d;
+}
+
+// ── 衣服展示 ─────────────────────────────────────────────────
+
+.outfit-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.outfit-item {
+  flex: 0 0 calc(33.333% - 11px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+
+  &.deleted {
+    opacity: 0.62;
+  }
+}
+
+.item-image {
+  width: 100%;
+  height: 160px;
+  border-radius: 12px;
+  background: #eee;
+  margin-bottom: 8px;
+}
+
+.item-name {
+  font-size: 22px;
+  color: #666;
+  text-align: center;
+}
+
+// ── 评分展示 ─────────────────────────────────────────────────
+
+.outfit-scores {
+  margin-bottom: 24px;
+  padding: 16px;
+  background: #fff;
+  border-radius: 12px;
+}
+
+.score-row {
+  display: flex;
+  align-items: center;
+  margin-bottom: 12px;
+
+  &:last-child {
+    margin-bottom: 0;
+  }
+}
+
+.score-label {
+  width: 80px;
+  font-size: 24px;
+  color: #666;
+}
+
+.score-bar {
+  flex: 1;
+  height: 8px;
+  background: #eee;
+  border-radius: 4px;
+  margin: 0 16px;
+  overflow: hidden;
+}
+
+.score-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #1a1a1a 0%, #666 100%);
+  border-radius: 4px;
+  transition: width 0.3s;
+}
+
+.score-value {
+  width: 40px;
+  font-size: 24px;
+  color: #1a1a1a;
+  font-weight: 600;
+  text-align: right;
+}
+
+// ── 推荐理由 ─────────────────────────────────────────────────
+
+.outfit-reasoning {
+  padding: 16px;
+  background: #fff;
+  border-radius: 12px;
+  margin-bottom: 24px;
+}
+
+.reasoning-text {
+  font-size: 24px;
+  color: #666;
+  line-height: 1.5;
+}
+
+// ── 行内错误 ─────────────────────────────────────────────────
+
+.inline-error {
+  padding: 14px 16px;
+  background: #fff4f2;
+  border-radius: 12px;
+  margin-bottom: 24px;
+}
+
+.inline-error-text {
+  font-size: 24px;
+  color: #c2412d;
+}
+
+// ── 操作按钮 ─────────────────────────────────────────────────
+
+.outfit-actions {
+  display: flex;
+  gap: 16px;
+}
+
+.action-btn {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 20px 0;
+  border-radius: 12px;
+  background: #fff;
+  border: 2px solid #ddd;
+
+  &.secondary {
+    background: #fff;
+    border-color: #ddd;
+  }
+
+  &.active {
+    background: #ffe6e6;
+    border-color: #ff6b6b;
+  }
+
+  &.disabled {
+    opacity: 0.62;
+  }
+
+  &.primary {
+    background: #1a1a1a;
+    border-color: #1a1a1a;
+
+    .btn-text {
+      color: #fff;
+    }
+
+    &.disabled {
+      background: #ccc;
+      border-color: #ccc;
+
+      .btn-text {
+        color: #fff;
+      }
+    }
+  }
+}
+
+.btn-text {
+  font-size: 26px;
+  color: #1a1a1a;
+  font-weight: 500;
+}

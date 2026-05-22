@@ -1,0 +1,38 @@
+{
+  "name": "@starter-template/web",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --port 3000",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "test": "esbuild ./src/lib/auth.test.ts ./src/lib/weather/service.test.ts --bundle --platform=node --format=cjs --outdir=.test --external:postgres && node .test/auth.test.js && node .test/weather/service.test.js",
+    "typecheck": "tsc --noEmit",
+    "clean": "rimraf .next"
+  },
+  "dependencies": {
+    "@starter-template/api": "workspace:*",
+    "@starter-template/auth": "workspace:*",
+    "@starter-template/ai": "workspace:*",
+    "@starter-template/hooks": "workspace:*",
+    "@starter-template/types": "workspace:*",
+    "@starter-template/ui": "workspace:*",
+    "@starter-template/utils": "workspace:*",
+    "drizzle-orm": "^0.45.2",
+    "next": "^15.1.0",
+    "postgres": "^3.4.9",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "sharp": "^0.34.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "rimraf": "^6.0.1",
+    "tailwindcss": "^3.4.17"
+  }
+}

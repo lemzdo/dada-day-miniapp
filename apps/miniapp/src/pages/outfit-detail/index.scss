@@ -1,0 +1,309 @@
+.outfit-detail-page {
+  min-height: 100vh;
+  background: #f5f5f5;
+  padding-bottom: 160px;
+
+  &.loading {
+    padding: 32px;
+
+    .skeleton-title,
+    .skeleton-card {
+      background: #e8e8e8;
+      border-radius: 20px;
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+
+    .skeleton-title {
+      width: 55%;
+      height: 48px;
+      margin-bottom: 24px;
+    }
+
+    .skeleton-card {
+      height: 420px;
+      margin-bottom: 24px;
+
+      &.short {
+        height: 220px;
+      }
+    }
+  }
+
+  &.empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 720px;
+    padding: 48px;
+
+    .empty-title {
+      font-size: 32px;
+      font-weight: 600;
+      color: #333;
+      margin-bottom: 16px;
+    }
+
+    .empty-desc {
+      font-size: 26px;
+      color: #999;
+      text-align: center;
+    }
+  }
+}
+
+.detail-scroll {
+  height: calc(100vh - 160px);
+}
+
+.hero-card,
+.detail-card {
+  margin: 24px;
+  background: #fff;
+  border-radius: 24px;
+  padding: 28px;
+}
+
+.hero-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 28px;
+}
+
+.hero-title {
+  display: block;
+  font-size: 36px;
+  font-weight: 700;
+  color: #1a1a1a;
+  margin-bottom: 12px;
+}
+
+.hero-subtitle {
+  display: block;
+  font-size: 24px;
+  color: #888;
+}
+
+.favorite-mark {
+  flex-shrink: 0;
+  height: 44px;
+  padding: 0 18px;
+  border-radius: 22px;
+  background: #ffe8e8;
+  color: #d94a4a;
+  font-size: 22px;
+  line-height: 44px;
+}
+
+.deleted-notice {
+  padding: 16px 18px;
+  background: #fff4f2;
+  border-radius: 14px;
+  margin-bottom: 22px;
+}
+
+.deleted-notice-text {
+  font-size: 24px;
+  color: #c2412d;
+}
+
+.outfit-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+}
+
+.outfit-item {
+  width: calc(50% - 9px);
+  padding: 14px;
+  border-radius: 18px;
+  background: #f7f7f7;
+  box-sizing: border-box;
+
+  &.deleted {
+    opacity: 0.62;
+  }
+}
+
+.item-image {
+  width: 100%;
+  height: 240px;
+  border-radius: 14px;
+  background: #eee;
+  margin-bottom: 12px;
+}
+
+.item-name {
+  display: block;
+  font-size: 24px;
+  color: #555;
+  text-align: center;
+}
+
+.card-title {
+  display: block;
+  font-size: 30px;
+  font-weight: 600;
+  color: #1a1a1a;
+  margin-bottom: 24px;
+}
+
+.weather-grid {
+  display: flex;
+  gap: 16px;
+}
+
+.weather-item {
+  flex: 1;
+  padding: 20px 12px;
+  border-radius: 16px;
+  background: #f7f7f7;
+  text-align: center;
+}
+
+.weather-value {
+  display: block;
+  font-size: 30px;
+  font-weight: 600;
+  color: #1a1a1a;
+  margin-bottom: 8px;
+}
+
+.weather-label {
+  font-size: 22px;
+  color: #999;
+}
+
+.score-row {
+  display: flex;
+  align-items: center;
+  margin-bottom: 18px;
+
+  &:last-child {
+    margin-bottom: 0;
+  }
+}
+
+.score-label {
+  width: 88px;
+  font-size: 24px;
+  color: #666;
+}
+
+.score-track {
+  flex: 1;
+  height: 10px;
+  margin: 0 18px;
+  border-radius: 999px;
+  background: #eee;
+  overflow: hidden;
+}
+
+.score-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #1a1a1a 0%, #767676 100%);
+}
+
+.score-value {
+  width: 44px;
+  font-size: 24px;
+  font-weight: 600;
+  color: #1a1a1a;
+  text-align: right;
+}
+
+.explain-item {
+  display: flex;
+  gap: 16px;
+  padding: 18px 0;
+  border-bottom: 1px solid #f0f0f0;
+
+  &:last-child {
+    border-bottom: 0;
+  }
+}
+
+.explain-score {
+  flex-shrink: 0;
+  width: 48px;
+  height: 48px;
+  border-radius: 24px;
+  background: #1a1a1a;
+  color: #fff;
+  font-size: 22px;
+  line-height: 48px;
+  text-align: center;
+}
+
+.explain-text,
+.reasoning-text {
+  font-size: 26px;
+  color: #555;
+  line-height: 1.6;
+}
+
+.action-bar {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  gap: 20px;
+  padding: 24px 32px;
+  padding-bottom: calc(24px + env(safe-area-inset-bottom));
+  background: #fff;
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.05);
+}
+
+.action-btn {
+  flex: 1;
+  height: 88px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 44px;
+
+  &.favorite {
+    background: #fff;
+    border: 2px solid #ddd;
+
+    &.active {
+      background: #ffe8e8;
+      border-color: #ff8a8a;
+    }
+
+    .btn-text {
+      color: #1a1a1a;
+    }
+  }
+
+  &.wear {
+    background: #1a1a1a;
+
+    &.disabled {
+      background: #cfcfcf;
+    }
+
+    .btn-text {
+      color: #fff;
+    }
+  }
+}
+
+.btn-text {
+  font-size: 30px;
+  font-weight: 600;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.55;
+  }
+}

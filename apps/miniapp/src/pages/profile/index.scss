@@ -1,0 +1,382 @@
+.profile-page {
+  min-height: 100vh;
+  background: #f7f5f0;
+  padding: 24px 0 56px;
+}
+
+.user-card {
+  position: relative;
+  margin: 0 24px;
+  padding: 32px 24px;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  overflow: hidden;
+  border-radius: 32px;
+  background:
+    radial-gradient(circle at 92% 0, rgba(255, 255, 255, 0.92) 0, rgba(255, 255, 255, 0) 150px),
+    linear-gradient(135deg, #617ff2 0%, #8561d4 56%, #d796a7 100%);
+  box-shadow: 0 22px 48px rgba(99, 92, 183, 0.22);
+}
+
+.avatar,
+.avatar-image {
+  width: 112px;
+  height: 112px;
+  border-radius: 56px;
+  flex-shrink: 0;
+}
+
+.avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.38), 0 16px 26px rgba(40, 36, 98, 0.2);
+}
+
+.avatar-image {
+  display: block;
+  background: #f4f0ff;
+  box-shadow: 0 16px 26px rgba(40, 36, 98, 0.2);
+}
+
+.user-info {
+  position: relative;
+  z-index: 2;
+  flex: 1;
+  min-width: 0;
+}
+
+.nickname {
+  display: block;
+  font-size: 38px;
+  line-height: 1.2;
+  font-weight: 800;
+  color: #fff;
+}
+
+.slogan,
+.preference-summary {
+  display: block;
+  font-size: 24px;
+  line-height: 1.45;
+}
+
+.slogan {
+  color: rgba(255, 255, 255, 0.88);
+  margin-top: 10px;
+}
+
+.preference-summary {
+  color: rgba(255, 255, 255, 0.72);
+  margin-top: 4px;
+}
+
+.profile-action-card,
+.edit-card,
+.notice-card,
+.capacity-card,
+.menu-section,
+.vip-card {
+  margin: 24px;
+  background: rgba(255, 255, 255, 0.94);
+  border-radius: 28px;
+  border: 1px solid rgba(230, 226, 218, 0.82);
+  box-shadow: 0 14px 34px rgba(29, 29, 31, 0.055);
+}
+
+.profile-action-card {
+  padding: 26px 24px;
+}
+
+.profile-action-copy {
+  margin-bottom: 22px;
+}
+
+.profile-action-title {
+  display: block;
+  font-size: 28px;
+  font-weight: 760;
+  color: #1d1d1f;
+}
+
+.profile-action-desc {
+  display: block;
+  margin-top: 8px;
+  font-size: 24px;
+  line-height: 1.5;
+  color: #817c74;
+}
+
+.profile-action-btn,
+.save-profile-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 78px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #627ff2 0%, #8351c9 100%);
+  box-shadow: 0 14px 28px rgba(98, 127, 242, 0.22);
+}
+
+.profile-action-text,
+.save-profile-text {
+  color: #fff;
+  font-size: 28px;
+  font-weight: 760;
+}
+
+.edit-card {
+  padding: 28px 24px 26px;
+}
+
+.edit-header,
+.preset-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.edit-title {
+  display: block;
+  font-size: 32px;
+  font-weight: 800;
+  color: #1d1d1f;
+}
+
+.edit-subtitle {
+  display: block;
+  margin-top: 8px;
+  font-size: 24px;
+  color: #817c74;
+}
+
+.edit-close {
+  width: 54px;
+  height: 54px;
+  text-align: center;
+  line-height: 50px;
+  border-radius: 27px;
+  background: #f3f0ea;
+  color: #77736d;
+  font-size: 40px;
+}
+
+.avatar-editor {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  margin-top: 28px;
+}
+
+.wechat-avatar-btn {
+  width: 230px;
+  height: 68px;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #1d1d1f;
+  color: #fff;
+  font-size: 25px;
+  font-weight: 700;
+  line-height: 68px;
+
+  &::after {
+    border: none;
+  }
+}
+
+.input-wrap {
+  margin-top: 24px;
+  padding: 0 22px;
+  height: 82px;
+  display: flex;
+  align-items: center;
+  border-radius: 24px;
+  background: #f8f6f1;
+  border: 1px solid #ebe7dd;
+}
+
+.nickname-input {
+  width: 100%;
+  font-size: 27px;
+  color: #1d1d1f;
+}
+
+.preset-header {
+  margin-top: 26px;
+}
+
+.preset-title {
+  font-size: 25px;
+  color: #3f3d39;
+  font-weight: 700;
+}
+
+.preset-random {
+  font-size: 24px;
+  color: #7668e5;
+  font-weight: 700;
+}
+
+.preset-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 16px;
+  margin-top: 18px;
+}
+
+.preset-option {
+  min-height: 118px;
+  padding: 10px 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border-radius: 24px;
+  background: #f8f6f1;
+  box-shadow: 0 10px 20px rgba(31, 31, 31, 0.08);
+  opacity: 0.78;
+
+  &.active {
+    opacity: 1;
+    box-shadow: 0 0 0 4px rgba(118, 104, 229, 0.22), 0 14px 28px rgba(31, 31, 31, 0.12);
+  }
+}
+
+.preset-image {
+  width: 72px;
+  height: 72px;
+  display: block;
+  border-radius: 36px;
+  background: #f4f0ff;
+}
+
+.preset-name {
+  margin-top: 8px;
+  font-size: 20px;
+  color: #6f6680;
+  font-weight: 700;
+}
+
+.save-profile-btn {
+  margin-top: 26px;
+
+  &.disabled {
+    opacity: 0.62;
+  }
+}
+
+.notice-card {
+  padding: 18px 22px;
+  background: #fff8e8;
+  border: none;
+}
+
+.notice-text {
+  font-size: 24px;
+  color: #9a6a1b;
+}
+
+.capacity-card {
+  padding: 28px 24px;
+}
+
+.capacity-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 18px;
+}
+
+.capacity-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.capacity-title {
+  font-size: 28px;
+  color: #333;
+  font-weight: 600;
+}
+
+.capacity-num {
+  font-size: 26px;
+  color: #1a1a1a;
+  font-weight: 600;
+}
+
+.capacity-track {
+  height: 12px;
+  border-radius: 999px;
+  background: #eee;
+  overflow: hidden;
+  margin-bottom: 14px;
+}
+
+.capacity-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #627ff2 0%, #8351c9 100%);
+}
+
+.capacity-tip {
+  display: block;
+  font-size: 23px;
+  color: #999;
+}
+
+.data-notice {
+  display: block;
+  margin-top: 10px;
+  font-size: 22px;
+  color: #b0aaa0;
+}
+
+.menu-section {
+  overflow: hidden;
+}
+
+.menu-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 30px 24px;
+  border-bottom: 1px solid #f0f0f0;
+
+  &:last-child {
+    border-bottom: none;
+  }
+}
+
+.menu-label {
+  font-size: 28px;
+  color: #333;
+}
+
+.menu-value {
+  font-size: 25px;
+  color: #999;
+}
+
+.menu-arrow {
+  font-size: 34px;
+  color: #ccc;
+}
+
+.vip-card {
+  background: linear-gradient(135deg, #1d1d1f, #68616d);
+  padding: 26px;
+  text-align: center;
+  border: none;
+}
+
+.vip-text {
+  font-size: 28px;
+  color: #fff;
+  font-weight: 600;
+}
