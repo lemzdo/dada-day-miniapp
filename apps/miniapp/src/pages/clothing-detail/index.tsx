@@ -84,7 +84,7 @@ export default function ClothingDetailPage() {
     } catch (err) {
       console.error('Recognize clothing error:', err);
       setClothing({ ...clothing, aiStatus: 'failed' });
-      Taro.showToast({ title: 'AI识别失败，可手动编辑或重新识别', icon: 'none' });
+      Taro.showToast({ title: '小搭暂时没整理好，可手动编辑或重新整理', icon: 'none' });
     } finally {
       setRecognizing(false);
     }
@@ -125,7 +125,7 @@ export default function ClothingDetailPage() {
       {(clothing.aiRecognizeStatus === 'pending' || clothing.aiRecognizeStatus === 'failed' || (clothing.aiStatus && clothing.aiStatus !== 'recognized')) && (
         <View className={`ai-status-card ${clothing.aiStatus}`}>
           <Text className="ai-status-title">
-            {clothing.aiRecognizeStatus === 'failed' || clothing.aiStatus === 'failed' ? 'AI识别失败' : 'AI 正在识别属性...'}
+            {clothing.aiRecognizeStatus === 'failed' || clothing.aiStatus === 'failed' ? '小搭暂时没整理好' : '小搭正在整理属性...'}
           </Text>
           <Text className="ai-status-desc">
             {clothing.aiRecognizeStatus === 'failed' || clothing.aiStatus === 'failed'
@@ -148,7 +148,7 @@ export default function ClothingDetailPage() {
             {clothing.subcategory && <InfoItem label="子类" value={displayClothingText(clothing.subcategory)} />}
             {material && <InfoItem label="材质" value={material} />}
             {typeof clothing.aiConfidence === 'number' && clothing.aiConfidence > 0 && (
-              <InfoItem label="AI置信度" value={`${Math.round(clothing.aiConfidence * 100)}%`} />
+              <InfoItem label="小搭置信度" value={`${Math.round(clothing.aiConfidence * 100)}%`} />
             )}
             {clothing.brand && <InfoItem label="品牌" value={clothing.brand} />}
           </View>

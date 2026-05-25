@@ -156,13 +156,13 @@ export default function ClothingFormPage() {
 
         {isEditMode && clothing && (
           <View className="ai-card">
-            <Text className="ai-title">AI 识别结果，仅供参考</Text>
+            <Text className="ai-title">小搭整理结果，仅供参考</Text>
             <View className="ai-tags">
               <AiTagRow label="风格" tags={displayClothingTags(clothing.styleTags)} />
               <AiTagRow label="季节" tags={displayClothingTags(clothing.seasonTags)} />
               <AiTagRow label="场景" tags={displayClothingTags(clothing.sceneTags)} />
               {!clothing.styleTags?.length && !clothing.seasonTags?.length && !clothing.sceneTags?.length && (
-                <Text className="no-ai">暂无 AI 识别数据</Text>
+                <Text className="no-ai">暂无小搭整理数据</Text>
               )}
             </View>
           </View>

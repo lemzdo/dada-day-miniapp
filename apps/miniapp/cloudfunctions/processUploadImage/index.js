@@ -4,8 +4,7 @@ cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
 const db = cloud.database();
 const BAILIAN_BASE_URL = process.env.BAILIAN_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1';
-const BAILIAN_MODEL = process.env.BAILIAN_MODEL || 'qwen3-vl-flash';
-const QWEN_TIMEOUT_MS = Number(process.env.QWEN_TIMEOUT_MS || 20000);
+const QWEN_TIMEOUT_MS = Number(process.env.QWEN_TIMEOUT_MS || 30000);
 
 exports.main = async (event = {}) => {
   const { OPENID } = cloud.getWXContext();
@@ -21,46 +20,98 @@ exports.main = async (event = {}) => {
     const batchRes = await db.collection('upload_batches').doc(image.batchId).get();
     if (!batchRes.data || batchRes.data._openid !== OPENID) throw new Error('batch not found');
 
-    await markImage(imageId, { status: 'processing', errorMessage: '', updatedAt: nowIso() });
+    const existingDraftsRes = await db.collection('clothes_drafts').where({ sourceImageId: imageId, _openid: OPENID }).get();
+    const existingDrafts = existingDraftsRes.data || [];
+    if (existingDrafts.length > 0) {
+      await safeMarkImage(imageId, {
+        status: 'detected',
+        detectStatus: image.detectStatus === 'partial' ? 'partial' : 'success',
+        segmentStatus: image.segmentStatus || 'queued',
+        detectedCount: existingDrafts.length,
+        errorMessage: '',
+        updatedAt: nowIso(),
+      });
+      await refreshBatch(image.batchId, OPENID);
+      return ok({ imageId, drafts: existingDrafts.map(toDraft) });
+    }
+
+    await markImage(imageId, {
+      status: 'detecting',
+      detectStatus: 'pending',
+      segmentStatus: 'not_started',
+      errorMessage: '',
+      updatedAt: nowIso(),
+    });
     await db.collection('upload_batches').doc(image.batchId).update({
       data: { status: 'processing', updatedAt: nowIso() },
     });
 
     try {
       const sourceFileID = image.cloudFileId || image.originalImageUrl;
-      const [imageUrl, sourceBuffer] = await Promise.all([
-        getTempUrl(sourceFileID),
-        downloadCloudFile(sourceFileID),
-      ]);
-      const aiResult = await retryOnce(() => callQwenVl(imageUrl));
-      const items = normalizeItems(aiResult);
-      if (items.length === 0) throw new Error('no clothing items detected');
+      const imageUrl = await getTempUrl(sourceFileID);
+      const detectModel = getRequiredEnv('BAILIAN_MODEL');
+      const raw = await retryOnce(() => callQwenVl(imageUrl, detectModel));
+      const items = normalizeItems(raw);
+      const aiRawResult = buildAiRawResult({ model: detectModel, raw, items });
 
-      const createdDrafts = [];
-      for (let index = 0; index < items.length; index += 1) {
-        const item = items[index];
-        const crop = await cropItem(sourceBuffer, item.cropBox);
-        const croppedImageUrl = crop.buffer
-          ? await saveCrop(OPENID, imageId, index, crop.buffer)
-          : sourceFileID;
-
-        const draft = buildDraft({
-          openid: OPENID,
-          batchId: image.batchId,
-          imageId,
-          originalImageUrl: sourceFileID,
-          croppedImageUrl,
-          item: { ...item, cropBox: crop.cropBox || item.cropBox },
+      if (items.length === 0) {
+        await markImage(imageId, {
+          status: 'empty',
+          detectStatus: 'success',
+          segmentStatus: 'not_started',
+          detectedCount: 0,
+          errorMessage: '',
+          aiRawResult,
+          updatedAt: nowIso(),
         });
-        const addRes = await db.collection('clothes_drafts').add({ data: draft });
-        createdDrafts.push(toDraft({ ...draft, _id: addRes._id }));
+        await refreshBatch(image.batchId, OPENID);
+        return ok({ imageId, drafts: [] });
       }
 
-      await markImage(imageId, {
-        status: 'completed',
+      const createdDrafts = [];
+      try {
+        for (let index = 0; index < items.length; index += 1) {
+          const item = items[index];
+          const draft = buildDraft({
+            openid: OPENID,
+            batchId: image.batchId,
+            imageId,
+            originalImageUrl: sourceFileID,
+            detectModel,
+            item,
+          });
+          const addRes = await db.collection('clothes_drafts').add({ data: draft });
+          createdDrafts.push(toDraft({ ...draft, _id: addRes._id }));
+        }
+      } catch (error) {
+        const message = getErrorMessage(error);
+        console.error('[processUploadImage] create drafts failed', {
+          batchId: image.batchId,
+          imageId,
+          createdCount: createdDrafts.length,
+          message,
+        });
+
+        await safeMarkImage(imageId, {
+          status: createdDrafts.length > 0 ? 'detected' : 'failed',
+          detectStatus: createdDrafts.length > 0 ? 'partial' : 'failed',
+          segmentStatus: createdDrafts.length > 0 ? 'queued' : 'not_started',
+          detectedCount: createdDrafts.length,
+          errorMessage: message,
+          aiRawResult,
+          updatedAt: nowIso(),
+        });
+        await refreshBatch(image.batchId, OPENID);
+        return ok({ imageId, drafts: createdDrafts, errorMessage: message });
+      }
+
+      await safeMarkImage(imageId, {
+        status: 'detected',
+        detectStatus: 'success',
+        segmentStatus: 'queued',
         detectedCount: createdDrafts.length,
         errorMessage: '',
-        aiRawResult: aiResult,
+        aiRawResult,
         updatedAt: nowIso(),
       });
       await refreshBatch(image.batchId, OPENID);
@@ -77,6 +128,8 @@ exports.main = async (event = {}) => {
       console.error('[processUploadImage] image failed', { imageId, message });
       await markImage(imageId, {
         status: 'failed',
+        detectStatus: 'failed',
+        segmentStatus: 'not_started',
         detectedCount: 0,
         errorMessage: message,
         updatedAt: nowIso(),
@@ -90,17 +143,17 @@ exports.main = async (event = {}) => {
   }
 };
 
-async function callQwenVl(imageUrl) {
-  if (!process.env.BAILIAN_API_KEY) throw new Error('BAILIAN_API_KEY is missing');
+async function callQwenVl(imageUrl, model) {
+  const apiKey = getRequiredEnv('BAILIAN_API_KEY');
   const fetch = require('node-fetch');
   const response = await fetch(`${BAILIAN_BASE_URL}/chat/completions`, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${process.env.BAILIAN_API_KEY}`,
+      Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: BAILIAN_MODEL,
+      model,
       messages: [
         {
           role: 'user',
@@ -111,7 +164,7 @@ async function callQwenVl(imageUrl) {
         },
       ],
       temperature: 0.1,
-      max_tokens: 900,
+      max_tokens: 1200,
       stream: false,
     }),
     timeout: QWEN_TIMEOUT_MS,
@@ -133,8 +186,8 @@ function buildPrompt() {
     'Return strict JSON only. Do not return Markdown or explanations.',
     'Detect independent clothing items in the image. Do not treat a full outfit/person as one item.',
     'Split tops, bottoms, dresses, shoes, bags, hats and accessories into separate items.',
-    'Return: {"items":[{"type":"top|bottom|onepiece|shoes|accessory|other","categoryName":"string","colors":["string"],"material":"string","style":"string","cropBox":{"x":0,"y":0,"width":100,"height":100},"confidence":0.9}]}',
-    'cropBox must use pixel coordinates based on the original image.',
+    'Do not crop or edit the image. Only describe candidate clothing items.',
+    'Return: {"items":[{"type":"top|bottom|onepiece|shoes|accessory|other","categoryName":"string","colors":["string"],"material":"string","styleTags":["string"],"seasonTags":["spring|summer|autumn|winter"],"confidence":0.9}]}',
     'If uncertain, still return the best item candidates with lower confidence.',
   ].join('\n');
 }
@@ -145,14 +198,17 @@ function normalizeItems(input) {
     .map((item) => {
       const type = normalizeType(item.type || item.category);
       const colors = readStringArray(item.colors);
+      const styleTags = readStringArray(item.styleTags || item.styles || (item.style ? [item.style] : []));
+      const seasonTags = normalizeSeasonTags(item.seasonTags || item.seasons);
       return {
         type,
         categoryName: readString(item.categoryName || item.subcategory || item.category, type),
         colors,
         color: colors[0] || '',
         material: readString(item.material, ''),
-        style: readString(item.style || (Array.isArray(item.styleTags) ? item.styleTags[0] : ''), ''),
-        cropBox: normalizeCropBox(item.cropBox || item.bbox),
+        style: styleTags[0] || '',
+        styleTags,
+        seasonTags,
         confidence: normalizeConfidence(item.confidence),
         raw: item,
       };
@@ -184,76 +240,12 @@ function normalizeType(value) {
   return map[text] || (['top', 'bottom', 'onepiece', 'shoes', 'accessory', 'other'].includes(text) ? text : 'other');
 }
 
-function normalizeCropBox(value) {
-  if (!value || typeof value !== 'object') return undefined;
-  const box = {
-    x: Number(value.x),
-    y: Number(value.y),
-    width: Number(value.width || value.w),
-    height: Number(value.height || value.h),
-  };
-  if (!Number.isFinite(box.x) || !Number.isFinite(box.y) || !Number.isFinite(box.width) || !Number.isFinite(box.height)) {
-    return undefined;
-  }
-  if (box.width <= 0 || box.height <= 0) return undefined;
-  return box;
+function normalizeSeasonTags(value) {
+  const allowed = new Set(['spring', 'summer', 'autumn', 'winter']);
+  return readStringArray(value).filter((item) => allowed.has(item));
 }
 
-async function cropItem(sourceBuffer, cropBox) {
-  if (!cropBox) return { buffer: null, cropBox: undefined };
-
-  try {
-    const sharp = require('sharp');
-    const image = sharp(sourceBuffer);
-    const metadata = await image.metadata();
-    const sourceWidth = metadata.width || 0;
-    const sourceHeight = metadata.height || 0;
-    const box = resolveCropBox(cropBox, sourceWidth, sourceHeight);
-    if (!box) return { buffer: null, cropBox };
-
-    const buffer = await image
-      .extract({ left: box.x, top: box.y, width: box.width, height: box.height })
-      .jpeg({ quality: 90 })
-      .toBuffer();
-    return { buffer, cropBox: box };
-  } catch (error) {
-    console.warn('[processUploadImage] crop failed, use original image', {
-      message: getErrorMessage(error),
-      cropBox,
-    });
-    return { buffer: null, cropBox };
-  }
-}
-
-function resolveCropBox(cropBox, sourceWidth, sourceHeight) {
-  if (sourceWidth <= 0 || sourceHeight <= 0) return undefined;
-  const normalized = cropBox.x <= 1 && cropBox.y <= 1 && cropBox.width <= 1 && cropBox.height <= 1;
-  const raw = normalized
-    ? {
-      x: cropBox.x * sourceWidth,
-      y: cropBox.y * sourceHeight,
-      width: cropBox.width * sourceWidth,
-      height: cropBox.height * sourceHeight,
-    }
-    : cropBox;
-
-  const x = Math.max(0, Math.floor(raw.x));
-  const y = Math.max(0, Math.floor(raw.y));
-  const maxWidth = sourceWidth - x;
-  const maxHeight = sourceHeight - y;
-  const width = Math.min(maxWidth, Math.max(1, Math.round(raw.width)));
-  const height = Math.min(maxHeight, Math.max(1, Math.round(raw.height)));
-  if (width <= 0 || height <= 0) return undefined;
-  return { x, y, width, height };
-}
-
-async function saveCrop(openid, imageId, index, buffer) {
-  const cloudPath = `wardrobe_uploads/crops/${openid}/${imageId}-${index + 1}-${Date.now()}.jpg`;
-  const uploadRes = await cloud.uploadFile({ cloudPath, fileContent: buffer });
-  return uploadRes.fileID;
-}
-
-function buildDraft({ openid, batchId, imageId, originalImageUrl, croppedImageUrl, item }) {
+function buildDraft({ openid, batchId, imageId, originalImageUrl, detectModel, item }) {
   const now = nowIso();
   return {
     _openid: openid,
@@ -261,15 +253,26 @@ function buildDraft({ openid, batchId, imageId, originalImageUrl, croppedImageUr
     batchId,
     sourceImageId: imageId,
     originalImageUrl,
-    croppedImageUrl,
-    cropBox: item.cropBox,
+    displayImageUrl: originalImageUrl,
+    imageSourceType: 'original',
+    aiSegmentImageUrl: '',
+    manualCropImageUrl: '',
+    detectStatus: 'success',
+    segmentStatus: 'queued',
+    manualCropStatus: 'unsupported',
     type: item.type,
     categoryName: item.categoryName,
     color: item.color || '',
     colors: item.colors || [],
     material: item.material || '',
     style: item.style || '',
+    styleTags: item.styleTags || [],
+    seasonTags: item.seasonTags || [],
     confidence: item.confidence,
+    detectProvider: 'bailian',
+    detectModel,
+    segmentProvider: 'aliyun_viapi',
+    segmentModel: 'SegmentCloth',
     selected: true,
     status: 'pending',
     aiRawResult: item.raw,
@@ -281,18 +284,25 @@ function buildDraft({ openid, batchId, imageId, originalImageUrl, croppedImageUr
 async function refreshBatch(batchId, openid) {
   const imagesRes = await db.collection('upload_images').where({ batchId, _openid: openid }).get();
   const images = imagesRes.data || [];
-  const processedImages = images.filter((item) => item.status === 'completed' || item.status === 'failed').length;
-  const failedImages = images.filter((item) => item.status === 'failed').length;
-  const totalDetectedClothes = images.reduce((sum, item) => sum + Number(item.detectedCount || 0), 0);
+  const draftsRes = await db.collection('clothes_drafts').where({ batchId, _openid: openid }).get();
+  const drafts = draftsRes.data || [];
+  const draftImageIds = new Set(drafts.map((item) => item.sourceImageId).filter(Boolean));
+  const processedImages = Math.max(
+    images.filter((item) => isImageProcessed(item) || draftImageIds.has(item._id)).length,
+    draftImageIds.size,
+  );
+  const failedImages = images.filter((item) => item.status === 'failed' && !draftImageIds.has(item._id)).length;
+  const emptyImages = images.filter((item) => item.status === 'empty').length;
+  const totalDetectedClothes = drafts.length;
   const batchRes = await db.collection('upload_batches').doc(batchId).get();
   const totalImages = batchRes.data && batchRes.data.totalImages ? batchRes.data.totalImages : images.length;
   const status = processedImages < totalImages
     ? 'processing'
-    : failedImages === 0
-      ? 'completed'
-      : failedImages === totalImages
-        ? 'failed'
-        : 'partial_failed';
+    : totalDetectedClothes > 0
+      ? (failedImages > 0 ? 'partial_success' : 'success')
+      : failedImages === 0 && emptyImages > 0
+        ? 'empty'
+        : 'failed';
 
   await db.collection('upload_batches').doc(batchId).update({
     data: {
@@ -308,19 +318,37 @@ async function markImage(imageId, data) {
   await db.collection('upload_images').doc(imageId).update({ data });
 }
 
+async function safeMarkImage(imageId, data) {
+  try {
+    await markImage(imageId, data);
+  } catch (error) {
+    console.error('[processUploadImage] update upload image failed after drafts were created', {
+      imageId,
+      message: getErrorMessage(error),
+    });
+  }
+}
+
+function isImageProcessed(item) {
+  return ['detected', 'completed', 'success', 'empty', 'failed'].includes(item.status);
+}
+
+function buildAiRawResult({ model, raw, items }) {
+  return {
+    provider: 'bailian',
+    model,
+    raw,
+    items,
+    parsedAt: nowIso(),
+  };
+}
+
 async function getTempUrl(fileID) {
   if (typeof fileID === 'string' && /^https?:\/\//.test(fileID)) return fileID;
   const tempRes = await cloud.getTempFileURL({ fileList: [fileID] });
   const tempUrl = tempRes.fileList && tempRes.fileList[0] && tempRes.fileList[0].tempFileURL;
   if (!tempUrl) throw new Error('failed to get image temp url');
   return tempUrl;
-}
-
-async function downloadCloudFile(fileID) {
-  if (!fileID || typeof fileID !== 'string' || !fileID.startsWith('cloud://')) return Buffer.alloc(0);
-  const res = await cloud.downloadFile({ fileID });
-  if (!Buffer.isBuffer(res.fileContent) || res.fileContent.length === 0) throw new Error('downloaded cloud file is empty');
-  return res.fileContent;
 }
 
 async function retryOnce(task) {
@@ -361,15 +389,26 @@ function toDraft(item) {
     batchId: item.batchId,
     sourceImageId: item.sourceImageId,
     originalImageUrl: item.originalImageUrl,
-    croppedImageUrl: item.croppedImageUrl,
-    cropBox: item.cropBox,
+    displayImageUrl: item.displayImageUrl || item.originalImageUrl,
+    imageSourceType: item.imageSourceType || 'original',
+    aiSegmentImageUrl: item.aiSegmentImageUrl || '',
+    manualCropImageUrl: item.manualCropImageUrl || '',
+    detectStatus: item.detectStatus || 'success',
+    segmentStatus: item.segmentStatus || 'not_started',
+    manualCropStatus: item.manualCropStatus || 'unsupported',
     type: item.type || 'other',
     categoryName: item.categoryName,
     color: item.color,
     colors: item.colors || (item.color ? [item.color] : []),
     material: item.material,
     style: item.style,
+    styleTags: item.styleTags || (item.style ? [item.style] : []),
+    seasonTags: item.seasonTags || [],
     confidence: item.confidence || 0,
+    detectProvider: item.detectProvider || 'bailian',
+    detectModel: item.detectModel || '',
+    segmentProvider: item.segmentProvider || 'aliyun_viapi',
+    segmentModel: item.segmentModel || 'SegmentCloth',
     selected: item.selected !== false,
     status: item.status || 'pending',
     createdAt: item.createdAt,
@@ -383,6 +422,12 @@ function nowIso() {
 
 function getErrorMessage(error) {
   return error && error.message ? error.message : String(error || 'unknown error');
+}
+
+function getRequiredEnv(name) {
+  const value = process.env[name];
+  if (!value || !String(value).trim()) throw new Error(`${name} is required`);
+  return String(value).trim();
 }
 
 function ok(data) {

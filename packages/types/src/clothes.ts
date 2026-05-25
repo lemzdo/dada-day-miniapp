@@ -19,11 +19,14 @@ export type ClothingSubcategory =
 export type ClothingStatus = 'active' | 'archived' | 'deleted';
 
 export type ClothingAiStatus = 'pending' | 'recognizing' | 'recognized' | 'failed';
-export type ClothingCutoutStatus = 'pending' | 'success' | 'failed' | 'manual' | 'skipped';
-export type ClothingRecognizeStatus = 'pending' | 'success' | 'failed' | 'skipped';
-export type UploadBatchStatus = 'pending' | 'processing' | 'completed' | 'partial_failed' | 'failed';
-export type UploadImageStatus = 'pending' | 'processing' | 'completed' | 'failed';
+export type ClothingCutoutStatus = 'not_started' | 'queued' | 'processing' | 'pending' | 'success' | 'failed' | 'manual' | 'skipped';
+export type ClothingRecognizeStatus = 'pending' | 'success' | 'partial' | 'failed' | 'skipped';
+export type UploadBatchStatus = 'pending' | 'processing' | 'success' | 'partial_success' | 'empty' | 'completed' | 'partial_failed' | 'failed';
+export type UploadImageStatus = 'pending' | 'detecting' | 'detected' | 'empty' | 'processing' | 'completed' | 'success' | 'failed';
 export type ClothesDraftStatus = 'pending' | 'confirmed' | 'discarded';
+export type ClothingImageSourceType = 'original' | 'ai_segment' | 'manual_crop';
+export type ClothesDraftSegmentStatus = 'not_started' | 'queued' | 'processing' | 'success' | 'failed';
+export type ClothesDraftManualCropStatus = 'unsupported' | 'pending' | 'success';
 
 export type Season = 'spring' | 'summer' | 'autumn' | 'winter';
 
@@ -63,10 +66,20 @@ export interface Clothing {
   thumbnailUrl?: string;
   originalImageUrl?: string;
   displayImageUrl?: string;
+  imageSourceType?: ClothingImageSourceType;
+  aiSegmentImageUrl?: string;
+  manualCropImageUrl?: string;
   cutoutStatus?: ClothingCutoutStatus;
+  segmentStatus?: ClothesDraftSegmentStatus | ClothingCutoutStatus;
+  manualCropStatus?: ClothesDraftManualCropStatus;
   cutoutProvider?: string;
   cutoutError?: string;
   aiRecognizeStatus?: ClothingRecognizeStatus;
+  detectStatus?: ClothingRecognizeStatus;
+  detectProvider?: string;
+  detectModel?: string;
+  segmentProvider?: string;
+  segmentModel?: string;
   aiProvider?: string;
   aiRawResult?: unknown;
 
@@ -137,6 +150,16 @@ export interface ClothingUpdateInput {
   material?: Material;
   displayImageUrl?: string;
   originalImageUrl?: string;
+  imageSourceType?: ClothingImageSourceType;
+  aiSegmentImageUrl?: string;
+  manualCropImageUrl?: string;
+  manualCropStatus?: ClothesDraftManualCropStatus;
+  segmentStatus?: ClothesDraftSegmentStatus;
+  detectStatus?: ClothingRecognizeStatus;
+  detectProvider?: string;
+  detectModel?: string;
+  segmentProvider?: string;
+  segmentModel?: string;
   cutoutStatus?: ClothingCutoutStatus;
   aiRecognizeStatus?: ClothingRecognizeStatus;
   aiError?: string;
@@ -160,6 +183,8 @@ export interface UploadImage {
   originalImageUrl: string;
   cloudFileId?: string;
   status: UploadImageStatus;
+  detectStatus?: ClothingRecognizeStatus;
+  segmentStatus?: ClothesDraftSegmentStatus;
   detectedCount: number;
   errorMessage?: string;
   aiRawResult?: unknown;
@@ -173,7 +198,14 @@ export interface ClothesDraft {
   batchId: string;
   sourceImageId: string;
   originalImageUrl: string;
-  croppedImageUrl: string;
+  displayImageUrl: string;
+  imageSourceType: ClothingImageSourceType;
+  aiSegmentImageUrl?: string;
+  manualCropImageUrl?: string;
+  detectStatus: ClothingRecognizeStatus;
+  segmentStatus: ClothesDraftSegmentStatus;
+  manualCropStatus: ClothesDraftManualCropStatus;
+  croppedImageUrl?: string;
   cropBox?: ClothingCropBox;
   type: ClothingCategory | string;
   categoryName?: string;
@@ -181,7 +213,13 @@ export interface ClothesDraft {
   colors?: string[];
   material?: string;
   style?: string;
+  styleTags?: string[];
+  seasonTags?: string[];
   confidence?: number;
+  detectProvider?: string;
+  detectModel?: string;
+  segmentProvider?: string;
+  segmentModel?: string;
   selected: boolean;
   status: ClothesDraftStatus;
   createdAt: string;

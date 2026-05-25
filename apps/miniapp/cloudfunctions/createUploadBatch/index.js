@@ -15,8 +15,10 @@ exports.main = async (event = {}) => {
         db.collection('upload_images').where({ batchId: event.batchId, _openid: OPENID }).orderBy('createdAt', 'asc').get(),
         db.collection('clothes_drafts').where({ batchId: event.batchId, _openid: OPENID }).orderBy('createdAt', 'asc').get(),
       ]);
+      const normalizedBatch = normalizeBatch(batch, imagesRes.data || [], draftsRes.data || []);
+      await repairBatchIfNeeded(event.batchId, batch, normalizedBatch);
       return ok({
-        batch: toBatch(batch),
+        batch: toBatch(normalizedBatch),
         images: imagesRes.data.map(toUploadImage),
         drafts: draftsRes.data.map(toDraft),
       });
@@ -62,6 +64,57 @@ function toBatch(item) {
   };
 }
 
+function normalizeBatch(batch, images, drafts) {
+  const draftImageIds = new Set(drafts.map((item) => item.sourceImageId).filter(Boolean));
+  const totalImages = batch.totalImages || images.length || 0;
+  const processedImages = Math.max(
+    images.filter((item) => isImageProcessed(item) || draftImageIds.has(item._id)).length,
+    draftImageIds.size,
+  );
+  const failedImages = images.filter((item) => item.status === 'failed' && !draftImageIds.has(item._id)).length;
+  const emptyImages = images.filter((item) => item.status === 'empty').length;
+  const totalDetectedClothes = drafts.length;
+  const status = processedImages < totalImages
+    ? 'processing'
+    : totalDetectedClothes > 0
+      ? (failedImages > 0 ? 'partial_success' : 'success')
+      : failedImages === 0 && emptyImages > 0
+        ? 'empty'
+        : 'failed';
+
+  return {
+    ...batch,
+    processedImages,
+    totalDetectedClothes,
+    status,
+  };
+}
+
+async function repairBatchIfNeeded(batchId, current, next) {
+  if (
+    current.processedImages === next.processedImages
+    && current.totalDetectedClothes === next.totalDetectedClothes
+    && current.status === next.status
+  ) {
+    return;
+  }
+
+  await db.collection('upload_batches').doc(batchId).update({
+    data: {
+      processedImages: next.processedImages,
+      totalDetectedClothes: next.totalDetectedClothes,
+      status: next.status,
+      updatedAt: new Date().toISOString(),
+    },
+  }).catch((error) => {
+    console.warn('[createUploadBatch] repair batch stats failed', error);
+  });
+}
+
+function isImageProcessed(item) {
+  return ['detected', 'completed', 'success', 'empty', 'failed'].includes(item.status);
+}
+
 function toUploadImage(item) {
   return {
     id: item._id,
@@ -70,6 +123,8 @@ function toUploadImage(item) {
     originalImageUrl: item.originalImageUrl,
     cloudFileId: item.cloudFileId,
     status: item.status || 'pending',
+    detectStatus: item.detectStatus || item.aiRecognizeStatus || 'pending',
+    segmentStatus: item.segmentStatus || item.cutoutStatus || 'not_started',
     detectedCount: item.detectedCount || 0,
     errorMessage: item.errorMessage,
     aiRawResult: item.aiRawResult,
@@ -85,15 +140,26 @@ function toDraft(item) {
     batchId: item.batchId,
     sourceImageId: item.sourceImageId,
     originalImageUrl: item.originalImageUrl,
-    croppedImageUrl: item.croppedImageUrl,
-    cropBox: item.cropBox,
+    displayImageUrl: item.displayImageUrl || item.croppedImageUrl || item.originalImageUrl,
+    imageSourceType: item.imageSourceType || (item.croppedImageUrl ? 'ai_segment' : 'original'),
+    aiSegmentImageUrl: item.aiSegmentImageUrl || '',
+    manualCropImageUrl: item.manualCropImageUrl || '',
+    detectStatus: item.detectStatus || item.aiRecognizeStatus || 'success',
+    segmentStatus: item.segmentStatus || item.cutoutStatus || 'not_started',
+    manualCropStatus: item.manualCropStatus || 'unsupported',
     type: item.type || 'other',
     categoryName: item.categoryName,
     color: item.color,
     colors: item.colors || (item.color ? [item.color] : []),
     material: item.material,
     style: item.style,
+    styleTags: item.styleTags || (item.style ? [item.style] : []),
+    seasonTags: item.seasonTags || [],
     confidence: item.confidence || 0,
+    detectProvider: item.detectProvider || 'bailian',
+    detectModel: item.detectModel || 'qwen3-vl-flash',
+    segmentProvider: item.segmentProvider || 'aliyun_viapi',
+    segmentModel: item.segmentModel || 'SegmentCloth',
     selected: item.selected !== false,
     status: item.status || 'pending',
     createdAt: item.createdAt,

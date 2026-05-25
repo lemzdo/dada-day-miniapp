@@ -56,6 +56,8 @@ const CACHE_TTL = {
   weather: 10 * 60 * 1000,
 };
 
+export const WEATHER_CACHE_KEY = 'd1d:lastWeather';
+
 export function initCloud() {
   if (!taroCloud) {
     console.warn('wx.cloud is not available in current runtime');
@@ -119,6 +121,20 @@ function clearCloudCache(prefixes: string[]) {
   }
 }
 
+export function clearCloudRecommendationCache() {
+  clearCloudCache(['generateOutfit:']);
+}
+
+export function writeLocalWeatherCache(value: ResolvedWeatherResponse) {
+  const cacheValue: ResolvedWeatherResponse = {
+    location: value.location,
+    weather: value.weather,
+    source: 'cache',
+    updatedAt: value.updatedAt,
+  };
+  Taro.setStorageSync(WEATHER_CACHE_KEY, cacheValue);
+}
+
 function getCloudCacheKey(name: string, data: Record<string, unknown>) {
   return `${name}:${stableStringify(data)}`;
 }
@@ -176,95 +192,14 @@ export async function getClothingById(id: string) {
   return item;
 }
 
-export async function uploadClothing(filePath: string, category: ClothingCategory) {
-  if (!taroCloud) throw new Error('wx.cloud is not available');
-
-  const cloudPath = `wardrobe_uploads/${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
-  let uploadRes: { fileID: string };
-
-  try {
-    uploadRes = await taroCloud.uploadFile({ cloudPath, filePath });
-  } catch (error) {
-    console.error('[uploadClothing] wx.cloud.uploadFile failed', {
-      cloudPath,
-      category,
-      filePath,
-      error,
-    });
-    throw new Error('图片上传到云存储失败');
-  }
-
-  try {
-    const item = await callCloudFunction<Clothing>('uploadClothing', {
-      fileID: uploadRes.fileID,
-      category,
-    });
-    clearCloudCache(['getWardrobe:', 'generateOutfit:']);
-    return item;
-  } catch (error) {
-    console.error('[uploadClothing] uploadClothing failed', {
-      fileID: uploadRes.fileID,
-      category,
-      error,
-    });
-    throw error;
-  }
-}
-
-export async function uploadClothImage(filePath: string, category: ClothingCategory | string) {
-  if (!taroCloud) throw new Error('wx.cloud is not available');
-
-  const cloudPath = `wardrobe_uploads/${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
-  let uploadRes: { fileID: string };
-
-  try {
-    uploadRes = await taroCloud.uploadFile({ cloudPath, filePath });
-  } catch (error) {
-    console.error('[uploadClothImage] wx.cloud.uploadFile failed', {
-      cloudPath,
-      category,
-      filePath,
-      error,
-    });
-    throw new Error('图片上传到云存储失败');
-  }
-
-  const result = await callCloudFunction<{
-    clothId: string;
-    clothingId: string;
-    originalImageUrl: string;
-    item: Clothing;
-  }>('uploadClothImage', {
-    fileID: uploadRes.fileID,
-    category,
-  });
-
-  clearCloudCache(['getWardrobe:', 'generateOutfit:']);
-  return result.item;
-}
-
 export async function segmentCloudClothing(id: string) {
-  const item = await callCloudFunction<Clothing>('segmentClothImage', { clothId: id });
+  const item = await callCloudFunction<Clothing>('segmentClothImage', { clothingId: id });
   clearCloudCache(['getWardrobe:', 'generateOutfit:']);
   return item;
 }
 
 export async function recognizeClothAttributes(id: string) {
   const item = await callCloudFunction<Clothing>('recognizeClothAttributes', { clothId: id });
-  clearCloudCache(['getWardrobe:', 'generateOutfit:']);
-  return item;
-}
-
-export async function processClothUpload(filePath: string, category: ClothingCategory | string, recognizeNow = false) {
-  if (!taroCloud) throw new Error('wx.cloud is not available');
-
-  const cloudPath = `wardrobe_uploads/${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
-  const uploadRes = await taroCloud.uploadFile({ cloudPath, filePath });
-  const item = await callCloudFunction<Clothing>('processClothUpload', {
-    fileID: uploadRes.fileID,
-    category,
-    recognizeNow,
-  });
   clearCloudCache(['getWardrobe:', 'generateOutfit:']);
   return item;
 }
@@ -300,6 +235,10 @@ export async function processUploadImage(imageId: string) {
   return callCloudFunction<{ imageId: string; drafts: ClothesDraft[]; errorMessage?: string }>('processUploadImage', {
     imageId,
   });
+}
+
+export async function segmentClothesDraft(draftId: string) {
+  return callCloudFunction<ClothesDraft>('segmentClothImage', { draftId });
 }
 
 export async function confirmClothesDrafts(batchId: string, drafts: Array<Partial<ClothesDraft> & { id: string }>) {
@@ -371,6 +310,13 @@ export async function generateCloudOutfit(params: RecommendRequest = {}) {
     scene: params.scene,
     date: params.date,
     timeOfDay: params.timeOfDay,
+    weather: params.weather
+      ? {
+          temp: params.weather.temp,
+          weather: params.weather.weather,
+          humidity: params.weather.humidity,
+        }
+      : undefined,
     excludeCount: params.excludeClothingIdSets?.length ?? 0,
   });
   return callCachedCloudFunction<RecommendResponse>('generateOutfit', params as Record<string, unknown>, ttl);
@@ -495,8 +441,21 @@ export async function getCloudOutfitList(params: { isFavorite?: boolean; wornOnl
   return listFavoriteOutfits(params);
 }
 
-export async function getCloudWeather(location: { latitude: number; longitude: number }) {
-  return callCachedCloudFunction<ResolvedWeatherResponse>('getWeather', location, CACHE_TTL.weather);
+export async function getCloudWeather(
+  location: { latitude: number; longitude: number },
+  options: { forceRefresh?: boolean } = {},
+) {
+  const payload = options.forceRefresh ? { ...location, forceRefresh: true } : location;
+  const data = options.forceRefresh
+    ? await callCloudFunction<ResolvedWeatherResponse>('getWeather', payload)
+    : await callCachedCloudFunction<ResolvedWeatherResponse>('getWeather', payload, CACHE_TTL.weather);
+
+  writeLocalWeatherCache(data);
+  if (options.forceRefresh) {
+    clearCloudCache(['getWeather:']);
+    clearCloudRecommendationCache();
+  }
+  return data;
 }
 
 export function getLocalStyles(): StyleDictItem[] {

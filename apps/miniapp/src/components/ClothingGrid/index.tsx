@@ -54,7 +54,7 @@ export function ClothingGrid({
               <Image className="item-image" src={getDisplayImage(item)} mode="aspectFit" lazyLoad />
               {(item.aiRecognizeStatus === 'pending' || item.aiStatus === 'pending' || item.aiStatus === 'recognizing') && (
                 <View className="ai-status-badge recognizing">
-                  <Text className="ai-status-text">AI识别中</Text>
+                  <Text className="ai-status-text">小搭整理中</Text>
                 </View>
               )}
               {(item.aiRecognizeStatus === 'failed' || item.aiStatus === 'failed') && (

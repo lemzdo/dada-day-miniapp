@@ -65,10 +65,30 @@ async function updateDraftFromInput(input, openid) {
   if (!current || !current.data || current.data._openid !== openid || current.data.status !== 'pending') return;
 
   const data = { updatedAt: nowIso() };
-  const fields = ['type', 'categoryName', 'color', 'colors', 'material', 'style', 'selected'];
+  const fields = [
+    'type',
+    'categoryName',
+    'color',
+    'colors',
+    'material',
+    'style',
+    'styleTags',
+    'seasonTags',
+    'selected',
+    'displayImageUrl',
+    'imageSourceType',
+    'aiSegmentImageUrl',
+    'manualCropImageUrl',
+    'manualCropStatus',
+  ];
   fields.forEach((field) => {
     if (Object.prototype.hasOwnProperty.call(input, field)) data[field] = input[field];
   });
+
+  if (data.imageSourceType === 'original') data.displayImageUrl = current.data.originalImageUrl;
+  if (data.imageSourceType === 'ai_segment') data.displayImageUrl = current.data.aiSegmentImageUrl || input.aiSegmentImageUrl || current.data.originalImageUrl;
+  if (data.imageSourceType === 'manual_crop') data.displayImageUrl = current.data.manualCropImageUrl || input.manualCropImageUrl || current.data.originalImageUrl;
+
   await db.collection('clothes_drafts').doc(input.id).update({ data });
 }
 
@@ -76,26 +96,41 @@ function buildClothingFromDraft(draft, openid) {
   const now = nowIso();
   const color = draft.color || (Array.isArray(draft.colors) ? draft.colors[0] : '');
   const colors = Array.isArray(draft.colors) && draft.colors.length > 0 ? draft.colors : (color ? [color] : []);
+  const styleTags = Array.isArray(draft.styleTags) && draft.styleTags.length > 0 ? draft.styleTags : (draft.style ? [draft.style] : []);
+  const displayImageUrl = resolveDisplayImage(draft);
+  const imageSourceType = resolveImageSourceType(draft, displayImageUrl);
   return {
     _openid: openid,
     userId: openid,
     batchId: draft.batchId,
     sourceImageId: draft.sourceImageId,
     originalImageUrl: draft.originalImageUrl,
-    displayImageUrl: draft.croppedImageUrl || draft.originalImageUrl,
-    cropBox: draft.cropBox,
+    displayImageUrl,
+    imageSourceType,
+    aiSegmentImageUrl: draft.aiSegmentImageUrl || '',
+    manualCropImageUrl: draft.manualCropImageUrl || '',
     category: draft.type || 'other',
     subcategory: draft.categoryName || '',
     subCategory: draft.categoryName || '',
+    type: draft.type || 'other',
+    categoryName: draft.categoryName || '',
     colors,
     colorPalette: colors.map((name, index) => ({ name, hex: '#8A8A8A', ratio: index === 0 ? 1 : 0 })),
-    styleTags: draft.style ? [draft.style] : [],
-    seasonTags: [],
+    styleTags,
+    seasonTags: Array.isArray(draft.seasonTags) ? draft.seasonTags : [],
     sceneTags: [],
     material: draft.material || '',
     materialGuess: draft.material || '',
-    aiRecognizeStatus: 'success',
-    aiProvider: 'bailian_qwen_vl',
+    aiRecognizeStatus: draft.detectStatus || 'success',
+    detectStatus: draft.detectStatus || 'success',
+    cutoutStatus: draft.segmentStatus || 'not_started',
+    segmentStatus: draft.segmentStatus || 'not_started',
+    manualCropStatus: draft.manualCropStatus || 'unsupported',
+    aiProvider: draft.detectProvider || 'bailian',
+    detectProvider: draft.detectProvider || 'bailian',
+    detectModel: draft.detectModel || 'qwen3-vl-flash',
+    segmentProvider: draft.segmentProvider || 'aliyun_viapi',
+    segmentModel: draft.segmentModel || 'SegmentCloth',
     aiRawResult: draft.aiRawResult || null,
     aiStatus: 'recognized',
     aiConfidence: draft.confidence || 0,
@@ -109,6 +144,20 @@ function buildClothingFromDraft(draft, openid) {
   };
 }
 
+function resolveDisplayImage(draft) {
+  if (draft.imageSourceType === 'ai_segment' && draft.aiSegmentImageUrl) return draft.aiSegmentImageUrl;
+  if (draft.imageSourceType === 'manual_crop' && draft.manualCropImageUrl) return draft.manualCropImageUrl;
+  return draft.displayImageUrl || draft.originalImageUrl;
+}
+
+function resolveImageSourceType(draft, displayImageUrl) {
+  if (draft.imageSourceType === 'ai_segment' && draft.aiSegmentImageUrl) return 'ai_segment';
+  if (draft.imageSourceType === 'manual_crop' && draft.manualCropImageUrl) return 'manual_crop';
+  if (displayImageUrl === draft.aiSegmentImageUrl && draft.aiSegmentImageUrl) return 'ai_segment';
+  if (displayImageUrl === draft.manualCropImageUrl && draft.manualCropImageUrl) return 'manual_crop';
+  return 'original';
+}
+
 function toClothing(item) {
   const originalImageUrl = item.originalImageUrl || '';
   const displayImageUrl = item.displayImageUrl || originalImageUrl;
@@ -119,12 +168,20 @@ function toClothing(item) {
     sourceImageId: item.sourceImageId,
     originalImageUrl,
     displayImageUrl,
-    cropBox: item.cropBox,
+    imageSourceType: item.imageSourceType || 'original',
+    aiSegmentImageUrl: item.aiSegmentImageUrl || '',
+    manualCropImageUrl: item.manualCropImageUrl || '',
     confidence: item.confidence || item.aiConfidence || 0,
-    cutoutStatus: item.cutoutStatus || 'success',
-    cutoutProvider: item.cutoutProvider || 'crop_box',
-    aiRecognizeStatus: item.aiRecognizeStatus || 'success',
-    aiProvider: item.aiProvider,
+    cutoutStatus: item.cutoutStatus || item.segmentStatus || 'not_started',
+    segmentStatus: item.segmentStatus || item.cutoutStatus || 'not_started',
+    manualCropStatus: item.manualCropStatus || 'unsupported',
+    aiRecognizeStatus: item.aiRecognizeStatus || item.detectStatus || 'success',
+    detectStatus: item.detectStatus || item.aiRecognizeStatus || 'success',
+    aiProvider: item.aiProvider || item.detectProvider,
+    detectProvider: item.detectProvider || item.aiProvider,
+    detectModel: item.detectModel,
+    segmentProvider: item.segmentProvider,
+    segmentModel: item.segmentModel,
     aiRawResult: item.aiRawResult,
     category: item.category || 'other',
     subcategory: item.subcategory || item.subCategory,

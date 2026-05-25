@@ -6,8 +6,9 @@ import {
   discardClothesDraft,
   getUploadBatchDetail,
   processUploadImage,
+  segmentClothesDraft,
 } from '@/lib/cloud';
-import type { ClothesDraft, ClothingCategory, UploadBatch, UploadImage } from '@starter-template/types';
+import type { ClothesDraft, ClothingCategory, ClothingImageSourceType, UploadBatch, UploadImage } from '@starter-template/types';
 import './index.scss';
 
 const WARDROBE_REFRESH_STORAGE_KEY = 'wardrobeNeedsRefresh';
@@ -30,6 +31,7 @@ export default function UploadConfirmPage() {
   const [processing, setProcessing] = useState(false);
   const [saving, setSaving] = useState(false);
   const processingRef = useRef(false);
+  const segmentingDraftIdsRef = useRef(new Set<string>());
 
   const refresh = useCallback(async () => {
     if (!batchId) return;
@@ -38,6 +40,7 @@ export default function UploadConfirmPage() {
       setBatch(detail.batch);
       setImages(detail.images);
       setDrafts(detail.drafts);
+      void segmentQueuedDrafts(detail.drafts);
       return detail;
     } catch (error) {
       console.error('Fetch upload batch detail failed:', error);
@@ -73,13 +76,11 @@ export default function UploadConfirmPage() {
       for (let index = 0; index < targetIds.length; index += 1) {
         const imageId = targetIds[index];
         if (!imageId) continue;
-        Taro.showLoading({ title: `识别 ${index + 1}/${targetIds.length}` });
         await processUploadImage(imageId);
         await refresh();
       }
       Taro.removeStorageSync(`uploadBatchImages:${batchId}`);
     } finally {
-      Taro.hideLoading();
       processingRef.current = false;
       setProcessing(false);
       await refresh();
@@ -89,7 +90,7 @@ export default function UploadConfirmPage() {
   async function handleRetry(image: UploadImage) {
     setProcessing(true);
     try {
-      Taro.showLoading({ title: '重新识别...' });
+      Taro.showLoading({ title: '小搭重新整理...' });
       await processUploadImage(image.id);
       await refresh();
     } catch (error) {
@@ -120,6 +121,42 @@ export default function UploadConfirmPage() {
     }
   }
 
+  async function segmentQueuedDrafts(nextDrafts: ClothesDraft[]) {
+    const targets = nextDrafts.filter((draft) => (
+      draft.status === 'pending'
+      && (draft.segmentStatus === 'queued' || draft.segmentStatus === 'not_started')
+      && !segmentingDraftIdsRef.current.has(draft.id)
+    ));
+    if (targets.length === 0) return;
+
+    for (const draft of targets) {
+      segmentingDraftIdsRef.current.add(draft.id);
+      try {
+        const updated = await segmentClothesDraft(draft.id);
+        patchDraft(updated.id, updated);
+      } catch (error) {
+        console.warn('Segment draft failed:', error);
+        patchDraft(draft.id, {
+          segmentStatus: 'failed',
+          displayImageUrl: draft.originalImageUrl,
+          imageSourceType: 'original',
+        });
+      } finally {
+        segmentingDraftIdsRef.current.delete(draft.id);
+      }
+    }
+    await refresh();
+  }
+
+  function selectImageSource(draft: ClothesDraft, imageSourceType: ClothingImageSourceType) {
+    if (imageSourceType === 'ai_segment' && !draft.aiSegmentImageUrl) return;
+    if (imageSourceType === 'manual_crop' && !draft.manualCropImageUrl) return;
+    patchDraft(draft.id, {
+      imageSourceType,
+      displayImageUrl: getDraftImageBySource(draft, imageSourceType),
+    });
+  }
+
   async function handleSave() {
     if (!batchId || saving) return;
     const pendingDrafts = drafts.filter((draft) => draft.status === 'pending' || draft.status === 'discarded');
@@ -140,6 +177,13 @@ export default function UploadConfirmPage() {
         colors: draft.colors,
         material: draft.material,
         style: draft.style,
+        styleTags: draft.styleTags,
+        seasonTags: draft.seasonTags,
+        displayImageUrl: draft.displayImageUrl,
+        imageSourceType: draft.imageSourceType,
+        aiSegmentImageUrl: draft.aiSegmentImageUrl,
+        manualCropImageUrl: draft.manualCropImageUrl,
+        manualCropStatus: draft.manualCropStatus,
         selected: draft.selected && draft.status !== 'discarded',
       })));
       Taro.setStorageSync(WARDROBE_REFRESH_STORAGE_KEY, true);
@@ -156,13 +200,15 @@ export default function UploadConfirmPage() {
 
   const selectedCount = drafts.filter((draft) => draft.selected && draft.status === 'pending').length;
   const totalImages = batch?.totalImages ?? images.length;
-  const processedImages = batch?.processedImages ?? images.filter((item) => item.status === 'completed' || item.status === 'failed').length;
+  const processedImages = batch?.processedImages ?? images.filter((item) => isImageProcessed(item)).length;
+  const imageDetectedCount = images.reduce((sum, item) => sum + item.detectedCount, 0);
+  const detectedCount = Math.max(drafts.length, batch?.totalDetectedClothes ?? 0, imageDetectedCount);
   const progress = totalImages > 0 ? Math.round((processedImages / totalImages) * 100) : 0;
 
   if (loading) {
     return (
       <View className="upload-confirm-page loading">
-        <Text className="loading-text">正在加载识别任务...</Text>
+        <Text className="loading-text">正在加载整理任务...</Text>
       </View>
     );
   }
@@ -171,22 +217,23 @@ export default function UploadConfirmPage() {
     <View className="upload-confirm-page">
       <View className="progress-panel">
         <View className="progress-head">
-          <Text className="progress-title">批量识别</Text>
+          <Text className="progress-title">批量整理</Text>
           <Text className="progress-count">{processedImages}/{totalImages}</Text>
         </View>
         <View className="progress-track">
           <View className="progress-fill" style={{ width: `${progress}%` }} />
         </View>
         <Text className="progress-hint">
-          {processing ? '正在逐张识别，单张失败不会影响其他图片' : `状态：${batch?.status || 'pending'}`}
+          {processing ? '小搭正在逐张整理，单张失败不会影响其他图片' : getBatchStatusText(batch?.status, detectedCount)}
         </Text>
+        <Text className="progress-subhint">已找到 {detectedCount} 件衣服，草稿会陆续出现。小搭生成图会稍后补上。</Text>
       </View>
 
       {images.some((item) => item.status === 'failed') && (
         <View className="image-status-panel">
           {images.filter((item) => item.status === 'failed').map((item) => (
             <View key={item.id} className="failed-row">
-              <Text className="failed-text">有一张图片识别失败：{item.errorMessage || '未知错误'}</Text>
+              <Text className="failed-text">有图片部分处理失败，小搭生成图稍后可重试{item.errorMessage ? `：${item.errorMessage}` : ''}</Text>
               <View className="retry-btn" onClick={() => handleRetry(item)}>
                 <Text className="retry-text">重试</Text>
               </View>
@@ -199,13 +246,13 @@ export default function UploadConfirmPage() {
         {drafts.length === 0 && !processing && (
           <View className="empty-state">
             <Text className="empty-title">暂无可确认的衣物</Text>
-            <Text className="empty-desc">可以下拉刷新，或对失败图片重试识别。</Text>
+            <Text className="empty-desc">可以下拉刷新，或对失败图片重新整理。</Text>
           </View>
         )}
 
         {drafts.map((draft) => (
           <View key={draft.id} className={`draft-card ${draft.selected ? '' : 'muted'}`}>
-            <Image className="draft-image" src={draft.croppedImageUrl || draft.originalImageUrl} mode="aspectFill" />
+            <Image className="draft-image" src={draft.displayImageUrl || draft.originalImageUrl} mode="aspectFill" />
             <View className="draft-body">
               <View className="draft-topline">
                 <View className={`select-dot ${draft.selected ? 'active' : ''}`} onClick={() => patchDraft(draft.id, { selected: !draft.selected })}>
@@ -213,6 +260,7 @@ export default function UploadConfirmPage() {
                 </View>
                 <Text className="confidence">置信度 {draft.confidence || 0}%</Text>
               </View>
+              <Text className={`segment-status ${draft.segmentStatus}`}>{getSegmentStatusText(draft)}</Text>
 
               <View className="field-row" onClick={() => handleCategorySelect(draft)}>
                 <Text className="field-label">类型</Text>
@@ -232,6 +280,36 @@ export default function UploadConfirmPage() {
               <View className="field-row">
                 <Text className="field-label">风格</Text>
                 <Input className="field-input" value={draft.style || ''} onInput={(event) => patchDraft(draft.id, { style: event.detail.value })} />
+              </View>
+
+              <View className="field-row">
+                <Text className="field-label">季节</Text>
+                <Input
+                  className="field-input"
+                  value={draft.seasonTags?.join('、') || ''}
+                  onInput={(event) => patchDraft(draft.id, { seasonTags: splitTags(event.detail.value) })}
+                />
+              </View>
+
+              <View className="source-row">
+                <Text className="field-label">展示图</Text>
+                <View className="source-options">
+                  <View className={`source-chip ${draft.imageSourceType === 'original' ? 'active' : ''}`} onClick={() => selectImageSource(draft, 'original')}>
+                    <Text className="source-chip-text">原图</Text>
+                  </View>
+                  <View
+                    className={`source-chip ${draft.imageSourceType === 'ai_segment' ? 'active' : ''} ${draft.aiSegmentImageUrl ? '' : 'disabled'}`}
+                    onClick={() => selectImageSource(draft, 'ai_segment')}
+                  >
+                    <Text className="source-chip-text">小搭生成图</Text>
+                  </View>
+                  <View
+                    className={`source-chip ${draft.imageSourceType === 'manual_crop' ? 'active' : ''} ${draft.manualCropImageUrl ? '' : 'disabled'}`}
+                    onClick={() => selectImageSource(draft, 'manual_crop')}
+                  >
+                    <Text className="source-chip-text">手动切割图</Text>
+                  </View>
+                </View>
               </View>
 
               <View className="draft-actions">
@@ -256,4 +334,42 @@ export default function UploadConfirmPage() {
 
 function getCategoryLabel(type?: string) {
   return categoryOptions.find((item) => item.key === type)?.label || '其他';
+}
+
+function isImageProcessed(image: UploadImage) {
+  return image.status === 'detected' || image.status === 'completed' || image.status === 'success' || image.status === 'empty' || image.status === 'failed';
+}
+
+function getBatchStatusText(status?: string, detectedCount = 0) {
+  const map: Record<string, string> = {
+    pending: '等待整理',
+    processing: '整理中',
+    success: '整理完成',
+    partial_success: '有图片部分处理失败，小搭生成图稍后可重试',
+    empty: '未识别到衣服',
+    completed: '整理完成',
+    partial_failed: '部分图片暂时没整理好',
+    failed: detectedCount > 0 ? '有图片部分处理失败，小搭生成图稍后可重试' : '整理失败',
+  };
+  return `状态：${map[status || 'pending'] || status || '等待整理'}`;
+}
+
+function getSegmentStatusText(draft: ClothesDraft) {
+  if (draft.segmentStatus === 'success') return '小搭生成图已就绪';
+  if (draft.segmentStatus === 'processing' || draft.segmentStatus === 'queued') return '小搭正在生成干净图';
+  if (draft.segmentStatus === 'failed') return '小搭暂时没处理好，已先使用原图';
+  return '先使用原图，可直接确认';
+}
+
+function getDraftImageBySource(draft: ClothesDraft, imageSourceType: ClothingImageSourceType) {
+  if (imageSourceType === 'ai_segment') return draft.aiSegmentImageUrl || draft.originalImageUrl;
+  if (imageSourceType === 'manual_crop') return draft.manualCropImageUrl || draft.originalImageUrl;
+  return draft.originalImageUrl;
+}
+
+function splitTags(value: string) {
+  return value
+    .split(/[、,\s]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }

@@ -12,7 +12,7 @@ import sceneSport from '@/assets/scenes/scene-sport-clean.png';
 import sceneSportActive from '@/assets/scenes/scene-sport-active-clean.png';
 import sceneWork from '@/assets/scenes/scene-work-clean.png';
 import sceneWorkActive from '@/assets/scenes/scene-work-active-clean.png';
-import type { Outfit, SceneTag } from '@starter-template/types';
+import type { Outfit, SceneTag, WeatherSnapshot } from '@starter-template/types';
 import './index.scss';
 
 interface TapEvent {
@@ -46,6 +46,8 @@ export default function TodayPage() {
   const [error, setError] = useState('');
   const [recommendationNotice, setRecommendationNotice] = useState('');
   const requestSeq = useRef(0);
+  const currentWeatherRef = useRef<WeatherSnapshot | undefined>(undefined);
+  const [currentWeather, setCurrentWeather] = useState<WeatherSnapshot | undefined>(undefined);
   const selectedScene = SCENE_TAGS[selectedSceneKey];
 
   useLoad(() => {
@@ -58,12 +60,13 @@ export default function TodayPage() {
     });
   });
 
-  async function fetchRecommendations({ scene }: { scene: SceneTag }) {
+  async function fetchRecommendations({ scene, weather = currentWeatherRef.current }: { scene: SceneTag; weather?: WeatherSnapshot }) {
     const seq = nextRequestSeq();
     console.log('[TodayPage] fetchRecommendations start', {
       requestSeq: seq,
       selectedScene,
       scene,
+      weather,
     });
     setLoading(true);
     setError('');
@@ -75,6 +78,7 @@ export default function TodayPage() {
         date: getToday(),
         scene,
         timeOfDay: 'all_day',
+        ...(weather ? { weather } : {}),
       });
 
       if (!isLatestRequest(seq)) return;
@@ -126,10 +130,12 @@ export default function TodayPage() {
     setRecommendationNotice('');
 
     try {
+      const weatherForRefresh = currentWeather ?? currentWeatherRef.current;
       const data = await generateCloudOutfit({
         date: getToday(),
         scene: selectedScene,
         timeOfDay: 'all_day',
+        ...(weatherForRefresh ? { weather: weatherForRefresh } : {}),
         excludeClothingIdSets: outfits.map((outfit) => outfit.clothingIds),
       });
 
@@ -221,7 +227,19 @@ export default function TodayPage() {
     setCurrentIndex(0);
     setOutfits([]);
     setHasRecommendations(true);
-    fetchRecommendations({ scene: SCENE_TAGS[key] });
+    fetchRecommendations({ scene: SCENE_TAGS[key], weather: currentWeather ?? currentWeatherRef.current });
+  }
+
+  function handleWeatherChange(weather: WeatherSnapshot, options: { forceRefresh?: boolean } = {}) {
+    currentWeatherRef.current = weather;
+    setCurrentWeather(weather);
+    fetchRecommendations({ scene: selectedScene, weather });
+    if (options.forceRefresh) {
+      console.log('[TodayPage] weather refreshed, recommendations reloaded', {
+        scene: selectedScene,
+        weather,
+      });
+    }
   }
 
   function goToWardrobe() {
@@ -260,7 +278,7 @@ export default function TodayPage() {
 
   return (
     <View className="today-page">
-      <WeatherCard city="上海" />
+      <WeatherCard city="上海" onWeatherChange={handleWeatherChange} />
 
       <View className="scene-section">
         {SCENES.map((item) => {

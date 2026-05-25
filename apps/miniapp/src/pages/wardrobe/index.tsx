@@ -237,7 +237,7 @@ export default function WardrobePage() {
     } catch (err) {
       console.error('Recognize clothing error:', err);
       updateClothingInList({ ...item, aiStatus: 'failed', aiRecognizeStatus: 'failed' });
-      Taro.showToast({ title: 'AI识别失败，可手动编辑或重新识别', icon: 'none' });
+      Taro.showToast({ title: '小搭暂时没整理好，可手动编辑或重新整理', icon: 'none' });
     }
   }
 

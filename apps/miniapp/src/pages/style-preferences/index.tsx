@@ -133,7 +133,7 @@ export default function StylePreferencesPage() {
           <View className="brand-orbit">
             <Text className="orbit-icon orbit-shirt">衣</Text>
             <Text className="orbit-icon orbit-weather">23°</Text>
-            <Text className="orbit-icon orbit-spark">AI</Text>
+            <Text className="orbit-icon orbit-spark">搭</Text>
           </View>
         </View>
 

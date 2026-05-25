@@ -8,7 +8,6 @@ import { NextResponse } from 'next/server';
 import { getUserIdFromRequest, isAuthError } from '@/lib/auth';
 import { getClothesList, createClothing } from '@/lib/db/repositories';
 import { storage } from '@/lib/storage';
-import { cropImageByBBox, isUsableBBox } from '@/lib/image/crop';
 import { smartProvider } from '@starter-template/ai';
 import type { ClothingCategory, RecognizedClothingItem } from '@starter-template/types';
 
@@ -167,18 +166,17 @@ export async function POST(request: Request) {
       const bbox = item.bbox;
       if (!isUsableBBox(bbox)) continue;
 
-      const crop = await cropImageByBBox(originalBuffer, bbox);
-      const croppedUpload = await storage.upload(crop.buffer, {
+      const clothingUpload = await storage.upload(originalBuffer, {
         dir: `wardrobe/${userId}/clothes`,
-        originalName: `${file.name.replace(/\.[^.]+$/, '')}-${index + 1}.jpg`,
-        mimeType: 'image/jpeg',
+        originalName: `${file.name.replace(/\.[^.]+$/, '')}-${index + 1}-${file.name}`,
+        mimeType: file.type,
         thumbnail: true,
       });
 
       const clothing = await createClothing({
         userId,
-        imageUrl: croppedUpload.url,
-        thumbnailUrl: croppedUpload.thumbnailUrl,
+        imageUrl: clothingUpload.url,
+        thumbnailUrl: clothingUpload.thumbnailUrl,
         category: item.category || category,
         subcategory: item.subcategory,
         colorPalette: item.colors,
@@ -188,12 +186,8 @@ export async function POST(request: Request) {
         sceneTags: item.sceneTags ?? [],
         aiRawResult: {
           ...item,
-          source: 'cropped_from_temp_upload',
-          crop: {
-            bbox,
-            width: crop.width,
-            height: crop.height,
-          },
+          source: 'original_from_temp_upload',
+          bbox,
           privacy: {
             originalImagePersisted: false,
           },
@@ -270,4 +264,14 @@ function formatClothingResponse(c: ClothingRow) {
     createdAt: c.createdAt instanceof Date ? c.createdAt.toISOString() : c.createdAt,
     updatedAt: c.updatedAt instanceof Date ? c.updatedAt.toISOString() : c.updatedAt,
   };
+}
+
+function isUsableBBox(bbox: RecognizedClothingItem['bbox']) {
+  if (!bbox) return false;
+  return Number.isFinite(bbox.x)
+    && Number.isFinite(bbox.y)
+    && Number.isFinite(bbox.width)
+    && Number.isFinite(bbox.height)
+    && bbox.width > 0
+    && bbox.height > 0;
 }

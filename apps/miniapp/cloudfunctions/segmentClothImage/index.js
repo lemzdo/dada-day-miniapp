@@ -3,115 +3,204 @@ const cloud = require('wx-server-sdk');
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
 const db = cloud.database();
-const SEGMENT_TIMEOUT_MS = Number(process.env.SEGMENT_TIMEOUT_MS || 15000);
-const OSS_REGION = normalizeOssRegion(process.env.ALIYUN_OSS_REGION || 'cn-shanghai');
-const OSS_BUCKET = process.env.ALIYUN_OSS_BUCKET;
-const OSS_URL_EXPIRES_SECONDS = Number(process.env.ALIYUN_OSS_URL_EXPIRES_SECONDS || 900);
-const OSS_USE_SIGNED_URL = process.env.ALIYUN_OSS_USE_SIGNED_URL === 'true';
-
-const PROVIDERS = [
-  { action: 'SegmentCloth', name: 'aliyun_viapi_segment_cloth' },
-  { action: 'SegmentCommodity', name: 'aliyun_viapi_segment_commodity' },
-  { action: 'SegmentCommonImage', name: 'aliyun_viapi_segment_common' },
-];
+const SEGMENT_TIMEOUT_MS = Number(process.env.SEGMENT_TIMEOUT_MS || 60000);
+const OSS_REGION = normalizeOssRegion(process.env.ALIYUN_OSS_REGION || '');
+const OSS_BUCKET = process.env.ALIYUN_OSS_BUCKET || '';
+const OSS_URL_EXPIRES_SECONDS = Number(process.env.ALIYUN_OSS_URL_EXPIRES_SECONDS || 1800);
+const OSS_USE_SIGNED_URL = process.env.ALIYUN_OSS_USE_SIGNED_URL !== 'false';
+const SEGMENT_PROVIDER = 'aliyun_viapi';
+const SEGMENT_MODEL = 'SegmentCloth';
 
 exports.main = async (event = {}) => {
   try {
     const { OPENID } = cloud.getWXContext();
+    const draftId = event.draftId;
     const clothingId = event.clothId || event.clothingId;
-    if (!clothingId) throw new Error('clothId is required');
 
-    const collection = db.collection('clothes');
-    const currentRes = await collection.doc(clothingId).get();
-    const current = currentRes.data;
-    if (!current || current._openid !== OPENID) throw new Error('clothing not found');
-
-    const sourceFileID = getOriginalImage(current);
-    const errors = [];
-    console.log('[segmentClothImage] original cloud fileID', sourceFileID);
-
-    let sourceBuffer;
-    try {
-      sourceBuffer = await downloadWechatCloudFile(sourceFileID);
-    } catch (error) {
-      const message = getErrorMessage(error);
-      console.error('[segmentClothImage] download wechat cloud file failed', {
-        sourceFileID,
-        message,
-      });
-      await markCutoutFailed(collection, clothingId, sourceFileID, [`download:${message}`]);
-      const updated = await collection.doc(clothingId).get();
-      return ok(toClothing(updated.data));
-    }
-
-    let imageUrl;
-    let ossObjectKey = '';
-    try {
-      ossObjectKey = `wardrobe/${OPENID}/viapi-source/${clothingId}-${Date.now()}${getFileExt(sourceFileID)}`;
-      imageUrl = await uploadBufferToOss({
-        buffer: sourceBuffer,
-        objectKey: ossObjectKey,
-      });
-    } catch (error) {
-      const message = getErrorMessage(error);
-      console.error('[segmentClothImage] upload source image to OSS failed', {
-        sourceFileID,
-        bufferSize: sourceBuffer.length,
-        message,
-      });
-      await markCutoutFailed(collection, clothingId, sourceFileID, [`oss:${message}`]);
-      const updated = await collection.doc(clothingId).get();
-      return ok(toClothing(updated.data));
-    }
-
-    try {
-      for (const provider of PROVIDERS) {
-        try {
-          const viapiUrl = await retryOnce(() => callViapiSegment(provider.action, imageUrl));
-          const fileID = await saveRemoteImage({
-            remoteUrl: viapiUrl,
-            cloudPath: `wardrobe/${OPENID}/clothes/cutout/${clothingId}-${Date.now()}.png`,
-          });
-          const data = {
-            displayImageUrl: fileID,
-            cutoutStatus: 'success',
-            cutoutProvider: provider.name,
-            cutoutError: '',
-            updatedAt: new Date().toISOString(),
-          };
-          await collection.doc(clothingId).update({ data });
-          const updated = await collection.doc(clothingId).get();
-          return ok(toClothing(updated.data));
-        } catch (error) {
-          const normalized = normalizeViapiError(error);
-          console.error('[segmentClothImage] VIAPI provider failed', {
-            provider: provider.name,
-            action: provider.action,
-            requestId: normalized.requestId,
-            code: normalized.code,
-            message: normalized.message,
-          });
-          errors.push(`${provider.name}:${normalized.code || 'unknown'}:${normalized.message}`);
-        }
-      }
-    } finally {
-      await deleteOssObject(ossObjectKey);
-    }
-
-    await markCutoutFailed(collection, clothingId, sourceFileID, errors);
-    const updated = await collection.doc(clothingId).get();
-    return ok(toClothing(updated.data));
+    if (draftId) return segmentDraft(draftId, OPENID);
+    if (clothingId) return segmentClothing(clothingId, OPENID);
+    throw new Error('draftId or clothingId is required');
   } catch (error) {
     console.error('[segmentClothImage] failed', error);
     return fail(error);
   }
 };
 
+function validateRequiredEnv() {
+  getRequiredEnv('ALIYUN_ACCESS_KEY_ID');
+  getRequiredEnv('ALIYUN_ACCESS_KEY_SECRET');
+  getRequiredEnv('ALIYUN_OSS_BUCKET');
+  getRequiredEnv('ALIYUN_OSS_REGION');
+}
+
+async function segmentDraft(draftId, openid) {
+  const collection = db.collection('clothes_drafts');
+  const currentRes = await collection.doc(draftId).get();
+  const current = currentRes.data;
+  if (!current || current._openid !== openid) throw new Error('draft not found');
+  if (current.status !== 'pending') return ok(toDraft(current));
+
+  const sourceFileID = current.originalImageUrl;
+  await collection.doc(draftId).update({
+    data: {
+      segmentStatus: 'processing',
+      segmentProvider: SEGMENT_PROVIDER,
+      segmentModel: SEGMENT_MODEL,
+      segmentError: '',
+      updatedAt: nowIso(),
+    },
+  });
+
+  const result = await runSegment({
+    openid,
+    sourceFileID,
+    objectId: draftId,
+    cloudPath: `wardrobe/${openid}/drafts/segment/${draftId}-${Date.now()}.png`,
+  });
+
+  if (!result.success) {
+    await collection.doc(draftId).update({
+      data: {
+        segmentStatus: 'failed',
+        segmentProvider: SEGMENT_PROVIDER,
+        segmentModel: SEGMENT_MODEL,
+        segmentError: result.errors.join('|'),
+        segmentErrorMessage: result.errors.join('|'),
+        errorMessage: result.errors.join('|'),
+        displayImageUrl: current.originalImageUrl,
+        imageSourceType: 'original',
+        updatedAt: nowIso(),
+      },
+    });
+    const updated = await collection.doc(draftId).get();
+    return ok(toDraft(updated.data));
+  }
+
+  const data = {
+    aiSegmentImageUrl: result.fileID,
+    segmentStatus: 'success',
+    segmentProvider: SEGMENT_PROVIDER,
+    segmentModel: SEGMENT_MODEL,
+    segmentError: '',
+    updatedAt: nowIso(),
+  };
+  if (canAutoUseSegment(current)) {
+    data.displayImageUrl = result.fileID;
+    data.imageSourceType = 'ai_segment';
+  }
+
+  await collection.doc(draftId).update({ data });
+  const updated = await collection.doc(draftId).get();
+  return ok(toDraft(updated.data));
+}
+
+async function segmentClothing(clothingId, openid) {
+  const collection = db.collection('clothes');
+  const currentRes = await collection.doc(clothingId).get();
+  const current = currentRes.data;
+  if (!current || current._openid !== openid) throw new Error('clothing not found');
+
+  const sourceFileID = getOriginalImage(current);
+  await collection.doc(clothingId).update({
+    data: {
+      segmentStatus: 'processing',
+      cutoutStatus: 'pending',
+      segmentProvider: SEGMENT_PROVIDER,
+      segmentModel: SEGMENT_MODEL,
+      updatedAt: nowIso(),
+    },
+  });
+
+  const result = await runSegment({
+    openid,
+    sourceFileID,
+    objectId: clothingId,
+    cloudPath: `wardrobe/${openid}/clothes/segment/${clothingId}-${Date.now()}.png`,
+  });
+
+  if (!result.success) {
+    await markClothingSegmentFailed(collection, clothingId, sourceFileID, result.errors);
+    const updated = await collection.doc(clothingId).get();
+    return ok(toClothing(updated.data));
+  }
+
+  const data = {
+    aiSegmentImageUrl: result.fileID,
+    segmentStatus: 'success',
+    cutoutStatus: 'success',
+    segmentProvider: SEGMENT_PROVIDER,
+    segmentModel: SEGMENT_MODEL,
+    cutoutProvider: SEGMENT_PROVIDER,
+    cutoutError: '',
+    updatedAt: nowIso(),
+  };
+  if (canAutoUseSegment(current)) {
+    data.displayImageUrl = result.fileID;
+    data.imageSourceType = 'ai_segment';
+  }
+
+  await collection.doc(clothingId).update({ data });
+  const updated = await collection.doc(clothingId).get();
+  return ok(toClothing(updated.data));
+}
+
+async function runSegment({ openid, sourceFileID, objectId, cloudPath }) {
+  const errors = [];
+  try {
+    validateRequiredEnv();
+  } catch (error) {
+    return { success: false, errors: [`env:${getErrorMessage(error)}`] };
+  }
+
+  let sourceBuffer;
+  try {
+    sourceBuffer = await downloadWechatCloudFile(sourceFileID);
+  } catch (error) {
+    const message = getErrorMessage(error);
+    console.error('[segmentClothImage] download wechat cloud file failed', {
+      sourceFileID,
+      message,
+    });
+    return { success: false, errors: [`download:${message}`] };
+  }
+
+  let ossObjectKey = '';
+  let imageUrl = '';
+  try {
+    ossObjectKey = `wardrobe/${openid}/viapi-source/${objectId}-${Date.now()}${getFileExt(sourceFileID)}`;
+    imageUrl = await uploadBufferToOss({ buffer: sourceBuffer, objectKey: ossObjectKey });
+  } catch (error) {
+    const message = getErrorMessage(error);
+    console.error('[segmentClothImage] upload source image to OSS failed', {
+      sourceFileID,
+      bufferSize: sourceBuffer.length,
+      message,
+    });
+    return { success: false, errors: [`oss:${message}`] };
+  }
+
+  try {
+    const viapiUrl = await retryOnce(() => callViapiSegment(imageUrl));
+    const fileID = await saveRemoteImage({ remoteUrl: viapiUrl, cloudPath });
+    return { success: true, fileID, errors: [] };
+  } catch (error) {
+    const normalized = normalizeViapiError(error);
+    console.error('[segmentClothImage] VIAPI SegmentCloth failed', {
+      requestId: normalized.requestId,
+      code: normalized.code,
+      message: normalized.message,
+    });
+    errors.push(`${SEGMENT_PROVIDER}:${normalized.code || 'unknown'}:${normalized.message}`);
+    return { success: false, errors };
+  } finally {
+    await deleteOssObject(ossObjectKey);
+  }
+}
+
 function createClient() {
-  const accessKeyId = process.env.ALIYUN_ACCESS_KEY_ID;
-  const accessKeySecret = process.env.ALIYUN_ACCESS_KEY_SECRET;
+  const accessKeyId = getRequiredEnv('ALIYUN_ACCESS_KEY_ID');
+  const accessKeySecret = getRequiredEnv('ALIYUN_ACCESS_KEY_SECRET');
   const region = process.env.ALIYUN_VIAPI_REGION || 'cn-shanghai';
-  if (!accessKeyId || !accessKeySecret) throw new Error('ALIYUN_ACCESS_KEY_ID/SECRET is missing');
 
   const { RPCClient } = require('@alicloud/pop-core');
   return new RPCClient({
@@ -122,34 +211,18 @@ function createClient() {
   });
 }
 
-async function callViapiSegment(action, imageUrl) {
+async function callViapiSegment(imageUrl) {
   const client = createClient();
-  console.log('[segmentClothImage] calling VIAPI', {
-    action,
+  console.log('[segmentClothImage] calling VIAPI SegmentCloth', {
     imageUrlType: getImageUrlType(imageUrl),
     imageUrlInfo: getImageUrlInfo(imageUrl),
   });
-  let response;
-  try {
-    response = await client.request(action, { ImageURL: imageUrl }, { method: 'POST', timeout: SEGMENT_TIMEOUT_MS });
-  } catch (error) {
-    const normalized = normalizeViapiError(error);
-    console.error('[segmentClothImage] VIAPI request error', {
-      action,
-      imageUrlType: getImageUrlType(imageUrl),
-      imageUrlInfo: getImageUrlInfo(imageUrl),
-      requestId: normalized.requestId,
-      code: normalized.code,
-      message: normalized.message,
-    });
-    throw error;
-  }
+  const response = await client.request(SEGMENT_MODEL, { ImageURL: imageUrl }, { method: 'POST', timeout: SEGMENT_TIMEOUT_MS });
   console.log('[segmentClothImage] VIAPI response', {
-    action,
     requestId: response && (response.RequestId || response.requestId),
   });
   const resultUrl = extractResultUrl(response);
-  if (!resultUrl) throw new Error(`${action} returned empty ImageURL`);
+  if (!resultUrl) throw new Error('SegmentCloth returned empty ImageURL');
   return resultUrl;
 }
 
@@ -162,10 +235,6 @@ async function downloadWechatCloudFile(fileID) {
   if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
     throw new Error('downloaded wechat cloud file is empty');
   }
-  console.log('[segmentClothImage] download wechat cloud file success', {
-    sourceFileID: fileID,
-    bufferSize: buffer.length,
-  });
   return buffer;
 }
 
@@ -192,10 +261,8 @@ async function uploadBufferToOss({ buffer, objectKey }) {
 }
 
 function createOssClient() {
-  const accessKeyId = process.env.ALIYUN_OSS_ACCESS_KEY_ID || process.env.ALIYUN_ACCESS_KEY_ID;
-  const accessKeySecret = process.env.ALIYUN_OSS_ACCESS_KEY_SECRET || process.env.ALIYUN_ACCESS_KEY_SECRET;
-  if (!accessKeyId || !accessKeySecret) throw new Error('ALIYUN_ACCESS_KEY_ID/SECRET is missing');
-  if (!OSS_BUCKET) throw new Error('ALIYUN_OSS_BUCKET is missing');
+  const accessKeyId = process.env.ALIYUN_OSS_ACCESS_KEY_ID || getRequiredEnv('ALIYUN_ACCESS_KEY_ID');
+  const accessKeySecret = process.env.ALIYUN_OSS_ACCESS_KEY_SECRET || getRequiredEnv('ALIYUN_ACCESS_KEY_SECRET');
 
   const OSS = require('ali-oss');
   return new OSS({
@@ -277,6 +344,40 @@ function extractResultUrl(response) {
     || '';
 }
 
+function toDraft(item) {
+  return {
+    id: item._id,
+    userId: item.userId || item._openid,
+    batchId: item.batchId,
+    sourceImageId: item.sourceImageId,
+    originalImageUrl: item.originalImageUrl,
+    displayImageUrl: item.displayImageUrl || item.originalImageUrl,
+    imageSourceType: item.imageSourceType || 'original',
+    aiSegmentImageUrl: item.aiSegmentImageUrl || '',
+    manualCropImageUrl: item.manualCropImageUrl || '',
+    detectStatus: item.detectStatus || 'success',
+    segmentStatus: item.segmentStatus || 'not_started',
+    manualCropStatus: item.manualCropStatus || 'unsupported',
+    type: item.type || 'other',
+    categoryName: item.categoryName,
+    color: item.color,
+    colors: item.colors || (item.color ? [item.color] : []),
+    material: item.material,
+    style: item.style,
+    styleTags: item.styleTags || (item.style ? [item.style] : []),
+    seasonTags: item.seasonTags || [],
+    confidence: item.confidence || 0,
+    detectProvider: item.detectProvider || 'bailian',
+    detectModel: item.detectModel || '',
+    segmentProvider: item.segmentProvider || SEGMENT_PROVIDER,
+    segmentModel: item.segmentModel || SEGMENT_MODEL,
+    selected: item.selected !== false,
+    status: item.status || 'pending',
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+  };
+}
+
 function toClothing(item) {
   const originalImageUrl = getOriginalImage(item);
   const displayImageUrl = getDisplayImage(item);
@@ -285,13 +386,22 @@ function toClothing(item) {
     userId: item._openid,
     originalImageUrl,
     displayImageUrl,
-    cutoutStatus: item.cutoutStatus || 'pending',
-    cutoutProvider: item.cutoutProvider || 'none',
-    cutoutError: item.cutoutError,
-    aiRecognizeStatus: item.aiRecognizeStatus || 'pending',
-    aiProvider: item.aiProvider,
+    imageSourceType: item.imageSourceType || 'original',
+    aiSegmentImageUrl: item.aiSegmentImageUrl || '',
+    manualCropImageUrl: item.manualCropImageUrl || '',
+    segmentStatus: item.segmentStatus || item.cutoutStatus || 'not_started',
+    segmentProvider: item.segmentProvider || SEGMENT_PROVIDER,
+    segmentModel: item.segmentModel || SEGMENT_MODEL,
+    cutoutStatus: item.cutoutStatus || item.segmentStatus || 'pending',
+    cutoutProvider: item.cutoutProvider || item.segmentProvider || 'none',
+    cutoutError: item.cutoutError || item.segmentError,
+    aiRecognizeStatus: item.aiRecognizeStatus || item.detectStatus || 'pending',
+    detectStatus: item.detectStatus || item.aiRecognizeStatus || 'pending',
+    detectProvider: item.detectProvider || item.aiProvider,
+    detectModel: item.detectModel,
+    aiProvider: item.aiProvider || item.detectProvider,
     aiError: item.aiError,
-    category: item.category || '其他',
+    category: item.category || 'other',
     subcategory: item.subcategory || item.subCategory,
     subCategory: item.subCategory || item.subcategory,
     colors: item.colors || [],
@@ -300,14 +410,10 @@ function toClothing(item) {
     seasonTags: item.seasonTags || [],
     material: item.material,
     materialGuess: item.materialGuess,
-    thickness: item.thickness,
-    warmthScore: item.warmthScore || 0,
-    coolnessScore: item.coolnessScore || 0,
-    fashionScore: item.fashionScore || 0,
     sceneTags: item.sceneTags || [],
-    matchTips: item.matchTips,
-    aiStatus: item.aiStatus || 'pending',
+    aiStatus: item.aiStatus || 'recognized',
     aiConfidence: item.aiConfidence || 0,
+    confidence: item.confidence || item.aiConfidence || 0,
     manualFields: item.manualFields || [],
     customName: item.customName,
     customCategory: item.customCategory,
@@ -327,6 +433,12 @@ function getErrorMessage(error) {
   return error && error.message ? error.message : String(error || 'unknown error');
 }
 
+function getRequiredEnv(name) {
+  const value = process.env[name];
+  if (!value || !String(value).trim()) throw new Error(`${name} is required`);
+  return String(value).trim();
+}
+
 function getOriginalImage(item) {
   return item.originalImageUrl || '';
 }
@@ -335,13 +447,23 @@ function getDisplayImage(item) {
   return item.displayImageUrl || getOriginalImage(item);
 }
 
-async function markCutoutFailed(collection, clothingId, sourceFileID, errors) {
+function canAutoUseSegment(item) {
+  const originalImageUrl = getOriginalImage(item);
+  return (item.imageSourceType || 'original') === 'original'
+    && (!item.displayImageUrl || item.displayImageUrl === originalImageUrl);
+}
+
+async function markClothingSegmentFailed(collection, clothingId, sourceFileID, errors) {
   const data = {
     displayImageUrl: sourceFileID,
+    segmentStatus: 'failed',
     cutoutStatus: 'failed',
+    segmentProvider: SEGMENT_PROVIDER,
+    segmentModel: SEGMENT_MODEL,
     cutoutProvider: 'none',
+    segmentError: errors.join('|'),
     cutoutError: errors.join('|'),
-    updatedAt: new Date().toISOString(),
+    updatedAt: nowIso(),
   };
   await collection.doc(clothingId).update({ data });
 }
@@ -403,6 +525,10 @@ function getContentType(objectKey) {
   if (ext === '.gif') return 'image/gif';
   if (ext === '.bmp') return 'image/bmp';
   return 'image/jpeg';
+}
+
+function nowIso() {
+  return new Date().toISOString();
 }
 
 function ok(data) {

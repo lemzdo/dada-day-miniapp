@@ -107,6 +107,7 @@ export interface RecommendRequest {
   scene?: SceneTag;
   location?: { lat: number; lng: number };
   cityCode?: string;
+  weather?: WeatherSnapshot;
   sourceItemId?: string;
   excludeClothingIdSets?: string[][];
 }

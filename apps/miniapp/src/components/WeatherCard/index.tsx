@@ -1,29 +1,35 @@
 import { View, Text } from '@tarojs/components';
 import Taro from '@tarojs/taro';
 import { useEffect, useState } from 'react';
-import { getCloudWeather, getFallbackResolvedWeather } from '@/lib/cloud';
-import type { ResolvedWeatherResponse } from '@starter-template/types';
+import { getCloudWeather, getFallbackResolvedWeather, WEATHER_CACHE_KEY, writeLocalWeatherCache } from '@/lib/cloud';
+import { toWeatherSnapshot } from '@/utils/weather';
+import type { ResolvedWeatherResponse, WeatherSnapshot } from '@starter-template/types';
 import './index.scss';
 
 interface WeatherCardProps {
   city?: string;
+  onWeatherChange?: (weather: WeatherSnapshot, options?: { forceRefresh?: boolean }) => void;
 }
 
 type WeatherStatus = 'locating' | 'loading' | 'success' | 'fallback';
 
-const WEATHER_CACHE_KEY = 'd1d:lastWeather';
-
-export function WeatherCard({ city = '当前位置' }: WeatherCardProps) {
+export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherCardProps) {
   const [weather, setWeather] = useState<ResolvedWeatherResponse>(() => readCachedWeather() ?? getFallbackResolvedWeather(city));
   const [status, setStatus] = useState<WeatherStatus>(weather.source === 'cache' ? 'fallback' : 'locating');
   const [hint, setHint] = useState(weather.source === 'cache' ? `缓存天气更新于 ${formatUpdateTime(weather.updatedAt)}` : '正在获取你所在位置...');
+  const [refreshing, setRefreshing] = useState(false);
   const hasWeather = Boolean(weather.weather.weather);
 
   useEffect(() => {
     fetchWeather();
   }, [city]);
 
-  async function fetchWeather() {
+  async function fetchWeather(options: { forceRefresh?: boolean } = {}) {
+    const forceRefresh = options.forceRefresh === true;
+    if (forceRefresh && refreshing) return;
+    const previousStatus = status;
+    const previousHint = hint;
+    if (forceRefresh) setRefreshing(true);
     setStatus('locating');
     setHint('正在获取你所在位置...');
     console.log('[WeatherCard] start getLocation');
@@ -45,32 +51,48 @@ export function WeatherCard({ city = '当前位置' }: WeatherCardProps) {
         getCloudWeather({
           latitude: location.latitude,
           longitude: location.longitude,
-        }),
+        }, { forceRefresh }),
         9000,
         '天气服务响应超时，请稍后重试',
       );
 
       console.log('[WeatherCard] getWeather success', data);
       setWeather(data);
-      writeCachedWeather(data);
+      writeLocalWeatherCache(data);
       setStatus('success');
       setHint(`实时天气更新于 ${formatUpdateTime(data.updatedAt)}`);
+      notifyWeatherChange(data, { forceRefresh });
     } catch (error) {
       const message = getErrorMessage(error);
-      const cached = readCachedWeather();
       console.warn('[WeatherCard] real weather failed', error);
 
+      if (forceRefresh) {
+        setStatus(previousStatus);
+        setHint(previousHint);
+        Taro.showToast({ title: '天气刷新失败，已显示上次天气', icon: 'none' });
+        return;
+      }
+
+      const cached = readCachedWeather();
       if (cached) {
         setWeather(cached);
         setStatus('fallback');
         setHint(`天气获取失败，已展示缓存 ${formatUpdateTime(cached.updatedAt)}`);
+        notifyWeatherChange(cached);
         return;
       }
 
       setWeather(getFallbackResolvedWeather(city));
       setStatus('fallback');
       setHint(message.includes('getLocation') || message.includes('定位') ? '逆地理编码失败：当前位置' : '天气获取失败，稍后重试');
+    } finally {
+      if (forceRefresh) setRefreshing(false);
     }
+  }
+
+  function notifyWeatherChange(value: ResolvedWeatherResponse, options?: { forceRefresh?: boolean }) {
+    const snapshot = toWeatherSnapshot(value);
+    if (snapshot) onWeatherChange?.(snapshot, options);
   }
 
   const displayLocation = weather.location.district || weather.location.city || weather.location.displayName || '当前位置';
@@ -108,11 +130,19 @@ export function WeatherCard({ city = '当前位置' }: WeatherCardProps) {
       </View>
       <View className="weather-footer">
         <Text className="weather-hint">{hint}</Text>
-        {status === 'fallback' && (
-          <View className="weather-retry" onClick={fetchWeather}>
-            <Text className="weather-retry-text">重新定位</Text>
+        <View className="weather-actions">
+          {status === 'fallback' && (
+            <View className="weather-retry" onClick={() => fetchWeather()}>
+              <Text className="weather-retry-text">重新定位</Text>
+            </View>
+          )}
+          <View
+            className={`weather-refresh ${refreshing ? 'disabled' : ''}`}
+            onClick={() => fetchWeather({ forceRefresh: true })}
+          >
+            <Text className="weather-refresh-text">{refreshing ? '刷新中...' : '刷新天气'}</Text>
           </View>
-        )}
+        </View>
       </View>
     </View>
   );
@@ -126,16 +156,6 @@ function readCachedWeather(): ResolvedWeatherResponse | null {
   } catch {
     return null;
   }
-}
-
-function writeCachedWeather(value: ResolvedWeatherResponse) {
-  const cacheValue: ResolvedWeatherResponse = {
-    location: value.location,
-    weather: value.weather,
-    source: 'cache',
-    updatedAt: value.updatedAt,
-  };
-  Taro.setStorageSync(WEATHER_CACHE_KEY, cacheValue);
 }
 
 function getErrorMessage(error: unknown) {

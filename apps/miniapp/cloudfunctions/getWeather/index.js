@@ -12,14 +12,17 @@ exports.main = async (event = {}) => {
   try {
     const latitude = Number(event.latitude);
     const longitude = Number(event.longitude);
+    const forceRefresh = event.forceRefresh === true;
 
     if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
       throw new Error('latitude and longitude are required');
     }
 
     const locationKey = getLocationKey(latitude, longitude);
-    const cached = await getCachedWeather(locationKey);
-    if (cached) return ok({ ...cached, source: 'cache' });
+    if (!forceRefresh) {
+      const cached = await getCachedWeather(locationKey);
+      if (cached) return ok({ ...cached, source: 'cache' });
+    }
 
     const amapKey = process.env.AMAP_KEY;
     if (!amapKey) {

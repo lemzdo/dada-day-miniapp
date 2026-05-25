@@ -61,8 +61,8 @@ async function ensureDir(dir: string): Promise<void> {
 
 async function generateThumbnail(_imageBuffer: Buffer): Promise<Buffer | null> {
   // TODO: Phase 1 可选实现
-  // 方案 A: sharp（需安装）
-  // 方案 B: 调用 AI 识别时顺便生成缩略图
+  // 方案 A: 由图片服务生成缩略图
+  // 方案 B: 调用识别服务时顺便生成缩略图
   return null;
 }
 
