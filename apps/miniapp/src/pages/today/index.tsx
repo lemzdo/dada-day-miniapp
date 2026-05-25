@@ -1,13 +1,9 @@
-import { View, Text, Image } from '@tarojs/components';
-import Taro, { useDidShow, useLoad, usePullDownRefresh, useUnload } from '@tarojs/taro';
+import { Image, Text, View } from '@tarojs/components';
+import Taro, { useLoad, usePullDownRefresh } from '@tarojs/taro';
 import { useRef, useState } from 'react';
 import { WeatherCard } from '@/components/WeatherCard';
-import {
-  confirmCloudWear,
-  generateCloudOutfit,
-  getCloudOutfit,
-  setCloudOutfitFavorite,
-} from '@/lib/cloud';
+import { addOutfitHistory, generateCloudOutfit, removeFavoriteOutfit, saveFavoriteOutfit } from '@/lib/cloud';
+import { getRecommendationOutfitId, normalizeOutfitSnapshot, storeOutfitDetailDraft } from '@/utils/outfitSnapshot';
 import sceneDate from '@/assets/scenes/scene-date-clean.png';
 import sceneDateActive from '@/assets/scenes/scene-date-active-clean.png';
 import sceneHome from '@/assets/scenes/scene-home-clean.png';
@@ -24,29 +20,21 @@ interface TapEvent {
 }
 
 type OutfitOperation = 'favorite' | 'wear' | 'refresh' | null;
-
 type SceneKey = 'home' | 'work' | 'date' | 'sport';
 
 const SCENES = [
-  { key: 'home', label: '\u5c45\u5bb6', icon: sceneHome, activeIcon: sceneHomeActive },
-  { key: 'work', label: '\u4e0a\u73ed', icon: sceneWork, activeIcon: sceneWorkActive },
-  { key: 'date', label: '\u7ea6\u4f1a', icon: sceneDate, activeIcon: sceneDateActive },
-  { key: 'sport', label: '\u8fd0\u52a8', icon: sceneSport, activeIcon: sceneSportActive },
+  { key: 'home', label: '居家', icon: sceneHome, activeIcon: sceneHomeActive },
+  { key: 'work', label: '上班', icon: sceneWork, activeIcon: sceneWorkActive },
+  { key: 'date', label: '约会', icon: sceneDate, activeIcon: sceneDateActive },
+  { key: 'sport', label: '运动', icon: sceneSport, activeIcon: sceneSportActive },
 ] as const;
 
 const SCENE_TAGS: Record<SceneKey, SceneTag> = {
-  home: '\u5c45\u5bb6' as SceneTag,
-  work: '\u4e0a\u73ed' as SceneTag,
-  date: '\u7ea6\u4f1a' as SceneTag,
-  sport: '\u8fd0\u52a8' as SceneTag,
+  home: '居家' as SceneTag,
+  work: '上班' as SceneTag,
+  date: '约会' as SceneTag,
+  sport: '运动' as SceneTag,
 };
-
-function getDeletedItemCount(outfit: Outfit) {
-  if (typeof outfit.deletedItemCount === 'number') return outfit.deletedItemCount;
-  const snapshotCount = outfit.snapshotItems?.filter((item) => item.isDeleted).length ?? 0;
-  const itemCount = outfit.items?.filter((item) => item.isDeleted).length ?? 0;
-  return Math.max(snapshotCount, itemCount);
-}
 
 export default function TodayPage() {
   const [selectedSceneKey, setSelectedSceneKey] = useState<SceneKey>('home');
@@ -58,21 +46,10 @@ export default function TodayPage() {
   const [error, setError] = useState('');
   const [recommendationNotice, setRecommendationNotice] = useState('');
   const requestSeq = useRef(0);
-  const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selectedScene = SCENE_TAGS[selectedSceneKey];
 
   useLoad(() => {
     fetchRecommendations({ scene: selectedScene });
-  });
-
-  useDidShow(() => {
-    const current = outfits[currentIndex];
-    if (!current || loading || operation) return;
-    scheduleCurrentOutfitSync(current.id);
-  });
-
-  useUnload(() => {
-    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
   });
 
   usePullDownRefresh(() => {
@@ -83,9 +60,15 @@ export default function TodayPage() {
 
   async function fetchRecommendations({ scene }: { scene: SceneTag }) {
     const seq = nextRequestSeq();
+    console.log('[TodayPage] fetchRecommendations start', {
+      requestSeq: seq,
+      selectedScene,
+      scene,
+    });
     setLoading(true);
     setError('');
     setRecommendationNotice('');
+    setCurrentIndex(0);
 
     try {
       const data = await generateCloudOutfit({
@@ -95,7 +78,16 @@ export default function TodayPage() {
       });
 
       if (!isLatestRequest(seq)) return;
-      setOutfits(data.outfits.slice(0, 3));
+      const nextOutfits = data.outfits.slice(0, 3).map((outfit) => normalizeOutfitSnapshot(outfit));
+      console.log('[TodayPage] fetchRecommendations success', {
+        requestSeq: seq,
+        scene,
+        debug: data.debug,
+        outfitCount: nextOutfits.length,
+        firstOutfitId: nextOutfits[0]?.id,
+        firstItemIds: nextOutfits[0]?.clothingIds,
+      });
+      setOutfits(nextOutfits);
       setCurrentIndex(0);
       setHasRecommendations(data.outfits.length > 0);
       setRecommendationNotice(data.recommendationNotice ?? '');
@@ -105,7 +97,6 @@ export default function TodayPage() {
       setError('获取推荐失败，请稍后再试');
       setOutfits([]);
       setHasRecommendations(false);
-      setRecommendationNotice('');
       Taro.showToast({ title: '获取推荐失败', icon: 'none' });
     } finally {
       if (isLatestRequest(seq)) setLoading(false);
@@ -114,6 +105,20 @@ export default function TodayPage() {
 
   async function handleRefresh() {
     if (loading || operation) return;
+    if (outfits.length > 1) {
+      setCurrentIndex((prev) => {
+        const next = (prev + 1) % outfits.length;
+        console.log('[TodayPage] switch local outfit', {
+          from: prev,
+          to: next,
+          outfitCount: outfits.length,
+          nextOutfitId: outfits[next]?.id,
+          nextItemIds: outfits[next]?.clothingIds,
+        });
+        return next;
+      });
+      return;
+    }
 
     const seq = nextRequestSeq();
     setOperation('refresh');
@@ -129,9 +134,17 @@ export default function TodayPage() {
       });
 
       if (!isLatestRequest(seq)) return;
-
       if (data.outfits.length > 0) {
-        setOutfits(data.outfits.slice(0, 3));
+        const nextOutfits = data.outfits.slice(0, 3).map((outfit) => normalizeOutfitSnapshot(outfit));
+        console.log('[TodayPage] refresh success', {
+          requestSeq: seq,
+          scene: selectedScene,
+          debug: data.debug,
+          outfitCount: nextOutfits.length,
+          firstOutfitId: nextOutfits[0]?.id,
+          firstItemIds: nextOutfits[0]?.clothingIds,
+        });
+        setOutfits(nextOutfits);
         setCurrentIndex(0);
         setHasRecommendations(true);
         setRecommendationNotice(data.recommendationNotice ?? '');
@@ -158,8 +171,17 @@ export default function TodayPage() {
     setOperation('favorite');
 
     try {
-      const saved = await setCloudOutfitFavorite(current.id, nextFavorite, nextFavorite ? current : undefined);
-      replaceOutfitInList(current.id, saved);
+      if (nextFavorite) {
+        const saved = await saveFavoriteOutfit(normalizeOutfitSnapshot(current), current.aiComment);
+        replaceOutfitInList(current.id, normalizeOutfitSnapshot({ ...saved, isFavorite: true, outfitKind: 'favorite' }));
+      } else {
+        await removeFavoriteOutfit(current.id);
+        updateOutfitInList(current.id, {
+          id: getRecommendationOutfitId(current),
+          isFavorite: false,
+          outfitKind: 'recommendation',
+        });
+      }
       Taro.showToast({ title: nextFavorite ? '已收藏' : '已取消收藏', icon: 'success' });
     } catch (err) {
       console.error('Toggle favorite error:', err);
@@ -171,14 +193,16 @@ export default function TodayPage() {
 
   async function handleConfirmWear() {
     const current = outfits[currentIndex];
-    if (!current || operation || current.isWornToday) return;
+    if (!current || operation) return;
 
     setOperation('wear');
-
     try {
-      const saved = await confirmCloudWear(current.id, current);
-      replaceOutfitInList(current.id, saved);
-      Taro.showToast({ title: '已确认今日穿搭', icon: 'success' });
+      await addOutfitHistory(normalizeOutfitSnapshot(current), {
+        source: current.outfitKind === 'favorite' || current.isFavorite ? 'favorite' : 'recommendation',
+        sourceFavoriteOutfitId: current.outfitKind === 'favorite' || current.isFavorite ? current.id : undefined,
+        aiComment: current.aiComment,
+      });
+      Taro.showToast({ title: '已记录到穿搭历史', icon: 'success' });
     } catch (err) {
       console.error('Confirm wear error:', err);
       Taro.showToast({ title: '操作失败', icon: 'none' });
@@ -188,7 +212,16 @@ export default function TodayPage() {
   }
 
   function handleSceneSelect(key: SceneKey) {
+    console.log('[TodayPage] scene clicked', {
+      clickedSceneKey: key,
+      clickedScene: SCENE_TAGS[key],
+      currentSelectedScene: selectedScene,
+    });
     setSelectedSceneKey(key);
+    setCurrentIndex(0);
+    setOutfits([]);
+    setHasRecommendations(true);
+    fetchRecommendations({ scene: SCENE_TAGS[key] });
   }
 
   function goToWardrobe() {
@@ -196,39 +229,15 @@ export default function TodayPage() {
   }
 
   function goToOutfitDetail(outfitId: string) {
-    if (isRecommendOutfitId(outfitId)) {
-      Taro.showToast({ title: '收藏或穿它后可查看详情', icon: 'none' });
-      return;
-    }
-    Taro.navigateTo({ url: `/pages/outfit-detail/index?id=${outfitId}` });
-  }
-
-  async function syncCurrentOutfit(outfitId: string) {
-    if (loading || operation || isRecommendOutfitId(outfitId)) return;
-
-    try {
-      const detail = await getCloudOutfit(outfitId);
-      updateOutfitInList(outfitId, {
-        isFavorite: detail.isFavorite,
-        isWornToday: detail.isWornToday,
-        title: detail.title,
-      });
-    } catch (err) {
-      console.warn('Sync outfit status failed:', err);
-    }
-  }
-
-  function scheduleCurrentOutfitSync(outfitId: string) {
-    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
-    syncTimerRef.current = setTimeout(() => {
-      syncCurrentOutfit(outfitId);
-    }, 800);
+    const current = outfits.find((outfit) => outfit.id === outfitId);
+    if (!current) return;
+    storeOutfitDetailDraft(current);
+    const source = current.outfitKind === 'favorite' || current.isFavorite ? 'favorite' : 'recommendation';
+    Taro.navigateTo({ url: `/pages/outfit-detail/index?id=${encodeURIComponent(outfitId)}&source=${source}` });
   }
 
   function updateOutfitInList(outfitId: string, patch: Partial<Outfit>) {
-    setOutfits((prev) =>
-      prev.map((outfit) => (outfit.id === outfitId ? { ...outfit, ...patch } : outfit)),
-    );
+    setOutfits((prev) => prev.map((outfit) => (outfit.id === outfitId ? { ...outfit, ...patch } : outfit)));
   }
 
   function replaceOutfitInList(outfitId: string, next: Outfit) {
@@ -248,7 +257,6 @@ export default function TodayPage() {
   const isRefreshing = operation === 'refresh';
   const isFavoriteBusy = operation === 'favorite';
   const isWearBusy = operation === 'wear';
-  const isWornToday = currentOutfit?.isWornToday ?? false;
 
   return (
     <View className="today-page">
@@ -318,7 +326,7 @@ export default function TodayPage() {
             {getDeletedItemCount(currentOutfit) > 0 && (
               <View className="deleted-notice">
                 <Text className="deleted-notice-text">
-                  该搭配中有 {getDeletedItemCount(currentOutfit)} 件衣服已删除
+                  这套搭配中有 {getDeletedItemCount(currentOutfit)} 件衣服已从衣柜删除
                 </Text>
               </View>
             )}
@@ -340,9 +348,9 @@ export default function TodayPage() {
               </View>
             )}
 
-            {currentOutfit.reasoning && (
+            {(currentOutfit.reasoning || currentOutfit.reason) && (
               <View className="outfit-reasoning">
-                <Text className="reasoning-text">{currentOutfit.reasoning}</Text>
+                <Text className="reasoning-text">{currentOutfit.reasoning || currentOutfit.reason}</Text>
               </View>
             )}
 
@@ -364,13 +372,8 @@ export default function TodayPage() {
               >
                 <Text className="btn-text">{currentOutfit.isFavorite ? '已收藏' : '收藏'}</Text>
               </View>
-              <View
-                className={`action-btn primary ${isWornToday || isWearBusy ? 'disabled' : ''}`}
-                onClick={handleConfirmWear}
-              >
-                <Text className="btn-text">
-                  {isWornToday ? '已确认' : isWearBusy ? '确认中...' : '穿它'}
-                </Text>
+              <View className={`action-btn primary ${isWearBusy ? 'disabled' : ''}`} onClick={handleConfirmWear}>
+                <Text className="btn-text">{isWearBusy ? '记录中...' : '穿它'}</Text>
               </View>
             </View>
           </View>
@@ -403,6 +406,9 @@ function getToday() {
   return new Date().toISOString().split('T')[0]!;
 }
 
-function isRecommendOutfitId(id: string) {
-  return id.startsWith('recommend:');
+function getDeletedItemCount(outfit: Outfit) {
+  if (typeof outfit.deletedItemCount === 'number') return outfit.deletedItemCount;
+  const snapshotCount = outfit.snapshotItems?.filter((item) => item.isDeleted || item.deletedAt).length ?? 0;
+  const itemCount = outfit.items?.filter((item) => item.isDeleted).length ?? 0;
+  return Math.max(snapshotCount, itemCount);
 }

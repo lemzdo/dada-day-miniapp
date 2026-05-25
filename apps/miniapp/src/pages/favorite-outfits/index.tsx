@@ -1,7 +1,7 @@
-import { View, Text, ScrollView } from '@tarojs/components';
+import { Image, ScrollView, Text, View } from '@tarojs/components';
 import Taro, { useLoad, usePullDownRefresh, useReachBottom } from '@tarojs/taro';
 import { useState } from 'react';
-import { getCloudOutfitList, setCloudOutfitFavorite } from '@/lib/cloud';
+import { listFavoriteOutfits, removeFavoriteOutfit } from '@/lib/cloud';
 import type { Outfit } from '@starter-template/types';
 import './index.scss';
 
@@ -9,13 +9,6 @@ const PAGE_SIZE = 10;
 
 interface TapEvent {
   stopPropagation: () => void;
-}
-
-function getDeletedItemCount(outfit: Outfit) {
-  if (typeof outfit.deletedItemCount === 'number') return outfit.deletedItemCount;
-  const snapshotCount = outfit.snapshotItems?.filter((item) => item.isDeleted).length ?? 0;
-  const itemCount = outfit.items?.filter((item) => item.isDeleted).length ?? 0;
-  return Math.max(snapshotCount, itemCount);
 }
 
 export default function FavoriteOutfitsPage() {
@@ -48,9 +41,9 @@ export default function FavoriteOutfitsPage() {
     setLoading(true);
     setError('');
     try {
-      const data = await getCloudOutfitList({ isFavorite: true, page: pageNum, pageSize: PAGE_SIZE });
+      const data = await listFavoriteOutfits({ page: pageNum, pageSize: PAGE_SIZE });
       setOutfits((prev) => (reset ? data.list : [...prev, ...data.list]));
-      setHasMore(pageNum < data.pagination.totalPages);
+      setHasMore(data.hasMore);
       if (reset) setPage(1);
     } catch (err) {
       console.error('Fetch favorite outfits error:', err);
@@ -62,12 +55,12 @@ export default function FavoriteOutfitsPage() {
   }
 
   function goToOutfitDetail(outfitId: string) {
-    Taro.navigateTo({ url: `/pages/outfit-detail/index?id=${outfitId}` });
+    Taro.navigateTo({ url: `/pages/outfit-detail/index?id=${encodeURIComponent(outfitId)}&source=favorite` });
   }
 
   async function handleUnfavorite(outfit: Outfit) {
     try {
-      await setCloudOutfitFavorite(outfit.id, false);
+      await removeFavoriteOutfit(outfit.id);
       setOutfits((prev) => prev.filter((item) => item.id !== outfit.id));
       Taro.showToast({ title: '已取消收藏', icon: 'success' });
     } catch (err) {
@@ -90,7 +83,7 @@ export default function FavoriteOutfitsPage() {
       {!error && !loading && outfits.length === 0 && (
         <View className="state-card">
           <Text className="state-title">还没有收藏穿搭</Text>
-          <Text className="state-desc">遇到喜欢的推荐，点一下收藏就会出现在这里。</Text>
+          <Text className="state-desc">看到喜欢的搭配，点击「收藏」后会出现在这里。</Text>
           <View className="state-action" onClick={() => Taro.switchTab({ url: '/pages/today/index' })}>
             <Text className="state-action-text">去今日页</Text>
           </View>
@@ -98,62 +91,59 @@ export default function FavoriteOutfitsPage() {
       )}
 
       <ScrollView scrollY className="favorite-list">
-        {outfits.map((outfit) => {
-          const deletedItemCount = getDeletedItemCount(outfit);
-
-          return (
-            <View key={outfit.id} className="favorite-card" onClick={() => goToOutfitDetail(outfit.id)}>
-              <View className="favorite-header">
-                <View className="favorite-title-wrap">
-                  <Text className="favorite-title">{outfit.title || '收藏穿搭'}</Text>
-                  <Text className="favorite-meta">
-                    {[outfit.scene, outfit.targetDate].filter(Boolean).join(' · ') || '日常搭配'}
-                  </Text>
-                </View>
-                <Text className={`favorite-badge ${deletedItemCount > 0 ? 'incomplete' : ''}`}>
-                  {deletedItemCount > 0 ? '不完整' : '已收藏'}
-                </Text>
+        {outfits.map((outfit) => (
+          <View key={outfit.id} className="favorite-card" onClick={() => goToOutfitDetail(outfit.id)}>
+            <View className="favorite-header">
+              <View className="favorite-title-wrap">
+                <Text className="favorite-title">{outfit.title || '收藏穿搭'}</Text>
+                <Text className="favorite-meta">{formatMeta(outfit)}</Text>
               </View>
+              <Text className={`favorite-badge ${getDeletedItemCount(outfit) > 0 ? 'incomplete' : ''}`}>
+                {getDeletedItemCount(outfit) > 0 ? '不完整' : '已收藏'}
+              </Text>
+            </View>
 
-              {deletedItemCount > 0 && (
-                <View className="deleted-notice">
-                  <Text className="deleted-notice-text">该搭配中有 {deletedItemCount} 件衣服已删除</Text>
+            {getDeletedItemCount(outfit) > 0 && (
+              <View className="deleted-notice">
+                <Text className="deleted-notice-text">部分单品已从衣柜删除，仍按收藏快照展示。</Text>
+              </View>
+            )}
+
+            <View className="thumb-row">
+              {outfit.items?.slice(0, 4).map((item) => (
+                <Image key={item.clothingId} className="thumb-image" src={item.imageUrl} mode="aspectFill" lazyLoad />
+              ))}
+            </View>
+
+            <Text className="reason-preview">{outfit.reasoning || outfit.reason || '这套搭配已保存为收藏。'}</Text>
+
+            <View className="favorite-info">
+              <View className="info-pill">
+                <Text className="info-num">{outfit.clothingIds.length}</Text>
+                <Text className="info-label">件单品</Text>
+              </View>
+              {outfit.scores && (
+                <View className="info-pill">
+                  <Text className="info-num">{outfit.scores.fashion}</Text>
+                  <Text className="info-label">时尚分</Text>
                 </View>
               )}
+            </View>
 
-              <View className="favorite-info">
-                <View className="info-pill">
-                  <Text className="info-num">{outfit.clothingIds.length}</Text>
-                  <Text className="info-label">件单品</Text>
-                </View>
-                {outfit.scores && (
-                  <View className="info-pill">
-                    <Text className="info-num">{outfit.scores.sceneMatch}</Text>
-                    <Text className="info-label">场景分</Text>
-                  </View>
-                )}
-                {outfit.isWornToday && (
-                  <View className="info-pill worn">
-                    <Text className="info-label">今日已穿</Text>
-                  </View>
-                )}
-              </View>
-
-              <View className="favorite-actions">
-                <Text className="detail-text">查看详情</Text>
-                <View
-                  className="unfavorite-btn"
-                  onClick={(event: TapEvent) => {
-                    event.stopPropagation();
-                    handleUnfavorite(outfit);
-                  }}
-                >
-                  <Text className="unfavorite-text">取消收藏</Text>
-                </View>
+            <View className="favorite-actions">
+              <Text className="detail-text">查看详情</Text>
+              <View
+                className="unfavorite-btn"
+                onClick={(event: TapEvent) => {
+                  event.stopPropagation();
+                  handleUnfavorite(outfit);
+                }}
+              >
+                <Text className="unfavorite-text">取消收藏</Text>
               </View>
             </View>
-          );
-        })}
+          </View>
+        ))}
       </ScrollView>
 
       {loading && (
@@ -169,4 +159,20 @@ export default function FavoriteOutfitsPage() {
       )}
     </View>
   );
+}
+
+function formatMeta(outfit: Outfit) {
+  return [outfit.scene, formatDate(outfit.favoritedAt || outfit.createdAt)].filter(Boolean).join(' · ') || '日常搭配';
+}
+
+function formatDate(value?: string) {
+  if (!value) return '';
+  return value.slice(0, 10);
+}
+
+function getDeletedItemCount(outfit: Outfit) {
+  if (typeof outfit.deletedItemCount === 'number') return outfit.deletedItemCount;
+  const snapshotCount = outfit.snapshotItems?.filter((item) => item.isDeleted || item.deletedAt).length ?? 0;
+  const itemCount = outfit.items?.filter((item) => item.isDeleted).length ?? 0;
+  return Math.max(snapshotCount, itemCount);
 }

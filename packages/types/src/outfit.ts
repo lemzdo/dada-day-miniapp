@@ -9,7 +9,9 @@ export type TimeOfDay = 'morning' | 'afternoon' | 'evening' | 'all_day';
 
 export type GenerationType = 'auto' | 'manual' | 'from_single' | 'scene';
 
-export type OutfitSource = 'recommend' | 'manual';
+export type OutfitSource = 'recommend' | 'recommendation' | 'favorite' | 'history' | 'manual';
+
+export type OutfitKind = 'recommendation' | 'favorite' | 'history';
 
 export interface OutfitItemSummary {
   clothingId: string;
@@ -22,9 +24,17 @@ export interface OutfitItemSummary {
 
 export interface OutfitSnapshotItem {
   itemId: string;
+  clothingId?: string;
+  type?: string;
   name: string;
   category: ClothingCategory | string;
   color?: string;
+  style?: string;
+  thickness?: string;
+  material?: string;
+  imageUrl?: string;
+  displayImageUrl?: string;
+  deletedAt?: string | null;
   thumbnailUrl?: string;
   isDeleted: boolean;
 }
@@ -35,13 +45,23 @@ export interface ScoreExplanation {
   text: string;
 }
 
+export interface OutfitAiComment {
+  title: string;
+  reason: string;
+  styleTags: string[];
+  tip: string;
+  generatedAt?: string;
+}
+
 export interface Outfit {
   id: string;
   userId: string;
   title?: string;
   clothingIds: string[];
   outfitKey?: string;
+  outfitKind?: OutfitKind;
   items?: OutfitItemSummary[];
+  itemsSnapshot?: OutfitSnapshotItem[];
   snapshotItems?: OutfitSnapshotItem[];
   incomplete?: boolean;
   deletedItemCount?: number;
@@ -54,6 +74,7 @@ export interface Outfit {
   generationType?: GenerationType;
   sourceItemId?: string;
   source?: OutfitSource;
+  sourceFavoriteOutfitId?: string;
   favoritedAt?: string;
   wornAt?: string;
   wornDate?: string;
@@ -63,6 +84,7 @@ export interface Outfit {
   updatedAt: string;
   reason?: string;
   reasoning?: string;
+  aiComment?: OutfitAiComment;
 }
 
 export interface OutfitScores {
@@ -93,14 +115,24 @@ export interface RecommendResponse {
   outfits: Outfit[];
   weather: WeatherSnapshot;
   recommendationNotice?: string;
+  debug?: {
+    inputScene?: SceneTag | string;
+    matchedScene?: SceneTag | string;
+    candidateCount: number;
+    generatedCount: number;
+  };
 }
 
 export interface OutfitHistory {
   id: string;
   userId: string;
   outfitId?: string;
+  source?: 'recommendation' | 'favorite';
+  sourceFavoriteOutfitId?: string;
   clothingIds: string[];
+  itemsSnapshot?: OutfitSnapshotItem[];
   wearDate: string;
+  wornAt?: string;
   timeOfDay?: TimeOfDay;
   scene?: SceneTag;
   weatherSnapshot?: WeatherSnapshot;

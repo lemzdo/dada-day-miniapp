@@ -138,6 +138,19 @@
   margin-top: 8px;
 }
 
+.thumb-row {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.thumb-image {
+  width: 88px;
+  height: 88px;
+  border-radius: 14px;
+  background: #eee;
+}
+
 .history-footer {
   margin-top: 18px;
   display: flex;

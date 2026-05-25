@@ -6,6 +6,7 @@ import type {
   ClothesDraft,
   CurrentWeather,
   Outfit,
+  OutfitAiComment,
   RecommendRequest,
   RecommendResponse,
   RecommendationProfile,
@@ -366,6 +367,12 @@ function isRecommendationProfile(input: RecommendationProfile | UpdateCloudUserP
 
 export async function generateCloudOutfit(params: RecommendRequest = {}) {
   const ttl = Array.isArray(params.excludeClothingIdSets) && params.excludeClothingIdSets.length > 0 ? 0 : CACHE_TTL.outfit;
+  console.log('[generateCloudOutfit] call generateOutfit', {
+    scene: params.scene,
+    date: params.date,
+    timeOfDay: params.timeOfDay,
+    excludeCount: params.excludeClothingIdSets?.length ?? 0,
+  });
   return callCachedCloudFunction<RecommendResponse>('generateOutfit', params as Record<string, unknown>, ttl);
 }
 
@@ -374,32 +381,118 @@ export async function getCloudOutfit(id: string) {
 }
 
 export async function setCloudOutfitFavorite(id: string, isFavorite: boolean, outfit?: Outfit) {
-  const outfitResult = await callCloudFunction<Outfit>('generateOutfit', {
-    action: 'favorite',
-    id,
-    isFavorite,
-    outfit,
-  });
+  const outfitResult = isFavorite
+    ? await saveFavoriteOutfit(outfit ?? ({ id } as Outfit))
+    : await removeFavoriteOutfit(id).then(() => ({
+        ...(outfit ?? ({} as Outfit)),
+        id,
+        isFavorite: false,
+      }));
   clearCloudCache(['generateOutfit:']);
   return outfitResult;
 }
 
 export async function confirmCloudWear(id: string, outfit?: Outfit) {
-  const outfitResult = await callCloudFunction<Outfit>('generateOutfit', {
-    action: 'wear',
-    id,
-    outfit,
-    date: new Date().toISOString().split('T')[0],
+  const outfitResult = await addOutfitHistory(outfit ?? ({ id } as Outfit), {
+    source: outfit?.outfitKind === 'favorite' || outfit?.isFavorite ? 'favorite' : 'recommendation',
+    sourceFavoriteOutfitId: outfit?.outfitKind === 'favorite' || outfit?.isFavorite ? id : undefined,
   });
   clearCloudCache(['generateOutfit:', 'getWardrobe:']);
   return outfitResult;
 }
 
-export async function getCloudOutfitList(params: { isFavorite?: boolean; wornOnly?: boolean; page?: number; pageSize?: number } = {}) {
+export async function saveFavoriteOutfit(outfit: Outfit, aiComment: OutfitAiComment | undefined = outfit.aiComment) {
+  const outfitResult = await callCloudFunction<Outfit>('generateOutfit', {
+    action: 'saveFavoriteOutfit',
+    id: outfit.id,
+    outfit,
+    aiComment,
+  });
+  clearCloudCache(['generateOutfit:', 'favoriteOutfits:', 'outfitHistory:']);
+  return outfitResult;
+}
+
+export async function removeFavoriteOutfit(favoriteOutfitId: string) {
+  const result = await callCloudFunction<{ success: boolean; id: string }>('generateOutfit', {
+    action: 'removeFavoriteOutfit',
+    favoriteOutfitId,
+  });
+  clearCloudCache(['generateOutfit:', 'favoriteOutfits:']);
+  return result;
+}
+
+export async function listFavoriteOutfits(params: { page?: number; pageSize?: number } = {}) {
   return callCloudFunction<{
     list: Outfit[];
+    hasMore: boolean;
     pagination: { total: number; page: number; pageSize: number; totalPages: number };
-  }>('generateOutfit', { action: 'list', ...params });
+  }>('generateOutfit', { action: 'listFavoriteOutfits', ...params });
+}
+
+export async function getFavoriteOutfitDetail(id: string) {
+  return callCloudFunction<Outfit>('generateOutfit', { action: 'detail', source: 'favorite', id });
+}
+
+export async function addOutfitHistory(
+  outfit: Outfit,
+  options: {
+    source?: 'recommendation' | 'favorite';
+    sourceFavoriteOutfitId?: string;
+    aiComment?: OutfitAiComment;
+  } = {},
+) {
+  const outfitResult = await callCloudFunction<Outfit>('generateOutfit', {
+    action: 'addOutfitHistory',
+    id: outfit.id,
+    outfit,
+    source: options.source ?? (outfit.outfitKind === 'favorite' || outfit.isFavorite ? 'favorite' : 'recommendation'),
+    sourceFavoriteOutfitId: options.sourceFavoriteOutfitId,
+    aiComment: options.aiComment ?? outfit.aiComment,
+  });
+  clearCloudCache(['generateOutfit:', 'outfitHistory:']);
+  return outfitResult;
+}
+
+export async function listOutfitHistory(params: { page?: number; pageSize?: number } = {}) {
+  return callCloudFunction<{
+    list: Outfit[];
+    page: number;
+    pageSize: number;
+    hasMore: boolean;
+    pagination: { total: number; page: number; pageSize: number; totalPages: number };
+  }>('generateOutfit', { action: 'listOutfitHistory', ...params });
+}
+
+export async function getOutfitHistoryDetail(id: string) {
+  return callCloudFunction<Outfit>('generateOutfit', { action: 'detail', source: 'history', id });
+}
+
+export interface GenerateCloudOutfitCommentResult {
+  success: boolean;
+  aiComment?: OutfitAiComment;
+  saved?: boolean;
+  fallback?: boolean;
+  message?: string;
+}
+
+export async function generateCloudOutfitComment(outfit: Outfit) {
+  const result = await callCloudFunction<GenerateCloudOutfitCommentResult>('generateOutfit', {
+    action: 'aiComment',
+    outfitId: outfit.id,
+    outfit,
+    weather: outfit.weatherSnapshot,
+    scene: outfit.scene,
+    items: outfit.items,
+    scores: outfit.scores,
+    reason: outfit.reasoning || outfit.reason || '',
+  });
+  return result;
+}
+
+export async function getCloudOutfitList(params: { isFavorite?: boolean; wornOnly?: boolean; page?: number; pageSize?: number } = {}) {
+  if (params.isFavorite) return listFavoriteOutfits(params);
+  if (params.wornOnly) return listOutfitHistory(params);
+  return listFavoriteOutfits(params);
 }
 
 export async function getCloudWeather(location: { latitude: number; longitude: number }) {

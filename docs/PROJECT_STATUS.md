@@ -1,109 +1,105 @@
-# d1d 当前项目状态
+# PROJECT_STATUS.md - 搭搭 day 当前状态
 
-更新时间：2026-05-19
+> 最后更新：2026-05-22  
+> 用途：给后续 Codex session 快速接手，减少重复扫描和上下文消耗。  
+> 维护原则：优先记录已确认事实；不确定内容标记为“待确认”。
 
-## 技术栈
-项目是 `pnpm workspace` monorepo，编排用 `TurboRepo`。Web 端是 `Next.js 15 + React 19 + TailwindCSS v3`，小程序端是 `Taro 4 + React 18 + SCSS + Zustand`。共享层拆成 `packages/types / api / utils / hooks / auth / ai / ui`。数据层使用 `PostgreSQL + Drizzle ORM + postgres.js`。AI 识别已接入 `SiliconFlow`，并保留 `Mock` fallback；`DeepSeek` 目前仍是未完成桩。
+---
 
-## 已完成
-衣物上传链路已经跑通：本地文件存储、上传接口、AI 识别、衣物入库都已实现。衣橱管理已具备列表、详情、编辑、自定义字段、归档/删除和容量读取。穿搭链路已有基础：规则推荐引擎、推荐 BFF、推荐结果落库、收藏切换、确认穿着、历史记录和满意度更新接口都已存在，推荐保存已增加基础复用/去重控制。天气与字典接口已经提供，但当前仍是 mock。小程序已有 `today / wardrobe / profile / clothing-detail / clothing-form / outfit-detail / outfit-history / favorite-outfits` 页面，且 `WeatherCard`、`ClothingGrid` 两个组件已可复用。
+## 1. 项目定位
 
-## 未完成
-真实微信 `code2Session` 登录尚未接入，当前登录与鉴权仍是临时 token / mock 逻辑。真实天气 API、天气缓存和推荐侧用户偏好驱动还没完成。`wardrobe-analysis / reminders / share` 等页面与接口仍缺失或未做完整。测试、CI、E2E 也还没有建立。
+- 产品名：搭搭 day。
+- 形态：微信小程序。
+- 核心链路：用户上传衣服到衣柜 -> AI 识别衣物属性 -> 按天气、场景、衣柜生成穿搭推荐。
+- 产品方向：年轻化、AI 感、穿搭潮流风格。
+- 产品边界：轻量日常穿搭助手，不是电商导购。
 
-## 关键目录
-`apps/web/src/lib/db/schema.ts` 是数据库模型定义，`apps/web/src/lib/db/repositories/` 是数据访问层。`apps/web/src/app/api/v1/` 放全部 BFF 路由。`apps/web/src/lib/recommend/engine.ts` 是当前穿搭规则引擎。`packages/ai/src/` 放 AI provider。`packages/api/src/` 是前后端共享接口客户端。`apps/miniapp/src/pages/` 是小程序页面，`apps/miniapp/src/components/` 是小程序复用组件。
+---
 
-## 当前风险
-最大风险是鉴权不够真实，用户隔离现在依赖临时 token 解析。第二个风险是推荐幂等和“换一套”语义仍处于基础实现阶段，需要继续用真实数据验证边界。第三个风险是天气、AI 分析、分享、提醒都还没有形成稳定生产链路。再往后是页面和接口覆盖不完整，当前主链路能跑，但离完整 MVP 还有空白。
+## 2. 技术栈
 
-## MVP 下一步优先级
-1. 统一登录与鉴权：补真实 `code2Session`，统一 token 注入和校验。
-2. 打通今日推荐闭环：完善 `today` 页交互，减少竞态，稳定推荐/收藏/确认穿着。
-3. 补齐穿搭详情与历史页：把推荐结果、历史记录和满意度串成完整体验。
-4. 接入真实天气并启用缓存。
-5. 补测试与 CI，先保住核心链路再扩展分析、分享和提醒。
+- 仓库：pnpm workspace / monorepo。
+- 根包管理：`pnpm@9.15.0`，根 `package.json` 仍显示 `starter-template` 名称，后续是否改名待确认。
+- 小程序：Taro 4 + React 18 + Zustand，目标平台为微信小程序。
+- 微信能力：`apps/miniapp/project.config.json` 确认 `cloudfunctionRoot` 为 `cloudfunctions/`。
+- 云开发：存在微信云函数，已确认 `generateOutfit` 云函数。
+- 云函数说明与配置维护见 `docs/cloud-functions.md`。
+- AI 模块：衣物识别/推荐相关模块已接入到小程序链路，细节以云函数和页面实现为准。
+- 天气能力：`generateOutfit` 可接收 `event.weather`，并有 fallback weather；真实天气接入状态待确认。
+- Web/BFF、数据库、共享 packages 的当前落地状态：待确认，本次低上下文更新未重新读取。
 
-## 2026-05-19 Development Update
+---
 
-- Added miniapp outfit detail page: `apps/miniapp/src/pages/outfit-detail/`.
-- Registered `pages/outfit-detail/index` in miniapp app config.
-- Today page outfit cards now navigate to outfit detail while action buttons keep their existing behavior.
-- Outfit detail supports independent loading, empty/error fallback, outfit items, weather snapshot, scores, score explanations, favorite toggle, and confirm-wear action.
-- Verified with `cmd /c pnpm --filter @starter-template/miniapp typecheck` and `cmd /c pnpm --filter @starter-template/api typecheck`.
+## 3. 当前模块状态
 
-## 2026-05-19 Outfit History Update
+| 模块 | 状态 | 已确认依据 |
+| --- | --- | --- |
+| 衣柜上传 / 衣物管理 | 部分实现 | `wardrobe` 页面包含衣柜列表、分页、分类、上传入口、删除入口。 |
+| 图片裁剪 / 衣物展示 | 部分实现 | 衣柜页已确认上传前图片压缩；裁剪能力待确认。 |
+| AI 识别衣物属性 | 部分实现 | 衣柜页存在 `recognizeClothAttributes` 和批量上传后确认流程；`recognizeClothing` 云函数文件本次未确认存在。 |
+| 场景选择卡片 UI | 待确认 | 本次未读取到相关页面。 |
+| `generateOutfit` 云函数 | 已实现 | 已确认支持 `generate/detail/favorite/wear/list` 行为。 |
+| 推荐页 / 穿搭展示 | 待确认 | 本次未读取到 `outfit` 页面入口。 |
+| 真实天气接入 | 待确认 | 仅确认推荐云函数支持传入天气和 fallback。 |
+| 收藏穿搭 | 部分实现 | `generateOutfit` 支持 `favorite` 行为和 `isFavorite/favoritedAt` 字段。 |
+| 穿搭历史 / 穿他按钮 | 部分实现 | `generateOutfit` 支持 `wear` 行为、`wornAt/wornDate/isWornToday` 和 `feedback` 记录。具体 UI 待确认。 |
+| 一图多衣 | 设计中 | 已列为后续重要能力，本次未确认实现。 |
+| 多图上传 | 部分实现 | 衣柜页 `chooseMedia` count 为 9，并创建 upload batch。 |
 
-- Added miniapp outfit history page: `apps/miniapp/src/pages/outfit-history/`.
-- Registered `pages/outfit-history/index` in miniapp app config.
-- Profile page now links to outfit history.
-- Outfit history supports loading, pull-to-refresh, pagination, empty/error fallback, detail navigation, and satisfaction rating updates.
-- Verified with `cmd /c pnpm --filter @starter-template/miniapp typecheck` and `cmd /c pnpm --filter @starter-template/api typecheck`.
+---
 
-## 2026-05-19 Profile Data Update
+## 4. 最近关键决策
 
-- Profile page now loads real user profile, capacity, clothes count, outfit count, and history-day stats from existing API clients.
-- Added pull-to-refresh and partial-failure fallback for profile summary data.
-- Kept unfinished entries such as wardrobe analysis and reminders as non-destructive "coming soon" prompts.
-- Verified with `cmd /c pnpm --filter @starter-template/miniapp typecheck` and `cmd /c pnpm --filter @starter-template/api typecheck`.
+- 删除衣服不能简单硬删，需要考虑软删除、历史快照或引用关系。
+- 同一套穿搭可以同时存在于收藏记录和穿搭历史。
+- “换一套”不应该无脑保存推荐记录，应该明确用户行为后再入库。
+- AI 点评倾向短点评，后续可考虑详情页直接展示或按钮按需生成。
+- 一张图多件衣服、一次上传多张图片是后续重要能力，需要分阶段改造。
+- 为节省 Codex 额度，后续任务需要小范围读取、最小改动、避免全仓库扫描。
 
-## 2026-05-19 Style Preferences Update
+---
 
-- Added miniapp style preferences page: `apps/miniapp/src/pages/style-preferences/`.
-- Registered `pages/style-preferences/index` in miniapp app config.
-- Profile page now links to style preferences and refreshes after returning from the preferences page without duplicating the initial request.
-- Style preferences page loads style dictionary and current user profile, supports multi-select, and saves `styleProfile.preferredStyles` while preserving other profile fields.
-- Verified with `cmd /c pnpm --filter @starter-template/miniapp typecheck` and `cmd /c pnpm --filter @starter-template/api typecheck`.
+## 5. Git 与验证状态
 
-## 2026-05-19 Favorite Outfits Update
+- Git 仓库：已初始化。
+- GitHub 远程：`origin` 为 `https://github.com/lemzdo/dada-day-miniapp.git`。
+- 当前分支：`main`。
+- 当前状态：用户说明此前已确认 clean；本次执行 `git status --short` 也为 clean。
+- 本次未运行 `pnpm install`、`pnpm build`、`pnpm typecheck`、`pnpm test`。
+- 历史验证，本次未重新执行：
+  - 曾运行 `pnpm typecheck -- --pretty false`，通过，9 个 workspace successful。
+  - 曾运行 `node --check apps\miniapp\cloudfunctions\generateOutfit\index.js`，通过。
 
-- Added miniapp favorite outfits page: `apps/miniapp/src/pages/favorite-outfits/`.
-- Registered `pages/favorite-outfits/index` in miniapp app config.
-- Profile page now links to favorite outfits instead of showing a coming-soon prompt.
-- Favorite outfits supports loading, pull-to-refresh, pagination, empty/error fallback, detail navigation, and cancel-favorite action.
-- Verified with `cmd /c pnpm --filter @starter-template/miniapp typecheck` and `cmd /c pnpm --filter @starter-template/api typecheck`.
+---
 
-## 2026-05-19 Auth Hardening Update
+## 6. 当前开发约束
 
-- Added server-signed auth tokens with expiry in `apps/web/src/lib/auth.ts`.
-- `wechat-login` now resolves WeChat `code2Session` when `WECHAT_APP_ID` and `WECHAT_APP_SECRET` are configured, with a dev fallback for local/mock codes.
-- Miniapp boot now obtains a real `Taro.login()` code before calling the shared login API, and clears invalid stored tokens before retrying login.
-- Protected core clothes, outfits, user, and outfit-history routes now return 401 for auth errors instead of falling through as internal errors.
-- Outfit and clothing detail reads now enforce owner checks, matching update/delete behavior.
-- Verified with `cmd /c pnpm --filter @starter-template/web typecheck`, `cmd /c pnpm --filter @starter-template/miniapp typecheck`, and `cmd /c pnpm --filter @starter-template/api typecheck`.
+- 不要全仓库扫描。
+- 每次 Codex 任务优先读取 `PROJECT_STATUS.md`。
+- 小程序端避免引入重型依赖。
+- 云函数保持 Node16 兼容。
+- UI 保持年轻化、干净、圆角卡片、轻 AI 感。
+- 新功能优先最小改动。
+- 修改前先看 `git status --short`，修改后用 `git diff -- <file>` 检查。
+- 不要读取或输出真实 API key / secret / token。
 
-## 2026-05-19 Today Loop Stability Update
+---
 
-- Hardened `apps/miniapp/src/pages/today/` request sequencing so scene changes and refreshes do not overwrite newer recommendations.
-- Split page loading from outfit operations, with independent busy states for refresh, favorite, and confirm-wear actions.
-- Today page now syncs the current outfit after returning from detail, keeping favorite and worn-today state fresh.
-- Confirm-wear now sends outfit scene, time of day, and weather snapshot when available.
-- Added visible retry/error feedback and disabled action styling.
-- Verified with `cmd /c pnpm --filter @starter-template/miniapp typecheck` and `cmd /c pnpm --filter @starter-template/api typecheck`.
+## 7. 下一步建议
 
-## 2026-05-19 Weather Cache Update
+1. 优先梳理收藏穿搭 / 穿搭历史 / 穿他 的数据模型和状态关系。
+2. 再做 AI 点评 / 推荐语生成。
+3. 再做一图多衣和批量上传的完整体验。
+4. 每完成一个小功能就提交 Git，避免改动堆积。
 
-- Added `apps/web/src/lib/db/repositories/weather.ts` for valid-cache reads and upserts against the existing `weather_cache` table.
-- Added `apps/web/src/lib/weather/service.ts` with current weather, forecast, and outfit weather snapshot helpers.
-- Weather routes now use the cache service instead of inline mock constants.
-- Recommendation generation now stores weather snapshots from the same cache-backed service used by the weather API.
-- `QWEATHER_API_KEY` enables live QWeather calls; missing keys or provider failures fall back to stable mock data and still populate cache.
-- Verified with `cmd /c pnpm --filter @starter-template/web typecheck`, `cmd /c pnpm --filter @starter-template/api typecheck`, and `cmd /c pnpm --filter @starter-template/miniapp typecheck`.
+---
 
-## 2026-05-19 Core Tests Update
+## 8. 后续接手建议
 
-- Added a lightweight `@starter-template/web` test script using Node `node:test` with an esbuild bundle step, avoiding new test dependencies.
-- Added auth tests for signed token validation, tamper rejection, and legacy dev-token compatibility.
-- Refactored weather service with `createWeatherService` dependency injection so cache/provider behavior can be tested without a database or network.
-- Added weather tests for cache hits, fallback cache writes, and QWeather forecast response mapping.
-- Added `.test` to `.gitignore` for bundled test output.
-- Verified with `cmd /c pnpm --filter @starter-template/web test`, `cmd /c pnpm --filter @starter-template/web typecheck`, `cmd /c pnpm --filter @starter-template/api typecheck`, and `cmd /c pnpm --filter @starter-template/miniapp typecheck`.
-
-## 2026-05-19 Quality Gate Update
-
-- Added root `test` script backed by Turbo so package-level tests can run through `cmd /c pnpm test`.
-- Added root `verify` script: `pnpm typecheck && pnpm lint && pnpm test`.
-- Added Turbo `test` task with empty outputs and preserved existing typecheck/lint tasks.
-- Added `.test` to ESLint and Prettier ignore lists so bundled test artifacts do not pollute checks.
-- Verified with `cmd /c pnpm test` and full `cmd /c pnpm verify`.
-- Current full lint passes with warnings only; warning cleanup remains a follow-up engineering hygiene task.
+- 先读本文件，再按任务只读必要文件。
+- 如果任务涉及推荐闭环，优先查看：
+  - `apps/miniapp/cloudfunctions/generateOutfit/index.js`
+  - 推荐/今日/穿搭相关页面入口，具体路径待确认。
+- 如果任务涉及衣柜，优先查看：
+  - `apps/miniapp/src/pages/wardrobe/index.tsx`
+  - 衣物详情、上传确认、云函数封装文件，具体路径按任务再确认。

@@ -4,6 +4,8 @@ export const CLOUD_COLLECTIONS = {
   users: 'users',
   clothes: 'clothes',
   outfits: 'outfits',
+  favoriteOutfits: 'favorite_outfits',
+  outfitHistory: 'outfit_history',
   aiTasks: 'ai_tasks',
   feedback: 'feedback',
 } as const;

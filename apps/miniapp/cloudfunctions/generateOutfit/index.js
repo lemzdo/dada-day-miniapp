@@ -4,14 +4,24 @@ cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
 const db = cloud.database();
 const DELETED_STATUS = 'deleted';
+const BAILIAN_BASE_URL = process.env.BAILIAN_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1';
+const AI_COMMENT_PROVIDER = process.env.AI_COMMENT_PROVIDER || 'aliyun-bailian';
+const AI_COMMENT_MODEL = process.env.AI_COMMENT_MODEL || 'qwen-flash';
+const AI_COMMENT_TIMEOUT_MS = Number(process.env.AI_COMMENT_TIMEOUT_MS || 5000);
 
 exports.main = async (event = {}) => {
   try {
     const action = event.action || 'generate';
-    if (action === 'detail') return ok(await getOutfit(event.id));
+    if (action === 'detail') return ok(await getOutfitDetail(event));
     if (action === 'favorite') return ok(await updateFavorite(event.id, Boolean(event.isFavorite), event.outfit));
     if (action === 'wear') return ok(await confirmWear(event.id, event.date, event.outfit));
     if (action === 'list') return ok(await listOutfits(event));
+    if (action === 'saveFavoriteOutfit') return ok(await saveFavoriteOutfit(event.id, event.outfit, event.aiComment));
+    if (action === 'removeFavoriteOutfit') return ok(await removeFavoriteOutfit(event.favoriteOutfitId || event.id));
+    if (action === 'listFavoriteOutfits') return ok(await listFavoriteOutfits(event));
+    if (action === 'addOutfitHistory') return ok(await addOutfitHistory(event));
+    if (action === 'listOutfitHistory') return ok(await listOutfitHistory(event));
+    if (action === 'aiComment') return ok(await generateAiComment(event));
 
     return ok(await generate(event));
   } catch (error) {
@@ -22,7 +32,8 @@ exports.main = async (event = {}) => {
 
 async function generate(event) {
   const { OPENID } = cloud.getWXContext();
-  const scene = event.scene || '居家';
+  const inputScene = typeof event.scene === 'string' ? event.scene.trim() : '';
+  const scene = inputScene || undefined;
   const targetDate = event.date || new Date().toISOString().slice(0, 10);
   const now = new Date().toISOString();
   const clothesRes = await db.collection('clothes').where({ _openid: OPENID, status: 'active' }).limit(100).get();
@@ -40,9 +51,24 @@ async function generate(event) {
     maxResults: 3,
   });
   const recommendationNotice = getRecommendationNotice(clothes, weather, recommendations.length);
+  const debug = {
+    inputScene,
+    matchedScene: recommendations[0]?.matchedScene || '',
+    candidateCount: recommendations.debug?.candidateCount ?? 0,
+    generatedCount: recommendations.length,
+  };
+
+  console.log('[generateOutfit] generate', {
+    inputScene,
+    scene,
+    candidateCount: debug.candidateCount,
+    generatedCount: debug.generatedCount,
+    firstOutfitId: recommendations[0] ? `recommend:${signature(recommendations[0].items.map((item) => item._id))}` : '',
+    firstItemIds: recommendations[0]?.items.map((item) => item._id) || [],
+  });
 
   if (recommendations.length === 0) {
-    return { outfits: [], weather, recommendationNotice };
+    return { outfits: [], weather, recommendationNotice, debug };
   }
 
   const outfits = recommendations.map((recommendation) =>
@@ -55,7 +81,14 @@ async function generate(event) {
       now,
     }),
   );
-  return { outfits: outfits.slice(0, 3), weather, recommendationNotice };
+  return { outfits: outfits.slice(0, 3), weather, recommendationNotice, debug };
+}
+
+async function getOutfitDetail(event) {
+  const source = event.source || event.type;
+  if (source === 'favorite') return getFavoriteOutfitById(event.id);
+  if (source === 'history') return getHistoryById(event.id);
+  return getOutfit(event.id);
 }
 
 async function getOutfit(id) {
@@ -68,96 +101,170 @@ async function getOutfit(id) {
 }
 
 async function updateFavorite(id, isFavorite, outfitPayload) {
-  const now = new Date().toISOString();
   if (!isFavorite) {
-    const outfit = await assertOutfitOwner(id);
-    await db.collection('outfits').doc(id).update({
-      data: { isFavorite: false, favoritedAt: null, updatedAt: now },
-    });
-    return toOutfit(
-      { ...outfit, isFavorite: false, favoritedAt: null, updatedAt: now },
-      await loadClothesByIds(outfit._openid, outfit.clothingIds || []),
-    );
+    return removeFavoriteOutfit(id);
   }
 
   return saveFavoriteOutfit(id, outfitPayload);
 }
 
 async function confirmWear(id, date, outfitPayload) {
-  const { OPENID } = cloud.getWXContext();
-  const now = new Date().toISOString();
-  const targetDate = date || now.slice(0, 10);
-  const saved = await saveWornOutfit(id, outfitPayload, targetDate);
-
-  const ids = saved.clothingIds || [];
-  if (!saved._alreadyWornToday) {
-    await Promise.all(
-      ids.map((clothingId) =>
-        db.collection('clothes').doc(clothingId).update({
-          data: { usageCount: db.command.inc(1), wearCount: db.command.inc(1), lastWornAt: now, updatedAt: now },
-        }).catch((error) => {
-          console.warn('[generateOutfit] skip usage update for missing clothing', {
-            clothingId,
-            message: error && error.message ? error.message : String(error || 'unknown error'),
-          });
-        }),
-      ),
-    );
-
-    await db.collection('feedback').add({
-      data: {
-        _openid: OPENID,
-        type: 'wear_confirm',
-        outfitId: saved.id,
-        clothingIds: ids,
-        wearDate: targetDate,
-        scene: saved.scene,
-        source: 'recommend',
-        createdAt: now,
-      },
-    });
-  }
-
-  delete saved._alreadyWornToday;
-
-  return saved;
+  return addOutfitHistory({
+    id,
+    outfit: outfitPayload,
+    source: outfitPayload && outfitPayload.isFavorite ? 'favorite' : 'recommendation',
+    sourceFavoriteOutfitId: outfitPayload && outfitPayload.isFavorite ? id : undefined,
+    date,
+  });
 }
 
 async function listOutfits(event) {
-  const { OPENID } = cloud.getWXContext();
-  const page = Math.max(Number(event.page || 1), 1);
-  const pageSize = Math.min(Math.max(Number(event.pageSize || 10), 1), 50);
-  const filter = { _openid: OPENID };
-  if (event.isFavorite === true) filter.isFavorite = true;
+  if (event.isFavorite === true) return listFavoriteOutfits(event);
+  if (shouldListWorn(event)) return listOutfitHistory(event);
+  return listFavoriteOutfits(event);
+}
 
-  const collection = db.collection('outfits');
-  const listRes = await collection
-    .where(filter)
-    .orderBy('createdAt', 'desc')
-    .limit(500)
-    .get();
-  const filteredList = shouldListWorn(event)
-    ? listRes.data.filter((item) => item.wornAt)
-    : listRes.data;
-  const pageList = filteredList.slice((page - 1) * pageSize, page * pageSize);
-  const allIds = Array.from(new Set(pageList.flatMap((item) => item.clothingIds || [])));
-  const clothes = await loadClothesByIds(OPENID, allIds);
-  const clothesMap = new Map(clothes.map((item) => [item._id, item]));
+async function generateAiComment(event) {
+  const fallbackMessage = 'AI 点评暂时不可用，请稍后再试';
 
+  try {
+    const commentInput = await buildAiCommentInput(event, null);
+    const aiComment = {
+      ...(await callAiCommentModel(commentInput)),
+      generatedAt: new Date().toISOString(),
+    };
+
+    return { success: true, aiComment, saved: false };
+  } catch (error) {
+    console.warn('[generateOutfit] aiComment fallback', error && error.message ? error.message : error);
+    return { success: false, fallback: true, message: fallbackMessage };
+  }
+}
+
+async function buildAiCommentInput(event, existing) {
+  const clothes = existing ? await loadClothesByIds(existing._openid, existing.clothingIds || []) : [];
   return {
-    list: pageList.map((outfit) =>
-      toOutfit(
-        outfit,
-        (outfit.clothingIds || []).map((id) => clothesMap.get(id)).filter(Boolean),
-      ),
-    ),
-    pagination: {
-      total: filteredList.length,
-      page,
-      pageSize,
-      totalPages: Math.max(1, Math.ceil(filteredList.length / pageSize)),
-    },
+    weather: event.weather || existing?.weatherSnapshot || existing?.weather || null,
+    scene: event.scene || existing?.scene || '',
+    items: buildAiCommentItems(event.items, existing, clothes),
+    scores: sanitizeScores(event.scores || existing?.scores || {}),
+    reason: event.reason || existing?.reasoning || existing?.reason || '',
   };
+}
+
+function buildAiCommentItems(payloadItems, existing, clothes) {
+  if (clothes.length > 0) {
+    return clothes.map((item) => ({
+      type: item.subcategory || item.subCategory || item.category || '',
+      color: readColorText(item),
+      style: readArray(item.styleTags).join(' / '),
+      thickness: item.thickness || '',
+      material: item.material || item.materialGuess || '',
+    }));
+  }
+
+  if (Array.isArray(payloadItems)) {
+    return payloadItems.map((item) => ({
+      type: item.subcategory || item.subCategory || item.category || '',
+      color: readColorText(item),
+      style: readArray(item.styleTags).join(' / '),
+      thickness: item.thickness || '',
+      material: item.material || item.materialGuess || '',
+    }));
+  }
+
+  return normalizeSnapshotItems(existing?.snapshotItems).map((item) => ({
+    type: item.name || item.category || '',
+    color: item.color || '',
+    style: '',
+    thickness: '',
+    material: '',
+  }));
+}
+
+async function callAiCommentModel(input) {
+  if (AI_COMMENT_PROVIDER !== 'aliyun-bailian') {
+    throw new Error(`unsupported_ai_comment_provider:${AI_COMMENT_PROVIDER}`);
+  }
+
+  const apiKey = process.env.BAILIAN_API_KEY || process.env.DASHSCOPE_API_KEY;
+  if (!apiKey) throw new Error('BAILIAN_API_KEY is missing');
+
+  const fetch = require('node-fetch');
+  const response = await fetch(`${BAILIAN_BASE_URL}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: AI_COMMENT_MODEL,
+      messages: [
+        { role: 'system', content: buildAiCommentSystemPrompt() },
+        { role: 'user', content: JSON.stringify(input) },
+      ],
+      temperature: 0.45,
+      max_tokens: 220,
+      stream: false,
+      response_format: { type: 'json_object' },
+    }),
+    timeout: AI_COMMENT_TIMEOUT_MS,
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`ai_comment_api_error_${response.status}:${text.slice(0, 200)}`);
+  }
+
+  const data = await response.json();
+  const content = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+  const parsed = parseLooseJson(content);
+  const normalized = normalizeAiComment(parsed);
+  if (!normalized) throw new Error('invalid_ai_comment_json');
+  return normalized;
+}
+
+function buildAiCommentSystemPrompt() {
+  return [
+    '你是穿搭小程序的短点评助手。',
+    '只基于用户给出的结构化穿搭数据生成点评文案。',
+    '不要重新选择衣服，不要修改分数，不要参与推荐算法。',
+    '中文、年轻化、自然、简短，不要夸张营销腔。',
+    '只输出 JSON，不要 Markdown，不要解释过程。',
+    'JSON 格式：{"title":"string","reason":"string","styleTags":["string"],"tip":"string"}',
+    'title 不超过 12 个中文字符；reason 不超过 80 个中文字符；styleTags 最多 3 个且每个不超过 6 个中文字符；tip 不超过 40 个中文字符。',
+  ].join('\n');
+}
+
+function parseLooseJson(content) {
+  const text = String(content || '').trim().replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '');
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start >= 0 && end > start) return JSON.parse(text.slice(start, end + 1));
+    throw error;
+  }
+}
+
+function normalizeAiComment(value) {
+  if (!value || typeof value !== 'object') return null;
+  const title = limitText(value.title, 12);
+  const reason = limitText(value.reason, 80);
+  const tip = limitText(value.tip, 40);
+  const styleTags = readStringArray(value.styleTags)
+    .map((tag) => limitText(tag, 6))
+    .filter(Boolean)
+    .slice(0, 3);
+
+  if (!title || !reason || !tip) return null;
+  return { title, reason, styleTags, tip, generatedAt: value.generatedAt };
+}
+
+function limitText(value, maxLength) {
+  if (typeof value !== 'string') return '';
+  return value.trim().replace(/\s+/g, ' ').slice(0, maxLength);
 }
 
 function shouldListWorn(event) {
@@ -178,48 +285,327 @@ async function loadClothesByIds(openid, ids) {
   return res.data;
 }
 
-async function saveFavoriteOutfit(id, outfitPayload) {
+async function saveFavoriteOutfit(id, outfitPayload, aiCommentPayload) {
   const { OPENID } = cloud.getWXContext();
   const now = new Date().toISOString();
-  const existing = id && !isRecommendId(id) ? await assertOutfitOwner(id) : null;
-  const base = existing || normalizeOutfitPayload(outfitPayload);
-  const saved = await upsertOutfitByKey({
-    openid: OPENID,
-    existing,
-    base,
-    patch: {
-      isFavorite: true,
-      favoritedAt: now,
-    },
+  const base = normalizeOutfitPayload(outfitPayload);
+  const clothingIds = readBaseClothingIds(base);
+  if (!base || clothingIds.length === 0) throw new Error('outfit payload is required');
+
+  const outfitKey = getOutfitKey(clothingIds);
+  const existing = await findFavoriteByKey(OPENID, outfitKey);
+  const recordData = buildSnapshotRecordData(base, {
+    aiComment: aiCommentPayload || base.aiComment,
+    outfitKey,
     now,
+    source: base.source === 'history' ? 'history' : 'recommendation',
   });
 
-  const clothes = await loadClothesByIds(OPENID, saved.clothingIds || []);
-  return toOutfit(saved, clothes);
+  if (existing) {
+    await db.collection('favorite_outfits').doc(existing._id).update({
+      data: {
+        ...recordData,
+        updatedAt: now,
+        deletedAt: null,
+      },
+    });
+    return toSnapshotOutfit({ ...existing, ...recordData, updatedAt: now, deletedAt: null }, 'favorite');
+  }
+
+  const addData = {
+    _openid: OPENID,
+    userId: OPENID,
+    ...recordData,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const addRes = await db.collection('favorite_outfits').add({ data: addData });
+  return toSnapshotOutfit({ ...addData, _id: addRes._id }, 'favorite');
 }
 
-async function saveWornOutfit(id, outfitPayload, targetDate) {
+async function removeFavoriteOutfit(id) {
+  const { OPENID } = cloud.getWXContext();
+  if (!id) throw new Error('favoriteOutfitId is required');
+  const favorite = await db.collection('favorite_outfits').doc(id).get();
+  if (!favorite.data || favorite.data._openid !== OPENID) throw new Error('favorite outfit not found');
+
+  await db.collection('favorite_outfits').doc(id).remove();
+  return { success: true, id };
+}
+
+async function listFavoriteOutfits(event) {
+  const { OPENID } = cloud.getWXContext();
+  const page = Math.max(Number(event.page || 1), 1);
+  const pageSize = Math.min(Math.max(Number(event.pageSize || 10), 1), 50);
+  const res = await db.collection('favorite_outfits')
+    .where({ _openid: OPENID })
+    .orderBy('createdAt', 'desc')
+    .limit(500)
+    .get();
+  const list = (res.data || []).filter((item) => !item.deletedAt);
+  const pageList = list.slice((page - 1) * pageSize, page * pageSize);
+
+  return {
+    list: pageList.map((item) => toSnapshotOutfit(item, 'favorite')),
+    hasMore: page * pageSize < list.length,
+    pagination: {
+      total: list.length,
+      page,
+      pageSize,
+      totalPages: Math.max(1, Math.ceil(list.length / pageSize)),
+    },
+  };
+}
+
+async function addOutfitHistory(event) {
   const { OPENID } = cloud.getWXContext();
   const now = new Date().toISOString();
-  const existing = id && !isRecommendId(id) ? await assertOutfitOwner(id) : null;
-  const base = existing || normalizeOutfitPayload(outfitPayload);
-  const outfitKey = getOutfitKey(readBaseClothingIds(base));
-  const savedBefore = existing || (await findOutfitByKey(OPENID, outfitKey));
-  const alreadyWornToday = Boolean(savedBefore && savedBefore.wornDate === targetDate);
-  const saved = await upsertOutfitByKey({
-    openid: OPENID,
-    existing,
-    base,
-    patch: {
-      wornAt: now,
-      wornDate: targetDate,
-      isWornToday: true,
-    },
-    now,
-  });
+  const base = normalizeOutfitPayload(event.outfit);
+  const clothingIds = readBaseClothingIds(base);
+  if (!base || clothingIds.length === 0) throw new Error('outfit payload is required');
 
-  const clothes = await loadClothesByIds(OPENID, saved.clothingIds || []);
-  return { ...toOutfit(saved, clothes), _alreadyWornToday: alreadyWornToday };
+  const source = event.source === 'favorite' ? 'favorite' : 'recommendation';
+  const sourceFavoriteOutfitId = source === 'favorite'
+    ? event.sourceFavoriteOutfitId || event.id || base.id
+    : null;
+  const recordData = buildSnapshotRecordData(base, {
+    aiComment: event.aiComment || base.aiComment,
+    outfitKey: getOutfitKey(clothingIds),
+    now,
+    source,
+  });
+  const addData = {
+    _openid: OPENID,
+    userId: OPENID,
+    ...recordData,
+    source,
+    sourceFavoriteOutfitId,
+    wornAt: now,
+    createdAt: now,
+  };
+
+  const addRes = await db.collection('outfit_history').add({ data: addData });
+  return toSnapshotOutfit({ ...addData, _id: addRes._id }, 'history');
+}
+
+async function listOutfitHistory(event) {
+  const { OPENID } = cloud.getWXContext();
+  const page = Math.max(Number(event.page || 1), 1);
+  const pageSize = Math.min(Math.max(Number(event.pageSize || 10), 1), 50);
+  const res = await db.collection('outfit_history')
+    .where({ _openid: OPENID })
+    .limit(500)
+    .get();
+  const list = (res.data || []).sort((a, b) => getHistorySortTime(b) - getHistorySortTime(a));
+  const pageList = list.slice((page - 1) * pageSize, page * pageSize);
+
+  return {
+    list: pageList.map((item) => toSnapshotOutfit(item, 'history')),
+    page,
+    pageSize,
+    hasMore: page * pageSize < list.length,
+    pagination: {
+      total: list.length,
+      page,
+      pageSize,
+      totalPages: Math.max(1, Math.ceil(list.length / pageSize)),
+    },
+  };
+}
+
+function getHistorySortTime(item) {
+  const value = item?.wornAt || item?.createdAt || '';
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) ? time : 0;
+}
+
+async function getFavoriteOutfitById(id) {
+  const { OPENID } = cloud.getWXContext();
+  if (!id) throw new Error('id is required');
+  const res = await db.collection('favorite_outfits').doc(id).get();
+  if (!res.data || res.data._openid !== OPENID || res.data.deletedAt) throw new Error('favorite outfit not found');
+  return toSnapshotOutfit(res.data, 'favorite');
+}
+
+async function getHistoryById(id) {
+  const { OPENID } = cloud.getWXContext();
+  if (!id) throw new Error('id is required');
+  const res = await db.collection('outfit_history').doc(id).get();
+  if (!res.data || res.data._openid !== OPENID) throw new Error('history record not found');
+  return toSnapshotOutfit(res.data, 'history');
+}
+
+async function findFavoriteByKey(openid, outfitKey) {
+  const res = await db.collection('favorite_outfits')
+    .where({ _openid: openid, outfitKey })
+    .limit(1)
+    .get();
+  return res.data[0] || null;
+}
+
+function buildSnapshotRecordData(base, { aiComment, outfitKey, now, source }) {
+  const clothingIds = readBaseClothingIds(base);
+  const itemsSnapshot = buildDetailedSnapshotItems(clothingIds, base);
+  const reason = base.reasoning || base.reason || '';
+  const normalizedAiComment = normalizeAiComment(aiComment);
+
+  return {
+    title: base.title || `${base.scene || '今日'}搭配`,
+    clothingIds,
+    outfitKey,
+    itemsSnapshot,
+    snapshotItems: itemsSnapshot.map((item) => ({
+      itemId: item.clothingId,
+      name: item.name || item.category || '衣服',
+      category: item.category || 'other',
+      color: item.color || '',
+      thumbnailUrl: item.displayImageUrl || item.imageUrl || '',
+      isDeleted: Boolean(item.deletedAt),
+    })),
+    scene: base.scene,
+    targetDate: base.targetDate,
+    timeOfDay: base.timeOfDay || 'all_day',
+    weather: base.weatherSnapshot || base.weather || fallbackWeather(),
+    weatherSnapshot: base.weatherSnapshot || base.weather || fallbackWeather(),
+    scores: sanitizeScores(base.scores || {}),
+    scoreExplanations: Array.isArray(base.scoreExplanations) ? base.scoreExplanations : [],
+    generationType: base.generationType || 'auto',
+    source: source || base.source || 'recommendation',
+    reason,
+    reasoning: reason,
+    ...(normalizedAiComment ? { aiComment: normalizedAiComment.generatedAt ? normalizedAiComment : { ...normalizedAiComment, generatedAt: now } } : {}),
+  };
+}
+
+function buildDetailedSnapshotItems(clothingIds, base) {
+  const snapshots = [
+    ...normalizeDetailedSnapshotItems(base?.itemsSnapshot),
+    ...normalizeDetailedSnapshotItems(base?.snapshotItems),
+    ...normalizeDetailedPayloadItems(base?.items),
+  ];
+  const snapshotMap = new Map(snapshots.map((item) => [item.clothingId, item]));
+
+  return clothingIds.map((id) => {
+    const snapshot = snapshotMap.get(id);
+    return {
+      clothingId: id,
+      itemId: id,
+      type: snapshot?.type || snapshot?.category || 'other',
+      category: snapshot?.category || 'other',
+      color: snapshot?.color || '',
+      style: snapshot?.style || '',
+      thickness: snapshot?.thickness || '',
+      material: snapshot?.material || '',
+      imageUrl: snapshot?.imageUrl || snapshot?.displayImageUrl || '',
+      displayImageUrl: snapshot?.displayImageUrl || snapshot?.imageUrl || '',
+      name: snapshot?.name || snapshot?.category || '衣服',
+      deletedAt: snapshot?.deletedAt || null,
+    };
+  });
+}
+
+function normalizeDetailedSnapshotItems(value) {
+  return Array.isArray(value)
+    ? value
+        .map((item) => {
+          const clothingId = item && (item.clothingId || item.itemId);
+          if (!clothingId || typeof clothingId !== 'string') return null;
+          return {
+            clothingId,
+            itemId: clothingId,
+            type: item.type || item.subcategory || item.name || item.category || 'other',
+            category: item.category || item.type || 'other',
+            color: item.color || '',
+            style: item.style || readArray(item.styleTags).join(' / '),
+            thickness: item.thickness || '',
+            material: item.material || '',
+            imageUrl: item.imageUrl || item.thumbnailUrl || item.displayImageUrl || '',
+            displayImageUrl: item.displayImageUrl || item.thumbnailUrl || item.imageUrl || '',
+            name: item.name || item.subcategory || item.category || '衣服',
+            deletedAt: item.deletedAt || (item.isDeleted ? new Date().toISOString() : null),
+          };
+        })
+        .filter(Boolean)
+    : [];
+}
+
+function normalizeDetailedPayloadItems(value) {
+  return Array.isArray(value)
+    ? value
+        .filter((item) => item && typeof item.clothingId === 'string')
+        .map((item) => ({
+          clothingId: item.clothingId,
+          itemId: item.clothingId,
+          type: item.subcategory || item.category || 'other',
+          category: item.category || 'other',
+          color: readColorText(item),
+          style: readArray(item.styleTags).join(' / '),
+          thickness: item.thickness || '',
+          material: item.material || item.materialGuess || '',
+          imageUrl: item.imageUrl || '',
+          displayImageUrl: item.displayImageUrl || item.imageUrl || '',
+          name: item.name || item.subcategory || item.category || '衣服',
+          deletedAt: item.deletedAt || (item.isDeleted ? new Date().toISOString() : null),
+        }))
+    : [];
+}
+
+function toSnapshotOutfit(item, kind) {
+  const itemsSnapshot = buildDetailedSnapshotItems(item.clothingIds || [], {
+    itemsSnapshot: item.itemsSnapshot,
+    snapshotItems: item.snapshotItems,
+    items: item.items,
+  });
+  const snapshotItems = itemsSnapshot.map((snapshot) => ({
+    itemId: snapshot.clothingId,
+    name: snapshot.name || snapshot.category || '衣服',
+    category: snapshot.category || 'other',
+    color: snapshot.color || '',
+    thumbnailUrl: snapshot.displayImageUrl || snapshot.imageUrl || '',
+    isDeleted: Boolean(snapshot.deletedAt),
+  }));
+  const deletedItemCount = itemsSnapshot.filter((snapshot) => snapshot.deletedAt).length;
+
+  return {
+    id: item._id,
+    userId: item._openid || item.userId,
+    title: item.title,
+    clothingIds: item.clothingIds || itemsSnapshot.map((snapshot) => snapshot.clothingId),
+    outfitKey: item.outfitKey || getOutfitKey(item.clothingIds || []),
+    outfitKind: kind,
+    itemsSnapshot,
+    snapshotItems,
+    incomplete: deletedItemCount > 0,
+    deletedItemCount,
+    items: itemsSnapshot.map((snapshot) => ({
+      clothingId: snapshot.clothingId,
+      category: snapshot.category || 'other',
+      subcategory: snapshot.name || snapshot.type || snapshot.category,
+      imageUrl: snapshot.displayImageUrl || snapshot.imageUrl || '',
+      colorPalette: snapshot.color ? [{ name: snapshot.color, hex: '' }] : [],
+      isDeleted: Boolean(snapshot.deletedAt),
+    })),
+    scene: item.scene,
+    targetDate: item.targetDate,
+    timeOfDay: item.timeOfDay,
+    weatherSnapshot: item.weatherSnapshot || item.weather,
+    scores: sanitizeScores(item.scores || {}),
+    scoreExplanations: item.scoreExplanations || [],
+    generationType: item.generationType || 'auto',
+    sourceItemId: item.sourceItemId,
+    source: item.source || (kind === 'history' ? 'recommendation' : 'recommendation'),
+    sourceFavoriteOutfitId: item.sourceFavoriteOutfitId || undefined,
+    isFavorite: kind === 'favorite',
+    favoritedAt: kind === 'favorite' ? item.createdAt : undefined,
+    wornAt: item.wornAt || undefined,
+    wornDate: item.wornAt ? String(item.wornAt).slice(0, 10) : undefined,
+    isWornToday: false,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt || item.createdAt,
+    reason: item.reason || item.reasoning,
+    reasoning: item.reasoning || item.reason,
+    aiComment: normalizeAiComment(item.aiComment) || undefined,
+  };
 }
 
 async function upsertOutfitByKey({ openid, existing, base, patch, now }) {
@@ -255,6 +641,7 @@ function buildOutfitSaveData(base, { outfitKey, now, patch, current }) {
   const clothingIds = readBaseClothingIds(base);
   const snapshotItems = buildSnapshotItems(clothingIds, base, current);
   const incomplete = snapshotItems.some((item) => item.isDeleted) || Boolean(current?.incomplete);
+  const aiComment = normalizeAiComment(base.aiComment || current?.aiComment);
 
   return {
     title: base.title || current?.title || `${base.scene || current?.scene || '今日'}搭配`,
@@ -279,6 +666,7 @@ function buildOutfitSaveData(base, { outfitKey, now, patch, current }) {
     isWornToday: patch.isWornToday ?? Boolean(current?.isWornToday),
     reason,
     reasoning: reason,
+    ...(aiComment ? { aiComment } : {}),
     updatedAt: now,
   };
 }
@@ -361,8 +749,10 @@ function getOutfitKey(clothingIds) {
 function normalizeOutfitPayload(payload) {
   if (!payload || typeof payload !== 'object') return null;
   return {
+    id: payload.id,
     title: payload.title,
     clothingIds: Array.isArray(payload.clothingIds) ? payload.clothingIds : [],
+    itemsSnapshot: Array.isArray(payload.itemsSnapshot) ? payload.itemsSnapshot : [],
     snapshotItems: Array.isArray(payload.snapshotItems) ? payload.snapshotItems : [],
     items: Array.isArray(payload.items) ? payload.items : [],
     scene: payload.scene,
@@ -376,6 +766,7 @@ function normalizeOutfitPayload(payload) {
     source: payload.source || 'recommend',
     reasoning: payload.reasoning,
     reason: payload.reason,
+    aiComment: normalizeAiComment(payload.aiComment),
   };
 }
 
@@ -426,7 +817,12 @@ function generateRuleRecommendations({ clothes, scene, weather, recommendationPr
   const scored = combos
     .map((items) => scoreCandidate(items, { scene, tempConfig, weather, recommendationProfile }))
     .filter((rec) => !excluded.has(signature(rec.items.map((item) => item._id))))
-    .sort((a, b) => b.scores.total - a.scores.total);
+    .sort((a, b) => {
+      if (scene && b.scores.sceneMatch !== a.scores.sceneMatch) {
+        return b.scores.sceneMatch - a.scores.sceneMatch;
+      }
+      return b.scores.total - a.scores.total;
+    });
 
   const results = [];
   const used = [];
@@ -440,6 +836,9 @@ function generateRuleRecommendations({ clothes, scene, weather, recommendationPr
     }
   }
 
+  results.debug = {
+    candidateCount: scored.length,
+  };
   return results;
 }
 
@@ -593,7 +992,8 @@ function scoreCandidate(items, context) {
   const weatherAdaptation = scoreWeather(items, context.tempConfig);
   const colorHarmony = scoreColorHarmony(colors, context.recommendationProfile.colorPreference);
   const styleUnity = scoreStyleUnity(styles, context.recommendationProfile.styleTags);
-  const sceneMatch = scoreSceneMatch(scenes, context.scene);
+  const sceneMatchInfo = getSceneMatchInfo(scenes, context.scene);
+  const sceneMatch = sceneMatchInfo.score;
   const freshness = scoreFreshness(items);
   const preference = scorePreference(items, styles, context.recommendationProfile);
   const warmth = scoreWarmth(items);
@@ -601,10 +1001,10 @@ function scoreCandidate(items, context) {
   const fashion = round1((styleUnity * 0.7) + (avg(items.map((item) => Number(item.fashionScore || 0)).filter(Boolean)) || 7) * 0.3);
   const comfort = round1((weatherAdaptation * 0.7) + (coolness * 0.15) + (warmth * 0.15));
   const total = round1(
-    weatherAdaptation * 0.3 +
-    colorHarmony * 0.2 +
-    styleUnity * 0.2 +
-    sceneMatch * 0.15 +
+    weatherAdaptation * 0.25 +
+    colorHarmony * 0.15 +
+    styleUnity * 0.15 +
+    sceneMatch * 0.3 +
     freshness * 0.1 +
     preference * 0.05,
   );
@@ -624,6 +1024,7 @@ function scoreCandidate(items, context) {
 
   return {
     items,
+    matchedScene: sceneMatchInfo.matchedScene,
     title: buildTitle(items, context.scene),
     scores,
     scoreExplanations: buildScoreExplanations(scores, context.tempConfig, context.scene),
@@ -666,10 +1067,10 @@ function scoreStyleUnity(styles, preferredStyles) {
   return round1(unity * 0.65 + (5 + matchRatio * 5) * 0.35);
 }
 
-function scoreSceneMatch(scenes, scene) {
-  if (!scene) return 7;
-  if (!scenes.length) return 5;
-  if (scenes.includes(scene)) return 9;
+function getSceneMatchInfo(scenes, scene) {
+  if (!scene) return { score: 7, matchedScene: '' };
+  if (!scenes.length) return { score: 5, matchedScene: '' };
+  if (scenes.includes(scene)) return { score: 9, matchedScene: scene };
   const related = {
     上班: ['开会', '正式', '通勤'],
     开会: ['上班', '正式', '通勤'],
@@ -679,7 +1080,8 @@ function scoreSceneMatch(scenes, scene) {
     居家: ['日常', '休闲'],
     运动: ['出游', '休闲'],
   };
-  return scenes.some((item) => (related[scene] || []).includes(item)) ? 7 : 5;
+  const matchedScene = scenes.find((item) => (related[scene] || []).includes(item)) || '';
+  return matchedScene ? { score: 7, matchedScene } : { score: 5, matchedScene: '' };
 }
 
 function scoreFreshness(items) {
@@ -849,12 +1251,16 @@ function readArray(value) {
   return Array.isArray(value) ? value.filter(Boolean) : [];
 }
 
+function readStringArray(value) {
+  return Array.isArray(value) ? value.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim()) : [];
+}
+
 function sameIdSet(a, b) {
   return signature(a) === signature(b);
 }
 
 function signature(ids) {
-  return ids.slice().sort().join('|');
+  return ids.slice().sort().join('_');
 }
 
 function overlapRatio(a, b) {
@@ -1051,6 +1457,7 @@ function toOutfit(item, clothes) {
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
     reasoning: item.reasoning || item.reason,
+    aiComment: normalizeAiComment(item.aiComment) || undefined,
   };
 }
 

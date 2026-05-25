@@ -105,6 +105,27 @@
   color: #c2412d;
 }
 
+.thumb-row {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.thumb-image {
+  width: 112px;
+  height: 112px;
+  border-radius: 16px;
+  background: #eee;
+}
+
+.reason-preview {
+  display: block;
+  font-size: 24px;
+  color: #666;
+  line-height: 1.5;
+  margin-bottom: 20px;
+}
+
 .favorite-info {
   display: flex;
   flex-wrap: wrap;

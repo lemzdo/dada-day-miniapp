@@ -30,6 +30,8 @@ exports.main = async (event = {}) => {
       clothingId: event.id,
       deletedItem: current.data,
       outfits: impact.outfits,
+      favoriteOutfits: impact.favoriteOutfits,
+      historyOutfits: impact.historyOutfits,
       now,
     });
 
@@ -59,18 +61,33 @@ async function getDeleteImpact(openid, clothingId) {
   const outfits = (outfitsRes.data || []).filter((outfit) =>
     Array.isArray(outfit.clothingIds) && outfit.clothingIds.includes(clothingId),
   );
-  const favoriteOutfits = outfits.filter((outfit) => outfit.isFavorite === true);
-  const historyOutfits = outfits.filter((outfit) => Boolean(outfit.wornAt || outfit.wornDate || outfit.isWornToday));
+  const favoriteRes = await db.collection('favorite_outfits').where({ _openid: openid }).limit(500).get();
+  const favoriteOutfits = (favoriteRes.data || []).filter((outfit) => recordHasClothing(outfit, clothingId));
+  const historyRes = await db.collection('outfit_history').where({ _openid: openid }).limit(500).get();
+  const historyOutfits = (historyRes.data || []).filter((outfit) => recordHasClothing(outfit, clothingId));
 
   return {
     affectedFavoriteCount: favoriteOutfits.length,
     affectedHistoryCount: historyOutfits.length,
-    affectedOutfitCount: outfits.length,
+    affectedOutfitCount: outfits.length + favoriteOutfits.length + historyOutfits.length,
     outfits,
+    favoriteOutfits,
+    historyOutfits,
   };
 }
 
-async function ensureOutfitSnapshots({ openid, clothingId, deletedItem, outfits, now }) {
+function recordHasClothing(record, clothingId) {
+  if (Array.isArray(record.clothingIds) && record.clothingIds.includes(clothingId)) return true;
+  return Array.isArray(record.itemsSnapshot) && record.itemsSnapshot.some((item) => item.clothingId === clothingId || item.itemId === clothingId);
+}
+
+async function ensureOutfitSnapshots({ openid, clothingId, deletedItem, outfits, favoriteOutfits, historyOutfits, now }) {
+  await ensureLegacyOutfitSnapshots({ openid, clothingId, deletedItem, outfits, now });
+  await markSnapshotDeleted('favorite_outfits', clothingId, favoriteOutfits || [], now);
+  await markSnapshotDeleted('outfit_history', clothingId, historyOutfits || [], now);
+}
+
+async function ensureLegacyOutfitSnapshots({ openid, clothingId, deletedItem, outfits, now }) {
   if (!outfits.length) return;
 
   for (const outfit of outfits) {
@@ -96,6 +113,43 @@ async function ensureOutfitSnapshots({ openid, clothingId, deletedItem, outfits,
       },
     });
   }
+}
+
+async function markSnapshotDeleted(collectionName, clothingId, records, now) {
+  for (const record of records) {
+    const itemsSnapshot = normalizeDetailedSnapshotItems(record.itemsSnapshot).map((item) =>
+      item.clothingId === clothingId || item.itemId === clothingId
+        ? { ...item, deletedAt: item.deletedAt || now }
+        : item,
+    );
+    const snapshotItems = normalizeSnapshotItems(record.snapshotItems).map((item) =>
+      item.itemId === clothingId ? { ...item, isDeleted: true } : item,
+    );
+
+    await db.collection(collectionName).doc(record._id).update({
+      data: {
+        itemsSnapshot,
+        snapshotItems,
+        updatedAt: now,
+      },
+    });
+  }
+}
+
+function normalizeDetailedSnapshotItems(value) {
+  return Array.isArray(value)
+    ? value
+        .map((item) => {
+          const clothingId = item && (item.clothingId || item.itemId);
+          if (!clothingId || typeof clothingId !== 'string') return null;
+          return {
+            ...item,
+            clothingId,
+            itemId: clothingId,
+          };
+        })
+        .filter(Boolean)
+    : [];
 }
 
 async function loadClothesMap(openid, ids, deletedItem) {

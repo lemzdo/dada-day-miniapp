@@ -1,7 +1,16 @@
-import { View, Text, Image, ScrollView } from '@tarojs/components';
+import { Image, ScrollView, Text, View } from '@tarojs/components';
 import Taro, { useLoad, useRouter } from '@tarojs/taro';
 import { useState } from 'react';
-import { confirmCloudWear, getCloudOutfit, setCloudOutfitFavorite } from '@/lib/cloud';
+import {
+  addOutfitHistory,
+  generateCloudOutfitComment,
+  getCloudOutfit,
+  getFavoriteOutfitDetail,
+  getOutfitHistoryDetail,
+  removeFavoriteOutfit,
+  saveFavoriteOutfit,
+} from '@/lib/cloud';
+import { normalizeOutfitSnapshot, readOutfitDetailDraft } from '@/utils/outfitSnapshot';
 import type { Outfit, OutfitScores } from '@starter-template/types';
 import './index.scss';
 
@@ -19,19 +28,17 @@ const scoreLabels: Record<keyof OutfitScores, string> = {
   colorHarmony: '配色',
 };
 
-function getDeletedItemCount(outfit: Outfit) {
-  if (typeof outfit.deletedItemCount === 'number') return outfit.deletedItemCount;
-  const snapshotCount = outfit.snapshotItems?.filter((item) => item.isDeleted).length ?? 0;
-  const itemCount = outfit.items?.filter((item) => item.isDeleted).length ?? 0;
-  return Math.max(snapshotCount, itemCount);
-}
+type DetailSource = 'recommendation' | 'favorite' | 'history';
 
 export default function OutfitDetailPage() {
   const router = useRouter();
   const id = router.params.id;
+  const sourceParam = router.params.source;
   const [outfit, setOutfit] = useState<Outfit | null>(null);
+  const [detailSource, setDetailSource] = useState<DetailSource>('recommendation');
   const [loading, setLoading] = useState(true);
   const [operating, setOperating] = useState(false);
+  const [commentLoading, setCommentLoading] = useState(false);
 
   useLoad(() => {
     if (id) fetchOutfit(id);
@@ -41,7 +48,25 @@ export default function OutfitDetailPage() {
   async function fetchOutfit(outfitId: string) {
     setLoading(true);
     try {
-      setOutfit(await getCloudOutfit(outfitId));
+      const decodedId = decodeURIComponent(outfitId);
+      const source = normalizeSource(sourceParam);
+      setDetailSource(source);
+
+      if (source === 'recommendation') {
+        const draft = readOutfitDetailDraft(decodedId);
+        if (draft) {
+          setOutfit(normalizeOutfitSnapshot({ ...draft, outfitKind: 'recommendation', isFavorite: false }));
+          return;
+        }
+      }
+
+      const detail =
+        source === 'favorite'
+          ? await getFavoriteOutfitDetail(decodedId)
+          : source === 'history'
+            ? await getOutfitHistoryDetail(decodedId)
+            : await getCloudOutfit(decodedId);
+      setOutfit(normalizeOutfitSnapshot(detail));
     } catch (err) {
       console.error('Fetch outfit detail error:', err);
       Taro.showToast({ title: '加载失败', icon: 'none' });
@@ -55,10 +80,19 @@ export default function OutfitDetailPage() {
 
     setOperating(true);
     try {
-      const nextFavorite = !outfit.isFavorite;
-      const updated = await setCloudOutfitFavorite(outfit.id, nextFavorite);
-      setOutfit(updated);
-      Taro.showToast({ title: nextFavorite ? '已收藏' : '已取消收藏', icon: 'success' });
+      if (detailSource === 'favorite' && outfit.isFavorite) {
+        await removeFavoriteOutfit(outfit.id);
+        setOutfit({ ...outfit, isFavorite: false, outfitKind: 'recommendation' });
+        setDetailSource('recommendation');
+        Taro.showToast({ title: '已取消收藏', icon: 'success' });
+        return;
+      }
+
+      const sourceForFavorite: Outfit = detailSource === 'history' ? { ...outfit, source: 'history' } : outfit;
+      const saved = await saveFavoriteOutfit(normalizeOutfitSnapshot(sourceForFavorite), outfit.aiComment);
+      setOutfit(normalizeOutfitSnapshot({ ...saved, isFavorite: true, outfitKind: 'favorite' }));
+      setDetailSource('favorite');
+      Taro.showToast({ title: '已收藏', icon: 'success' });
     } catch (err) {
       console.error('Toggle outfit favorite error:', err);
       Taro.showToast({ title: '操作失败', icon: 'none' });
@@ -68,18 +102,45 @@ export default function OutfitDetailPage() {
   }
 
   async function handleConfirmWear() {
-    if (!outfit || operating || outfit.isWornToday) return;
+    if (!outfit || operating) return;
 
     setOperating(true);
     try {
-      const updated = await confirmCloudWear(outfit.id);
-      setOutfit(updated);
-      Taro.showToast({ title: '已确认今日穿搭', icon: 'success' });
+      await addOutfitHistory(normalizeOutfitSnapshot(outfit), {
+        source: detailSource === 'favorite' ? 'favorite' : 'recommendation',
+        sourceFavoriteOutfitId: detailSource === 'favorite' ? outfit.id : outfit.sourceFavoriteOutfitId,
+        aiComment: outfit.aiComment,
+      });
+      Taro.showToast({ title: '已记录到穿搭历史', icon: 'success' });
     } catch (err) {
       console.error('Confirm outfit wear error:', err);
       Taro.showToast({ title: '操作失败', icon: 'none' });
     } finally {
       setOperating(false);
+    }
+  }
+
+  async function handleGenerateAiComment() {
+    if (!outfit || commentLoading) return;
+    if (outfit.aiComment) {
+      Taro.showToast({ title: '已展示 AI 点评', icon: 'none' });
+      return;
+    }
+
+    setCommentLoading(true);
+    try {
+      const result = await generateCloudOutfitComment(outfit);
+      if (result.success && result.aiComment) {
+        setOutfit({ ...outfit, aiComment: result.aiComment });
+        Taro.showToast({ title: 'AI 点评已生成', icon: 'success' });
+        return;
+      }
+      Taro.showToast({ title: result.message || 'AI 点评暂时不可用', icon: 'none' });
+    } catch (err) {
+      console.error('Generate outfit AI comment error:', err);
+      Taro.showToast({ title: 'AI 点评暂时不可用', icon: 'none' });
+    } finally {
+      setCommentLoading(false);
     }
   }
 
@@ -106,6 +167,7 @@ export default function OutfitDetailPage() {
     ? (Object.entries(outfit.scores) as Array<[keyof OutfitScores, number]>)
     : [];
   const deletedItemCount = getDeletedItemCount(outfit);
+  const isFavoriteDetail = detailSource === 'favorite' && outfit.isFavorite;
 
   return (
     <View className="outfit-detail-page">
@@ -118,12 +180,12 @@ export default function OutfitDetailPage() {
                 {[outfit.scene, outfit.timeOfDay, outfit.targetDate].filter(Boolean).join(' · ')}
               </Text>
             </View>
-            {outfit.isFavorite && <Text className="favorite-mark">已收藏</Text>}
+            {isFavoriteDetail && <Text className="favorite-mark">已收藏</Text>}
           </View>
 
           {deletedItemCount > 0 && (
             <View className="deleted-notice">
-              <Text className="deleted-notice-text">该搭配中有 {deletedItemCount} 件衣服已删除</Text>
+              <Text className="deleted-notice-text">部分单品已从衣柜删除，仍按当时快照展示。</Text>
             </View>
           )}
 
@@ -157,26 +219,56 @@ export default function OutfitDetailPage() {
           </View>
         )}
 
-        {outfit.reasoning && (
+        {(outfit.reasoning || outfit.reason) && (
           <View className="detail-card">
             <Text className="card-title">搭配理由</Text>
-            <Text className="reasoning-text">{outfit.reasoning}</Text>
+            <Text className="reasoning-text">{outfit.reasoning || outfit.reason}</Text>
           </View>
         )}
+
+        <View className="detail-card ai-comment-card">
+          <View className="ai-comment-header">
+            <Text className="card-title">AI 点评</Text>
+            <View
+              className={`ai-comment-btn ${commentLoading || outfit.aiComment ? 'disabled' : ''}`}
+              onClick={handleGenerateAiComment}
+            >
+              <Text className="ai-comment-btn-text">
+                {commentLoading ? '点评中...' : outfit.aiComment ? '已生成' : 'AI 点评这套'}
+              </Text>
+            </View>
+          </View>
+
+          {outfit.aiComment ? (
+            <View className="ai-comment-content">
+              <Text className="ai-comment-title">{outfit.aiComment.title}</Text>
+              <Text className="ai-comment-reason">{outfit.aiComment.reason}</Text>
+              {outfit.aiComment.styleTags.length > 0 && (
+                <View className="ai-comment-tags">
+                  {outfit.aiComment.styleTags.map((tag) => (
+                    <Text key={tag} className="ai-comment-tag">
+                      {tag}
+                    </Text>
+                  ))}
+                </View>
+              )}
+              <Text className="ai-comment-tip">{outfit.aiComment.tip}</Text>
+            </View>
+          ) : (
+            <Text className="ai-comment-empty">需要更自然的点评时，可以手动生成一次。</Text>
+          )}
+        </View>
       </ScrollView>
 
       <View className="action-bar">
         <View
-          className={`action-btn favorite ${outfit.isFavorite ? 'active' : ''}`}
+          className={`action-btn favorite ${isFavoriteDetail ? 'active' : ''} ${operating ? 'disabled' : ''}`}
           onClick={handleToggleFavorite}
         >
-          <Text className="btn-text">{outfit.isFavorite ? '取消收藏' : '收藏'}</Text>
+          <Text className="btn-text">{isFavoriteDetail ? '取消收藏' : '收藏'}</Text>
         </View>
-        <View
-          className={`action-btn wear ${outfit.isWornToday ? 'disabled' : ''}`}
-          onClick={handleConfirmWear}
-        >
-          <Text className="btn-text">{outfit.isWornToday ? '已确认' : '穿它'}</Text>
+        <View className={`action-btn wear ${operating ? 'disabled' : ''}`} onClick={handleConfirmWear}>
+          <Text className="btn-text">{operating ? '处理中...' : '穿它'}</Text>
         </View>
       </View>
     </View>
@@ -204,6 +296,18 @@ function ScoreValue({ label, value }: { label: string; value: number }) {
       <Text className="score-value">{score}</Text>
     </View>
   );
+}
+
+function normalizeSource(value?: string): DetailSource {
+  if (value === 'favorite' || value === 'history') return value;
+  return 'recommendation';
+}
+
+function getDeletedItemCount(outfit: Outfit) {
+  if (typeof outfit.deletedItemCount === 'number') return outfit.deletedItemCount;
+  const snapshotCount = outfit.snapshotItems?.filter((item) => item.isDeleted || item.deletedAt).length ?? 0;
+  const itemCount = outfit.items?.filter((item) => item.isDeleted).length ?? 0;
+  return Math.max(snapshotCount, itemCount);
 }
 
 function formatScore(value: number) {
