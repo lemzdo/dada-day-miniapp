@@ -21,7 +21,7 @@ exports.main = async (event = {}) => {
     const locationKey = getLocationKey(latitude, longitude);
     if (!forceRefresh) {
       const cached = await getCachedWeather(locationKey);
-      if (cached) return ok({ ...cached, source: 'cache' });
+      if (cached) return ok(cached);
     }
 
     const amapKey = process.env.AMAP_KEY;
@@ -31,12 +31,17 @@ exports.main = async (event = {}) => {
 
     const location = await withTimeout(reverseGeocodeByAmap(latitude, longitude, amapKey), 3500);
     const weather = await withTimeout(fetchWeatherByAmap(location.adcode, amapKey), 3500);
+    const fetchedAt = new Date().toISOString();
+    const observedAt = weather.reportTime || undefined;
 
     const data = {
       location,
       weather,
       source: 'amap',
-      updatedAt: weather.reportTime || new Date().toISOString(),
+      cacheHit: false,
+      fetchedAt,
+      observedAt,
+      updatedAt: fetchedAt,
     };
     await setCachedWeather(locationKey, data);
 
@@ -58,11 +63,29 @@ async function getCachedWeather(locationKey) {
       .limit(1)
       .get();
     const cache = res.data && res.data[0];
-    return cache && cache.weatherData ? cache.weatherData : null;
+    if (!cache || !cache.weatherData) return null;
+
+    return normalizeCachedWeather(cache.weatherData, cache.updatedAt);
   } catch (error) {
     console.warn('[getWeather] read cache failed', error);
     return null;
   }
+}
+
+function normalizeCachedWeather(weatherData, cacheUpdatedAt) {
+  const fetchedAt =
+    weatherData.fetchedAt ||
+    toIsoString(cacheUpdatedAt) ||
+    weatherData.updatedAt ||
+    new Date().toISOString();
+  return {
+    ...weatherData,
+    source: 'cache',
+    cacheHit: true,
+    fetchedAt,
+    observedAt: weatherData.observedAt || weatherData.weather?.reportTime || undefined,
+    updatedAt: weatherData.updatedAt || fetchedAt,
+  };
 }
 
 async function setCachedWeather(locationKey, weatherData) {
@@ -183,6 +206,13 @@ function normalizeAmapText(value) {
 function toNumber(value, fallback) {
   const numberValue = Number(value);
   return Number.isFinite(numberValue) ? numberValue : fallback;
+}
+
+function toIsoString(value) {
+  if (!value) return '';
+  if (value instanceof Date) return value.toISOString();
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString();
 }
 
 function withTimeout(promise, timeoutMs) {

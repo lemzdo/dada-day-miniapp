@@ -37,6 +37,9 @@ export interface ResolvedWeatherResponse {
   location: ResolvedWeatherLocation;
   weather: ResolvedWeather;
   source: 'amap' | 'cache' | 'fallback';
+  cacheHit?: boolean;
+  fetchedAt?: string;
+  observedAt?: string;
   updatedAt: string;
 }
 

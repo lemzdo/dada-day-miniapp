@@ -105,6 +105,7 @@ function buildClothingFromDraft(draft, openid) {
     batchId: draft.batchId,
     sourceImageId: draft.sourceImageId,
     originalImageUrl: draft.originalImageUrl,
+    imageUrl: displayImageUrl,
     displayImageUrl,
     imageSourceType,
     aiSegmentImageUrl: draft.aiSegmentImageUrl || '',
@@ -145,9 +146,9 @@ function buildClothingFromDraft(draft, openid) {
 }
 
 function resolveDisplayImage(draft) {
-  if (draft.imageSourceType === 'ai_segment' && draft.aiSegmentImageUrl) return draft.aiSegmentImageUrl;
-  if (draft.imageSourceType === 'manual_crop' && draft.manualCropImageUrl) return draft.manualCropImageUrl;
-  return draft.displayImageUrl || draft.originalImageUrl;
+  if (draft.aiSegmentImageUrl && draft.segmentStatus === 'success') return draft.aiSegmentImageUrl;
+  if (draft.manualCropImageUrl && draft.manualCropStatus === 'success') return draft.manualCropImageUrl;
+  return draft.displayImageUrl || draft.originalImageUrl || draft.aiSegmentImageUrl || draft.manualCropImageUrl || '';
 }
 
 function resolveImageSourceType(draft, displayImageUrl) {
@@ -167,6 +168,7 @@ function toClothing(item) {
     batchId: item.batchId,
     sourceImageId: item.sourceImageId,
     originalImageUrl,
+    imageUrl: item.imageUrl || displayImageUrl,
     displayImageUrl,
     imageSourceType: item.imageSourceType || 'original',
     aiSegmentImageUrl: item.aiSegmentImageUrl || '',

@@ -1,8 +1,8 @@
-import { View, Text, Input, ScrollView } from '@tarojs/components';
+import { View, Text, Input, ScrollView, Image } from '@tarojs/components';
 import Taro, { useLoad, useRouter } from '@tarojs/taro';
 import { useState } from 'react';
 import { getClothingById, updateCloudClothing } from '@/lib/cloud';
-import { displayClothingTags, getDisplayImage } from '@/utils/clothingLabels';
+import { displayClothingTags, displayClothingText, getDisplayImage } from '@/utils/clothingLabels';
 import type { Clothing, ClothingCategory } from '@starter-template/types';
 import './index.scss';
 
@@ -27,6 +27,10 @@ export default function ClothingFormPage() {
   const [customCategory, setCustomCategory] = useState<ClothingCategory>('top');
   const [brand, setBrand] = useState('');
   const [customTagsInput, setCustomTagsInput] = useState('');
+  const [colorInput, setColorInput] = useState('');
+  const [materialInput, setMaterialInput] = useState('');
+  const [styleInput, setStyleInput] = useState('');
+  const [seasonInput, setSeasonInput] = useState('');
 
   useLoad(() => {
     if (isEditMode) fetchClothing(editId);
@@ -38,9 +42,13 @@ export default function ClothingFormPage() {
       const item = await getClothingById(id);
       setClothing(item);
       setCustomName(item.customName ?? '');
-      setCustomCategory((item.customCategory as ClothingCategory) ?? item.category);
+      setCustomCategory(normalizeCategory((item.customCategory as string) || item.category));
       setBrand(item.brand ?? '');
       setCustomTagsInput(item.customTags?.join('、') ?? '');
+      setColorInput(displayClothingTags(item.colors).join('、'));
+      setMaterialInput(displayClothingText(item.materialGuess || item.material));
+      setStyleInput(displayClothingTags(item.styleTags).join('、'));
+      setSeasonInput(displayClothingTags(item.seasonTags).join('、'));
     } catch (err) {
       console.error('Fetch clothing error:', err);
       Taro.showToast({ title: '加载失败', icon: 'none' });
@@ -60,6 +68,9 @@ export default function ClothingFormPage() {
         .split(/[、,\s]+/)
         .map((tag) => tag.trim())
         .filter(Boolean);
+      const colors = splitTags(colorInput);
+      const styleTags = splitTags(styleInput);
+      const seasonTags = splitTags(seasonInput);
 
       await updateCloudClothing(clothing.id, {
         customName: customName || undefined,
@@ -67,6 +78,12 @@ export default function ClothingFormPage() {
         category: customCategory,
         customTags: tags.length > 0 ? tags : undefined,
         brand: brand || undefined,
+        colors: colors.length > 0 ? colors : undefined,
+        colorPalette: colors.length > 0 ? colors.map((name, index) => ({ name, hex: '#8A8A8A', ratio: index === 0 ? 1 : 0 })) : undefined,
+        material: materialInput || undefined,
+        materialGuess: materialInput || undefined,
+        styleTags: styleTags.length > 0 ? styleTags : undefined,
+        seasonTags: seasonTags.length > 0 ? seasonTags : undefined,
       });
 
       Taro.showToast({ title: '保存成功', icon: 'success' });
@@ -96,7 +113,7 @@ export default function ClothingFormPage() {
         {isEditMode && clothing && (
           <View className="image-preview">
             <View className="preview-wrapper">
-              <View className="preview-img" style={{ backgroundImage: `url(${getDisplayImage(clothing)})` }} />
+              <Image className="preview-img" src={getDisplayImage(clothing)} mode="aspectFit" />
             </View>
           </View>
         )}
@@ -142,6 +159,50 @@ export default function ClothingFormPage() {
           </View>
 
           <View className="form-item">
+            <Text className="item-label">颜色</Text>
+            <Input
+              className="item-input"
+              value={colorInput}
+              onInput={(event) => setColorInput(event.detail.value)}
+              placeholder="例如：白色、蓝色"
+              maxlength={120}
+            />
+          </View>
+
+          <View className="form-item">
+            <Text className="item-label">材质</Text>
+            <Input
+              className="item-input"
+              value={materialInput}
+              onInput={(event) => setMaterialInput(event.detail.value)}
+              placeholder="例如：棉、牛仔"
+              maxlength={80}
+            />
+          </View>
+
+          <View className="form-item">
+            <Text className="item-label">风格</Text>
+            <Input
+              className="item-input"
+              value={styleInput}
+              onInput={(event) => setStyleInput(event.detail.value)}
+              placeholder="例如：休闲、通勤"
+              maxlength={160}
+            />
+          </View>
+
+          <View className="form-item">
+            <Text className="item-label">季节</Text>
+            <Input
+              className="item-input"
+              value={seasonInput}
+              onInput={(event) => setSeasonInput(event.detail.value)}
+              placeholder="例如：春季、夏季"
+              maxlength={120}
+            />
+          </View>
+
+          <View className="form-item">
             <Text className="item-label">标签</Text>
             <Input
               className="item-input"
@@ -176,6 +237,38 @@ export default function ClothingFormPage() {
       </View>
     </View>
   );
+}
+
+function splitTags(value: string) {
+  return value
+    .split(/[、,\s]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function normalizeCategory(value?: string): ClothingCategory {
+  const map: Record<string, ClothingCategory> = {
+    top: 'top',
+    上衣: 'top',
+    外套: 'top',
+    bottom: 'bottom',
+    下装: 'bottom',
+    裤子: 'bottom',
+    裙子: 'bottom',
+    onepiece: 'onepiece',
+    dress: 'onepiece',
+    连体: 'onepiece',
+    连衣裙: 'onepiece',
+    shoes: 'shoes',
+    鞋子: 'shoes',
+    accessory: 'accessory',
+    配饰: 'accessory',
+    包: 'accessory',
+    帽子: 'accessory',
+    other: 'other',
+    其他: 'other',
+  };
+  return map[value || ''] || 'other';
 }
 
 function AiTagRow({ label, tags }: { label: string; tags?: string[] }) {

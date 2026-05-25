@@ -12,6 +12,7 @@ import {
   recognizeClothAttributes,
   uploadBatchSourceImage,
 } from '@/lib/cloud';
+import { canRecognizeSingleClothing } from '@/utils/clothingLabels';
 import type { Clothing, ClothingCategory } from '@starter-template/types';
 import './index.scss';
 
@@ -228,6 +229,15 @@ export default function WardrobePage() {
   }
 
   async function handleRecognize(item: Clothing) {
+    if (!canSafelyRecognize(item)) {
+      Taro.showModal({
+        title: '暂不支持重新识别',
+        content: '当前使用的是原图，暂不支持单独重新识别这件衣服。你可以手动编辑信息。',
+        showCancel: false,
+      });
+      return;
+    }
+
     updateClothingInList({ ...item, aiStatus: 'recognizing', aiRecognizeStatus: 'pending' });
 
     try {
@@ -330,6 +340,11 @@ function getErrorMessage(error: unknown) {
   if (error instanceof Error) return error.message;
   if (typeof error === 'object' && error && 'errMsg' in error) return String((error as { errMsg?: unknown }).errMsg ?? '');
   return String(error ?? '');
+}
+
+function canSafelyRecognize(item: Clothing) {
+  if (canRecognizeSingleClothing(item)) return true;
+  return !item.batchId && !item.sourceImageId;
 }
 
 function trimMessage(message: string) {

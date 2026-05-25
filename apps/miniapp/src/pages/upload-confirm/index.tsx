@@ -8,7 +8,8 @@ import {
   processUploadImage,
   segmentClothesDraft,
 } from '@/lib/cloud';
-import type { ClothesDraft, ClothingCategory, ClothingImageSourceType, UploadBatch, UploadImage } from '@starter-template/types';
+import { displayClothingTags, displayClothingText } from '@/utils/clothingLabels';
+import type { ClothesDraft, ClothingCategory, UploadBatch, UploadImage } from '@starter-template/types';
 import './index.scss';
 
 const WARDROBE_REFRESH_STORAGE_KEY = 'wardrobeNeedsRefresh';
@@ -148,15 +149,6 @@ export default function UploadConfirmPage() {
     await refresh();
   }
 
-  function selectImageSource(draft: ClothesDraft, imageSourceType: ClothingImageSourceType) {
-    if (imageSourceType === 'ai_segment' && !draft.aiSegmentImageUrl) return;
-    if (imageSourceType === 'manual_crop' && !draft.manualCropImageUrl) return;
-    patchDraft(draft.id, {
-      imageSourceType,
-      displayImageUrl: getDraftImageBySource(draft, imageSourceType),
-    });
-  }
-
   async function handleSave() {
     if (!batchId || saving) return;
     const pendingDrafts = drafts.filter((draft) => draft.status === 'pending' || draft.status === 'discarded');
@@ -179,8 +171,8 @@ export default function UploadConfirmPage() {
         style: draft.style,
         styleTags: draft.styleTags,
         seasonTags: draft.seasonTags,
-        displayImageUrl: draft.displayImageUrl,
-        imageSourceType: draft.imageSourceType,
+        displayImageUrl: getDraftDisplayImage(draft),
+        imageSourceType: getDraftImageSourceType(draft),
         aiSegmentImageUrl: draft.aiSegmentImageUrl,
         manualCropImageUrl: draft.manualCropImageUrl,
         manualCropStatus: draft.manualCropStatus,
@@ -252,7 +244,7 @@ export default function UploadConfirmPage() {
 
         {drafts.map((draft) => (
           <View key={draft.id} className={`draft-card ${draft.selected ? '' : 'muted'}`}>
-            <Image className="draft-image" src={draft.displayImageUrl || draft.originalImageUrl} mode="aspectFill" />
+            <Image className="draft-image" src={getDraftDisplayImage(draft)} mode="aspectFill" />
             <View className="draft-body">
               <View className="draft-topline">
                 <View className={`select-dot ${draft.selected ? 'active' : ''}`} onClick={() => patchDraft(draft.id, { selected: !draft.selected })}>
@@ -269,47 +261,31 @@ export default function UploadConfirmPage() {
 
               <View className="field-row">
                 <Text className="field-label">颜色</Text>
-                <Input className="field-input" value={draft.color || ''} onInput={(event) => patchDraft(draft.id, { color: event.detail.value, colors: [event.detail.value].filter(Boolean) })} />
+                <Input className="field-input" value={displayClothingText(draft.color)} onInput={(event) => patchDraft(draft.id, { color: event.detail.value, colors: [event.detail.value].filter(Boolean) })} />
               </View>
 
               <View className="field-row">
                 <Text className="field-label">材质</Text>
-                <Input className="field-input" value={draft.material || ''} onInput={(event) => patchDraft(draft.id, { material: event.detail.value })} />
+                <Input className="field-input" value={displayClothingText(draft.material)} onInput={(event) => patchDraft(draft.id, { material: event.detail.value })} />
               </View>
 
               <View className="field-row">
                 <Text className="field-label">风格</Text>
-                <Input className="field-input" value={draft.style || ''} onInput={(event) => patchDraft(draft.id, { style: event.detail.value })} />
+                <Input className="field-input" value={displayClothingText(draft.style)} onInput={(event) => patchDraft(draft.id, { style: event.detail.value })} />
               </View>
 
               <View className="field-row">
                 <Text className="field-label">季节</Text>
                 <Input
                   className="field-input"
-                  value={draft.seasonTags?.join('、') || ''}
+                  value={displayClothingTags(draft.seasonTags).join('、')}
                   onInput={(event) => patchDraft(draft.id, { seasonTags: splitTags(event.detail.value) })}
                 />
               </View>
 
               <View className="source-row">
                 <Text className="field-label">展示图</Text>
-                <View className="source-options">
-                  <View className={`source-chip ${draft.imageSourceType === 'original' ? 'active' : ''}`} onClick={() => selectImageSource(draft, 'original')}>
-                    <Text className="source-chip-text">原图</Text>
-                  </View>
-                  <View
-                    className={`source-chip ${draft.imageSourceType === 'ai_segment' ? 'active' : ''} ${draft.aiSegmentImageUrl ? '' : 'disabled'}`}
-                    onClick={() => selectImageSource(draft, 'ai_segment')}
-                  >
-                    <Text className="source-chip-text">小搭生成图</Text>
-                  </View>
-                  <View
-                    className={`source-chip ${draft.imageSourceType === 'manual_crop' ? 'active' : ''} ${draft.manualCropImageUrl ? '' : 'disabled'}`}
-                    onClick={() => selectImageSource(draft, 'manual_crop')}
-                  >
-                    <Text className="source-chip-text">手动切割图</Text>
-                  </View>
-                </View>
+                <Text className="source-note">{getDraftImageSourceText(draft)}</Text>
               </View>
 
               <View className="draft-actions">
@@ -361,10 +337,23 @@ function getSegmentStatusText(draft: ClothesDraft) {
   return '先使用原图，可直接确认';
 }
 
-function getDraftImageBySource(draft: ClothesDraft, imageSourceType: ClothingImageSourceType) {
-  if (imageSourceType === 'ai_segment') return draft.aiSegmentImageUrl || draft.originalImageUrl;
-  if (imageSourceType === 'manual_crop') return draft.manualCropImageUrl || draft.originalImageUrl;
-  return draft.originalImageUrl;
+function getDraftDisplayImage(draft: ClothesDraft) {
+  if (draft.aiSegmentImageUrl && draft.segmentStatus === 'success') return draft.aiSegmentImageUrl;
+  if (draft.manualCropImageUrl && draft.manualCropStatus === 'success') return draft.manualCropImageUrl;
+  return draft.originalImageUrl || draft.displayImageUrl;
+}
+
+function getDraftImageSourceType(draft: ClothesDraft) {
+  if (draft.aiSegmentImageUrl && draft.segmentStatus === 'success') return 'ai_segment';
+  if (draft.manualCropImageUrl && draft.manualCropStatus === 'success') return 'manual_crop';
+  return 'original';
+}
+
+function getDraftImageSourceText(draft: ClothesDraft) {
+  if (draft.aiSegmentImageUrl && draft.segmentStatus === 'success') return '已使用小搭生成图';
+  if (draft.manualCropImageUrl && draft.manualCropStatus === 'success') return '已使用手动切割图';
+  if (draft.segmentStatus === 'processing' || draft.segmentStatus === 'queued') return '小搭正在生成干净图';
+  return '小搭暂时没处理好，已先使用原图';
 }
 
 function splitTags(value: string) {

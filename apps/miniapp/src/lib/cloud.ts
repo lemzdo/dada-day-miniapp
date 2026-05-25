@@ -130,6 +130,9 @@ export function writeLocalWeatherCache(value: ResolvedWeatherResponse) {
     location: value.location,
     weather: value.weather,
     source: 'cache',
+    cacheHit: true,
+    fetchedAt: value.fetchedAt,
+    observedAt: value.observedAt ?? value.weather.reportTime,
     updatedAt: value.updatedAt,
   };
   Taro.setStorageSync(WEATHER_CACHE_KEY, cacheValue);
@@ -446,6 +449,9 @@ export async function getCloudWeather(
   options: { forceRefresh?: boolean } = {},
 ) {
   const payload = options.forceRefresh ? { ...location, forceRefresh: true } : location;
+  if (options.forceRefresh) {
+    clearCloudCache(['getWeather:']);
+  }
   const data = options.forceRefresh
     ? await callCloudFunction<ResolvedWeatherResponse>('getWeather', payload)
     : await callCachedCloudFunction<ResolvedWeatherResponse>('getWeather', payload, CACHE_TTL.weather);
@@ -490,6 +496,7 @@ export function getFallbackWeather(city = '涓婃捣'): CurrentWeather {
 }
 
 export function getFallbackResolvedWeather(displayName = '当前位置'): ResolvedWeatherResponse {
+  const now = new Date().toISOString();
   return {
     location: {
       province: '',
@@ -503,6 +510,8 @@ export function getFallbackResolvedWeather(displayName = '当前位置'): Resolv
       temperature: 0,
     },
     source: 'fallback',
-    updatedAt: new Date().toISOString(),
+    cacheHit: false,
+    fetchedAt: now,
+    updatedAt: now,
   };
 }

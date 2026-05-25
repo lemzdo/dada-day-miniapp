@@ -16,7 +16,7 @@ type WeatherStatus = 'locating' | 'loading' | 'success' | 'fallback';
 export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherCardProps) {
   const [weather, setWeather] = useState<ResolvedWeatherResponse>(() => readCachedWeather() ?? getFallbackResolvedWeather(city));
   const [status, setStatus] = useState<WeatherStatus>(weather.source === 'cache' ? 'fallback' : 'locating');
-  const [hint, setHint] = useState(weather.source === 'cache' ? `缓存天气更新于 ${formatUpdateTime(weather.updatedAt)}` : '正在获取你所在位置...');
+  const [hint, setHint] = useState(weather.source === 'cache' ? `缓存天气刷新于 ${formatRefreshTime(weather)}` : '正在获取你所在位置...');
   const [refreshing, setRefreshing] = useState(false);
   const hasWeather = Boolean(weather.weather.weather);
 
@@ -60,7 +60,7 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
       setWeather(data);
       writeLocalWeatherCache(data);
       setStatus('success');
-      setHint(`实时天气更新于 ${formatUpdateTime(data.updatedAt)}`);
+      setHint(data.cacheHit ? `缓存天气刷新于 ${formatRefreshTime(data)}` : `天气刷新于 ${formatRefreshTime(data)}`);
       notifyWeatherChange(data, { forceRefresh });
     } catch (error) {
       const message = getErrorMessage(error);
@@ -77,7 +77,7 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
       if (cached) {
         setWeather(cached);
         setStatus('fallback');
-        setHint(`天气获取失败，已展示缓存 ${formatUpdateTime(cached.updatedAt)}`);
+        setHint(`天气获取失败，已展示缓存 ${formatRefreshTime(cached)}`);
         notifyWeatherChange(cached);
         return;
       }
@@ -107,7 +107,7 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
           <Text className="weather-city">{headline}</Text>
           <Text className="weather-desc">{hasWeather ? weather.location.city || weather.location.province : '天气获取失败，稍后重试'}</Text>
           <Text className="weather-update">
-            {hasWeather ? `更新于 ${formatUpdateTime(weather.updatedAt)}` : '请稍后重试'}
+            {hasWeather ? `刷新于 ${formatRefreshTime(weather)}` : '请稍后重试'}
           </Text>
         </View>
         <View className="weather-right">
@@ -152,7 +152,7 @@ function readCachedWeather(): ResolvedWeatherResponse | null {
   try {
     const cached = Taro.getStorageSync(WEATHER_CACHE_KEY) as ResolvedWeatherResponse | '';
     if (!cached || typeof cached !== 'object') return null;
-    return { ...cached, source: 'cache' };
+    return { ...cached, source: 'cache', cacheHit: true };
   } catch {
     return null;
   }
@@ -187,9 +187,13 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
 
 function formatUpdateTime(value?: string) {
   if (!value) return '刚刚';
-  const date = new Date(value.replace(/-/g, '/'));
+  const date = new Date(value.includes('T') ? value : value.replace(/-/g, '/'));
   if (Number.isNaN(date.getTime())) return '刚刚';
   return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function formatRefreshTime(value: ResolvedWeatherResponse) {
+  return formatUpdateTime(value.fetchedAt ?? value.updatedAt);
 }
 
 function pad(value: number) {

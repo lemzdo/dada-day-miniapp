@@ -86,6 +86,7 @@ async function segmentDraft(draftId, openid) {
   };
   if (canAutoUseSegment(current)) {
     data.displayImageUrl = result.fileID;
+    data.imageUrl = result.fileID;
     data.imageSourceType = 'ai_segment';
   }
 
@@ -386,6 +387,7 @@ function toClothing(item) {
     userId: item._openid,
     originalImageUrl,
     displayImageUrl,
+    imageUrl: item.imageUrl || displayImageUrl,
     imageSourceType: item.imageSourceType || 'original',
     aiSegmentImageUrl: item.aiSegmentImageUrl || '',
     manualCropImageUrl: item.manualCropImageUrl || '',
@@ -444,7 +446,11 @@ function getOriginalImage(item) {
 }
 
 function getDisplayImage(item) {
-  return item.displayImageUrl || getOriginalImage(item);
+  return item.displayImageUrl
+    || item.imageUrl
+    || item.aiSegmentImageUrl
+    || item.manualCropImageUrl
+    || getOriginalImage(item);
 }
 
 function canAutoUseSegment(item) {
@@ -456,6 +462,7 @@ function canAutoUseSegment(item) {
 async function markClothingSegmentFailed(collection, clothingId, sourceFileID, errors) {
   const data = {
     displayImageUrl: sourceFileID,
+    imageUrl: sourceFileID,
     segmentStatus: 'failed',
     cutoutStatus: 'failed',
     segmentProvider: SEGMENT_PROVIDER,

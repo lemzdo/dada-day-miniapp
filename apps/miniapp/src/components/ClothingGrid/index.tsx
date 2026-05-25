@@ -1,5 +1,5 @@
 import { View, Image, Text } from '@tarojs/components';
-import { categoryLabels, displayClothingTags, getDisplayImage } from '@/utils/clothingLabels';
+import { categoryLabels, displayClothingTags, displayClothingText, getDisplayImage } from '@/utils/clothingLabels';
 import type { Clothing } from '@starter-template/types';
 import './index.scss';
 
@@ -69,7 +69,7 @@ export function ClothingGrid({
               )}
             </View>
             <View className="item-info">
-              <Text className="item-category">{categoryLabels[item.category]}</Text>
+              <Text className="item-category">{categoryLabels[item.category] || displayClothingText(item.category)}</Text>
               {styleTags.length > 0 && (
                 <View className="item-tags">
                   {styleTags.map((tag, idx) => (

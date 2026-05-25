@@ -4,6 +4,7 @@ export const categoryLabels: Record<string, string> = {
   top: '上衣',
   bottom: '下装',
   onepiece: '连体',
+  dress: '连体',
   shoes: '鞋子',
   accessory: '配饰',
   other: '其他',
@@ -50,20 +51,34 @@ const textLabels: Record<string, string> = {
   date: '约会',
   party: '聚会',
   home: '居家',
-  spring: '春',
-  summer: '夏',
-  autumn: '秋',
-  fall: '秋',
-  winter: '冬',
+  spring: '春季',
+  summer: '夏季',
+  autumn: '秋季',
+  fall: '秋季',
+  winter: '冬季',
+  all: '四季',
+  'all-season': '四季',
+  all_season: '四季',
+  'all season': '四季',
   cotton: '棉',
   linen: '麻',
+  flax: '亚麻',
   wool: '羊毛',
   denim: '牛仔',
   leather: '皮革',
   silk: '丝绸',
   polyester: '聚酯纤维',
+  poly: '聚酯纤维',
   knit: '针织',
   mixed: '混纺',
+  loose: '宽松',
+  slim: '修身',
+  tiered: '分层',
+  top: '上衣',
+  bottom: '下装',
+  onepiece: '连体',
+  accessory: '配饰',
+  other: '其他',
   black: '黑色',
   white: '白色',
   gray: '灰色',
@@ -82,13 +97,42 @@ const textLabels: Record<string, string> = {
 
 export function displayClothingText(value?: string) {
   if (!value) return '';
-  return textLabels[value.toLowerCase()] ?? value;
+  const key = value.trim().toLowerCase();
+  return categoryLabels[key] ?? textLabels[key] ?? value;
 }
 
 export function displayClothingTags(tags?: Array<string | undefined>) {
   return tags?.map(displayClothingText).filter(Boolean) ?? [];
 }
 
-export function getDisplayImage(item: Pick<Clothing, 'originalImageUrl' | 'displayImageUrl'>) {
-  return item.displayImageUrl || item.originalImageUrl || '';
+export function getClothDisplayImage(
+  item: Pick<Clothing, 'originalImageUrl' | 'displayImageUrl' | 'aiSegmentImageUrl' | 'manualCropImageUrl'> & {
+    imageUrl?: string;
+    thumbnailUrl?: string;
+  },
+) {
+  return [
+    item.displayImageUrl,
+    item.imageUrl,
+    item.aiSegmentImageUrl,
+    item.manualCropImageUrl,
+    item.originalImageUrl,
+    item.thumbnailUrl,
+  ].find((value): value is string => typeof value === 'string' && value.trim().length > 0) ?? '';
+}
+
+export const getDisplayImage = getClothDisplayImage;
+
+export function getSingleClothRecognizeImage(
+  item: Pick<Clothing, 'aiSegmentImageUrl' | 'manualCropImageUrl' | 'segmentStatus' | 'manualCropStatus'>,
+) {
+  if (item.aiSegmentImageUrl && item.segmentStatus === 'success') return item.aiSegmentImageUrl;
+  if (item.manualCropImageUrl && item.manualCropStatus === 'success') return item.manualCropImageUrl;
+  return '';
+}
+
+export function canRecognizeSingleClothing(
+  item: Pick<Clothing, 'aiSegmentImageUrl' | 'manualCropImageUrl' | 'segmentStatus' | 'manualCropStatus'>,
+) {
+  return Boolean(getSingleClothRecognizeImage(item));
 }

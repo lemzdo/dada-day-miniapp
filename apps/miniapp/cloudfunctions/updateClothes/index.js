@@ -13,6 +13,7 @@ const ALLOWED_FIELDS = [
   'styleTags',
   'seasonTags',
   'sceneTags',
+  'colors',
   'colorPalette',
   'material',
   'materialGuess',
@@ -25,6 +26,7 @@ const ALLOWED_FIELDS = [
   'brand',
   'purchaseDate',
   'displayImageUrl',
+  'imageUrl',
   'originalImageUrl',
   'imageSourceType',
   'aiSegmentImageUrl',
@@ -61,6 +63,7 @@ exports.main = async (event = {}) => {
         if (![
           'status',
           'displayImageUrl',
+          'imageUrl',
           'originalImageUrl',
           'imageSourceType',
           'aiSegmentImageUrl',
@@ -82,6 +85,9 @@ exports.main = async (event = {}) => {
         }
       }
     });
+    if (data.displayImageUrl && !data.imageUrl) {
+      data.imageUrl = data.displayImageUrl;
+    }
     data.manualFields = Array.from(manualFields);
     data.updatedAt = new Date().toISOString();
 
@@ -102,6 +108,7 @@ function toClothing(item) {
     id: item._id,
     userId: item._openid,
     thumbnailUrl: item.thumbnailUrl,
+    imageUrl: item.imageUrl || displayImageUrl,
     originalImageUrl,
     displayImageUrl,
     imageSourceType: item.imageSourceType || 'original',
@@ -126,6 +133,8 @@ function toClothing(item) {
     aiRawResult: item.aiRawResult,
     category: item.category || 'other',
     subcategory: item.subcategory,
+    subCategory: item.subCategory || item.subcategory,
+    colors: item.colors || [],
     colorPalette: item.colorPalette || [],
     styleTags: item.styleTags || [],
     seasonTags: item.seasonTags || [],
@@ -160,7 +169,11 @@ function getOriginalImage(item) {
 }
 
 function getDisplayImage(item) {
-  return item.displayImageUrl || getOriginalImage(item);
+  return item.displayImageUrl
+    || item.imageUrl
+    || item.aiSegmentImageUrl
+    || item.manualCropImageUrl
+    || getOriginalImage(item);
 }
 
 function ok(data) {

@@ -47,6 +47,7 @@
 
 .progress-count,
 .progress-hint,
+.progress-subhint,
 .failed-text,
 .confidence,
 .field-label,
@@ -162,13 +163,21 @@
   border-bottom: 1px solid #f0f2f4;
 }
 
+.source-row {
+  display: flex;
+  align-items: center;
+  min-height: 54px;
+  border-bottom: 1px solid #f0f2f4;
+}
+
 .field-label {
   width: 88px;
   flex-shrink: 0;
 }
 
 .field-value,
-.field-input {
+.field-input,
+.source-note {
   flex: 1;
   color: #111827;
   font-size: 26px;

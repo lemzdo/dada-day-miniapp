@@ -25,11 +25,15 @@ exports.main = async (event = {}) => {
     let scanned = 0;
     let removed = 0;
     let deletedFiles = [];
+    let shouldContinue = true;
 
-    while (true) {
+    while (shouldContinue) {
       const res = await db.collection('clothes').where(filter).limit(BATCH_SIZE).get();
       const items = res.data || [];
-      if (!items.length) break;
+      if (!items.length) {
+        shouldContinue = false;
+        break;
+      }
 
       scanned += items.length;
       for (const item of items) {
@@ -42,7 +46,9 @@ exports.main = async (event = {}) => {
         }
       }
 
-      if (dryRun || items.length < BATCH_SIZE) break;
+      if (dryRun || items.length < BATCH_SIZE) {
+        shouldContinue = false;
+      }
     }
 
     return ok({

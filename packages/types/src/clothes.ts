@@ -64,6 +64,7 @@ export interface Clothing {
   id: string;
   userId: string;
   thumbnailUrl?: string;
+  imageUrl?: string;
   originalImageUrl?: string;
   displayImageUrl?: string;
   imageSourceType?: ClothingImageSourceType;
@@ -147,8 +148,11 @@ export interface ClothingUpdateInput {
   status?: ClothingStatus;
   brand?: string;
   colorPalette?: ColorInfo[];
-  material?: Material;
+  colors?: string[];
+  material?: Material | string;
+  materialGuess?: string;
   displayImageUrl?: string;
+  imageUrl?: string;
   originalImageUrl?: string;
   imageSourceType?: ClothingImageSourceType;
   aiSegmentImageUrl?: string;

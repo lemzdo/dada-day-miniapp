@@ -58,6 +58,7 @@ function toClothing(item) {
     id: item._id,
     userId: item._openid,
     thumbnailUrl: item.thumbnailUrl,
+    imageUrl: item.imageUrl || displayImageUrl,
     originalImageUrl,
     displayImageUrl,
     imageSourceType: item.imageSourceType || 'original',
@@ -118,7 +119,11 @@ function getOriginalImage(item) {
 }
 
 function getDisplayImage(item) {
-  return item.displayImageUrl || getOriginalImage(item);
+  return item.displayImageUrl
+    || item.imageUrl
+    || item.aiSegmentImageUrl
+    || item.manualCropImageUrl
+    || getOriginalImage(item);
 }
 
 function resolveCategoryValues(category) {

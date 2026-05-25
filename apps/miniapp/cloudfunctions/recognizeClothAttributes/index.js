@@ -18,6 +18,11 @@ exports.main = async (event = {}) => {
     const current = currentRes.data;
     if (!current || current._openid !== OPENID) throw new Error('clothing not found');
 
+    const singleClothImage = getSingleClothImage(current);
+    if (!singleClothImage && (current.batchId || current.sourceImageId)) {
+      throw new Error('当前使用的是原图，暂不支持单独重新识别这件衣服。你可以手动编辑信息。');
+    }
+
     await collection.doc(clothingId).update({
       data: {
         aiRecognizeStatus: 'pending',
@@ -29,7 +34,7 @@ exports.main = async (event = {}) => {
     });
 
     try {
-      const sourceImage = getDisplayImage(current);
+      const sourceImage = singleClothImage || getDisplayImage(current);
       const imageUrl = await getTempUrl(sourceImage);
       const result = await retryOnce(() => callQwenVl(imageUrl));
       const updateData = buildRecognizeUpdate(current, result);
@@ -213,9 +218,17 @@ function toClothing(item) {
   return {
     id: item._id,
     userId: item._openid,
+    imageUrl: item.imageUrl || displayImageUrl,
     originalImageUrl,
     displayImageUrl,
+    imageSourceType: item.imageSourceType || 'original',
+    aiSegmentImageUrl: item.aiSegmentImageUrl || '',
+    manualCropImageUrl: item.manualCropImageUrl || '',
+    batchId: item.batchId,
+    sourceImageId: item.sourceImageId,
     cutoutStatus: item.cutoutStatus || 'pending',
+    segmentStatus: item.segmentStatus || item.cutoutStatus || 'not_started',
+    manualCropStatus: item.manualCropStatus || 'unsupported',
     cutoutProvider: item.cutoutProvider || 'none',
     cutoutError: item.cutoutError,
     aiRecognizeStatus: item.aiRecognizeStatus || 'pending',
@@ -258,7 +271,17 @@ function getOriginalImage(item) {
 }
 
 function getDisplayImage(item) {
-  return item.displayImageUrl || getOriginalImage(item);
+  return item.displayImageUrl
+    || item.imageUrl
+    || item.aiSegmentImageUrl
+    || item.manualCropImageUrl
+    || getOriginalImage(item);
+}
+
+function getSingleClothImage(item) {
+  if (item.aiSegmentImageUrl && item.segmentStatus === 'success') return item.aiSegmentImageUrl;
+  if (item.manualCropImageUrl && item.manualCropStatus === 'success') return item.manualCropImageUrl;
+  return '';
 }
 
 function getErrorMessage(error) {

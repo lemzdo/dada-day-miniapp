@@ -2,7 +2,7 @@ import { View, Image, Text } from '@tarojs/components';
 import Taro, { useLoad, useRouter } from '@tarojs/taro';
 import { useState } from 'react';
 import { deleteCloudClothing, getClothingById, inspectCloudClothingDelete, recognizeClothAttributes } from '@/lib/cloud';
-import { categoryLabels, displayClothingTags, displayClothingText, getDisplayImage } from '@/utils/clothingLabels';
+import { canRecognizeSingleClothing, categoryLabels, displayClothingTags, displayClothingText, getDisplayImage } from '@/utils/clothingLabels';
 import type { Clothing } from '@starter-template/types';
 import './index.scss';
 
@@ -74,6 +74,15 @@ export default function ClothingDetailPage() {
 
   async function handleRecognize() {
     if (!clothing || recognizing) return;
+    if (!canSafelyRecognize(clothing)) {
+      Taro.showModal({
+        title: '暂不支持重新识别',
+        content: '当前使用的是原图，暂不支持单独重新识别这件衣服。你可以手动编辑信息。',
+        showCancel: false,
+      });
+      return;
+    }
+
     setRecognizing(true);
     setClothing({ ...clothing, aiStatus: 'recognizing' });
 
@@ -144,11 +153,11 @@ export default function ClothingDetailPage() {
         <View className="info-section">
           <Text className="section-title">基础信息</Text>
           <View className="info-grid">
-            <InfoItem label="品类" value={categoryLabels[clothing.category] || clothing.category} />
+            <InfoItem label="品类" value={categoryLabels[clothing.category] || displayClothingText(clothing.category)} />
             {clothing.subcategory && <InfoItem label="子类" value={displayClothingText(clothing.subcategory)} />}
             {material && <InfoItem label="材质" value={material} />}
             {typeof clothing.aiConfidence === 'number' && clothing.aiConfidence > 0 && (
-              <InfoItem label="小搭置信度" value={`${Math.round(clothing.aiConfidence * 100)}%`} />
+              <InfoItem label="小搭置信度" value={`${formatConfidence(clothing.aiConfidence)}%`} />
             )}
             {clothing.brand && <InfoItem label="品牌" value={clothing.brand} />}
           </View>
@@ -203,6 +212,15 @@ function InfoItem({ label, value }: { label: string; value: string }) {
       <Text className="info-value">{value}</Text>
     </View>
   );
+}
+
+function canSafelyRecognize(clothing: Clothing) {
+  if (canRecognizeSingleClothing(clothing)) return true;
+  return !clothing.batchId && !clothing.sourceImageId;
+}
+
+function formatConfidence(value: number) {
+  return Math.round(value <= 1 ? value * 100 : value);
 }
 
 function TagSection({
