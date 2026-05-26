@@ -1,7 +1,7 @@
 import { View, Image, Text } from '@tarojs/components';
 import Taro, { useLoad, useRouter } from '@tarojs/taro';
 import { useState } from 'react';
-import { deleteCloudClothing, getClothingById, inspectCloudClothingDelete, recognizeClothAttributes } from '@/lib/cloud';
+import { deleteCloudClothing, getClothingById, inspectCloudClothingDelete, recognizeClothAttributes, segmentCloudClothing } from '@/lib/cloud';
 import { canRecognizeSingleClothing, categoryLabels, displayClothingTags, displayClothingText, getDisplayImage } from '@/utils/clothingLabels';
 import type { Clothing } from '@starter-template/types';
 import './index.scss';
@@ -27,6 +27,7 @@ export default function ClothingDetailPage() {
   const [clothing, setClothing] = useState<Clothing | null>(null);
   const [loading, setLoading] = useState(true);
   const [recognizing, setRecognizing] = useState(false);
+  const [reprocessing, setReprocessing] = useState(false);
 
   useLoad(() => {
     if (id) fetchClothing(id);
@@ -70,6 +71,22 @@ export default function ClothingDetailPage() {
   function handleEdit() {
     if (!clothing) return;
     Taro.navigateTo({ url: `/pages/clothing-form/index?id=${clothing.id}` });
+  }
+
+  async function handleReprocessImage() {
+    if (!clothing || reprocessing) return;
+
+    setReprocessing(true);
+    try {
+      const updated = await segmentCloudClothing(clothing.id);
+      setClothing(updated);
+      Taro.showToast({ title: updated.segmentStatus === 'success' ? '图片已处理' : '需要确认图片', icon: 'none' });
+    } catch (err) {
+      console.error('Reprocess clothing image error:', err);
+      Taro.showToast({ title: '图片处理失败，已保留可用图片', icon: 'none' });
+    } finally {
+      setReprocessing(false);
+    }
   }
 
   async function handleRecognize() {
@@ -143,7 +160,7 @@ export default function ClothingDetailPage() {
           </Text>
           {(clothing.aiRecognizeStatus === 'failed' || clothing.aiStatus === 'failed') && (
             <View className="retry-btn" onClick={handleRecognize}>
-              <Text className="retry-text">{recognizing ? '识别中...' : '重新识别'}</Text>
+          <Text className="retry-text">{recognizing ? '识别中...' : '重新识别信息'}</Text>
             </View>
           )}
         </View>
@@ -156,6 +173,7 @@ export default function ClothingDetailPage() {
             <InfoItem label="品类" value={categoryLabels[clothing.category] || displayClothingText(clothing.category)} />
             {clothing.subcategory && <InfoItem label="子类" value={displayClothingText(clothing.subcategory)} />}
             {material && <InfoItem label="材质" value={material} />}
+            {clothing.thickness && <InfoItem label="厚薄" value={displayClothingText(clothing.thickness)} />}
             {typeof clothing.aiConfidence === 'number' && clothing.aiConfidence > 0 && (
               <InfoItem label="小搭置信度" value={`${formatConfidence(clothing.aiConfidence)}%`} />
             )}
@@ -192,10 +210,13 @@ export default function ClothingDetailPage() {
 
       <View className="action-bar">
         <View className="action-btn edit" onClick={handleEdit}>
-          <Text className="btn-text">编辑</Text>
+          <Text className="btn-text">编辑信息</Text>
+        </View>
+        <View className={`action-btn reprocess ${reprocessing ? 'disabled' : ''}`} onClick={handleReprocessImage}>
+          <Text className="btn-text">{reprocessing ? '处理中...' : '处理图片'}</Text>
         </View>
         <View className={`action-btn recognize ${recognizing ? 'disabled' : ''}`} onClick={handleRecognize}>
-          <Text className="btn-text">{recognizing ? '识别中...' : '重新识别'}</Text>
+          <Text className="btn-text">{recognizing ? '识别中...' : '识别信息'}</Text>
         </View>
         <View className="action-btn delete" onClick={handleDelete}>
           <Text className="btn-text">删除</Text>

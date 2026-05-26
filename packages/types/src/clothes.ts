@@ -21,12 +21,26 @@ export type ClothingStatus = 'active' | 'archived' | 'deleted';
 export type ClothingAiStatus = 'pending' | 'recognizing' | 'recognized' | 'failed';
 export type ClothingCutoutStatus = 'not_started' | 'queued' | 'processing' | 'pending' | 'success' | 'failed' | 'manual' | 'skipped';
 export type ClothingRecognizeStatus = 'pending' | 'success' | 'partial' | 'failed' | 'skipped';
-export type UploadBatchStatus = 'pending' | 'processing' | 'success' | 'partial_success' | 'empty' | 'completed' | 'partial_failed' | 'failed';
+export type UploadBatchStatus =
+  | 'pending'
+  | 'processing'
+  | 'ready'
+  | 'failed'
+  | 'discarded'
+  | 'saved'
+  | 'success'
+  | 'partial_success'
+  | 'empty'
+  | 'completed'
+  | 'partial_failed';
 export type UploadImageStatus = 'pending' | 'detecting' | 'detected' | 'empty' | 'processing' | 'completed' | 'success' | 'failed';
 export type ClothesDraftStatus = 'pending' | 'confirmed' | 'discarded';
-export type ClothingImageSourceType = 'original' | 'ai_segment' | 'manual_crop';
-export type ClothesDraftSegmentStatus = 'not_started' | 'queued' | 'processing' | 'success' | 'failed';
+export type ClothingImageSourceType = 'clean' | 'crop' | 'original' | 'ai_segment' | 'manual_crop';
+export type ClothesDraftSegmentStatus = 'not_started' | 'queued' | 'processing' | 'success' | 'partial' | 'failed' | 'skipped';
 export type ClothesDraftManualCropStatus = 'unsupported' | 'pending' | 'success';
+export type WardrobeAssetStatus = 'ready' | 'needs_review' | 'failed';
+export type WardrobeAssetStageStatusValue = 'success' | 'failed' | 'skipped';
+export type WardrobeAssetStage = 'router' | 'detection' | 'crop' | 'segment' | 'attribute';
 
 export type Season = 'spring' | 'summer' | 'autumn' | 'winter';
 
@@ -58,6 +72,18 @@ export interface ClothingCropBox {
   height: number;
 }
 
+export type WardrobeAssetStageStatus = Record<WardrobeAssetStage, WardrobeAssetStageStatusValue>;
+
+export interface WardrobeAssetProviderTrace {
+  stage: WardrobeAssetStage;
+  provider: string;
+  model: string;
+  status: WardrobeAssetStageStatusValue;
+  durationMs: number;
+  errorMessage: string;
+  estimatedCost: number;
+}
+
 // ── 衣服实体 ──
 
 export interface Clothing {
@@ -65,11 +91,25 @@ export interface Clothing {
   userId: string;
   thumbnailUrl?: string;
   imageUrl?: string;
+  assetVersion?: 'v2' | string;
   originalImageUrl?: string;
+  normalizedImageUrl?: string;
+  cropImageUrl?: string;
+  croppedImageUrl?: string;
+  maskImageUrl?: string;
+  cleanImageUrl?: string;
   displayImageUrl?: string;
   imageSourceType?: ClothingImageSourceType;
   aiSegmentImageUrl?: string;
   manualCropImageUrl?: string;
+  assetStatus?: WardrobeAssetStatus;
+  qualityScore?: number;
+  needsUserConfirm?: boolean;
+  confirmReasons?: string[];
+  bbox?: ClothingCropBox;
+  itemIndex?: number;
+  stageStatus?: Partial<WardrobeAssetStageStatus>;
+  providerTrace?: WardrobeAssetProviderTrace[];
   cutoutStatus?: ClothingCutoutStatus;
   segmentStatus?: ClothesDraftSegmentStatus | ClothingCutoutStatus;
   manualCropStatus?: ClothesDraftManualCropStatus;
@@ -151,10 +191,24 @@ export interface ClothingUpdateInput {
   colors?: string[];
   material?: Material | string;
   materialGuess?: string;
+  thickness?: string;
   displayImageUrl?: string;
   imageUrl?: string;
+  assetVersion?: string;
   originalImageUrl?: string;
+  normalizedImageUrl?: string;
+  cropImageUrl?: string;
+  croppedImageUrl?: string;
+  maskImageUrl?: string;
+  cleanImageUrl?: string;
   imageSourceType?: ClothingImageSourceType;
+  assetStatus?: WardrobeAssetStatus;
+  qualityScore?: number;
+  needsUserConfirm?: boolean;
+  confirmReasons?: string[];
+  bbox?: ClothingCropBox;
+  stageStatus?: Partial<WardrobeAssetStageStatus>;
+  providerTrace?: WardrobeAssetProviderTrace[];
   aiSegmentImageUrl?: string;
   manualCropImageUrl?: string;
   manualCropStatus?: ClothesDraftManualCropStatus;
@@ -172,10 +226,13 @@ export interface ClothingUpdateInput {
 export interface UploadBatch {
   id: string;
   userId: string;
+  assetVersion?: string;
   totalImages: number;
   processedImages: number;
   totalDetectedClothes: number;
   status: UploadBatchStatus;
+  errorMessage?: string;
+  summaryMessage?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -184,7 +241,9 @@ export interface UploadImage {
   id: string;
   batchId: string;
   userId: string;
+  assetVersion?: string;
   originalImageUrl: string;
+  normalizedImageUrl?: string;
   cloudFileId?: string;
   status: UploadImageStatus;
   detectStatus?: ClothingRecognizeStatus;
@@ -199,11 +258,25 @@ export interface UploadImage {
 export interface ClothesDraft {
   id: string;
   userId: string;
+  assetVersion?: string;
   batchId: string;
   sourceImageId: string;
+  itemIndex?: number;
   originalImageUrl: string;
+  normalizedImageUrl?: string;
+  cropImageUrl?: string;
+  maskImageUrl?: string;
+  cleanImageUrl?: string;
   displayImageUrl: string;
+  imageUrl?: string;
   imageSourceType: ClothingImageSourceType;
+  assetStatus?: WardrobeAssetStatus;
+  qualityScore?: number;
+  needsUserConfirm?: boolean;
+  confirmReasons?: string[];
+  bbox?: ClothingCropBox;
+  stageStatus?: Partial<WardrobeAssetStageStatus>;
+  providerTrace?: WardrobeAssetProviderTrace[];
   aiSegmentImageUrl?: string;
   manualCropImageUrl?: string;
   detectStatus: ClothingRecognizeStatus;
@@ -216,6 +289,7 @@ export interface ClothesDraft {
   color?: string;
   colors?: string[];
   material?: string;
+  thickness?: string;
   style?: string;
   styleTags?: string[];
   seasonTags?: string[];

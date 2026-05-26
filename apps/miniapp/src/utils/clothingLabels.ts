@@ -106,15 +106,18 @@ export function displayClothingTags(tags?: Array<string | undefined>) {
 }
 
 export function getClothDisplayImage(
-  item: Pick<Clothing, 'originalImageUrl' | 'displayImageUrl' | 'aiSegmentImageUrl' | 'manualCropImageUrl'> & {
+  item: Pick<Clothing, 'originalImageUrl' | 'displayImageUrl' | 'aiSegmentImageUrl' | 'manualCropImageUrl' | 'cleanImageUrl' | 'cropImageUrl' | 'croppedImageUrl'> & {
     imageUrl?: string;
     thumbnailUrl?: string;
   },
 ) {
   return [
+    item.cleanImageUrl,
+    item.aiSegmentImageUrl,
+    item.cropImageUrl,
+    item.croppedImageUrl,
     item.displayImageUrl,
     item.imageUrl,
-    item.aiSegmentImageUrl,
     item.manualCropImageUrl,
     item.originalImageUrl,
     item.thumbnailUrl,
@@ -124,15 +127,18 @@ export function getClothDisplayImage(
 export const getDisplayImage = getClothDisplayImage;
 
 export function getSingleClothRecognizeImage(
-  item: Pick<Clothing, 'aiSegmentImageUrl' | 'manualCropImageUrl' | 'segmentStatus' | 'manualCropStatus'>,
+  item: Pick<Clothing, 'aiSegmentImageUrl' | 'manualCropImageUrl' | 'segmentStatus' | 'manualCropStatus' | 'cleanImageUrl' | 'cropImageUrl' | 'croppedImageUrl'>,
 ) {
+  if (item.cleanImageUrl && item.segmentStatus === 'success') return item.cleanImageUrl;
   if (item.aiSegmentImageUrl && item.segmentStatus === 'success') return item.aiSegmentImageUrl;
+  if (item.cropImageUrl) return item.cropImageUrl;
+  if (item.croppedImageUrl) return item.croppedImageUrl;
   if (item.manualCropImageUrl && item.manualCropStatus === 'success') return item.manualCropImageUrl;
   return '';
 }
 
 export function canRecognizeSingleClothing(
-  item: Pick<Clothing, 'aiSegmentImageUrl' | 'manualCropImageUrl' | 'segmentStatus' | 'manualCropStatus'>,
+  item: Pick<Clothing, 'aiSegmentImageUrl' | 'manualCropImageUrl' | 'segmentStatus' | 'manualCropStatus' | 'cleanImageUrl' | 'cropImageUrl' | 'croppedImageUrl'>,
 ) {
   return Boolean(getSingleClothRecognizeImage(item));
 }

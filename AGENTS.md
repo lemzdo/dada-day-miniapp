@@ -400,3 +400,39 @@ AI 设计原则：
 截至当前分析，项目已经不是 starter template，而是业务 MVP 中段。不要把 Web 首页 demo、mock 登录、mock 天气误判为最终能力。
 
 优先级最高的是：先让项目可稳定编译，再打通小程序真实主链路。后续所有新增功能都应围绕“衣橱数据质量”和“穿搭推荐闭环”展开。
+
+
+
+## 15.Git 提交规则
+
+每次完成一个明确的开发任务后，必须按以下流程收尾：
+
+1. 先运行必要检查：
+   - 如果改动涉及 miniapp：运行 `cmd /c pnpm --filter @starter-template/miniapp typecheck`
+   - 如果改动涉及 lint 范围：运行对应 lint
+   - 如果只改文档，可跳过代码检查，但必须说明跳过原因
+
+2. 检查通过后，运行：
+   - `git status --short`
+   - `git diff --stat`
+   - 必要时查看关键 diff，确认没有误改、调试代码、临时文件、密钥、日志文件、构建产物
+
+3. 如果存在本次任务产生的代码或文档改动，必须创建一个本地 git commit。
+   - commit message 使用中文，格式：
+     - `feat: xxx`
+     - `fix: xxx`
+     - `refactor: xxx`
+     - `docs: xxx`
+     - `chore: xxx`
+   - message 必须准确描述本次任务，不要写“update”“misc”“changes”。
+
+4. 只允许本地 commit，禁止 push，除非我明确要求。
+
+5. 如果检查失败，不允许 commit。必须先修复；如果无法修复，汇报失败原因和当前未提交改动。
+
+6. 最终汇报必须包含：
+   - 本次 commit hash
+   - commit message
+   - 修改文件列表
+   - 已运行的检查命令和结果
+   - 如果没有 commit，必须说明原因

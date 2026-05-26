@@ -219,6 +219,20 @@ export async function getUploadBatchDetail(batchId: string) {
   }>('createUploadBatch', { action: 'detail', batchId });
 }
 
+export interface RecoverableUploadBatch extends UploadBatch {
+  successImages: number;
+  failedImages: number;
+  draftCount: number;
+  recognizedCount: number;
+}
+
+export async function getRecoverableUploadBatches(limit = 1) {
+  return callCloudFunction<{ list: RecoverableUploadBatch[] }>('createUploadBatch', {
+    action: 'recoverable',
+    limit,
+  });
+}
+
 export async function createUploadImage(batchId: string, fileID: string) {
   return callCloudFunction<UploadImage>('createUploadImage', {
     batchId,
@@ -255,6 +269,10 @@ export async function confirmClothesDrafts(batchId: string, drafts: Array<Partia
 
 export async function discardClothesDraft(draftId: string) {
   return callCloudFunction<{ id: string }>('discardClothesDraft', { draftId });
+}
+
+export async function discardUploadBatch(batchId: string) {
+  return callCloudFunction<{ id: string; status: 'discarded' }>('discardUploadBatch', { batchId });
 }
 
 export async function updateCloudClothing(id: string, data: ClothingUpdateInput) {

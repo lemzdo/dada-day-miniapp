@@ -4,8 +4,8 @@ cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
 const db = cloud.database();
 const BAILIAN_BASE_URL = process.env.BAILIAN_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1';
-const BAILIAN_MODEL = process.env.BAILIAN_MODEL || 'qwen3-vl-flash';
-const QWEN_TIMEOUT_MS = Number(process.env.QWEN_TIMEOUT_MS || 20000);
+const BAILIAN_MODEL = process.env.BAILIAN_ATTRIBUTE_MODEL || process.env.BAILIAN_MODEL || 'qwen3-vl-flash';
+const QWEN_TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS || process.env.QWEN_TIMEOUT_MS || 20000);
 
 exports.main = async (event = {}) => {
   try {
@@ -45,8 +45,13 @@ exports.main = async (event = {}) => {
       await collection.doc(clothingId).update({
         data: {
           aiRecognizeStatus: 'failed',
+          detectStatus: 'failed',
           aiStatus: 'failed',
           aiError: getErrorMessage(error),
+          stageStatus: {
+            ...(current.stageStatus || {}),
+            attribute: 'failed',
+          },
           updatedAt: new Date().toISOString(),
         },
       });
@@ -116,11 +121,18 @@ function buildRecognizeUpdate(current, result) {
   const manualFields = new Set(Array.isArray(current.manualFields) ? current.manualFields : []);
   const data = {
     aiRecognizeStatus: 'success',
+    detectStatus: 'success',
     aiStatus: 'recognized',
     aiProvider: 'bailian_qwen_vl',
+    detectProvider: 'bailian',
+    detectModel: BAILIAN_MODEL,
     aiRawResult: result.raw,
     aiRaw: result.raw,
     aiError: '',
+    stageStatus: {
+      ...(current.stageStatus || {}),
+      attribute: 'success',
+    },
     updatedAt: new Date().toISOString(),
   };
 
@@ -219,10 +231,23 @@ function toClothing(item) {
     id: item._id,
     userId: item._openid,
     imageUrl: item.imageUrl || displayImageUrl,
+    assetVersion: item.assetVersion || 'v1',
     originalImageUrl,
+    normalizedImageUrl: item.normalizedImageUrl || originalImageUrl,
+    cropImageUrl: item.cropImageUrl || item.croppedImageUrl || '',
+    croppedImageUrl: item.croppedImageUrl || item.cropImageUrl || '',
+    maskImageUrl: item.maskImageUrl || '',
+    cleanImageUrl: item.cleanImageUrl || item.aiSegmentImageUrl || '',
     displayImageUrl,
-    imageSourceType: item.imageSourceType || 'original',
-    aiSegmentImageUrl: item.aiSegmentImageUrl || '',
+    imageSourceType: normalizeImageSourceType(item),
+    assetStatus: item.assetStatus || 'needs_review',
+    qualityScore: item.qualityScore || 0,
+    needsUserConfirm: item.needsUserConfirm !== false,
+    confirmReasons: item.confirmReasons || [],
+    bbox: item.bbox || item.cropBox,
+    stageStatus: item.stageStatus,
+    providerTrace: item.providerTrace || [],
+    aiSegmentImageUrl: item.aiSegmentImageUrl || item.cleanImageUrl || '',
     manualCropImageUrl: item.manualCropImageUrl || '',
     batchId: item.batchId,
     sourceImageId: item.sourceImageId,
@@ -271,17 +296,34 @@ function getOriginalImage(item) {
 }
 
 function getDisplayImage(item) {
-  return item.displayImageUrl
-    || item.imageUrl
+  return item.cleanImageUrl
     || item.aiSegmentImageUrl
+    || item.cropImageUrl
+    || item.croppedImageUrl
+    || item.displayImageUrl
+    || item.imageUrl
     || item.manualCropImageUrl
     || getOriginalImage(item);
 }
 
 function getSingleClothImage(item) {
+  if (item.cleanImageUrl && item.segmentStatus === 'success') return item.cleanImageUrl;
   if (item.aiSegmentImageUrl && item.segmentStatus === 'success') return item.aiSegmentImageUrl;
+  if (item.cropImageUrl) return item.cropImageUrl;
+  if (item.croppedImageUrl) return item.croppedImageUrl;
   if (item.manualCropImageUrl && item.manualCropStatus === 'success') return item.manualCropImageUrl;
   return '';
+}
+
+function normalizeImageSourceType(item) {
+  if (item.imageSourceType === 'clean' || item.imageSourceType === 'crop' || item.imageSourceType === 'original') {
+    return item.imageSourceType;
+  }
+  if (item.imageSourceType === 'ai_segment') return 'clean';
+  if (item.imageSourceType === 'manual_crop') return 'crop';
+  if (item.cleanImageUrl || item.aiSegmentImageUrl) return 'clean';
+  if (item.cropImageUrl || item.croppedImageUrl || item.manualCropImageUrl) return 'crop';
+  return 'original';
 }
 
 function getErrorMessage(error) {

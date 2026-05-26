@@ -41,6 +41,59 @@
   transition: width 0.3s ease;
 }
 
+.recognition-task-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  margin: 20px 24px 0;
+  padding: 24px;
+  background: #fff;
+  border-radius: 16px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+}
+
+.recognition-task-card.processing {
+  border-left: 8px solid #FF8E53;
+}
+
+.recognition-task-card.ready {
+  border-left: 8px solid #16a34a;
+}
+
+.recognition-task-card.failed {
+  border-left: 8px solid #ef4444;
+}
+
+.recognition-task-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.recognition-task-title {
+  display: block;
+  color: #1a1a1a;
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.recognition-task-desc {
+  display: block;
+  margin-top: 8px;
+  color: #666;
+  font-size: 24px;
+  line-height: 1.45;
+  white-space: normal;
+}
+
+.recognition-task-action {
+  flex-shrink: 0;
+  color: #1a1a1a;
+  font-size: 24px;
+  font-weight: 500;
+}
+
 .category-scroll {
   display: flex;
   gap: 16px;

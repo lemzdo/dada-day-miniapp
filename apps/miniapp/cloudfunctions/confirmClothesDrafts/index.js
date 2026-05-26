@@ -13,6 +13,9 @@ exports.main = async (event = {}) => {
 
     const batchRes = await db.collection('upload_batches').doc(batchId).get();
     if (!batchRes.data || batchRes.data._openid !== OPENID) throw new Error('batch not found');
+    const batchStatus = normalizeUploadBatchStatus(batchRes.data.status);
+    if (batchStatus === 'discarded') throw new Error('batch already discarded');
+    if (batchStatus === 'saved') return ok({ list: [], count: 0, batchStatus: 'saved' });
 
     const updates = Array.isArray(event.drafts) ? event.drafts : [];
     await Promise.all(updates.map((draft) => updateDraftFromInput(draft, OPENID)));
@@ -23,6 +26,9 @@ exports.main = async (event = {}) => {
       status: 'pending',
       selected: true,
     }).get();
+    if (!draftRes.data || draftRes.data.length === 0) {
+      throw new Error('no confirmable drafts');
+    }
 
     const created = [];
     for (const draft of draftRes.data) {
@@ -47,6 +53,23 @@ exports.main = async (event = {}) => {
       data: { status: 'discarded', updatedAt: nowIso() },
     }).catch(() => undefined);
 
+    const remainingDraftRes = await db.collection('clothes_drafts').where({
+      batchId,
+      _openid: OPENID,
+      status: 'pending',
+    }).get();
+    const remainingPendingCount = remainingDraftRes.data ? remainingDraftRes.data.length : 0;
+    if (created.length > 0 && remainingPendingCount === 0) {
+      await db.collection('upload_batches').doc(batchId).update({
+        data: {
+          status: 'saved',
+          errorMessage: '',
+          summaryMessage: `已保存 ${created.length} 件衣服到衣柜`,
+          updatedAt: nowIso(),
+        },
+      });
+    }
+
     console.log('[confirmClothesDrafts] confirmed', {
       batchId,
       count: created.length,
@@ -66,11 +89,29 @@ async function updateDraftFromInput(input, openid) {
 
   const data = { updatedAt: nowIso() };
   const fields = [
+    'assetVersion',
+    'originalImageUrl',
+    'normalizedImageUrl',
+    'cropImageUrl',
+    'croppedImageUrl',
+    'maskImageUrl',
+    'cleanImageUrl',
+    'imageUrl',
+    'assetStatus',
+    'qualityScore',
+    'needsUserConfirm',
+    'confirmReasons',
+    'bbox',
+    'cropBox',
+    'itemIndex',
+    'stageStatus',
+    'providerTrace',
     'type',
     'categoryName',
     'color',
     'colors',
     'material',
+    'thickness',
     'style',
     'styleTags',
     'seasonTags',
@@ -86,7 +127,9 @@ async function updateDraftFromInput(input, openid) {
   });
 
   if (data.imageSourceType === 'original') data.displayImageUrl = current.data.originalImageUrl;
-  if (data.imageSourceType === 'ai_segment') data.displayImageUrl = current.data.aiSegmentImageUrl || input.aiSegmentImageUrl || current.data.originalImageUrl;
+  if (data.imageSourceType === 'clean') data.displayImageUrl = current.data.cleanImageUrl || input.cleanImageUrl || current.data.aiSegmentImageUrl || current.data.originalImageUrl;
+  if (data.imageSourceType === 'crop') data.displayImageUrl = current.data.cropImageUrl || input.cropImageUrl || current.data.croppedImageUrl || current.data.manualCropImageUrl || current.data.originalImageUrl;
+  if (data.imageSourceType === 'ai_segment') data.displayImageUrl = current.data.aiSegmentImageUrl || current.data.cleanImageUrl || input.aiSegmentImageUrl || current.data.originalImageUrl;
   if (data.imageSourceType === 'manual_crop') data.displayImageUrl = current.data.manualCropImageUrl || input.manualCropImageUrl || current.data.originalImageUrl;
 
   await db.collection('clothes_drafts').doc(input.id).update({ data });
@@ -102,13 +145,28 @@ function buildClothingFromDraft(draft, openid) {
   return {
     _openid: openid,
     userId: openid,
+    assetVersion: draft.assetVersion || 'v2',
     batchId: draft.batchId,
     sourceImageId: draft.sourceImageId,
+    itemIndex: draft.itemIndex || 0,
     originalImageUrl: draft.originalImageUrl,
+    normalizedImageUrl: draft.normalizedImageUrl || draft.originalImageUrl,
+    cropImageUrl: draft.cropImageUrl || draft.croppedImageUrl || '',
+    croppedImageUrl: draft.croppedImageUrl || draft.cropImageUrl || '',
+    maskImageUrl: draft.maskImageUrl || '',
+    cleanImageUrl: draft.cleanImageUrl || draft.aiSegmentImageUrl || '',
     imageUrl: displayImageUrl,
     displayImageUrl,
     imageSourceType,
-    aiSegmentImageUrl: draft.aiSegmentImageUrl || '',
+    assetStatus: draft.assetStatus || 'needs_review',
+    qualityScore: draft.qualityScore || 0,
+    needsUserConfirm: draft.needsUserConfirm !== false,
+    confirmReasons: draft.confirmReasons || [],
+    bbox: draft.bbox || draft.cropBox || null,
+    cropBox: draft.cropBox || draft.bbox || null,
+    stageStatus: draft.stageStatus || null,
+    providerTrace: draft.providerTrace || [],
+    aiSegmentImageUrl: draft.aiSegmentImageUrl || draft.cleanImageUrl || '',
     manualCropImageUrl: draft.manualCropImageUrl || '',
     category: draft.type || 'other',
     subcategory: draft.categoryName || '',
@@ -122,6 +180,7 @@ function buildClothingFromDraft(draft, openid) {
     sceneTags: [],
     material: draft.material || '',
     materialGuess: draft.material || '',
+    thickness: draft.thickness || '',
     aiRecognizeStatus: draft.detectStatus || 'success',
     detectStatus: draft.detectStatus || 'success',
     cutoutStatus: draft.segmentStatus || 'not_started',
@@ -146,12 +205,22 @@ function buildClothingFromDraft(draft, openid) {
 }
 
 function resolveDisplayImage(draft) {
-  if (draft.aiSegmentImageUrl && draft.segmentStatus === 'success') return draft.aiSegmentImageUrl;
-  if (draft.manualCropImageUrl && draft.manualCropStatus === 'success') return draft.manualCropImageUrl;
-  return draft.displayImageUrl || draft.originalImageUrl || draft.aiSegmentImageUrl || draft.manualCropImageUrl || '';
+  return draft.cleanImageUrl
+    || draft.cropImageUrl
+    || draft.displayImageUrl
+    || draft.imageUrl
+    || draft.aiSegmentImageUrl
+    || draft.croppedImageUrl
+    || draft.manualCropImageUrl
+    || draft.originalImageUrl
+    || '';
 }
 
 function resolveImageSourceType(draft, displayImageUrl) {
+  if (draft.imageSourceType === 'clean' && (draft.cleanImageUrl || draft.aiSegmentImageUrl)) return 'clean';
+  if (draft.imageSourceType === 'crop' && (draft.cropImageUrl || draft.croppedImageUrl || draft.manualCropImageUrl)) return 'crop';
+  if (displayImageUrl === draft.cleanImageUrl && draft.cleanImageUrl) return 'clean';
+  if (displayImageUrl === draft.cropImageUrl && draft.cropImageUrl) return 'crop';
   if (draft.imageSourceType === 'ai_segment' && draft.aiSegmentImageUrl) return 'ai_segment';
   if (draft.imageSourceType === 'manual_crop' && draft.manualCropImageUrl) return 'manual_crop';
   if (displayImageUrl === draft.aiSegmentImageUrl && draft.aiSegmentImageUrl) return 'ai_segment';
@@ -167,10 +236,24 @@ function toClothing(item) {
     userId: item.userId || item._openid,
     batchId: item.batchId,
     sourceImageId: item.sourceImageId,
+    assetVersion: item.assetVersion || 'v2',
+    itemIndex: item.itemIndex || 0,
     originalImageUrl,
+    normalizedImageUrl: item.normalizedImageUrl || originalImageUrl,
+    cropImageUrl: item.cropImageUrl || item.croppedImageUrl || '',
+    croppedImageUrl: item.croppedImageUrl || item.cropImageUrl || '',
+    maskImageUrl: item.maskImageUrl || '',
+    cleanImageUrl: item.cleanImageUrl || item.aiSegmentImageUrl || '',
     imageUrl: item.imageUrl || displayImageUrl,
     displayImageUrl,
     imageSourceType: item.imageSourceType || 'original',
+    assetStatus: item.assetStatus || 'needs_review',
+    qualityScore: item.qualityScore || 0,
+    needsUserConfirm: item.needsUserConfirm !== false,
+    confirmReasons: item.confirmReasons || [],
+    bbox: item.bbox || item.cropBox,
+    stageStatus: item.stageStatus,
+    providerTrace: item.providerTrace || [],
     aiSegmentImageUrl: item.aiSegmentImageUrl || '',
     manualCropImageUrl: item.manualCropImageUrl || '',
     confidence: item.confidence || item.aiConfidence || 0,
@@ -194,6 +277,7 @@ function toClothing(item) {
     seasonTags: item.seasonTags || [],
     material: item.material,
     materialGuess: item.materialGuess,
+    thickness: item.thickness,
     sceneTags: item.sceneTags || [],
     aiStatus: item.aiStatus || 'recognized',
     aiConfidence: item.aiConfidence || 0,
@@ -209,6 +293,15 @@ function toClothing(item) {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function normalizeUploadBatchStatus(rawStatus) {
+  if (rawStatus === 'success' || rawStatus === 'partial_success' || rawStatus === 'completed') return 'ready';
+  if (rawStatus === 'empty' || rawStatus === 'partial_failed') return 'failed';
+  if (rawStatus === 'discarded') return 'discarded';
+  if (rawStatus === 'saved') return 'saved';
+  if (rawStatus === 'failed') return 'failed';
+  return 'processing';
 }
 
 function ok(data) {

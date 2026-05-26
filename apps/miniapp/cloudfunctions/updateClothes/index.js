@@ -28,7 +28,20 @@ const ALLOWED_FIELDS = [
   'displayImageUrl',
   'imageUrl',
   'originalImageUrl',
+  'normalizedImageUrl',
+  'cropImageUrl',
+  'croppedImageUrl',
+  'maskImageUrl',
+  'cleanImageUrl',
   'imageSourceType',
+  'assetVersion',
+  'assetStatus',
+  'qualityScore',
+  'needsUserConfirm',
+  'confirmReasons',
+  'bbox',
+  'stageStatus',
+  'providerTrace',
   'aiSegmentImageUrl',
   'manualCropImageUrl',
   'manualCropStatus',
@@ -65,7 +78,20 @@ exports.main = async (event = {}) => {
           'displayImageUrl',
           'imageUrl',
           'originalImageUrl',
+          'normalizedImageUrl',
+          'cropImageUrl',
+          'croppedImageUrl',
+          'maskImageUrl',
+          'cleanImageUrl',
           'imageSourceType',
+          'assetVersion',
+          'assetStatus',
+          'qualityScore',
+          'needsUserConfirm',
+          'confirmReasons',
+          'bbox',
+          'stageStatus',
+          'providerTrace',
           'aiSegmentImageUrl',
           'manualCropImageUrl',
           'manualCropStatus',
@@ -109,10 +135,23 @@ function toClothing(item) {
     userId: item._openid,
     thumbnailUrl: item.thumbnailUrl,
     imageUrl: item.imageUrl || displayImageUrl,
+    assetVersion: item.assetVersion || 'v1',
     originalImageUrl,
+    normalizedImageUrl: item.normalizedImageUrl || originalImageUrl,
+    cropImageUrl: item.cropImageUrl || item.croppedImageUrl || '',
+    croppedImageUrl: item.croppedImageUrl || item.cropImageUrl || '',
+    maskImageUrl: item.maskImageUrl || '',
+    cleanImageUrl: item.cleanImageUrl || item.aiSegmentImageUrl || '',
     displayImageUrl,
-    imageSourceType: item.imageSourceType || 'original',
-    aiSegmentImageUrl: item.aiSegmentImageUrl || '',
+    imageSourceType: normalizeImageSourceType(item),
+    assetStatus: item.assetStatus || 'needs_review',
+    qualityScore: item.qualityScore || 0,
+    needsUserConfirm: item.needsUserConfirm !== false,
+    confirmReasons: item.confirmReasons || [],
+    bbox: item.bbox || item.cropBox,
+    stageStatus: item.stageStatus,
+    providerTrace: item.providerTrace || [],
+    aiSegmentImageUrl: item.aiSegmentImageUrl || item.cleanImageUrl || '',
     manualCropImageUrl: item.manualCropImageUrl || '',
     batchId: item.batchId,
     sourceImageId: item.sourceImageId,
@@ -169,11 +208,25 @@ function getOriginalImage(item) {
 }
 
 function getDisplayImage(item) {
-  return item.displayImageUrl
-    || item.imageUrl
+  return item.cleanImageUrl
     || item.aiSegmentImageUrl
+    || item.cropImageUrl
+    || item.croppedImageUrl
+    || item.displayImageUrl
+    || item.imageUrl
     || item.manualCropImageUrl
     || getOriginalImage(item);
+}
+
+function normalizeImageSourceType(item) {
+  if (item.imageSourceType === 'clean' || item.imageSourceType === 'crop' || item.imageSourceType === 'original') {
+    return item.imageSourceType;
+  }
+  if (item.imageSourceType === 'ai_segment') return 'clean';
+  if (item.imageSourceType === 'manual_crop') return 'crop';
+  if (item.cleanImageUrl || item.aiSegmentImageUrl) return 'clean';
+  if (item.cropImageUrl || item.croppedImageUrl || item.manualCropImageUrl) return 'crop';
+  return 'original';
 }
 
 function ok(data) {

@@ -4,10 +4,10 @@ cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
 const db = cloud.database();
 const SEGMENT_TIMEOUT_MS = Number(process.env.SEGMENT_TIMEOUT_MS || 60000);
-const OSS_REGION = normalizeOssRegion(process.env.ALIYUN_OSS_REGION || '');
-const OSS_BUCKET = process.env.ALIYUN_OSS_BUCKET || '';
-const OSS_URL_EXPIRES_SECONDS = Number(process.env.ALIYUN_OSS_URL_EXPIRES_SECONDS || 1800);
-const OSS_USE_SIGNED_URL = process.env.ALIYUN_OSS_USE_SIGNED_URL !== 'false';
+const OSS_REGION = normalizeOssRegion(process.env.OSS_REGION || process.env.ALIYUN_OSS_REGION || '');
+const OSS_BUCKET = process.env.OSS_BUCKET || process.env.ALIYUN_OSS_BUCKET || '';
+const OSS_URL_EXPIRES_SECONDS = Number(process.env.OSS_URL_EXPIRES_SECONDS || process.env.ALIYUN_OSS_URL_EXPIRES_SECONDS || 1800);
+const OSS_USE_SIGNED_URL = getOssUseSignedUrl();
 const SEGMENT_PROVIDER = 'aliyun_viapi';
 const SEGMENT_MODEL = 'SegmentCloth';
 
@@ -29,8 +29,8 @@ exports.main = async (event = {}) => {
 function validateRequiredEnv() {
   getRequiredEnv('ALIYUN_ACCESS_KEY_ID');
   getRequiredEnv('ALIYUN_ACCESS_KEY_SECRET');
-  getRequiredEnv('ALIYUN_OSS_BUCKET');
-  getRequiredEnv('ALIYUN_OSS_REGION');
+  if (!OSS_BUCKET) getRequiredEnv('ALIYUN_OSS_BUCKET');
+  if (!OSS_REGION) getRequiredEnv('ALIYUN_OSS_REGION');
 }
 
 async function segmentDraft(draftId, openid) {
@@ -40,16 +40,57 @@ async function segmentDraft(draftId, openid) {
   if (!current || current._openid !== openid) throw new Error('draft not found');
   if (current.status !== 'pending') return ok(toDraft(current));
 
-  const sourceFileID = current.originalImageUrl;
+  const cropResult = await ensureSingleItemCrop({
+    collection,
+    objectId: draftId,
+    item: current,
+    fallbackCloudPath: `wardrobe_uploads/crops/${current.batchId}/${current.sourceImageId || draftId}-${current.itemIndex || 0}-retry.jpg`,
+  });
+  const sourceFileID = cropResult.sourceFileID;
   await collection.doc(draftId).update({
     data: {
       segmentStatus: 'processing',
+      cropImageUrl: cropResult.cropImageUrl || current.cropImageUrl || current.croppedImageUrl || '',
+      croppedImageUrl: cropResult.cropImageUrl || current.croppedImageUrl || current.cropImageUrl || '',
       segmentProvider: SEGMENT_PROVIDER,
       segmentModel: SEGMENT_MODEL,
       segmentError: '',
+      stageStatus: {
+        ...(current.stageStatus || {}),
+        crop: cropResult.cropStatus,
+        segment: normalizeFinalStageStatus(current.stageStatus && current.stageStatus.segment),
+      },
       updatedAt: nowIso(),
     },
   });
+
+  if (!sourceFileID) {
+    await collection.doc(draftId).update({
+      data: {
+        segmentStatus: 'failed',
+        segmentProvider: SEGMENT_PROVIDER,
+        segmentModel: SEGMENT_MODEL,
+        segmentError: 'single crop image is required',
+        segmentErrorMessage: 'single crop image is required',
+        errorMessage: 'single crop image is required',
+        cleanImageUrl: '',
+        aiSegmentImageUrl: '',
+        displayImageUrl: current.cropImageUrl || current.croppedImageUrl || current.originalImageUrl,
+        imageUrl: current.cropImageUrl || current.croppedImageUrl || current.originalImageUrl,
+        imageSourceType: current.cropImageUrl || current.croppedImageUrl ? 'crop' : 'original',
+        assetStatus: 'needs_review',
+        needsUserConfirm: true,
+        stageStatus: {
+          ...(current.stageStatus || {}),
+          crop: cropResult.cropStatus,
+          segment: 'failed',
+        },
+        updatedAt: nowIso(),
+      },
+    });
+    const updated = await collection.doc(draftId).get();
+    return ok(toDraft(updated.data));
+  }
 
   const result = await runSegment({
     openid,
@@ -67,8 +108,18 @@ async function segmentDraft(draftId, openid) {
         segmentError: result.errors.join('|'),
         segmentErrorMessage: result.errors.join('|'),
         errorMessage: result.errors.join('|'),
-        displayImageUrl: current.originalImageUrl,
-        imageSourceType: 'original',
+        cleanImageUrl: '',
+        aiSegmentImageUrl: '',
+        displayImageUrl: sourceFileID || current.originalImageUrl,
+        imageUrl: sourceFileID || current.originalImageUrl,
+        imageSourceType: sourceFileID && sourceFileID !== current.originalImageUrl ? 'crop' : 'original',
+        assetStatus: 'needs_review',
+        needsUserConfirm: true,
+        stageStatus: {
+          ...(current.stageStatus || {}),
+          crop: cropResult.cropStatus,
+          segment: 'failed',
+        },
         updatedAt: nowIso(),
       },
     });
@@ -77,17 +128,26 @@ async function segmentDraft(draftId, openid) {
   }
 
   const data = {
+    cleanImageUrl: result.fileID,
     aiSegmentImageUrl: result.fileID,
     segmentStatus: 'success',
     segmentProvider: SEGMENT_PROVIDER,
     segmentModel: SEGMENT_MODEL,
     segmentError: '',
+    assetStatus: current.assetStatus === 'failed' ? 'needs_review' : current.assetStatus || 'ready',
+    qualityScore: Math.max(current.qualityScore || 0, 80),
+    needsUserConfirm: current.needsUserConfirm === true && (current.qualityScore || 0) < 80,
+    stageStatus: {
+      ...(current.stageStatus || {}),
+      crop: cropResult.cropStatus,
+      segment: 'success',
+    },
     updatedAt: nowIso(),
   };
   if (canAutoUseSegment(current)) {
     data.displayImageUrl = result.fileID;
     data.imageUrl = result.fileID;
-    data.imageSourceType = 'ai_segment';
+    data.imageSourceType = 'clean';
   }
 
   await collection.doc(draftId).update({ data });
@@ -101,16 +161,35 @@ async function segmentClothing(clothingId, openid) {
   const current = currentRes.data;
   if (!current || current._openid !== openid) throw new Error('clothing not found');
 
-  const sourceFileID = getOriginalImage(current);
+  const cropResult = await ensureSingleItemCrop({
+    collection,
+    objectId: clothingId,
+    item: current,
+    fallbackCloudPath: `wardrobe_uploads/crops/${current.batchId || 'clothes'}/${current.sourceImageId || clothingId}-${current.itemIndex || 0}-retry.jpg`,
+  });
+  const sourceFileID = cropResult.sourceFileID;
   await collection.doc(clothingId).update({
     data: {
       segmentStatus: 'processing',
       cutoutStatus: 'pending',
+      cropImageUrl: cropResult.cropImageUrl || current.cropImageUrl || current.croppedImageUrl || '',
+      croppedImageUrl: cropResult.cropImageUrl || current.croppedImageUrl || current.cropImageUrl || '',
       segmentProvider: SEGMENT_PROVIDER,
       segmentModel: SEGMENT_MODEL,
+      stageStatus: {
+        ...(current.stageStatus || {}),
+        crop: cropResult.cropStatus,
+        segment: normalizeFinalStageStatus(current.stageStatus && current.stageStatus.segment),
+      },
       updatedAt: nowIso(),
     },
   });
+
+  if (!sourceFileID) {
+    await markClothingSegmentFailed(collection, clothingId, getDisplayImage(current), ['single crop image is required'], cropResult.cropStatus, current.stageStatus);
+    const updated = await collection.doc(clothingId).get();
+    return ok(toClothing(updated.data));
+  }
 
   const result = await runSegment({
     openid,
@@ -120,25 +199,32 @@ async function segmentClothing(clothingId, openid) {
   });
 
   if (!result.success) {
-    await markClothingSegmentFailed(collection, clothingId, sourceFileID, result.errors);
+    await markClothingSegmentFailed(collection, clothingId, sourceFileID, result.errors, cropResult.cropStatus, current.stageStatus);
     const updated = await collection.doc(clothingId).get();
     return ok(toClothing(updated.data));
   }
 
   const data = {
+    cleanImageUrl: result.fileID,
     aiSegmentImageUrl: result.fileID,
+    displayImageUrl: result.fileID,
+    imageUrl: result.fileID,
+    imageSourceType: 'clean',
+    assetStatus: current.assetStatus === 'failed' ? 'needs_review' : current.assetStatus || 'ready',
+    qualityScore: Math.max(current.qualityScore || 0, 80),
     segmentStatus: 'success',
     cutoutStatus: 'success',
     segmentProvider: SEGMENT_PROVIDER,
     segmentModel: SEGMENT_MODEL,
     cutoutProvider: SEGMENT_PROVIDER,
     cutoutError: '',
+    stageStatus: {
+      ...(current.stageStatus || {}),
+      crop: cropResult.cropStatus,
+      segment: 'success',
+    },
     updatedAt: nowIso(),
   };
-  if (canAutoUseSegment(current)) {
-    data.displayImageUrl = result.fileID;
-    data.imageSourceType = 'ai_segment';
-  }
 
   await collection.doc(clothingId).update({ data });
   const updated = await collection.doc(clothingId).get();
@@ -198,16 +284,142 @@ async function runSegment({ openid, sourceFileID, objectId, cloudPath }) {
   }
 }
 
+async function ensureSingleItemCrop({ collection, objectId, item, fallbackCloudPath }) {
+  const existingCrop = item.cropImageUrl || item.croppedImageUrl || '';
+  if (existingCrop) {
+    return { sourceFileID: existingCrop, cropImageUrl: existingCrop, cropStatus: 'success' };
+  }
+
+  const bbox = item.bbox || item.cropBox;
+  if (!bbox) {
+    if (!item.batchId && !item.sourceImageId) {
+      return { sourceFileID: getOriginalImage(item), cropImageUrl: '', cropStatus: 'skipped' };
+    }
+    return { sourceFileID: '', cropImageUrl: '', cropStatus: 'failed' };
+  }
+
+  try {
+    const cropImageUrl = await cropCloudImage({
+      originalImageUrl: getOriginalImage(item),
+      bbox,
+      cloudPath: fallbackCloudPath,
+    });
+    await collection.doc(objectId).update({
+      data: {
+        cropImageUrl,
+        croppedImageUrl: cropImageUrl,
+        displayImageUrl: item.displayImageUrl || cropImageUrl,
+        imageSourceType: item.imageSourceType === 'clean' ? 'clean' : 'crop',
+        updatedAt: nowIso(),
+      },
+    }).catch(() => undefined);
+    return { sourceFileID: cropImageUrl, cropImageUrl, cropStatus: 'success' };
+  } catch (error) {
+    console.warn('[segmentClothImage] crop before segment failed', {
+      objectId,
+      message: getErrorMessage(error),
+    });
+    if (!item.batchId && !item.sourceImageId) {
+      return { sourceFileID: getOriginalImage(item), cropImageUrl: '', cropStatus: 'failed' };
+    }
+    return { sourceFileID: '', cropImageUrl: '', cropStatus: 'failed' };
+  }
+}
+
+async function cropCloudImage({ originalImageUrl, bbox, cloudPath }) {
+  const sourceBuffer = await downloadImageSource(originalImageUrl);
+  const Jimp = require('jimp');
+  const image = await Jimp.read(sourceBuffer);
+  const cropBox = toPaddedPixelBox(normalizeBBox(bbox), image.bitmap.width, image.bitmap.height, 0.12);
+  const cropped = image.clone().crop(cropBox.x, cropBox.y, cropBox.width, cropBox.height).quality(92);
+  const buffer = await cropped.getBufferAsync(Jimp.MIME_JPEG);
+  const uploadRes = await cloud.uploadFile({ cloudPath, fileContent: buffer });
+  return uploadRes.fileID;
+}
+
+async function downloadImageSource(fileID) {
+  if (fileID && typeof fileID === 'string' && /^https?:\/\//.test(fileID)) {
+    const fetch = require('node-fetch');
+    const response = await fetch(fileID, { timeout: SEGMENT_TIMEOUT_MS });
+    if (!response.ok) throw new Error(`download_image_failed_${response.status}`);
+    return response.buffer();
+  }
+  return downloadWechatCloudFile(fileID);
+}
+
+function normalizeBBox(value) {
+  if (!value || typeof value !== 'object') throw new Error('bbox is required');
+  const x = Number(value.x ?? value.left ?? 0);
+  const y = Number(value.y ?? value.top ?? 0);
+  const width = Number(value.width ?? ((value.right ?? value.x2 ?? 0) - x));
+  const height = Number(value.height ?? ((value.bottom ?? value.y2 ?? 0) - y));
+  if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
+    throw new Error('bbox is invalid');
+  }
+  return {
+    x: clamp01(x),
+    y: clamp01(y),
+    width: clamp01(width),
+    height: clamp01(height),
+  };
+}
+
+function toPaddedPixelBox(bbox, imageWidth, imageHeight, paddingRatio) {
+  const x = bbox.x * imageWidth;
+  const y = bbox.y * imageHeight;
+  const width = bbox.width * imageWidth;
+  const height = bbox.height * imageHeight;
+  const padX = width * paddingRatio;
+  const padY = height * paddingRatio;
+  const left = Math.max(0, Math.floor(x - padX));
+  const top = Math.max(0, Math.floor(y - padY));
+  const right = Math.min(imageWidth, Math.ceil(x + width + padX));
+  const bottom = Math.min(imageHeight, Math.ceil(y + height + padY));
+  return {
+    x: left,
+    y: top,
+    width: Math.max(1, right - left),
+    height: Math.max(1, bottom - top),
+  };
+}
+
+function clamp01(value) {
+  return Math.max(0, Math.min(1, Number(value)));
+}
+
+function getOssUseSignedUrl() {
+  const value = process.env.OSS_USE_SIGNED_URL
+    ?? process.env.ALIYUN_OSS_USE_SIGNED_URL
+    ?? 'false';
+  return String(value).trim().toLowerCase() === 'true';
+}
+
+function normalizeFinalStageStatus(value) {
+  return value === 'success' || value === 'failed' || value === 'skipped' ? value : 'skipped';
+}
+
+function normalizeStageStatusMap(value) {
+  const source = value || {};
+  return {
+    router: normalizeFinalStageStatus(source.router),
+    detection: normalizeFinalStageStatus(source.detection),
+    crop: normalizeFinalStageStatus(source.crop),
+    segment: normalizeFinalStageStatus(source.segment),
+    attribute: normalizeFinalStageStatus(source.attribute),
+  };
+}
+
 function createClient() {
   const accessKeyId = getRequiredEnv('ALIYUN_ACCESS_KEY_ID');
   const accessKeySecret = getRequiredEnv('ALIYUN_ACCESS_KEY_SECRET');
-  const region = process.env.ALIYUN_VIAPI_REGION || 'cn-shanghai';
+  const region = process.env.ALIYUN_REGION || process.env.ALIYUN_VIAPI_REGION || 'cn-shanghai';
+  const endpoint = process.env.ALIYUN_SEGMENT_CLOTH_ENDPOINT || `https://imageseg.${region}.aliyuncs.com`;
 
   const { RPCClient } = require('@alicloud/pop-core');
   return new RPCClient({
     accessKeyId,
     accessKeySecret,
-    endpoint: `https://imageseg.${region}.aliyuncs.com`,
+    endpoint,
     apiVersion: '2019-12-30',
   });
 }
@@ -262,8 +474,8 @@ async function uploadBufferToOss({ buffer, objectKey }) {
 }
 
 function createOssClient() {
-  const accessKeyId = process.env.ALIYUN_OSS_ACCESS_KEY_ID || getRequiredEnv('ALIYUN_ACCESS_KEY_ID');
-  const accessKeySecret = process.env.ALIYUN_OSS_ACCESS_KEY_SECRET || getRequiredEnv('ALIYUN_ACCESS_KEY_SECRET');
+  const accessKeyId = process.env.OSS_ACCESS_KEY_ID || process.env.ALIYUN_OSS_ACCESS_KEY_ID || getRequiredEnv('ALIYUN_ACCESS_KEY_ID');
+  const accessKeySecret = process.env.OSS_ACCESS_KEY_SECRET || process.env.ALIYUN_OSS_ACCESS_KEY_SECRET || getRequiredEnv('ALIYUN_ACCESS_KEY_SECRET');
 
   const OSS = require('ali-oss');
   return new OSS({
@@ -349,12 +561,27 @@ function toDraft(item) {
   return {
     id: item._id,
     userId: item.userId || item._openid,
+    assetVersion: item.assetVersion || 'v1',
     batchId: item.batchId,
     sourceImageId: item.sourceImageId,
+    itemIndex: item.itemIndex || 0,
     originalImageUrl: item.originalImageUrl,
-    displayImageUrl: item.displayImageUrl || item.originalImageUrl,
-    imageSourceType: item.imageSourceType || 'original',
-    aiSegmentImageUrl: item.aiSegmentImageUrl || '',
+    normalizedImageUrl: item.normalizedImageUrl || item.originalImageUrl,
+    cropImageUrl: item.cropImageUrl || item.croppedImageUrl || '',
+    croppedImageUrl: item.croppedImageUrl || item.cropImageUrl || '',
+    maskImageUrl: item.maskImageUrl || '',
+    cleanImageUrl: item.cleanImageUrl || item.aiSegmentImageUrl || '',
+    displayImageUrl: getDisplayImage(item),
+    imageUrl: item.imageUrl || getDisplayImage(item),
+    imageSourceType: normalizeImageSourceType(item),
+    assetStatus: item.assetStatus || 'needs_review',
+    qualityScore: item.qualityScore || 0,
+    needsUserConfirm: item.needsUserConfirm !== false,
+    confirmReasons: item.confirmReasons || [],
+    bbox: item.bbox || item.cropBox,
+    stageStatus: normalizeStageStatusMap(item.stageStatus),
+    providerTrace: item.providerTrace || [],
+    aiSegmentImageUrl: item.aiSegmentImageUrl || item.cleanImageUrl || '',
     manualCropImageUrl: item.manualCropImageUrl || '',
     detectStatus: item.detectStatus || 'success',
     segmentStatus: item.segmentStatus || 'not_started',
@@ -385,11 +612,24 @@ function toClothing(item) {
   return {
     id: item._id,
     userId: item._openid,
+    assetVersion: item.assetVersion || 'v1',
     originalImageUrl,
+    normalizedImageUrl: item.normalizedImageUrl || originalImageUrl,
+    cropImageUrl: item.cropImageUrl || item.croppedImageUrl || '',
+    croppedImageUrl: item.croppedImageUrl || item.cropImageUrl || '',
+    maskImageUrl: item.maskImageUrl || '',
+    cleanImageUrl: item.cleanImageUrl || item.aiSegmentImageUrl || '',
     displayImageUrl,
     imageUrl: item.imageUrl || displayImageUrl,
-    imageSourceType: item.imageSourceType || 'original',
-    aiSegmentImageUrl: item.aiSegmentImageUrl || '',
+    imageSourceType: normalizeImageSourceType(item),
+    assetStatus: item.assetStatus || 'needs_review',
+    qualityScore: item.qualityScore || 0,
+    needsUserConfirm: item.needsUserConfirm !== false,
+    confirmReasons: item.confirmReasons || [],
+    bbox: item.bbox || item.cropBox,
+    stageStatus: normalizeStageStatusMap(item.stageStatus),
+    providerTrace: item.providerTrace || [],
+    aiSegmentImageUrl: item.aiSegmentImageUrl || item.cleanImageUrl || '',
     manualCropImageUrl: item.manualCropImageUrl || '',
     segmentStatus: item.segmentStatus || item.cutoutStatus || 'not_started',
     segmentProvider: item.segmentProvider || SEGMENT_PROVIDER,
@@ -446,23 +686,43 @@ function getOriginalImage(item) {
 }
 
 function getDisplayImage(item) {
-  return item.displayImageUrl
-    || item.imageUrl
+  return item.cleanImageUrl
     || item.aiSegmentImageUrl
+    || item.cropImageUrl
+    || item.croppedImageUrl
+    || item.displayImageUrl
+    || item.imageUrl
     || item.manualCropImageUrl
     || getOriginalImage(item);
 }
 
 function canAutoUseSegment(item) {
   const originalImageUrl = getOriginalImage(item);
-  return (item.imageSourceType || 'original') === 'original'
-    && (!item.displayImageUrl || item.displayImageUrl === originalImageUrl);
+  return ['original', 'crop', 'ai_segment', 'manual_crop', undefined, ''].includes(item.imageSourceType)
+    && !item.cleanImageUrl
+    && (!item.displayImageUrl || item.displayImageUrl === originalImageUrl || item.displayImageUrl === item.cropImageUrl || item.displayImageUrl === item.croppedImageUrl);
 }
 
-async function markClothingSegmentFailed(collection, clothingId, sourceFileID, errors) {
+function normalizeImageSourceType(item) {
+  if (item.imageSourceType === 'clean' || item.imageSourceType === 'crop' || item.imageSourceType === 'original') {
+    return item.imageSourceType;
+  }
+  if (item.imageSourceType === 'ai_segment') return 'clean';
+  if (item.imageSourceType === 'manual_crop') return 'crop';
+  if (item.cleanImageUrl || item.aiSegmentImageUrl) return 'clean';
+  if (item.cropImageUrl || item.croppedImageUrl || item.manualCropImageUrl) return 'crop';
+  return 'original';
+}
+
+async function markClothingSegmentFailed(collection, clothingId, sourceFileID, errors, cropStatus = 'skipped', currentStageStatus = {}) {
   const data = {
     displayImageUrl: sourceFileID,
     imageUrl: sourceFileID,
+    cleanImageUrl: '',
+    aiSegmentImageUrl: '',
+    imageSourceType: sourceFileID ? 'crop' : 'original',
+    assetStatus: 'needs_review',
+    needsUserConfirm: true,
     segmentStatus: 'failed',
     cutoutStatus: 'failed',
     segmentProvider: SEGMENT_PROVIDER,
@@ -470,6 +730,11 @@ async function markClothingSegmentFailed(collection, clothingId, sourceFileID, e
     cutoutProvider: 'none',
     segmentError: errors.join('|'),
     cutoutError: errors.join('|'),
+    stageStatus: {
+      ...(currentStageStatus || {}),
+      crop: cropStatus,
+      segment: 'failed',
+    },
     updatedAt: nowIso(),
   };
   await collection.doc(clothingId).update({ data });

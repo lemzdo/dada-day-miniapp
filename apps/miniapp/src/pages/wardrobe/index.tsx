@@ -7,6 +7,7 @@ import {
   createUploadBatch,
   createUploadImage,
   deleteCloudClothing,
+  getRecoverableUploadBatches,
   getWardrobe,
   inspectCloudClothingDelete,
   recognizeClothAttributes,
@@ -14,6 +15,7 @@ import {
 } from '@/lib/cloud';
 import { canRecognizeSingleClothing } from '@/utils/clothingLabels';
 import type { Clothing, ClothingCategory } from '@starter-template/types';
+import type { RecoverableUploadBatch } from '@/lib/cloud';
 import './index.scss';
 
 const WARDROBE_REFRESH_STORAGE_KEY = 'wardrobeNeedsRefresh';
@@ -57,6 +59,7 @@ export default function WardrobePage() {
   const [page, setPage] = useState(1);
   const [activeCategory, setActiveCategory] = useState<ClothingCategory | 'all'>('all');
   const [stats, setStats] = useState({ total: 50, used: 0 });
+  const [recoverableBatch, setRecoverableBatch] = useState<RecoverableUploadBatch | null>(null);
   const skipNextShowRefreshRef = useRef(false);
   const loadingRef = useRef(false);
   const lastFetchAtRef = useRef(0);
@@ -91,9 +94,21 @@ export default function WardrobePage() {
     [activeCategory],
   );
 
+  const fetchRecoverableUploadTask = useCallback(async () => {
+    try {
+      const result = await getRecoverableUploadBatches(1);
+      const task = (result.list || []).find((item) => Boolean(normalizeRecoverableTaskStatus(item.status))) ?? null;
+      setRecoverableBatch(task);
+    } catch (err) {
+      console.warn('Fetch recoverable upload task failed:', err);
+      setRecoverableBatch(null);
+    }
+  }, []);
+
   useLoad(() => {
     skipNextShowRefreshRef.current = true;
     fetchClothes(1, true);
+    void fetchRecoverableUploadTask();
   });
 
   useDidShow(() => {
@@ -109,6 +124,7 @@ export default function WardrobePage() {
     if (needsRefresh || Date.now() - lastFetchAtRef.current > WARDROBE_STALE_MS) {
       refreshWardrobe();
     }
+    void fetchRecoverableUploadTask();
   });
 
   useEffect(() => {
@@ -124,6 +140,7 @@ export default function WardrobePage() {
 
   usePullDownRefresh(() => {
     refreshWardrobe();
+    void fetchRecoverableUploadTask();
   });
 
   useReachBottom(() => {
@@ -196,6 +213,10 @@ export default function WardrobePage() {
     fetchClothes(1, true, activeCategory, true);
   }
 
+  function handleRecoverableTaskClick(batch: RecoverableUploadBatch) {
+    Taro.navigateTo({ url: `/pages/upload-confirm/index?batchId=${batch.id}` });
+  }
+
   async function handleDelete(item: Clothing) {
     try {
       const impact = await inspectCloudClothingDelete(item.id);
@@ -252,6 +273,7 @@ export default function WardrobePage() {
   }
 
   const percent = stats.total > 0 ? Math.min(100, Math.round((stats.used / stats.total) * 100)) : 0;
+  const recoverableStatus = normalizeRecoverableTaskStatus(recoverableBatch?.status);
 
   return (
     <View className="wardrobe-page">
@@ -266,6 +288,16 @@ export default function WardrobePage() {
           <View className="capacity-fill" style={{ width: `${percent}%` }} />
         </View>
       </View>
+
+      {recoverableBatch && recoverableStatus && (
+        <View className={`recognition-task-card ${recoverableStatus}`} onClick={() => handleRecoverableTaskClick(recoverableBatch)}>
+          <View className="recognition-task-main">
+            <Text className="recognition-task-title">{getRecognitionTaskTitle(recoverableStatus)}</Text>
+            <Text className="recognition-task-desc">{getRecognitionTaskDesc(recoverableBatch, recoverableStatus)}</Text>
+          </View>
+          <Text className="recognition-task-action">{getRecognitionTaskAction(recoverableStatus)}</Text>
+        </View>
+      )}
 
       <View className="category-scroll">
         {categories.map((cat) => (
@@ -349,4 +381,41 @@ function canSafelyRecognize(item: Clothing) {
 
 function trimMessage(message: string) {
   return message.length > 16 ? `${message.slice(0, 16)}...` : message;
+}
+
+type RecoverableTaskStatus = 'processing' | 'ready' | 'failed';
+
+function normalizeRecoverableTaskStatus(status?: string): RecoverableTaskStatus | null {
+  if (status === 'processing' || status === 'pending') return 'processing';
+  if (status === 'ready' || status === 'success' || status === 'partial_success' || status === 'completed') return 'ready';
+  if (status === 'failed' || status === 'empty' || status === 'partial_failed') return 'failed';
+  return null;
+}
+
+function getRecognitionTaskTitle(status: RecoverableTaskStatus) {
+  if (status === 'processing') return '正在识别新衣服';
+  if (status === 'ready') return '识别完成，待确认';
+  return '识别失败';
+}
+
+function getRecognitionTaskDesc(batch: RecoverableUploadBatch, status: RecoverableTaskStatus) {
+  const totalImages = Math.max(0, Number(batch.totalImages || 0));
+  const processedImages = Math.max(0, Number(batch.processedImages || 0));
+  const recognizedCount = Math.max(0, Number(batch.recognizedCount ?? batch.draftCount ?? batch.totalDetectedClothes ?? 0));
+
+  if (status === 'processing') {
+    return `正在处理 ${processedImages}/${totalImages} 张图片，已识别 ${recognizedCount} 件`;
+  }
+
+  if (status === 'ready') {
+    return `已识别 ${recognizedCount} 件衣服，请确认后保存到衣柜`;
+  }
+
+  return batch.errorMessage || batch.summaryMessage || '本次识别未成功，可点击查看详情';
+}
+
+function getRecognitionTaskAction(status: RecoverableTaskStatus) {
+  if (status === 'processing') return '点击继续查看';
+  if (status === 'ready') return '点击继续处理';
+  return '点击查看';
 }
