@@ -9,6 +9,8 @@ interface ClothingGridProps {
   onItemLongPress?: (item: Clothing) => void;
   loading?: boolean;
   emptyText?: string;
+  selectionMode?: boolean;
+  selectedIds?: string[];
 }
 
 export function ClothingGrid({
@@ -17,6 +19,8 @@ export function ClothingGrid({
   onItemLongPress,
   loading,
   emptyText = '还没有衣服，去添加第一件吧',
+  selectionMode = false,
+  selectedIds = [],
 }: ClothingGridProps) {
   if (loading) {
     return (
@@ -42,16 +46,22 @@ export function ClothingGrid({
     <View className="clothing-grid">
       {clothes.map((item) => {
         const styleTags = displayClothingTags(item.styleTags).slice(0, 2);
+        const selected = selectedIds.includes(item.id);
 
         return (
           <View
             key={item.id}
-            className="grid-item"
+            className={`grid-item ${selectionMode ? 'selectable' : ''} ${selected ? 'selected' : ''}`}
             onClick={() => onItemClick?.(item)}
             onLongPress={() => onItemLongPress?.(item)}
           >
             <View className="item-image-wrapper">
               <Image className="item-image" src={getDisplayImage(item)} mode="aspectFit" lazyLoad />
+              {selectionMode && (
+                <View className={`select-dot ${selected ? 'checked' : ''}`}>
+                  {selected && <Text className="select-check">✓</Text>}
+                </View>
+              )}
               {(item.aiRecognizeStatus === 'pending' || item.aiStatus === 'pending' || item.aiStatus === 'recognizing') && (
                 <View className="ai-status-badge recognizing">
                   <Text className="ai-status-text">小搭整理中</Text>

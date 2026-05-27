@@ -7,6 +7,7 @@ import {
   createUploadBatch,
   createUploadImage,
   deleteCloudClothing,
+  deleteCloudClothingBatch,
   getRecoverableUploadBatches,
   getWardrobe,
   inspectCloudClothingDelete,
@@ -60,6 +61,9 @@ export default function WardrobePage() {
   const [activeCategory, setActiveCategory] = useState<ClothingCategory | 'all'>('all');
   const [stats, setStats] = useState({ total: 50, used: 0 });
   const [recoverableBatch, setRecoverableBatch] = useState<RecoverableUploadBatch | null>(null);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [batchDeleting, setBatchDeleting] = useState(false);
   const skipNextShowRefreshRef = useRef(false);
   const loadingRef = useRef(false);
   const lastFetchAtRef = useRef(0);
@@ -138,6 +142,10 @@ export default function WardrobePage() {
     };
   }, [fetchClothes]);
 
+  useEffect(() => {
+    setSelectedIds((prev) => prev.filter((id) => clothes.some((item) => item.id === id)));
+  }, [clothes]);
+
   usePullDownRefresh(() => {
     refreshWardrobe();
     void fetchRecoverableUploadTask();
@@ -205,7 +213,38 @@ export default function WardrobePage() {
   }
 
   function handleItemClick(item: Clothing) {
+    if (selectionMode) {
+      toggleSelected(item.id);
+      return;
+    }
     Taro.navigateTo({ url: `/pages/clothing-detail/index?id=${item.id}` });
+  }
+
+  function toggleSelectionMode() {
+    if (selectionMode) {
+      exitSelectionMode();
+      return;
+    }
+    setSelectionMode(true);
+  }
+
+  function exitSelectionMode() {
+    if (batchDeleting) return;
+    setSelectionMode(false);
+    setSelectedIds([]);
+  }
+
+  function toggleSelected(id: string) {
+    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((itemId) => itemId !== id) : [...prev, id]));
+  }
+
+  function handleSelectAllToggle() {
+    if (batchDeleting) return;
+    if (allSelected) {
+      setSelectedIds([]);
+      return;
+    }
+    setSelectedIds(clothes.map((item) => item.id));
   }
 
   function refreshWardrobe() {
@@ -239,14 +278,52 @@ export default function WardrobePage() {
   }
 
   function handleItemLongPress(item: Clothing) {
-    Taro.showActionSheet({
-      itemList: ['查看详情', '重新识别', '删除'],
-      success: (res) => {
-        if (res.tapIndex === 0) handleItemClick(item);
-        if (res.tapIndex === 1) handleRecognize(item);
-        if (res.tapIndex === 2) handleDelete(item);
-      },
+    if (batchDeleting) return;
+    if (!selectionMode) {
+      setSelectionMode(true);
+      setSelectedIds([item.id]);
+      return;
+    }
+    toggleSelected(item.id);
+  }
+
+  async function handleBatchDelete() {
+    if (batchDeleting || selectedIds.length === 0) return;
+
+    const ids = selectedIds;
+    const modalRes = await Taro.showModal({
+      title: `让小搭帮你清理这 ${ids.length} 件衣服吗？`,
+      content: '清理后，这些衣服会先从衣柜里消失。7 天内系统会保留一小会儿，之后再悄悄收走～',
+      cancelText: '我再想想',
+      confirmText: '确认清理',
+      confirmColor: '#FF6B6B',
     });
+    if (!modalRes.confirm) return;
+
+    setBatchDeleting(true);
+    try {
+      const result = await deleteCloudClothingBatch(ids);
+      if (result.successIds.length > 0) {
+        setClothes((prev) => prev.filter((item) => !result.successIds.includes(item.id)));
+        setStats((prev) => ({ ...prev, used: Math.max(0, prev.used - result.successIds.length) }));
+      }
+
+      if (result.failedIds.length > 0) {
+        setSelectedIds(result.failedIds);
+        Taro.showToast({ title: '部分衣服没清理成功，再试一次吧', icon: 'none' });
+        return;
+      }
+
+      setSelectedIds([]);
+      setSelectionMode(false);
+      Taro.showToast({ title: '小搭已帮你清理好啦', icon: 'success' });
+      refreshWardrobe();
+    } catch (err) {
+      console.error('Batch delete clothing error:', err);
+      Taro.showToast({ title: '清理失败，小搭刚刚手滑了', icon: 'none' });
+    } finally {
+      setBatchDeleting(false);
+    }
   }
 
   async function handleRecognize(item: Clothing) {
@@ -274,9 +351,21 @@ export default function WardrobePage() {
 
   const percent = stats.total > 0 ? Math.min(100, Math.round((stats.used / stats.total) * 100)) : 0;
   const recoverableStatus = normalizeRecoverableTaskStatus(recoverableBatch?.status);
+  const allSelected = clothes.length > 0 && clothes.every((item) => selectedIds.includes(item.id));
+  const selectedCount = selectedIds.length;
 
   return (
-    <View className="wardrobe-page">
+    <View className={`wardrobe-page ${selectionMode ? 'selecting' : ''}`}>
+      <View className="wardrobe-header">
+        <View className="wardrobe-title-block">
+          <Text className="wardrobe-title">我的衣柜</Text>
+          {selectionMode && <Text className="selection-count">已选 {selectedCount} 件</Text>}
+        </View>
+        <View className={`manage-btn ${selectionMode ? 'active' : ''}`} onClick={toggleSelectionMode}>
+          <Text className="manage-btn-text">{selectionMode ? '取消' : '管理'}</Text>
+        </View>
+      </View>
+
       <View className="capacity-bar">
         <View className="capacity-info">
           <Text className="capacity-label">衣橱容量</Text>
@@ -316,6 +405,8 @@ export default function WardrobePage() {
         loading={loading && clothes.length === 0}
         onItemClick={handleItemClick}
         onItemLongPress={handleItemLongPress}
+        selectionMode={selectionMode}
+        selectedIds={selectedIds}
       />
 
       {clothes.length > 0 && (
@@ -329,6 +420,22 @@ export default function WardrobePage() {
       <View className="fab-add" onClick={handleAdd}>
         <Text className="fab-icon">+</Text>
       </View>
+
+      {selectionMode && (
+        <View className="selection-toolbar">
+          <View className="select-all-btn" onClick={handleSelectAllToggle}>
+            <Text className="select-all-text">{allSelected ? '取消全选' : '全选'}</Text>
+          </View>
+          <View
+            className={`batch-delete-btn ${selectedCount === 0 || batchDeleting ? 'disabled' : ''} ${batchDeleting ? 'deleting' : ''}`}
+            onClick={handleBatchDelete}
+          >
+            <Text className="batch-delete-text">
+              {batchDeleting ? '清理中...' : selectedCount > 0 ? `清理 ${selectedCount} 件` : '清理'}
+            </Text>
+          </View>
+        </View>
+      )}
     </View>
   );
 }

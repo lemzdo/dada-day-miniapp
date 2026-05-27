@@ -8,53 +8,99 @@ const DELETED_STATUS = 'deleted';
 exports.main = async (event = {}) => {
   try {
     const { OPENID } = cloud.getWXContext();
+    const batchIds = getBatchIds(event);
+    if (batchIds.length > 0) return ok(await deleteBatchClothes(OPENID, batchIds));
     if (!event.id) throw new Error('id is required');
 
-    const collection = db.collection('clothes');
-    const current = await collection.doc(event.id).get();
-    if (!current.data || current.data._openid !== OPENID) throw new Error('clothing not found');
-
-    const impact = await getDeleteImpact(OPENID, event.id);
+    const result = await deleteSingleClothing(OPENID, event.id, {
+      inspect: event.action === 'inspect' || event.dryRun,
+    });
     if (event.action === 'inspect' || event.dryRun) {
       return ok({
         id: event.id,
-        affectedFavoriteCount: impact.affectedFavoriteCount,
-        affectedHistoryCount: impact.affectedHistoryCount,
-        affectedOutfitCount: impact.affectedOutfitCount,
+        affectedFavoriteCount: result.affectedFavoriteCount,
+        affectedHistoryCount: result.affectedHistoryCount,
+        affectedOutfitCount: result.affectedOutfitCount,
       });
     }
 
-    const now = new Date().toISOString();
-    await ensureOutfitSnapshots({
-      openid: OPENID,
-      clothingId: event.id,
-      deletedItem: current.data,
-      outfits: impact.outfits,
-      favoriteOutfits: impact.favoriteOutfits,
-      historyOutfits: impact.historyOutfits,
-      now,
-    });
-
-    await collection.doc(event.id).update({
-      data: {
-        status: DELETED_STATUS,
-        deletedAt: now,
-        updatedAt: now,
-      },
-    });
-
-    return ok({
-      id: event.id,
-      deletedAt: now,
-      affectedFavoriteCount: impact.affectedFavoriteCount,
-      affectedHistoryCount: impact.affectedHistoryCount,
-      affectedOutfitCount: impact.affectedOutfitCount,
-    });
+    return ok(result);
   } catch (error) {
     console.error('[deleteClothes] failed', error);
     return fail(error);
   }
 };
+
+async function deleteBatchClothes(openid, ids) {
+  const successIds = [];
+  const failedIds = [];
+
+  for (const id of ids) {
+    try {
+      await deleteSingleClothing(openid, id);
+      successIds.push(id);
+    } catch (error) {
+      console.warn('[deleteClothes] batch item failed', { id, message: error && error.message });
+      failedIds.push(id);
+    }
+  }
+
+  return {
+    successIds,
+    failedIds,
+    total: ids.length,
+    successCount: successIds.length,
+    failedCount: failedIds.length,
+  };
+}
+
+async function deleteSingleClothing(openid, id, options = {}) {
+  const collection = db.collection('clothes');
+  const current = await collection.doc(id).get();
+  if (!current.data || current.data._openid !== openid) throw new Error('clothing not found');
+
+  const impact = await getDeleteImpact(openid, id);
+  if (options.inspect) {
+    return {
+      id,
+      affectedFavoriteCount: impact.affectedFavoriteCount,
+      affectedHistoryCount: impact.affectedHistoryCount,
+      affectedOutfitCount: impact.affectedOutfitCount,
+    };
+  }
+
+  const now = new Date().toISOString();
+  await ensureOutfitSnapshots({
+    openid,
+    clothingId: id,
+    deletedItem: current.data,
+    outfits: impact.outfits,
+    favoriteOutfits: impact.favoriteOutfits,
+    historyOutfits: impact.historyOutfits,
+    now,
+  });
+
+  await collection.doc(id).update({
+    data: {
+      status: DELETED_STATUS,
+      deletedAt: now,
+      updatedAt: now,
+    },
+  });
+
+  return {
+    id,
+    deletedAt: now,
+    affectedFavoriteCount: impact.affectedFavoriteCount,
+    affectedHistoryCount: impact.affectedHistoryCount,
+    affectedOutfitCount: impact.affectedOutfitCount,
+  };
+}
+
+function getBatchIds(event) {
+  const rawIds = Array.isArray(event.ids) ? event.ids : Array.isArray(event.clothesIds) ? event.clothesIds : [];
+  return Array.from(new Set(rawIds.filter((id) => typeof id === 'string' && id.trim()).map((id) => id.trim())));
+}
 
 async function getDeleteImpact(openid, clothingId) {
   const outfitsRes = await db.collection('outfits').where({ _openid: openid }).limit(500).get();

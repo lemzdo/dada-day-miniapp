@@ -287,6 +287,20 @@ export async function deleteCloudClothing(id: string) {
   return result;
 }
 
+export interface BatchDeleteCloudClothingResult {
+  successIds: string[];
+  failedIds: string[];
+  total: number;
+  successCount: number;
+  failedCount: number;
+}
+
+export async function deleteCloudClothingBatch(ids: string[]) {
+  const result = await callCloudFunction<BatchDeleteCloudClothingResult>('deleteClothes', { ids });
+  clearCloudCache(['getWardrobe:', 'generateOutfit:']);
+  return result;
+}
+
 export interface DeleteClothingImpact {
   id: string;
   affectedFavoriteCount: number;
