@@ -8,6 +8,7 @@ const DEFAULT_AITRYON_PARSING_MODEL = 'aitryon-parsing-v1';
 const AITRYON_PROVIDER = 'bailian_tryon_parsing';
 const PRIMARY_AITRYON_CLOTHES_TYPES = ['upper', 'lower'];
 const FALLBACK_AITRYON_CLOTHES_TYPES = ['dress'];
+const VALID_AITRYON_CLOTHES_TYPES = new Set(['upper', 'lower', 'dress', 'jumpsuit']);
 
 const DEFAULT_STAGE_STATUS = {
   router: 'skipped',
@@ -596,6 +597,7 @@ async function callBailianJson({ model, imageUrl, prompt, maxTokens }) {
 async function callAitryonParsing({ imageUrl, clothesType, endpoint, model }) {
   const apiKey = getRequiredEnv('BAILIAN_API_KEY');
   const fetch = require('node-fetch');
+  const normalizedClothesType = normalizeTryonParsingClothesType(clothesType);
   const response = await fetch(endpoint, {
     method: 'POST',
     headers: {
@@ -608,7 +610,7 @@ async function callAitryonParsing({ imageUrl, clothesType, endpoint, model }) {
         image_url: imageUrl,
       },
       parameters: {
-        clothes_type: clothesType,
+        clothes_type: normalizedClothesType,
       },
     }),
     timeout: getAiTimeoutMs(),
@@ -627,6 +629,19 @@ async function callAitryonParsing({ imageUrl, clothesType, endpoint, model }) {
     throw new Error('aitryon_parsing_api_empty_output');
   }
   return data;
+}
+
+function normalizeTryonParsingClothesType(value) {
+  const clothesTypes = Array.isArray(value) ? value : [value];
+  if (clothesTypes.length === 0) {
+    throw new Error('invalid_aitryon_clothes_type:empty');
+  }
+  for (const item of clothesTypes) {
+    if (!VALID_AITRYON_CLOTHES_TYPES.has(item)) {
+      throw new Error(`invalid_aitryon_clothes_type:${String(item)}`);
+    }
+  }
+  return clothesTypes;
 }
 
 function getAitryonParsingEndpoint() {
