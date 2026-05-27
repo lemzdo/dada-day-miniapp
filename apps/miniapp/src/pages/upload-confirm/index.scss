@@ -1,7 +1,9 @@
 .upload-confirm-page {
   min-height: 100vh;
   background: #f7f8fa;
-  padding: 24px 24px 140px;
+  padding: 24px 24px 220px;
+  padding-bottom: calc(220px + constant(safe-area-inset-bottom));
+  padding-bottom: calc(220px + env(safe-area-inset-bottom));
   box-sizing: border-box;
 }
 
@@ -54,7 +56,6 @@
 .progress-stat,
 .failed-text,
 .confidence,
-.save-count,
 .empty-desc {
   color: #6b7280;
   font-size: 24px;
@@ -156,6 +157,8 @@
 .draft-list {
   height: calc(100vh - 330px);
   margin-top: 20px;
+  padding-bottom: 160px;
+  box-sizing: border-box;
 }
 
 .draft-card {
@@ -349,40 +352,57 @@
   right: 0;
   bottom: 0;
   left: 0;
+  z-index: 10;
   justify-content: space-between;
-  padding: 20px 24px 34px;
+  gap: 16px;
+  padding: 18px 24px 24px;
+  padding-bottom: calc(24px + constant(safe-area-inset-bottom));
+  padding-bottom: calc(24px + env(safe-area-inset-bottom));
   background: #fff;
   box-shadow: 0 -8px 24px rgba(15, 23, 42, 0.08);
 }
 
+.save-btn,
+.discard-batch-btn,
+.save-bar-placeholder {
+  display: flex;
+  height: 88px;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  border-radius: 999px;
+}
+
 .save-btn {
-  min-width: 220px;
+  flex: 1;
+  min-width: 0;
+  padding: 0 24px;
   text-align: center;
 }
 
 .save-btn.disabled {
-  opacity: 0.45;
-}
-
-.save-info {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-width: 0;
+  background: #d1d5db;
 }
 
 .discard-batch-btn {
-  align-self: flex-start;
-  padding: 8px 0;
+  flex: 0 0 240px;
+  padding: 0 20px;
+  border: 1px solid #fecaca;
+  background: #fff1f2;
 }
 
 .discard-batch-btn.disabled {
   opacity: 0.45;
 }
 
+.save-bar-placeholder {
+  flex: 0 0 240px;
+}
+
 .discard-batch-text {
-  color: #ef4444;
+  color: #dc2626;
   font-size: 24px;
+  font-weight: 500;
 }
 
 .draft-edit-overlay {

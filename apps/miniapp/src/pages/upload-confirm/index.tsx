@@ -194,22 +194,15 @@ export default function UploadConfirmPage() {
 
   async function handleSave() {
     if (!batchId || saving) return;
-    const taskStatus = normalizeUploadBatchStatus(batch?.status);
-    const pendingDrafts = drafts.filter((draft) => draft.status === 'pending' || draft.status === 'discarded');
-    const selectedCount = pendingDrafts.filter((draft) => draft.selected && draft.status !== 'discarded').length;
-    if (!canSaveDrafts(taskStatus, selectedCount)) {
+    if (savableDrafts.length === 0) {
       Taro.showToast({ title: getDisabledSaveToast(taskStatus), icon: 'none' });
-      return;
-    }
-    if (selectedCount === 0) {
-      Taro.showToast({ title: '请选择至少一件衣服', icon: 'none' });
       return;
     }
 
     setSaving(true);
     Taro.showLoading({ title: '保存中...' });
     try {
-      await confirmClothesDrafts(batchId, pendingDrafts.map((draft) => ({
+      await confirmClothesDrafts(batchId, savableDrafts.map((draft) => ({
         id: draft.id,
         type: draft.type,
         categoryName: draft.categoryName,
@@ -242,7 +235,7 @@ export default function UploadConfirmPage() {
         aiSegmentImageUrl: draft.aiSegmentImageUrl,
         manualCropImageUrl: draft.manualCropImageUrl,
         manualCropStatus: draft.manualCropStatus,
-        selected: draft.selected && draft.status !== 'discarded',
+        selected: true,
       })));
       Taro.setStorageSync(WARDROBE_REFRESH_STORAGE_KEY, true);
       Taro.showToast({ title: '已保存到衣柜', icon: 'success' });
@@ -286,18 +279,17 @@ export default function UploadConfirmPage() {
     }
   }
 
-  const selectedCount = drafts.filter((draft) => draft.selected && draft.status === 'pending').length;
+  const savableDrafts = drafts.filter(isSavableDraft);
   const totalImages = batch?.totalImages ?? images.length;
   const processedImages = batch?.processedImages ?? images.filter((item) => isImageProcessed(item)).length;
   const imageDetectedCount = images.reduce((sum, item) => sum + item.detectedCount, 0);
   const detectedCount = Math.max(drafts.length, batch?.totalDetectedClothes ?? 0, imageDetectedCount);
   const progress = totalImages > 0 ? Math.round((processedImages / totalImages) * 100) : 0;
   const taskStatus = normalizeUploadBatchStatus(batch?.status);
-  const pendingDraftCount = drafts.filter((draft) => draft.status === 'pending').length;
   const canEditDrafts = taskStatus !== 'saved' && taskStatus !== 'discarded';
   const canDiscardBatch = taskStatus === 'processing' || taskStatus === 'ready' || taskStatus === 'failed';
-  const saveDisabled = saving || processing || !canSaveDrafts(taskStatus, selectedCount);
-  const saveText = getSaveButtonText(taskStatus, saving);
+  const saveDisabled = saving || savableDrafts.length === 0;
+  const saveText = getSaveButtonText(savableDrafts.length, saving);
 
   if (loading) {
     return (
@@ -426,14 +418,13 @@ export default function UploadConfirmPage() {
       )}
 
       <View className="save-bar">
-        <View className="save-info">
-          <Text className="save-count">{getSaveCountText(taskStatus, selectedCount, pendingDraftCount)}</Text>
-          {canDiscardBatch && (
-            <View className={`discard-batch-btn ${discardingBatch ? 'disabled' : ''}`} onClick={handleDiscardBatch}>
-              <Text className="discard-batch-text">{discardingBatch ? '舍弃中...' : '舍弃本次识别'}</Text>
-            </View>
-          )}
-        </View>
+        {canDiscardBatch ? (
+          <View className={`discard-batch-btn ${discardingBatch ? 'disabled' : ''}`} onClick={handleDiscardBatch}>
+            <Text className="discard-batch-text">{discardingBatch ? '舍弃中...' : '舍弃本次识别'}</Text>
+          </View>
+        ) : (
+          <View className="save-bar-placeholder" />
+        )}
         <View className={`save-btn ${saveDisabled ? 'disabled' : ''}`} onClick={handleSave}>
           <Text className="save-text">{saveText}</Text>
         </View>
@@ -548,15 +539,20 @@ function getFailedStatusMessage(batch?: UploadBatch | null) {
   return batch?.errorMessage || batch?.summaryMessage || '本次识别未成功，可查看已有结果或返回衣柜。';
 }
 
-function canSaveDrafts(status: UploadBatchViewStatus, selectedCount: number) {
-  return (status === 'ready' || status === 'failed') && selectedCount > 0;
+function isSavableDraft(draft: ClothesDraft) {
+  return (
+    draft.status === 'pending'
+    && draft.selected
+    && draft.assetStatus === 'ready'
+    && draft.segmentStatus === 'success'
+    && getDraftImageSourceType(draft) === 'clean'
+    && Boolean(getDraftDisplayImage(draft))
+  );
 }
 
-function getSaveButtonText(status: UploadBatchViewStatus, saving: boolean) {
+function getSaveButtonText(savableCount: number, saving: boolean) {
   if (saving) return '保存中...';
-  if (status === 'processing') return '识别完成后可保存';
-  if (status === 'saved') return '已保存到衣柜';
-  if (status === 'discarded') return '已舍弃';
+  if (savableCount === 0) return '识别完成后可保存';
   return '保存到衣柜';
 }
 
@@ -565,14 +561,6 @@ function getDisabledSaveToast(status: UploadBatchViewStatus) {
   if (status === 'saved') return '本次识别已保存';
   if (status === 'discarded') return '本次识别已舍弃';
   return '暂无可保存的衣服';
-}
-
-function getSaveCountText(status: UploadBatchViewStatus, selectedCount: number, pendingDraftCount: number) {
-  if (status === 'processing') return '识别完成后可保存';
-  if (status === 'saved') return '已保存';
-  if (status === 'discarded') return '已舍弃';
-  if (pendingDraftCount === 0) return '暂无可保存衣服';
-  return `已选择 ${selectedCount} 件`;
 }
 
 function getEmptyTitle(status: UploadBatchViewStatus) {
