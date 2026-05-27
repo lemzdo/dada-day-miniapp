@@ -291,10 +291,11 @@ export default function UploadConfirmPage() {
   const progress = totalImages > 0 ? Math.round((processedImages / totalImages) * 100) : 0;
   const taskStatus = normalizeUploadBatchStatus(batch?.status);
   const hasSavableDrafts = savableDrafts.length > 0;
-  const showProcessingProgress = taskStatus === 'processing';
+  const hasProcessingDrafts = drafts.some(isDraftProcessing);
+  const showProcessingProgress = !hasSavableDrafts && (hasProcessingDrafts || taskStatus === 'processing');
   const canEditDrafts = taskStatus !== 'saved' && taskStatus !== 'discarded';
   const canDiscardBatch = taskStatus === 'processing' || taskStatus === 'ready' || taskStatus === 'failed';
-  const saveDisabled = saving || showProcessingProgress || !hasSavableDrafts;
+  const saveDisabled = saving || !hasSavableDrafts;
   const saveText = getSaveButtonText(hasSavableDrafts, saving, showProcessingProgress);
 
   if (loading) {
@@ -530,7 +531,7 @@ function normalizeUploadBatchStatus(status?: string): UploadBatchViewStatus {
 }
 
 function getProgressTitle(status: UploadBatchViewStatus, hasSavableDrafts: boolean) {
-  if (hasSavableDrafts && status !== 'processing' && status !== 'saved' && status !== 'discarded') return '识别结果待保存';
+  if (hasSavableDrafts) return '识别结果待保存';
   if (status === 'ready') return '暂无可保存衣服';
   if (status === 'failed') return '识别未完成';
   if (status === 'saved') return '本次识别已保存到衣柜';
@@ -539,7 +540,7 @@ function getProgressTitle(status: UploadBatchViewStatus, hasSavableDrafts: boole
 }
 
 function getProgressDesc(status: UploadBatchViewStatus, batch: UploadBatch | null | undefined, hasSavableDrafts: boolean) {
-  if (hasSavableDrafts && status !== 'processing' && status !== 'saved' && status !== 'discarded') return '已处理完成，可保存到衣柜。';
+  if (hasSavableDrafts) return '已处理完成，可保存到衣柜。';
   if (status === 'ready') return batch?.summaryMessage || '已处理完成，但暂无可保存衣服。';
   if (status === 'failed') return getFailedStatusMessage(batch);
   if (status === 'saved') return '这批识别结果已经保存，请返回衣柜查看。';
@@ -570,8 +571,9 @@ function getSavableDraftImage(draft: ClothesDraft) {
 
 function getSaveButtonText(hasSavableDrafts: boolean, saving: boolean, isProcessing: boolean) {
   if (saving) return '保存中...';
-  if (!hasSavableDrafts || isProcessing) return '识别完成后可保存';
-  return '保存到衣柜';
+  if (hasSavableDrafts) return '保存到衣柜';
+  if (isProcessing) return '识别完成后可保存';
+  return '暂无可保存衣服';
 }
 
 function getDisabledSaveToast(status: UploadBatchViewStatus) {
@@ -648,10 +650,17 @@ function getDraftImageSourceText(draft: ClothesDraft) {
 }
 
 function isUsingOriginalFallback(draft: ClothesDraft) {
-  const displayImage = draft.displayImageUrl || draft.imageUrl;
+  const hasOriginalImage = Boolean(draft.originalImageUrl);
+  const hasUsableImage = Boolean(draft.displayImageUrl || draft.originalImageUrl);
   return (
-    draft.segmentStatus === 'failed'
-    && Boolean(draft.originalImageUrl)
-    && (!displayImage || displayImage === draft.originalImageUrl || getDraftImageSourceType(draft) === 'original')
+    hasOriginalImage
+    && (
+      draft.segmentStatus === 'failed'
+      || draft.segmentStatus === 'skipped'
+      || draft.imageSourceType === 'original'
+      || draft.displayImageUrl === draft.originalImageUrl
+      || (!draft.cleanImageUrl && hasUsableImage)
+      || (draft.assetStatus === 'needs_review' && hasUsableImage)
+    )
   );
 }
