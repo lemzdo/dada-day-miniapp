@@ -194,6 +194,10 @@ export default function UploadConfirmPage() {
 
   async function handleSave() {
     if (!batchId || saving) return;
+    if (taskStatus === 'processing') {
+      Taro.showToast({ title: getDisabledSaveToast(taskStatus), icon: 'none' });
+      return;
+    }
     if (savableDrafts.length === 0) {
       Taro.showToast({ title: getDisabledSaveToast(taskStatus), icon: 'none' });
       return;
@@ -204,7 +208,7 @@ export default function UploadConfirmPage() {
     try {
       await confirmClothesDrafts(batchId, savableDrafts.map((draft) => ({
         id: draft.id,
-        type: draft.type,
+        type: normalizeCategory(draft.type),
         categoryName: draft.categoryName,
         color: draft.color,
         colors: draft.colors,
@@ -220,9 +224,9 @@ export default function UploadConfirmPage() {
         croppedImageUrl: draft.croppedImageUrl,
         maskImageUrl: draft.maskImageUrl,
         cleanImageUrl: draft.cleanImageUrl,
-        displayImageUrl: getDraftDisplayImage(draft),
+        displayImageUrl: getSavableDraftImage(draft),
         imageSourceType: getDraftImageSourceType(draft),
-        imageUrl: getDraftDisplayImage(draft),
+        imageUrl: getSavableDraftImage(draft),
         assetStatus: draft.assetStatus,
         qualityScore: draft.qualityScore,
         needsUserConfirm: draft.needsUserConfirm,
@@ -286,10 +290,12 @@ export default function UploadConfirmPage() {
   const detectedCount = Math.max(drafts.length, batch?.totalDetectedClothes ?? 0, imageDetectedCount);
   const progress = totalImages > 0 ? Math.round((processedImages / totalImages) * 100) : 0;
   const taskStatus = normalizeUploadBatchStatus(batch?.status);
+  const hasSavableDrafts = savableDrafts.length > 0;
+  const showProcessingProgress = taskStatus === 'processing';
   const canEditDrafts = taskStatus !== 'saved' && taskStatus !== 'discarded';
   const canDiscardBatch = taskStatus === 'processing' || taskStatus === 'ready' || taskStatus === 'failed';
-  const saveDisabled = saving || savableDrafts.length === 0;
-  const saveText = getSaveButtonText(savableDrafts.length, saving);
+  const saveDisabled = saving || showProcessingProgress || !hasSavableDrafts;
+  const saveText = getSaveButtonText(hasSavableDrafts, saving, showProcessingProgress);
 
   if (loading) {
     return (
@@ -302,19 +308,23 @@ export default function UploadConfirmPage() {
   return (
     <View className="upload-confirm-page">
       <View className={`progress-panel ${taskStatus}`}>
-        <Text className="progress-title">{getProgressTitle(taskStatus)}</Text>
-        <Text className="progress-desc">{getProgressDesc(taskStatus, batch)}</Text>
-        <View className="progress-track">
-          <View className="progress-fill" style={{ width: `${progress}%` }} />
-        </View>
-        <View className="progress-stat-list">
-          <Text className="progress-stat">正在处理 {processedImages}/{totalImages} 张图片</Text>
-          <Text className="progress-stat">已识别 {detectedCount} 件衣服</Text>
-        </View>
+        <Text className="progress-title">{getProgressTitle(taskStatus, hasSavableDrafts)}</Text>
+        <Text className="progress-desc">{getProgressDesc(taskStatus, batch, hasSavableDrafts)}</Text>
+        {showProcessingProgress && (
+          <>
+            <View className="progress-track">
+              <View className="progress-fill" style={{ width: `${progress}%` }} />
+            </View>
+            <View className="progress-stat-list">
+              <Text className="progress-stat">正在处理 {processedImages}/{totalImages} 张图片</Text>
+              <Text className="progress-stat">已识别 {detectedCount} 件衣服</Text>
+            </View>
+          </>
+        )}
         {taskStatus === 'processing' && detectedCount === 0 && (
           <Text className="progress-subhint">暂未识别到衣服，请稍等</Text>
         )}
-        {taskStatus === 'failed' && (
+        {taskStatus === 'failed' && !hasSavableDrafts && (
           <Text className="progress-subhint">{getFailedStatusMessage(batch)}</Text>
         )}
         {(taskStatus === 'saved' || taskStatus === 'discarded') && (
@@ -361,8 +371,8 @@ export default function UploadConfirmPage() {
                 <Text className="confidence">置信度 {draft.confidence || 0}%</Text>
               </View>
               <View className="status-line">
-                <Text className={`asset-status ${draft.assetStatus || 'needs_review'}`}>{getAssetStatusText(draft)}</Text>
-                <Text className={`segment-status ${draft.segmentStatus}`}>{getSegmentStatusText(draft)}</Text>
+                <Text className={`asset-status ${getAssetStatusClass(draft)}`}>{getAssetStatusText(draft)}</Text>
+                <Text className={`segment-status ${getSegmentStatusClass(draft)}`}>{getSegmentStatusText(draft)}</Text>
               </View>
 
               <View className="draft-summary">
@@ -519,16 +529,18 @@ function normalizeUploadBatchStatus(status?: string): UploadBatchViewStatus {
   return 'processing';
 }
 
-function getProgressTitle(status: UploadBatchViewStatus) {
-  if (status === 'ready') return '识别完成，待确认';
+function getProgressTitle(status: UploadBatchViewStatus, hasSavableDrafts: boolean) {
+  if (hasSavableDrafts && status !== 'processing' && status !== 'saved' && status !== 'discarded') return '识别结果待保存';
+  if (status === 'ready') return '暂无可保存衣服';
   if (status === 'failed') return '识别未完成';
   if (status === 'saved') return '本次识别已保存到衣柜';
   if (status === 'discarded') return '本次识别已舍弃';
   return '正在识别衣服';
 }
 
-function getProgressDesc(status: UploadBatchViewStatus, batch?: UploadBatch | null) {
-  if (status === 'ready') return batch?.summaryMessage || '请确认识别结果，保存后会加入衣柜。';
+function getProgressDesc(status: UploadBatchViewStatus, batch: UploadBatch | null | undefined, hasSavableDrafts: boolean) {
+  if (hasSavableDrafts && status !== 'processing' && status !== 'saved' && status !== 'discarded') return '已处理完成，可保存到衣柜。';
+  if (status === 'ready') return batch?.summaryMessage || '已处理完成，但暂无可保存衣服。';
   if (status === 'failed') return getFailedStatusMessage(batch);
   if (status === 'saved') return '这批识别结果已经保存，请返回衣柜查看。';
   if (status === 'discarded') return '这批上传识别已被舍弃，不能继续保存。';
@@ -543,16 +555,22 @@ function isSavableDraft(draft: ClothesDraft) {
   return (
     draft.status === 'pending'
     && draft.selected
-    && draft.assetStatus === 'ready'
-    && draft.segmentStatus === 'success'
-    && getDraftImageSourceType(draft) === 'clean'
-    && Boolean(getDraftDisplayImage(draft))
+    && !isDraftProcessing(draft)
+    && Boolean(getSavableDraftImage(draft))
   );
 }
 
-function getSaveButtonText(savableCount: number, saving: boolean) {
+function isDraftProcessing(draft: ClothesDraft) {
+  return draft.segmentStatus === 'queued' || draft.segmentStatus === 'processing';
+}
+
+function getSavableDraftImage(draft: ClothesDraft) {
+  return draft.displayImageUrl || draft.originalImageUrl;
+}
+
+function getSaveButtonText(hasSavableDrafts: boolean, saving: boolean, isProcessing: boolean) {
   if (saving) return '保存中...';
-  if (savableCount === 0) return '识别完成后可保存';
+  if (!hasSavableDrafts || isProcessing) return '识别完成后可保存';
   return '保存到衣柜';
 }
 
@@ -578,6 +596,7 @@ function getEmptyDesc(status: UploadBatchViewStatus, batch?: UploadBatch | null)
 }
 
 function getSegmentStatusText(draft: ClothesDraft) {
+  if (isUsingOriginalFallback(draft)) return '已用原图';
   if (draft.segmentStatus === 'success') return '清晰衣物图已就绪';
   if (draft.segmentStatus === 'processing' || draft.segmentStatus === 'queued') return '小搭正在生成干净图';
   if (draft.segmentStatus === 'failed') return '图片增强失败';
@@ -585,10 +604,21 @@ function getSegmentStatusText(draft: ClothesDraft) {
   return '已保留可用图片';
 }
 
+function getSegmentStatusClass(draft: ClothesDraft) {
+  if (isUsingOriginalFallback(draft)) return 'original_fallback';
+  return draft.segmentStatus;
+}
+
 function getAssetStatusText(draft: ClothesDraft) {
+  if (isUsingOriginalFallback(draft)) return '已用原图';
   if (draft.assetStatus === 'ready') return '已处理完成';
   if (draft.assetStatus === 'failed') return '处理失败';
-  return '需要确认';
+  return '待保存';
+}
+
+function getAssetStatusClass(draft: ClothesDraft) {
+  if (isUsingOriginalFallback(draft)) return 'original_fallback';
+  return draft.assetStatus || 'needs_review';
 }
 
 function getDraftDisplayImage(draft: ClothesDraft) {
@@ -613,5 +643,15 @@ function getDraftImageSourceText(draft: ClothesDraft) {
   if (sourceType === 'clean') return '已生成清晰衣物图';
   if (sourceType === 'crop') return '已自动截取衣服区域';
   if (draft.segmentStatus === 'processing' || draft.segmentStatus === 'queued') return '小搭正在生成干净图';
-  return '图片处理不理想，已先使用原图';
+  if (isUsingOriginalFallback(draft)) return 'AI 抠图不理想，已保留原图展示';
+  return '已保留原图展示';
+}
+
+function isUsingOriginalFallback(draft: ClothesDraft) {
+  const displayImage = draft.displayImageUrl || draft.imageUrl;
+  return (
+    draft.segmentStatus === 'failed'
+    && Boolean(draft.originalImageUrl)
+    && (!displayImage || displayImage === draft.originalImageUrl || getDraftImageSourceType(draft) === 'original')
+  );
 }
