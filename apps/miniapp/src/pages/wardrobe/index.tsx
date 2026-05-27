@@ -101,7 +101,7 @@ export default function WardrobePage() {
   const fetchRecoverableUploadTask = useCallback(async () => {
     try {
       const result = await getRecoverableUploadBatches(1);
-      const task = (result.list || []).find((item) => Boolean(normalizeRecoverableTaskStatus(item.status))) ?? null;
+      const task = (result.list || []).find((item) => Boolean(getRecoverableTaskState(item))) ?? null;
       setRecoverableBatch(task);
     } catch (err) {
       console.warn('Fetch recoverable upload task failed:', err);
@@ -350,7 +350,7 @@ export default function WardrobePage() {
   }
 
   const percent = stats.total > 0 ? Math.min(100, Math.round((stats.used / stats.total) * 100)) : 0;
-  const recoverableStatus = normalizeRecoverableTaskStatus(recoverableBatch?.status);
+  const recoverableStatus = recoverableBatch ? getRecoverableTaskState(recoverableBatch) : null;
   const allSelected = clothes.length > 0 && clothes.every((item) => selectedIds.includes(item.id));
   const selectedCount = selectedIds.length;
 
@@ -492,37 +492,65 @@ function trimMessage(message: string) {
 
 type RecoverableTaskStatus = 'processing' | 'ready' | 'failed';
 
-function normalizeRecoverableTaskStatus(status?: string): RecoverableTaskStatus | null {
-  if (status === 'processing' || status === 'pending') return 'processing';
-  if (status === 'ready' || status === 'success' || status === 'partial_success' || status === 'completed') return 'ready';
-  if (status === 'failed' || status === 'empty' || status === 'partial_failed') return 'failed';
+function getRecoverableTaskState(batch: RecoverableUploadBatch): RecoverableTaskStatus | null {
+  if (batch.status === 'saved' || batch.status === 'discarded') return null;
+
+  const totalImages = getRecoverableTotalImages(batch);
+  const processedImages = getRecoverableProcessedImages(batch);
+  const recognizedCount = getRecoverableRecognizedCount(batch);
+  const isBatchComplete = totalImages > 0 && processedImages >= totalImages;
+
+  if (isBatchComplete && recognizedCount > 0) return 'ready';
+  if (isBatchComplete) return 'failed';
+  if (batch.status === 'processing' || batch.status === 'pending') return 'processing';
+  if (batch.status === 'ready' || batch.status === 'success' || batch.status === 'partial_success' || batch.status === 'completed') return 'ready';
+  if (batch.status === 'failed' || batch.status === 'empty' || batch.status === 'partial_failed') return 'failed';
   return null;
 }
 
+function getRecoverableTotalImages(batch: RecoverableUploadBatch) {
+  return Math.max(0, Number(batch.totalImages || 0));
+}
+
+function getRecoverableProcessedImages(batch: RecoverableUploadBatch) {
+  return Math.min(
+    getRecoverableTotalImages(batch),
+    Math.max(0, Number(batch.processedImages || 0)),
+  );
+}
+
+function getRecoverableRecognizedCount(batch: RecoverableUploadBatch) {
+  return Math.max(0, Number(batch.recognizedCount ?? batch.draftCount ?? batch.totalDetectedClothes ?? 0));
+}
+
 function getRecognitionTaskTitle(status: RecoverableTaskStatus) {
-  if (status === 'processing') return '正在识别新衣服';
-  if (status === 'ready') return '识别完成，待确认';
-  return '识别失败';
+  if (status === 'processing') return '小搭正在帮你识别新衣服';
+  if (status === 'ready') return '小搭整理好啦';
+  return '这次没识别出可保存的衣服';
 }
 
 function getRecognitionTaskDesc(batch: RecoverableUploadBatch, status: RecoverableTaskStatus) {
-  const totalImages = Math.max(0, Number(batch.totalImages || 0));
-  const processedImages = Math.max(0, Number(batch.processedImages || 0));
-  const recognizedCount = Math.max(0, Number(batch.recognizedCount ?? batch.draftCount ?? batch.totalDetectedClothes ?? 0));
+  const totalImages = getRecoverableTotalImages(batch);
+  const processedImages = getRecoverableProcessedImages(batch);
+  const recognizedCount = getRecoverableRecognizedCount(batch);
 
   if (status === 'processing') {
-    return `正在处理 ${processedImages}/${totalImages} 张图片，已识别 ${recognizedCount} 件`;
+    if (recognizedCount > 0) {
+      const remainingImages = Math.max(0, totalImages - processedImages);
+      return `小搭已经识别出 ${recognizedCount} 件衣服，还在处理 ${remainingImages} 张图片`;
+    }
+    return `正在处理 ${processedImages}/${totalImages} 张图片`;
   }
 
   if (status === 'ready') {
-    return `已识别 ${recognizedCount} 件衣服，请确认后保存到衣柜`;
+    return `已识别出 ${recognizedCount} 件衣服，去确认后就能保存啦`;
   }
 
-  return batch.errorMessage || batch.summaryMessage || '本次识别未成功，可点击查看详情';
+  return '可以换张更清晰的照片再试试';
 }
 
 function getRecognitionTaskAction(status: RecoverableTaskStatus) {
-  if (status === 'processing') return '点击继续查看';
-  if (status === 'ready') return '点击继续处理';
+  if (status === 'processing') return '点击查看进度';
+  if (status === 'ready') return '点击去确认';
   return '点击查看';
 }

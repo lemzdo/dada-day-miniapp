@@ -1,9 +1,9 @@
 .upload-confirm-page {
   min-height: 100vh;
   background: #f7f8fa;
-  padding: 24px 24px 220px;
-  padding-bottom: calc(220px + constant(safe-area-inset-bottom));
-  padding-bottom: calc(220px + env(safe-area-inset-bottom));
+  padding: 24px 24px 240px;
+  padding-bottom: calc(240px + constant(safe-area-inset-bottom));
+  padding-bottom: calc(240px + env(safe-area-inset-bottom));
   box-sizing: border-box;
 }
 
@@ -155,9 +155,8 @@
 }
 
 .draft-list {
-  height: calc(100vh - 330px);
   margin-top: 20px;
-  padding-bottom: 160px;
+  padding-bottom: 32px;
   box-sizing: border-box;
 }
 
