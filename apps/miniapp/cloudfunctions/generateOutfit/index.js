@@ -18,7 +18,7 @@ exports.main = async (event = {}) => {
     if (action === 'wear') return ok(await confirmWear(event.id, event.date, event.outfit));
     if (action === 'list') return ok(await listOutfits(event));
     if (action === 'saveFavoriteOutfit') return ok(await saveFavoriteOutfit(event.id, event.outfit, event.aiComment));
-    if (action === 'removeFavoriteOutfit') return ok(await removeFavoriteOutfit(event.favoriteOutfitId || event.id));
+    if (action === 'removeFavoriteOutfit') return ok(await removeFavoriteOutfit(event.favoriteOutfitId || event.id, event.outfitKey));
     if (action === 'listFavoriteOutfits') return ok(await listFavoriteOutfits(event));
     if (action === 'addOutfitHistory') return ok(await addOutfitHistory(event));
     if (action === 'listOutfitHistory') return ok(await listOutfitHistory(event));
@@ -439,14 +439,30 @@ async function saveFavoriteOutfit(id, outfitPayload, aiCommentPayload) {
   });
 }
 
-async function removeFavoriteOutfit(id) {
+async function removeFavoriteOutfit(id, outfitKey) {
   const { OPENID } = cloud.getWXContext();
-  if (!id) throw new Error('favoriteOutfitId is required');
-  const favorite = await db.collection('favorite_outfits').doc(id).get();
-  if (!favorite.data || favorite.data._openid !== OPENID) throw new Error('favorite outfit not found');
+  if (!id && !outfitKey) throw new Error('favoriteOutfitId is required');
+  let favorite = null;
 
-  await db.collection('favorite_outfits').doc(id).remove();
-  return { success: true, id };
+  if (id) {
+    try {
+      const res = await db.collection('favorite_outfits').doc(id).get();
+      if (res.data && res.data._openid === OPENID) favorite = res.data;
+    } catch {
+      favorite = null;
+    }
+  }
+
+  if (!favorite && outfitKey) {
+    favorite = await findFavoriteByKey(OPENID, outfitKey);
+  }
+
+  if (!favorite || favorite.deletedAt) {
+    return { success: true, id, outfitKey, alreadyRemoved: true };
+  }
+
+  await db.collection('favorite_outfits').doc(favorite._id).remove();
+  return { success: true, id: favorite._id, outfitKey: favorite.outfitKey };
 }
 
 async function listFavoriteOutfits(event) {

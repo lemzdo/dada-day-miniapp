@@ -406,10 +406,11 @@ export async function saveFavoriteOutfit(outfit: Outfit, aiComment: OutfitAiComm
   return outfitResult;
 }
 
-export async function removeFavoriteOutfit(favoriteOutfitId: string) {
-  const result = await callCloudFunction<{ success: boolean; id: string }>('generateOutfit', {
+export async function removeFavoriteOutfit(favoriteOutfitId: string, outfitKey?: string) {
+  const result = await callCloudFunction<{ success: boolean; id?: string; outfitKey?: string; alreadyRemoved?: boolean }>('generateOutfit', {
     action: 'removeFavoriteOutfit',
     favoriteOutfitId,
+    outfitKey,
   });
   clearCloudCache(['generateOutfit:', 'favoriteOutfits:']);
   return result;

@@ -11,7 +11,7 @@ import {
   renameCloudOutfit,
   saveFavoriteOutfit,
 } from '@/lib/cloud';
-import { normalizeOutfitSnapshot, readOutfitDetailDraft, storeOutfitDetailDraft } from '@/utils/outfitSnapshot';
+import { normalizeOutfitSnapshot, readOutfitDetailDraft, storeOutfitDetailDraft, storeOutfitStateSync } from '@/utils/outfitSnapshot';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
 import type { Outfit, OutfitScores } from '@starter-template/types';
 import './index.scss';
@@ -65,7 +65,6 @@ export default function OutfitDetailPage() {
         const draft = readOutfitDetailDraft(decodedId);
         if (draft) {
           setOutfit(normalizeOutfitSnapshot({ ...draft, outfitKind: draft.outfitKind || 'recommendation' }));
-          return;
         }
       }
 
@@ -90,8 +89,16 @@ export default function OutfitDetailPage() {
     setOperating(true);
     try {
       if (outfit.isFavorite) {
-        await removeFavoriteOutfit(outfit.favoriteOutfitId || outfit.id);
-        setOutfit({ ...outfit, isFavorite: false, favoriteOutfitId: undefined, outfitKind: 'recommendation' });
+        await removeFavoriteOutfit(outfit.favoriteOutfitId || outfit.id, outfit.outfitKey);
+        persistOutfitUpdate(
+          normalizeOutfitSnapshot({
+            ...outfit,
+            isFavorite: false,
+            favoriteOutfitId: undefined,
+            favoritedAt: undefined,
+            outfitKind: 'recommendation',
+          }),
+        );
         setDetailSource('recommendation');
         Taro.showToast({ title: '已取消收藏', icon: 'success' });
         return;
@@ -99,7 +106,7 @@ export default function OutfitDetailPage() {
 
       const sourceForFavorite: Outfit = detailSource === 'history' ? { ...outfit, source: 'history' } : outfit;
       const saved = await saveFavoriteOutfit(normalizeOutfitSnapshot(sourceForFavorite), outfit.aiComment);
-      setOutfit(
+      persistOutfitUpdate(
         normalizeOutfitSnapshot({
           ...outfit,
           isFavorite: true,
@@ -129,7 +136,7 @@ export default function OutfitDetailPage() {
             : outfit.sourceFavoriteOutfitId,
         aiComment: outfit.aiComment,
       });
-      setOutfit(
+      persistOutfitUpdate(
         normalizeOutfitSnapshot({
           ...outfit,
           isWornToday: true,
@@ -182,10 +189,7 @@ export default function OutfitDetailPage() {
         updatedAt: saved.updatedAt || outfit.updatedAt,
       });
 
-      setOutfit(nextOutfit);
-      if (detailSource === 'recommendation') {
-        storeOutfitDetailDraft(nextOutfit);
-      }
+      persistOutfitUpdate(nextOutfit);
       Taro.showToast({ title: userTitle.trim() ? '已保存名称' : '已清空名称', icon: 'success' });
     } catch (err) {
       console.error('Rename outfit error:', err);
@@ -216,6 +220,14 @@ export default function OutfitDetailPage() {
       Taro.showToast({ title: '小搭点评暂时不可用', icon: 'none' });
     } finally {
       setCommentLoading(false);
+    }
+  }
+
+  function persistOutfitUpdate(nextOutfit: Outfit) {
+    setOutfit(nextOutfit);
+    storeOutfitStateSync(nextOutfit);
+    if (detailSource === 'recommendation') {
+      storeOutfitDetailDraft(nextOutfit);
     }
   }
 

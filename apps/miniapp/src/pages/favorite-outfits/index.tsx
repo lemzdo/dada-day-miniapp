@@ -61,7 +61,7 @@ export default function FavoriteOutfitsPage() {
 
   async function handleUnfavorite(outfit: Outfit) {
     try {
-      await removeFavoriteOutfit(outfit.id);
+      await removeFavoriteOutfit(outfit.id, outfit.outfitKey);
       setOutfits((prev) => prev.filter((item) => item.id !== outfit.id));
       Taro.showToast({ title: '已取消收藏', icon: 'success' });
     } catch (err) {

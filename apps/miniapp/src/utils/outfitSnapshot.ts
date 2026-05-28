@@ -3,6 +3,7 @@ import type { ClothingCategory, Outfit, OutfitSnapshotItem } from '@starter-temp
 import { getOutfitDisplayTitle } from './outfitTitle';
 
 const DETAIL_DRAFT_PREFIX = 'outfitDetailDraft:';
+const OUTFIT_STATE_SYNC_KEY = 'outfitStateSync';
 
 export function normalizeOutfitSnapshot(outfit: Outfit): Outfit {
   const clothingIds = outfit.clothingIds ?? [];
@@ -39,6 +40,20 @@ export function getRecommendationOutfitId(outfit: Outfit) {
 export function storeOutfitDetailDraft(outfit: Outfit) {
   const normalized = normalizeOutfitSnapshot(outfit);
   Taro.setStorageSync(getOutfitStorageKey(normalized.id), normalized);
+}
+
+export function storeOutfitStateSync(outfit: Outfit) {
+  Taro.setStorageSync(OUTFIT_STATE_SYNC_KEY, normalizeOutfitSnapshot(outfit));
+}
+
+export function consumeOutfitStateSync() {
+  try {
+    const value = Taro.getStorageSync(OUTFIT_STATE_SYNC_KEY) as Outfit | '';
+    Taro.removeStorageSync(OUTFIT_STATE_SYNC_KEY);
+    return value && typeof value === 'object' ? normalizeOutfitSnapshot(value) : null;
+  } catch {
+    return null;
+  }
 }
 
 export function readOutfitDetailDraft(id: string) {

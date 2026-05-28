@@ -1,9 +1,9 @@
 import { Image, Swiper, SwiperItem, Text, View } from '@tarojs/components';
-import Taro, { useLoad, usePullDownRefresh } from '@tarojs/taro';
+import Taro, { useDidShow, useLoad, usePullDownRefresh } from '@tarojs/taro';
 import { useRef, useState } from 'react';
 import { WeatherCard } from '@/components/WeatherCard';
 import { addOutfitHistory, generateCloudOutfit, removeFavoriteOutfit, saveFavoriteOutfit } from '@/lib/cloud';
-import { normalizeOutfitSnapshot, storeOutfitDetailDraft } from '@/utils/outfitSnapshot';
+import { consumeOutfitStateSync, normalizeOutfitSnapshot, storeOutfitDetailDraft } from '@/utils/outfitSnapshot';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
 import sceneDate from '@/assets/scenes/scene-date-clean.png';
 import sceneDateActive from '@/assets/scenes/scene-date-active-clean.png';
@@ -69,6 +69,13 @@ export default function TodayPage() {
     fetchRecommendations({ scene: selectedScene }).finally(() => {
       Taro.stopPullDownRefresh();
     });
+  });
+
+  useDidShow(() => {
+    const syncedOutfit = consumeOutfitStateSync();
+    if (syncedOutfit) {
+      updateOutfitsByKey(syncedOutfit, syncedOutfit);
+    }
   });
 
   async function fetchRecommendations({
@@ -204,7 +211,7 @@ export default function TodayPage() {
           favoritedAt: saved.favoritedAt || saved.createdAt,
         });
       } else {
-        await removeFavoriteOutfit(current.favoriteOutfitId || current.id);
+        await removeFavoriteOutfit(current.favoriteOutfitId || current.id, current.outfitKey);
         updateOutfitsByKey(current, {
           isFavorite: false,
           favoriteOutfitId: undefined,
@@ -413,7 +420,7 @@ export default function TodayPage() {
               circular={false}
               onChange={handleSwiperChange}
             >
-              {outfits.map((outfit) => (
+              {outfits.map((outfit, index) => (
                 <SwiperItem key={outfit.id} className="outfit-slide">
                   <View
                     className={`outfit-card ${recommendationBatchId ? 'has-batch' : ''} ${
@@ -421,6 +428,10 @@ export default function TodayPage() {
                     }`}
                     onClick={() => goToOutfitDetail(outfit.id)}
                   >
+                    <View className="outfit-card-top">
+                      <Text className="card-count">{index + 1} / {outfits.length}</Text>
+                    </View>
+
                     <View className="outfit-header">
                       <View className="outfit-title-wrap">
                         <Text className="outfit-title">{getOutfitDisplayTitle(outfit, '今日推荐')}</Text>
@@ -440,12 +451,18 @@ export default function TodayPage() {
                       </View>
                     )}
 
-                    <View className="outfit-items">
+                    <View className="outfit-collage">
                       {outfit.items?.map((item) => (
                         <View key={item.clothingId} className={`outfit-item ${item.isDeleted ? 'deleted' : ''}`}>
                           <Image className="item-image" src={item.imageUrl} mode="aspectFit" lazyLoad />
                           <Text className="item-name">{item.subcategory || item.category}</Text>
                         </View>
+                      ))}
+                    </View>
+
+                    <View className="outfit-vibes">
+                      {getOutfitVibeTags(outfit).map((tag) => (
+                        <Text key={tag} className="vibe-tag">{tag}</Text>
                       ))}
                     </View>
 
@@ -496,6 +513,9 @@ export default function TodayPage() {
               <View className={`action-btn primary ${isWearBusy ? 'disabled' : ''}`} onClick={handleConfirmWear}>
                 <Text className="btn-text">{isWearBusy ? '记录中...' : currentOutfit.isWornToday ? '今天穿过啦' : '穿它'}</Text>
               </View>
+              <View className="action-btn detail" onClick={() => goToOutfitDetail(currentOutfit.id)}>
+                <Text className="btn-text">璇︽儏</Text>
+              </View>
             </View>
 
             <View className={`batch-btn ${isRefreshing ? 'disabled' : ''}`} onClick={handleRefresh}>
@@ -506,6 +526,16 @@ export default function TodayPage() {
       </View>
     </View>
   );
+}
+
+function getOutfitVibeTags(outfit: Outfit) {
+  const tags = [];
+  if ((outfit.scores?.comfort ?? 0) >= 8) tags.push('舒适耐看');
+  else tags.push('轻松好穿');
+  if ((outfit.scores?.colorHarmony ?? 0) >= 8) tags.push('清爽干净');
+  else tags.push('配色柔和');
+  tags.push(outfit.scene ? `适合${outfit.scene}` : '日常灵感');
+  return tags.slice(0, 3);
 }
 
 function ScoreRow({ label, value }: { label: string; value: number }) {
