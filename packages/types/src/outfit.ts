@@ -119,6 +119,7 @@ export interface RecommendRequest {
   sourceItemId?: string;
   excludeClothingIdSets?: string[][];
   excludedOutfitKeys?: string[];
+  maxResults?: number;
 }
 
 export interface RecommendResponse {

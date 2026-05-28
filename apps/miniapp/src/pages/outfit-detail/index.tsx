@@ -197,7 +197,7 @@ export default function OutfitDetailPage() {
             <View>
               <Text className="hero-title">{outfit.title || '今日推荐穿搭'}</Text>
               <Text className="hero-subtitle">
-                {[outfit.scene, outfit.timeOfDay, outfit.targetDate].filter(Boolean).join(' · ')}
+                {[outfit.scene, formatTimeOfDay(outfit.timeOfDay), outfit.targetDate].filter(Boolean).join(' · ')}
               </Text>
             </View>
             <View className="detail-status-badges">
@@ -324,6 +324,14 @@ function ScoreValue({ label, value }: { label: string; value: number }) {
 function normalizeSource(value?: string): DetailSource {
   if (value === 'favorite' || value === 'history') return value;
   return 'recommendation';
+}
+
+function formatTimeOfDay(value?: string) {
+  if (value === 'all_day') return '适合全天';
+  if (value === 'morning') return '适合早晨';
+  if (value === 'afternoon') return '适合下午';
+  if (value === 'evening') return '适合晚上';
+  return '';
 }
 
 function getDeletedItemCount(outfit: Outfit) {

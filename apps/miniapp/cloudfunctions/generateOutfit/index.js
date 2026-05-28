@@ -1049,7 +1049,7 @@ function generateRuleRecommendations({
     ...(excludeClothingIdSets || []).filter(Array.isArray).map((ids) => signature(ids)),
     ...readStringArray(excludedOutfitKeys),
   ]);
-  const limit = Math.min(Math.max(Number(maxResults || 8), 1), 10);
+  const limit = Math.min(Math.max(Number(maxResults || 8), 1), 8);
 
   const scored = combos
     .map((items) => scoreCandidate(items, { scene, tempConfig, weather, recommendationProfile }))
@@ -1063,7 +1063,6 @@ function generateRuleRecommendations({
     });
   const available = scored.filter((rec) => !excluded.has(rec.outfitKey));
   const sortedAvailable = available.slice().sort((a, b) => b.rankingScore - a.rankingScore);
-  const sortedFallback = scored.slice().sort((a, b) => b.rankingScore - a.rankingScore);
 
   const results = [];
   const used = [];
@@ -1079,15 +1078,6 @@ function generateRuleRecommendations({
 
   if (results.length < limit) {
     for (const rec of sortedAvailable) {
-      if (results.length >= limit) break;
-      if (!results.some((item) => item.outfitKey === rec.outfitKey)) {
-        results.push(rec);
-      }
-    }
-  }
-
-  if (results.length < limit) {
-    for (const rec of sortedFallback) {
       if (results.length >= limit) break;
       if (!results.some((item) => item.outfitKey === rec.outfitKey)) {
         results.push(rec);
@@ -1300,7 +1290,7 @@ function scoreCandidate(items, context) {
     title: buildTitle(items, context.scene),
     scores,
     scoreExplanations: buildScoreExplanations(scores, context.tempConfig, context.scene),
-    reasoning: buildTemplateReasoning(context.scene, items, scores, context.tempConfig),
+    reasoning: buildFriendlyReasoning(context.scene, items, scores, context.tempConfig),
   };
 }
 
@@ -1443,6 +1433,41 @@ function buildTemplateReasoning(scene, items, scores, tempConfig) {
   const colorText = scores.colorHarmony >= 8 ? '配色干净' : '配色有层次';
   const temperatureText = scores.weatherAdaptation >= 8 ? '今天穿着也舒服' : tempConfig.advice;
   return `${names}，适合${scene || '日常'}；${colorText}，${temperatureText}。`;
+}
+
+function buildFriendlyReasoning(scene, items, scores, tempConfig) {
+  if (!items.length) return buildTemplateReasoning(scene, items, scores, tempConfig);
+  const style = getMainStyle(items);
+  const sceneText = scene || '日常';
+  const itemNames = items
+    .map((item) => item.customName || item.subCategory || item.subcategory || item.category)
+    .filter(Boolean)
+    .slice(0, 2)
+    .join('、');
+  const opening =
+    scores.sceneMatch >= 8
+      ? `这套很贴合${sceneText}节奏，${style}感会显得自然又利落。`
+      : `这套更偏轻松耐看的${style}感，用在${sceneText}也不突兀。`;
+  const weatherText =
+    scores.weatherAdaptation >= 8
+      ? '厚薄和透气度都比较稳，今天穿起来会舒服一些。'
+      : `${tempConfig.advice}，这套可以作为备选灵感。`;
+  const colorText =
+    scores.colorHarmony >= 8
+      ? '配色干净，单品放在一起不会抢戏。'
+      : '颜色有一点层次感，搭配时保持配饰简单会更清爽。';
+  const itemText = itemNames ? `${itemNames}把整体气质撑起来，` : '';
+  const variants = [
+    `${itemText}${opening}${weatherText}`,
+    `${opening}${colorText}`,
+    `${itemText}${colorText}${weatherText}`,
+  ];
+  const index = Math.abs(
+    signature(items.map((item) => item._id))
+      .split('')
+      .reduce((sum, char) => sum + char.charCodeAt(0), 0),
+  ) % variants.length;
+  return variants[index];
 }
 
 function normalizeWeather(weather) {

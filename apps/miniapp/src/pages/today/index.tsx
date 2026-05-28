@@ -1,4 +1,4 @@
-import { Image, Text, View } from '@tarojs/components';
+import { Image, Swiper, SwiperItem, Text, View } from '@tarojs/components';
 import Taro, { useLoad, usePullDownRefresh } from '@tarojs/taro';
 import { useRef, useState } from 'react';
 import { WeatherCard } from '@/components/WeatherCard';
@@ -17,6 +17,12 @@ import './index.scss';
 
 interface TapEvent {
   stopPropagation: () => void;
+}
+
+interface SwiperChangeEvent {
+  detail: {
+    current: number;
+  };
 }
 
 type OutfitOperation = 'favorite' | 'wear' | 'refresh' | null;
@@ -92,6 +98,7 @@ export default function TodayPage() {
         date: getToday(),
         scene,
         timeOfDay: 'all_day',
+        maxResults: 8,
         ...(weather ? { weather } : {}),
         ...(excludedOutfitKeys.length > 0 ? { excludedOutfitKeys } : {}),
       });
@@ -128,22 +135,6 @@ export default function TodayPage() {
 
   async function handleRefresh() {
     if (loading || operation) return;
-    if (currentIndex + 1 < outfits.length) {
-      setCurrentIndex((prev) => {
-        const next = prev + 1;
-        console.log('[TodayPage] switch local outfit', {
-          from: prev,
-          to: next,
-          outfitCount: outfits.length,
-          nextOutfitId: outfits[next]?.id,
-          nextItemIds: outfits[next]?.clothingIds,
-        });
-        markOutfitShown(outfits[next]);
-        return next;
-      });
-      return;
-    }
-
     const seq = nextRequestSeq();
     setOperation('refresh');
     setError('');
@@ -155,6 +146,7 @@ export default function TodayPage() {
         date: getToday(),
         scene: selectedScene,
         timeOfDay: 'all_day',
+        maxResults: 8,
         ...(weatherForRefresh ? { weather: weatherForRefresh } : {}),
         excludedOutfitKeys: getSeenOutfitKeys(),
       });
@@ -180,6 +172,8 @@ export default function TodayPage() {
         markOutfitShown(nextOutfits[0]);
       } else {
         const notice = getBatchNotice(data.recommendationNotice, Boolean(data.limited), true);
+        setBatchLimited(Boolean(data.limited));
+        setBatchExhausted(true);
         setRecommendationNotice(notice);
         Taro.showToast({ title: notice, icon: 'none' });
       }
@@ -291,6 +285,12 @@ export default function TodayPage() {
     Taro.navigateTo({ url: `/pages/outfit-detail/index?id=${encodeURIComponent(outfitId)}&source=recommendation` });
   }
 
+  function handleSwiperChange(event: SwiperChangeEvent) {
+    const next = event.detail.current;
+    setCurrentIndex(next);
+    markOutfitShown(outfits[next]);
+  }
+
   function updateOutfitsByKey(reference: Outfit, patch: Partial<Outfit>) {
     const outfitKey = reference.outfitKey;
     setOutfits((prev) =>
@@ -315,6 +315,18 @@ export default function TodayPage() {
       return notice || '小搭暂时只能搭出这些啦，多上传几件衣服，我就能给你更多灵感～';
     }
     return notice ?? '';
+  }
+
+  function formatOutfitMeta(outfit: Outfit) {
+    return [outfit.scene ? `今日${outfit.scene}` : '今日推荐', formatTimeOfDay(outfit.timeOfDay)].filter(Boolean).join(' · ');
+  }
+
+  function formatTimeOfDay(value?: string) {
+    if (value === 'all_day') return '适合全天';
+    if (value === 'morning') return '适合早晨';
+    if (value === 'afternoon') return '适合下午';
+    if (value === 'evening') return '适合晚上';
+    return '';
   }
 
   function nextRequestSeq() {
@@ -390,50 +402,80 @@ export default function TodayPage() {
         )}
 
         {!loading && currentOutfit && (
-          <View
-            className={`outfit-card ${recommendationBatchId ? 'has-batch' : ''} ${
-              batchLimited || batchExhausted ? 'limited' : ''
-            }`}
-            onClick={() => goToOutfitDetail(currentOutfit.id)}
-          >
-            <View className="outfit-header">
-              <Text className="outfit-title">{currentOutfit.title || '今日推荐'}</Text>
-              <View className="status-badges">
-                {currentOutfit.isFavorite && <Text className="status-badge favorite">已收藏</Text>}
-                {currentOutfit.isWornToday && <Text className="status-badge worn">今天穿过啦</Text>}
-              </View>
-            </View>
+          <View className="recommendation-browser">
+            <Text className="browser-hint">左右滑动，查看更多穿搭灵感</Text>
+            <Swiper
+              className="outfit-swiper"
+              current={currentIndex}
+              previousMargin="36px"
+              nextMargin="36px"
+              circular={false}
+              onChange={handleSwiperChange}
+            >
+              {outfits.map((outfit) => (
+                <SwiperItem key={outfit.id} className="outfit-slide">
+                  <View
+                    className={`outfit-card ${recommendationBatchId ? 'has-batch' : ''} ${
+                      batchLimited || batchExhausted ? 'limited' : ''
+                    }`}
+                    onClick={() => goToOutfitDetail(outfit.id)}
+                  >
+                    <View className="outfit-header">
+                      <View className="outfit-title-wrap">
+                        <Text className="outfit-title">{outfit.title || '今日推荐'}</Text>
+                        <Text className="outfit-meta">{formatOutfitMeta(outfit)}</Text>
+                      </View>
+                      <View className="status-badges">
+                        {outfit.isFavorite && <Text className="status-badge favorite">已收藏</Text>}
+                        {outfit.isWornToday && <Text className="status-badge worn">今天穿过啦</Text>}
+                      </View>
+                    </View>
 
-            {getDeletedItemCount(currentOutfit) > 0 && (
-              <View className="deleted-notice">
-                <Text className="deleted-notice-text">
-                  这套搭配中有 {getDeletedItemCount(currentOutfit)} 件衣服已从衣柜删除
-                </Text>
-              </View>
-            )}
+                    {getDeletedItemCount(outfit) > 0 && (
+                      <View className="deleted-notice">
+                        <Text className="deleted-notice-text">
+                          这套搭配中有 {getDeletedItemCount(outfit)} 件衣服已从衣橱删除
+                        </Text>
+                      </View>
+                    )}
 
-            <View className="outfit-items">
-              {currentOutfit.items?.map((item) => (
-                <View key={item.clothingId} className={`outfit-item ${item.isDeleted ? 'deleted' : ''}`}>
-                  <Image className="item-image" src={item.imageUrl} mode="aspectFit" lazyLoad />
-                  <Text className="item-name">{item.subcategory || item.category}</Text>
-                </View>
+                    <View className="outfit-items">
+                      {outfit.items?.map((item) => (
+                        <View key={item.clothingId} className={`outfit-item ${item.isDeleted ? 'deleted' : ''}`}>
+                          <Image className="item-image" src={item.imageUrl} mode="aspectFit" lazyLoad />
+                          <Text className="item-name">{item.subcategory || item.category}</Text>
+                        </View>
+                      ))}
+                    </View>
+
+                    {outfit.scores && (
+                      <View className="outfit-scores">
+                        <ScoreRow label="时尚" value={outfit.scores.fashion} />
+                        <ScoreRow label="舒适" value={outfit.scores.comfort} />
+                        <ScoreRow label="场景" value={outfit.scores.sceneMatch} />
+                      </View>
+                    )}
+
+                    {(outfit.reasoning || outfit.reason) && (
+                      <View className="outfit-reasoning">
+                        <Text className="reasoning-text">{outfit.reasoning || outfit.reason}</Text>
+                      </View>
+                    )}
+                  </View>
+                </SwiperItem>
               ))}
+            </Swiper>
+
+            <View className="swiper-footer">
+              <View className="pagination-dots">
+                {outfits.map((outfit, index) => (
+                  <View key={outfit.outfitKey || outfit.id} className={`pagination-dot ${index === currentIndex ? 'active' : ''}`} />
+                ))}
+              </View>
+              <Text className="page-count">
+                {currentIndex + 1} / {outfits.length}
+              </Text>
             </View>
-
-            {currentOutfit.scores && (
-              <View className="outfit-scores">
-                <ScoreRow label="时尚" value={currentOutfit.scores.fashion} />
-                <ScoreRow label="舒适" value={currentOutfit.scores.comfort} />
-                <ScoreRow label="场景" value={currentOutfit.scores.sceneMatch} />
-              </View>
-            )}
-
-            {(currentOutfit.reasoning || currentOutfit.reason) && (
-              <View className="outfit-reasoning">
-                <Text className="reasoning-text">{currentOutfit.reasoning || currentOutfit.reason}</Text>
-              </View>
-            )}
 
             {(error || recommendationNotice) && (
               <View className="inline-error">
@@ -442,9 +484,6 @@ export default function TodayPage() {
             )}
 
             <View className="outfit-actions" onClick={(event: TapEvent) => event.stopPropagation()}>
-              <View className={`action-btn secondary ${isRefreshing ? 'disabled' : ''}`} onClick={handleRefresh}>
-                <Text className="btn-text">{isRefreshing ? '正在换...' : '换一套'}</Text>
-              </View>
               <View
                 className={`action-btn ${currentOutfit.isFavorite ? 'active' : ''} ${
                   isFavoriteBusy ? 'disabled' : ''
@@ -456,6 +495,10 @@ export default function TodayPage() {
               <View className={`action-btn primary ${isWearBusy ? 'disabled' : ''}`} onClick={handleConfirmWear}>
                 <Text className="btn-text">{isWearBusy ? '记录中...' : currentOutfit.isWornToday ? '今天穿过啦' : '穿它'}</Text>
               </View>
+            </View>
+
+            <View className={`batch-btn ${isRefreshing ? 'disabled' : ''}`} onClick={handleRefresh}>
+              <Text className="batch-btn-text">{isRefreshing ? '正在找灵感...' : '换一批灵感'}</Text>
             </View>
           </View>
         )}
