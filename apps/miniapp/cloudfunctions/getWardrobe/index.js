@@ -78,6 +78,8 @@ function toClothing(item) {
     aiSegmentImageUrl: item.aiSegmentImageUrl || item.cleanImageUrl || '',
     manualCropImageUrl: item.manualCropImageUrl || '',
     batchId: item.batchId,
+    sourceBatchId: item.sourceBatchId || item.batchId,
+    sourceItemId: item.sourceItemId,
     sourceImageId: item.sourceImageId,
     cropBox: item.cropBox,
     confidence: item.confidence || item.aiConfidence || 0,

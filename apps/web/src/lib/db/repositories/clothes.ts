@@ -80,6 +80,8 @@ export async function createClothing(data: {
   aiRawResult?: unknown;
   brand?: string;
   batchId?: string;
+  sourceBatchId?: string;
+  sourceItemId?: string;
   sourceImageId?: string;
   cropBox?: { x: number; y: number; width: number; height: number };
   confidence?: number;
@@ -100,6 +102,8 @@ export async function createClothing(data: {
       aiRawResult: data.aiRawResult,
       brand: data.brand,
       batchId: data.batchId,
+      sourceBatchId: data.sourceBatchId,
+      sourceItemId: data.sourceItemId,
       sourceImageId: data.sourceImageId,
       cropBox: data.cropBox,
       confidence: data.confidence,

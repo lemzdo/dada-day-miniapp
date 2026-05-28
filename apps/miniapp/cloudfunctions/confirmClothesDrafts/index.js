@@ -3,7 +3,6 @@ const cloud = require('wx-server-sdk');
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
 const db = cloud.database();
-const _ = db.command;
 
 exports.main = async (event = {}) => {
   try {
@@ -18,40 +17,85 @@ exports.main = async (event = {}) => {
     if (batchStatus === 'saved') return ok({ list: [], count: 0, batchStatus: 'saved' });
 
     const updates = Array.isArray(event.drafts) ? event.drafts : [];
+    const selectedIds = getSelectedIds(event, updates);
+    const selectedIdSet = new Set(selectedIds);
+    const beforeDraftsRes = await db.collection('clothes_drafts').where({ batchId, _openid: OPENID }).get();
+    const draftTotal = beforeDraftsRes.data ? beforeDraftsRes.data.length : 0;
+
+    console.log('[confirmClothesDrafts] request', {
+      batchId,
+      selectedIds,
+      draftTotal,
+      payloadDraftCount: updates.length,
+    });
+
+    if (selectedIds.length === 0) {
+      throw new Error('no confirmable drafts');
+    }
+
     await Promise.all(updates.map((draft) => updateDraftFromInput(draft, OPENID)));
 
-    const draftRes = await db.collection('clothes_drafts').where({
+    const draftRes = await db.collection('clothes_drafts').where({ batchId, _openid: OPENID }).get();
+    const allDrafts = draftRes.data || [];
+    const confirmableDrafts = allDrafts.filter((draft) => (
+      draft.status === 'pending'
+      && selectedIdSet.has(draft._id)
+    ));
+    const discardedDrafts = allDrafts.filter((draft) => (
+      draft.status === 'pending'
+      && !selectedIdSet.has(draft._id)
+    ));
+
+    console.log('[confirmClothesDrafts] filter result', {
       batchId,
-      _openid: OPENID,
-      status: 'pending',
-      selected: true,
-    }).get();
-    if (!draftRes.data || draftRes.data.length === 0) {
+      selectedIds,
+      draftTotal: allDrafts.length,
+      filteredSaveCount: confirmableDrafts.length,
+      discardedCount: discardedDrafts.length,
+    });
+
+    if (confirmableDrafts.length === 0) {
       throw new Error('no confirmable drafts');
     }
 
     const created = [];
-    for (const draft of draftRes.data) {
+    let actualCreatedCount = 0;
+    let skippedDuplicateCount = 0;
+    for (const draft of confirmableDrafts) {
+      const existing = await findExistingClothing(OPENID, draft);
+      if (existing) {
+        skippedDuplicateCount += 1;
+        await markDraftConfirmed(draft._id, existing._id);
+        created.push(toClothing(existing));
+        continue;
+      }
+
+      const reserved = await reserveDraftForConfirm(draft._id, OPENID);
+      if (!reserved) {
+        skippedDuplicateCount += 1;
+        const existingAfterReserve = await findExistingClothing(OPENID, draft);
+        if (existingAfterReserve) {
+          created.push(toClothing(existingAfterReserve));
+        }
+        continue;
+      }
+
       const clothing = buildClothingFromDraft(draft, OPENID);
-      const addRes = await db.collection('clothes').add({ data: clothing });
-      await db.collection('clothes_drafts').doc(draft._id).update({
-        data: {
-          status: 'confirmed',
-          clothingId: addRes._id,
-          updatedAt: nowIso(),
-        },
-      });
-      created.push(toClothing({ ...clothing, _id: addRes._id }));
+      await db.collection('clothes').doc(draft._id).set({ data: clothing });
+      await markDraftConfirmed(draft._id, draft._id);
+      actualCreatedCount += 1;
+      created.push(toClothing({ ...clothing, _id: draft._id }));
     }
 
-    await db.collection('clothes_drafts').where({
-      batchId,
-      _openid: OPENID,
-      status: 'pending',
-      selected: _.neq(true),
-    }).update({
-      data: { status: 'discarded', updatedAt: nowIso() },
-    }).catch(() => undefined);
+    await Promise.all(discardedDrafts.map((draft) => (
+      db.collection('clothes_drafts').doc(draft._id).update({
+        data: {
+          selected: false,
+          status: 'discarded',
+          updatedAt: nowIso(),
+        },
+      }).catch(() => undefined)
+    )));
 
     const remainingDraftRes = await db.collection('clothes_drafts').where({
       batchId,
@@ -72,15 +116,87 @@ exports.main = async (event = {}) => {
 
     console.log('[confirmClothesDrafts] confirmed', {
       batchId,
-      count: created.length,
+      selectedIds,
+      draftTotal: allDrafts.length,
+      filteredSaveCount: confirmableDrafts.length,
+      actualCreatedCount,
+      returnedCount: created.length,
+      skippedDuplicateCount,
     });
 
-    return ok({ list: created, count: created.length });
+    return ok({
+      list: created,
+      count: created.length,
+      skippedDuplicateCount,
+      actualCreatedCount,
+    });
   } catch (error) {
     console.error('[confirmClothesDrafts] failed', error);
     return fail(error);
   }
 };
+
+function getSelectedIds(event, updates) {
+  const rawIds = Array.isArray(event.selectedIds)
+    ? event.selectedIds
+    : updates
+      .filter((draft) => draft && draft.status !== 'discarded' && draft.checked !== false && draft.selected !== false)
+      .map((draft) => draft.id);
+
+  return Array.from(new Set(
+    rawIds
+      .filter((id) => typeof id === 'string')
+      .map((id) => id.trim())
+      .filter(Boolean),
+  ));
+}
+
+async function findExistingClothing(openid, draft) {
+  const bySourceRes = await db.collection('clothes').where({
+    _openid: openid,
+    sourceItemId: draft._id,
+  }).limit(1).get();
+  if (bySourceRes.data && bySourceRes.data[0]) return bySourceRes.data[0];
+
+  const byDocId = await db.collection('clothes').doc(draft._id).get().catch(() => null);
+  if (byDocId && byDocId.data && byDocId.data._openid === openid) return byDocId.data;
+
+  return null;
+}
+
+async function reserveDraftForConfirm(draftId, openid) {
+  const res = await db.collection('clothes_drafts').where({
+    _id: draftId,
+    _openid: openid,
+    status: 'pending',
+  }).update({
+    data: {
+      selected: true,
+      status: 'confirming',
+      updatedAt: nowIso(),
+    },
+  });
+
+  return getUpdatedCount(res) > 0;
+}
+
+function getUpdatedCount(res) {
+  if (!res) return 0;
+  if (res.stats && typeof res.stats.updated === 'number') return res.stats.updated;
+  if (typeof res.updated === 'number') return res.updated;
+  return 0;
+}
+
+async function markDraftConfirmed(draftId, clothingId) {
+  await db.collection('clothes_drafts').doc(draftId).update({
+    data: {
+      selected: true,
+      status: 'confirmed',
+      clothingId,
+      updatedAt: nowIso(),
+    },
+  });
+}
 
 async function updateDraftFromInput(input, openid) {
   if (!input || !input.id) return;
@@ -162,6 +278,8 @@ function buildClothingFromDraft(draft, openid) {
     qualityScore: draft.qualityScore || 0,
     needsUserConfirm: draft.needsUserConfirm !== false,
     confirmReasons: draft.confirmReasons || [],
+    sourceBatchId: draft.batchId,
+    sourceItemId: draft._id,
     bbox: draft.bbox || draft.cropBox || null,
     cropBox: draft.cropBox || draft.bbox || null,
     stageStatus: draft.stageStatus || null,
@@ -235,6 +353,8 @@ function toClothing(item) {
     id: item._id,
     userId: item.userId || item._openid,
     batchId: item.batchId,
+    sourceBatchId: item.sourceBatchId || item.batchId,
+    sourceItemId: item.sourceItemId,
     sourceImageId: item.sourceImageId,
     assetVersion: item.assetVersion || 'v2',
     itemIndex: item.itemIndex || 0,

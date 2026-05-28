@@ -258,10 +258,19 @@ export async function segmentClothesDraft(draftId: string) {
   return callCloudFunction<ClothesDraft>('segmentClothImage', { draftId });
 }
 
-export async function confirmClothesDrafts(batchId: string, drafts: Array<Partial<ClothesDraft> & { id: string }>) {
-  const result = await callCloudFunction<{ list: Clothing[]; count: number }>('confirmClothesDrafts', {
+export async function confirmClothesDrafts(
+  batchId: string,
+  drafts: Array<Partial<ClothesDraft> & { id: string }>,
+  selectedIds = drafts.map((draft) => draft.id),
+) {
+  const result = await callCloudFunction<{
+    list: Clothing[];
+    count: number;
+    skippedDuplicateCount?: number;
+  }>('confirmClothesDrafts', {
     batchId,
     drafts,
+    selectedIds,
   });
   clearCloudCache(['getWardrobe:', 'generateOutfit:']);
   return result;

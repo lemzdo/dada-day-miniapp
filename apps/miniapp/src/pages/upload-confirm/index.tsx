@@ -12,7 +12,7 @@ import {
   segmentClothesDraft,
 } from '@/lib/cloud';
 import { displayClothingTags, displayClothingText } from '@/utils/clothingLabels';
-import type { ClothesDraft, ClothingCategory, UploadBatch, UploadImage } from '@starter-template/types';
+import type { ClothesDraft, ClothingCategory, ClothingImageSourceType, UploadBatch, UploadImage } from '@starter-template/types';
 import './index.scss';
 
 const WARDROBE_REFRESH_STORAGE_KEY = 'wardrobeNeedsRefresh';
@@ -32,6 +32,7 @@ export default function UploadConfirmPage() {
   const mountedRef = useRef(true);
   const discardRequestedRef = useRef(false);
   const segmentingDraftIdsRef = useRef(new Set<string>());
+  const savingRef = useRef(false);
 
   const refresh = useCallback(async () => {
     if (!batchId) return;
@@ -193,7 +194,7 @@ export default function UploadConfirmPage() {
   }
 
   async function handleSave() {
-    if (!batchId || saving) return;
+    if (!batchId || saving || savingRef.current) return;
     if (!isBatchComplete) {
       Taro.showToast({ title: '小搭还在识别，全部完成后就可以保存啦', icon: 'none' });
       return;
@@ -203,10 +204,11 @@ export default function UploadConfirmPage() {
       return;
     }
 
+    savingRef.current = true;
     setSaving(true);
     Taro.showLoading({ title: '保存中...' });
     try {
-      await confirmClothesDrafts(batchId, savableDrafts.map((draft) => ({
+      const draftPayload = savableDrafts.map((draft) => ({
         id: draft.id,
         type: normalizeCategory(draft.type),
         categoryName: draft.categoryName,
@@ -240,7 +242,16 @@ export default function UploadConfirmPage() {
         manualCropImageUrl: draft.manualCropImageUrl,
         manualCropStatus: draft.manualCropStatus,
         selected: true,
-      })));
+      }));
+      const selectedIds = draftPayload.map((draft) => draft.id);
+      console.log('[upload-confirm] confirm selected drafts', {
+        batchId,
+        selectedIds,
+        draftTotal: drafts.length,
+        saveCount: draftPayload.length,
+      });
+
+      await confirmClothesDrafts(batchId, draftPayload, selectedIds);
       Taro.setStorageSync(WARDROBE_REFRESH_STORAGE_KEY, true);
       Taro.showToast({ title: '已保存到衣柜', icon: 'success' });
       setTimeout(() => Taro.navigateBack(), 700);
@@ -249,6 +260,7 @@ export default function UploadConfirmPage() {
       Taro.showToast({ title: '保存失败', icon: 'none' });
     } finally {
       Taro.hideLoading();
+      savingRef.current = false;
       setSaving(false);
     }
   }
@@ -665,7 +677,7 @@ function getDraftDisplayImage(draft: ClothesDraft) {
   return draft.originalImageUrl;
 }
 
-function getDraftImageSourceType(draft: ClothesDraft) {
+function getDraftImageSourceType(draft: ClothesDraft): ClothingImageSourceType {
   if (draft.cleanImageUrl || (draft.aiSegmentImageUrl && draft.segmentStatus === 'success')) return 'clean';
   if (draft.cropImageUrl || draft.croppedImageUrl || (draft.manualCropImageUrl && draft.manualCropStatus === 'success')) return 'crop';
   return 'original';

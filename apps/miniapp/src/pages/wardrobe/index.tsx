@@ -82,7 +82,17 @@ export default function WardrobePage() {
           status: 'active',
         });
 
-        setClothes((prev) => (reset ? res.list : [...prev, ...res.list]));
+        setClothes((prev) => {
+          const next = reset ? dedupeClothesById(res.list) : mergeUniqueClothes(prev, res.list);
+          console.log('[wardrobe] fetch clothes result', {
+            category,
+            page: pageNum,
+            reset,
+            receivedCount: res.list.length,
+            visibleCount: next.length,
+          });
+          return next;
+        });
         setStats({ total: res.capacity.total, used: res.capacity.used });
         setHasMore(pageNum < res.pagination.totalPages);
         if (reset || pageNum === 1) lastFetchAtRef.current = Date.now();
@@ -493,6 +503,25 @@ function canSafelyRecognize(item: Clothing) {
 
 function trimMessage(message: string) {
   return message.length > 16 ? `${message.slice(0, 16)}...` : message;
+}
+
+function dedupeClothesById(list: Clothing[]) {
+  const seen = new Set<string>();
+  return list.filter((item) => {
+    if (seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  });
+}
+
+function mergeUniqueClothes(prev: Clothing[], nextPage: Clothing[]) {
+  const seen = new Set(prev.map((item) => item.id));
+  const uniqueNext = nextPage.filter((item) => {
+    if (seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  });
+  return [...prev, ...uniqueNext];
 }
 
 type RecoverableTaskStatus = 'processing' | 'ready' | 'failed';

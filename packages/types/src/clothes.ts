@@ -34,7 +34,7 @@ export type UploadBatchStatus =
   | 'completed'
   | 'partial_failed';
 export type UploadImageStatus = 'pending' | 'detecting' | 'detected' | 'empty' | 'processing' | 'completed' | 'success' | 'failed';
-export type ClothesDraftStatus = 'pending' | 'confirmed' | 'discarded';
+export type ClothesDraftStatus = 'pending' | 'confirming' | 'confirmed' | 'discarded';
 export type ClothingImageSourceType = 'clean' | 'crop' | 'original' | 'ai_segment' | 'manual_crop';
 export type ClothesDraftSegmentStatus = 'not_started' | 'queued' | 'processing' | 'success' | 'partial' | 'failed' | 'skipped';
 export type ClothesDraftManualCropStatus = 'unsupported' | 'pending' | 'success';
@@ -140,6 +140,8 @@ export interface Clothing {
   aiError?: string;
   manualFields?: string[];
   batchId?: string;
+  sourceBatchId?: string;
+  sourceItemId?: string;
   sourceImageId?: string;
   cropBox?: ClothingCropBox;
   confidence?: number;

@@ -18,6 +18,8 @@ interface ClothingRow {
   imageUrl: string;
   thumbnailUrl: string | null;
   batchId: string | null;
+  sourceBatchId: string | null;
+  sourceItemId: string | null;
   sourceImageId: string | null;
   cropBox: { x: number; y: number; width: number; height: number } | null;
   confidence: number | null;
@@ -242,6 +244,8 @@ function formatClothingResponse(c: ClothingRow) {
     imageUrl: c.imageUrl,
     thumbnailUrl: c.thumbnailUrl ?? undefined,
     batchId: c.batchId ?? undefined,
+    sourceBatchId: c.sourceBatchId ?? undefined,
+    sourceItemId: c.sourceItemId ?? undefined,
     sourceImageId: c.sourceImageId ?? undefined,
     cropBox: c.cropBox ?? undefined,
     confidence: c.confidence ?? undefined,

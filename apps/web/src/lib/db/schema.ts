@@ -88,6 +88,8 @@ export const clothes = pgTable(
     segmentStatus: varchar('segment_status', { length: 24 }),
     manualCropStatus: varchar('manual_crop_status', { length: 24 }),
     batchId: uuid('batch_id'),
+    sourceBatchId: uuid('source_batch_id'),
+    sourceItemId: uuid('source_item_id'),
     sourceImageId: uuid('source_image_id'),
     cropBox: jsonb('crop_box').$type<{ x: number; y: number; width: number; height: number }>(),
     confidence: integer('confidence'),
@@ -128,6 +130,7 @@ export const clothes = pgTable(
     index('idx_clothes_status').on(table.userId, table.status),
     index('idx_clothes_batch_id').on(table.batchId),
     index('idx_clothes_source_image_id').on(table.sourceImageId),
+    uniqueIndex('idx_clothes_source_item_unique').on(table.userId, table.sourceBatchId, table.sourceItemId),
   ],
 );
 
