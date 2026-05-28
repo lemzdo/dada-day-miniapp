@@ -396,8 +396,7 @@ export default function UploadConfirmPage() {
                 <Text className="confidence">置信度 {draft.confidence || 0}%</Text>
               </View>
               <View className="status-line">
-                <Text className={`asset-status ${getAssetStatusClass(draft)}`}>{getAssetStatusText(draft)}</Text>
-                <Text className={`segment-status ${getSegmentStatusClass(draft)}`}>{getSegmentStatusText(draft)}</Text>
+                <Text className={`asset-status ${getDraftPrimaryStatusClass(draft)}`}>{getDraftPrimaryStatusText(draft)}</Text>
               </View>
 
               <View className="draft-summary">
@@ -675,26 +674,19 @@ function getEmptyDesc(state: UploadConfirmPageState, status: UploadBatchViewStat
   return '可以下拉刷新，或对失败图片重新整理。';
 }
 
-function getSegmentStatusText(draft: ClothesDraft) {
-  if (isUsingOriginalFallback(draft)) return '已保留原图';
-  if (draft.segmentStatus === 'success') return '已处理完成';
-  return '小搭整理中';
-}
-
-function getSegmentStatusClass(draft: ClothesDraft) {
-  if (isUsingOriginalFallback(draft)) return 'original_fallback';
-  return draft.segmentStatus;
-}
-
-function getAssetStatusText(draft: ClothesDraft) {
+function getDraftPrimaryStatusText(draft: ClothesDraft) {
   if (isUsingOriginalFallback(draft)) return '已保留原图';
   if (draft.assetStatus === 'ready') return '已处理完成';
+  if (draft.assetStatus === 'failed') return '处理异常';
+  if (isDraftProcessing(draft)) return '小搭整理中';
   return '小搭整理中';
 }
 
-function getAssetStatusClass(draft: ClothesDraft) {
+function getDraftPrimaryStatusClass(draft: ClothesDraft) {
   if (isUsingOriginalFallback(draft)) return 'original_fallback';
-  return draft.assetStatus || 'needs_review';
+  if (draft.assetStatus === 'ready') return 'ready';
+  if (draft.assetStatus === 'failed') return 'failed';
+  return 'needs_review';
 }
 
 function getDraftDisplayImage(draft: ClothesDraft) {
