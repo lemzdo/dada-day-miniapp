@@ -60,7 +60,7 @@ export default function WardrobePage() {
   const [page, setPage] = useState(1);
   const [activeCategory, setActiveCategory] = useState<ClothingCategory | 'all'>('all');
   const [stats, setStats] = useState({ total: 50, used: 0 });
-  const [recoverableBatch, setRecoverableBatch] = useState<RecoverableUploadBatch | null>(null);
+  const [recoverableBatches, setRecoverableBatches] = useState<RecoverableUploadBatch[]>([]);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [batchDeleting, setBatchDeleting] = useState(false);
@@ -100,12 +100,11 @@ export default function WardrobePage() {
 
   const fetchRecoverableUploadTask = useCallback(async () => {
     try {
-      const result = await getRecoverableUploadBatches(1);
-      const task = (result.list || []).find((item) => Boolean(getRecoverableTaskState(item))) ?? null;
-      setRecoverableBatch(task);
+      const result = await getRecoverableUploadBatches(10);
+      setRecoverableBatches((result.list || []).filter(isActiveRecoverableBatch));
     } catch (err) {
       console.warn('Fetch recoverable upload task failed:', err);
-      setRecoverableBatch(null);
+      setRecoverableBatches([]);
     }
   }, []);
 
@@ -252,8 +251,14 @@ export default function WardrobePage() {
     fetchClothes(1, true, activeCategory, true);
   }
 
-  function handleRecoverableTaskClick(batch: RecoverableUploadBatch) {
-    Taro.navigateTo({ url: `/pages/upload-confirm/index?batchId=${batch.id}` });
+  function handleRecoverableTaskClick() {
+    const firstBatch = recoverableBatches[0];
+    if (!firstBatch) return;
+    if (recoverableBatches.length === 1) {
+      Taro.navigateTo({ url: `/pages/upload-confirm/index?batchId=${firstBatch.id}` });
+      return;
+    }
+    Taro.navigateTo({ url: '/pages/upload-tasks/index' });
   }
 
   async function handleDelete(item: Clothing) {
@@ -350,7 +355,7 @@ export default function WardrobePage() {
   }
 
   const percent = stats.total > 0 ? Math.min(100, Math.round((stats.used / stats.total) * 100)) : 0;
-  const recoverableStatus = recoverableBatch ? getRecoverableTaskState(recoverableBatch) : null;
+  const recognitionEntryStatus = getRecognitionEntryStatus(recoverableBatches);
   const allSelected = clothes.length > 0 && clothes.every((item) => selectedIds.includes(item.id));
   const selectedCount = selectedIds.length;
 
@@ -378,13 +383,13 @@ export default function WardrobePage() {
         </View>
       </View>
 
-      {recoverableBatch && recoverableStatus && (
-        <View className={`recognition-task-card ${recoverableStatus}`} onClick={() => handleRecoverableTaskClick(recoverableBatch)}>
+      {recoverableBatches.length > 0 && recognitionEntryStatus && (
+        <View className={`recognition-task-card ${recognitionEntryStatus}`} onClick={handleRecoverableTaskClick}>
           <View className="recognition-task-main">
-            <Text className="recognition-task-title">{getRecognitionTaskTitle(recoverableStatus)}</Text>
-            <Text className="recognition-task-desc">{getRecognitionTaskDesc(recoverableBatch, recoverableStatus)}</Text>
+            <Text className="recognition-task-title">{getRecognitionTaskTitle(recoverableBatches)}</Text>
+            <Text className="recognition-task-desc">{getRecognitionTaskDesc(recoverableBatches)}</Text>
           </View>
-          <Text className="recognition-task-action">{getRecognitionTaskAction(recoverableStatus)}</Text>
+          <Text className="recognition-task-action">{getRecognitionTaskAction(recoverableBatches)}</Text>
         </View>
       )}
 
@@ -492,8 +497,17 @@ function trimMessage(message: string) {
 
 type RecoverableTaskStatus = 'processing' | 'ready' | 'failed';
 
+function isActiveRecoverableBatch(batch: RecoverableUploadBatch) {
+  if (isTerminalUploadBatchStatus(batch.status)) return false;
+  return Boolean(getRecoverableTaskState(batch));
+}
+
+function isTerminalUploadBatchStatus(status?: string) {
+  return status === 'saved' || status === 'discarded' || status === 'deleted' || status === 'expired';
+}
+
 function getRecoverableTaskState(batch: RecoverableUploadBatch): RecoverableTaskStatus | null {
-  if (batch.status === 'saved' || batch.status === 'discarded') return null;
+  if (isTerminalUploadBatchStatus(batch.status)) return null;
 
   const totalImages = getRecoverableTotalImages(batch);
   const processedImages = getRecoverableProcessedImages(batch);
@@ -506,6 +520,14 @@ function getRecoverableTaskState(batch: RecoverableUploadBatch): RecoverableTask
   if (batch.status === 'ready' || batch.status === 'success' || batch.status === 'partial_success' || batch.status === 'completed') return 'ready';
   if (batch.status === 'failed' || batch.status === 'empty' || batch.status === 'partial_failed') return 'failed';
   return null;
+}
+
+function getRecognitionEntryStatus(batches: RecoverableUploadBatch[]): RecoverableTaskStatus | null {
+  const states = batches.map(getRecoverableTaskState).filter(Boolean) as RecoverableTaskStatus[];
+  if (states.length === 0) return null;
+  if (states.some((state) => state === 'ready')) return 'ready';
+  if (states.some((state) => state === 'processing')) return 'processing';
+  return 'failed';
 }
 
 function getRecoverableTotalImages(batch: RecoverableUploadBatch) {
@@ -523,34 +545,61 @@ function getRecoverableRecognizedCount(batch: RecoverableUploadBatch) {
   return Math.max(0, Number(batch.recognizedCount ?? batch.draftCount ?? batch.totalDetectedClothes ?? 0));
 }
 
-function getRecognitionTaskTitle(status: RecoverableTaskStatus) {
-  if (status === 'processing') return '小搭正在帮你识别新衣服';
-  if (status === 'ready') return '小搭整理好啦';
-  return '这次没识别出可保存的衣服';
+function getRecognitionTaskTitle(batches: RecoverableUploadBatch[]) {
+  if (batches.length > 1) return `小搭正在整理 ${batches.length} 批新衣服`;
+
+  const status = getRecoverableTaskState(batches[0] as RecoverableUploadBatch);
+  if (status === 'processing') return '小搭正在整理新衣服';
+  if (status === 'ready') return '有一批新衣服待确认';
+  return '有一批新衣服需要看看';
 }
 
-function getRecognitionTaskDesc(batch: RecoverableUploadBatch, status: RecoverableTaskStatus) {
+function getRecognitionTaskDesc(batches: RecoverableUploadBatch[]) {
+  if (batches.length > 1) return getRecognitionAggregateDesc(batches);
+
+  const batch = batches[0] as RecoverableUploadBatch;
+  const status = getRecoverableTaskState(batch);
   const totalImages = getRecoverableTotalImages(batch);
   const processedImages = getRecoverableProcessedImages(batch);
   const recognizedCount = getRecoverableRecognizedCount(batch);
 
   if (status === 'processing') {
     if (recognizedCount > 0) {
-      const remainingImages = Math.max(0, totalImages - processedImages);
-      return `小搭已经识别出 ${recognizedCount} 件衣服，还在处理 ${remainingImages} 张图片`;
+      return `已识别 ${recognizedCount} 件，剩下的还在慢慢整理`;
     }
     return `正在处理 ${processedImages}/${totalImages} 张图片`;
   }
 
   if (status === 'ready') {
-    return `已识别出 ${recognizedCount} 件衣服，去确认后就能保存啦`;
+    return `小搭识别出 ${recognizedCount} 件衣服，待你确认保存`;
   }
 
-  return '可以换张更清晰的照片再试试';
+  return '这批识别遇到一点问题，去看看怎么处理';
 }
 
-function getRecognitionTaskAction(status: RecoverableTaskStatus) {
+function getRecognitionAggregateDesc(batches: RecoverableUploadBatch[]) {
+  const counts = batches.reduce(
+    (acc, batch) => {
+      const state = getRecoverableTaskState(batch);
+      if (state === 'ready') acc.ready += 1;
+      if (state === 'processing') acc.processing += 1;
+      if (state === 'failed') acc.failed += 1;
+      return acc;
+    },
+    { ready: 0, processing: 0, failed: 0 },
+  );
+  const parts = [];
+  if (counts.ready > 0) parts.push(`${counts.ready} 批待确认`);
+  if (counts.processing > 0) parts.push(`${counts.processing} 批识别中`);
+  if (counts.failed > 0) parts.push(`${counts.failed} 批需要看看`);
+  return parts.length > 0 ? parts.join('，') : '小搭整理完会放在这里提醒你';
+}
+
+function getRecognitionTaskAction(batches: RecoverableUploadBatch[]) {
+  if (batches.length > 1) return '查看全部';
+
+  const status = getRecoverableTaskState(batches[0] as RecoverableUploadBatch);
   if (status === 'processing') return '点击查看进度';
-  if (status === 'ready') return '点击去确认';
+  if (status === 'ready') return '查看结果';
   return '点击查看';
 }

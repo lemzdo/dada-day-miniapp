@@ -10,6 +10,7 @@
     'pages/style-preferences/index',
     'pages/clothing-detail/index',
     'pages/clothing-form/index',
+    'pages/upload-tasks/index',
     'pages/upload-confirm/index',
   ],
   window: {

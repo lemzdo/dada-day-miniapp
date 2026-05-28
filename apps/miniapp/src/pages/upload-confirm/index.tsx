@@ -312,8 +312,8 @@ export default function UploadConfirmPage() {
   return (
     <View className="upload-confirm-page">
       <View className={`progress-panel ${taskStatus}`}>
-        <Text className="progress-title">{getProgressTitle(pageState)}</Text>
-        <Text className="progress-desc">{getProgressDesc(pageState, detectedCount, processedImages, totalImages)}</Text>
+        <Text className="progress-title">{getProgressTitle(pageState, taskStatus)}</Text>
+        <Text className="progress-desc">{getProgressDesc(pageState, detectedCount, processedImages, totalImages, taskStatus)}</Text>
         {showProcessingProgress && (
           <>
             <View className="progress-track">
@@ -558,7 +558,9 @@ function normalizeUploadBatchStatus(status?: string): UploadBatchViewStatus {
   return 'processing';
 }
 
-function getProgressTitle(state: UploadConfirmPageState) {
+function getProgressTitle(state: UploadConfirmPageState, status: UploadBatchViewStatus) {
+  if (status === 'saved') return '这批衣服已保存到衣柜';
+  if (status === 'discarded') return '这批识别已舍弃';
   if (state === 'processing') return '小搭正在帮你识别新衣服';
   if (state === 'ready') return '小搭整理好啦';
   return '这次没识别出可保存的衣服';
@@ -569,7 +571,10 @@ function getProgressDesc(
   recognizedCount: number,
   processedImages: number,
   totalImages: number,
+  status: UploadBatchViewStatus,
 ) {
+  if (status === 'saved') return '返回衣柜，就能看到刚刚保存好的衣服啦。';
+  if (status === 'discarded') return '这批识别结果不会保存到衣柜。';
   if (state === 'ready') return `已识别出 ${recognizedCount} 件衣服，可以保存到衣柜啦。`;
   if (state === 'empty') return '可以换张更清晰的照片再试试，或先舍弃本次识别。';
   if (recognizedCount > 0) {
@@ -612,17 +617,17 @@ function getSaveButtonText(
 }
 
 function getEmptyTitle(state: UploadConfirmPageState, status: UploadBatchViewStatus) {
+  if (status === 'saved') return '这批衣服已保存到衣柜';
+  if (status === 'discarded') return '这批识别已舍弃';
   if (state === 'empty') return '这次没识别出可保存的衣服';
-  if (status === 'saved') return '本次识别已保存到衣柜';
-  if (status === 'discarded') return '本次识别已舍弃';
   if (status === 'failed') return '暂无可确认的衣物';
   return '暂无可确认的衣物';
 }
 
 function getEmptyDesc(state: UploadConfirmPageState, status: UploadBatchViewStatus, batch?: UploadBatch | null) {
-  if (state === 'empty') return '可以换张更清晰的照片再试试，或先舍弃本次识别。';
   if (status === 'saved') return '返回衣柜即可查看已保存的衣服。';
   if (status === 'discarded') return '这批识别结果不会保存到衣柜。';
+  if (state === 'empty') return '可以换张更清晰的照片再试试，或先舍弃本次识别。';
   if (status === 'failed') return getFailedStatusMessage(batch);
   return '可以下拉刷新，或对失败图片重新整理。';
 }
