@@ -2,6 +2,7 @@ import { Image, ScrollView, Text, View } from '@tarojs/components';
 import Taro, { useLoad, usePullDownRefresh, useReachBottom } from '@tarojs/taro';
 import { useState } from 'react';
 import { listFavoriteOutfits, removeFavoriteOutfit } from '@/lib/cloud';
+import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
 import type { Outfit } from '@starter-template/types';
 import './index.scss';
 
@@ -95,7 +96,7 @@ export default function FavoriteOutfitsPage() {
           <View key={outfit.id} className="favorite-card" onClick={() => goToOutfitDetail(outfit.id)}>
             <View className="favorite-header">
               <View className="favorite-title-wrap">
-                <Text className="favorite-title">{outfit.title || '收藏穿搭'}</Text>
+                <Text className="favorite-title">{getOutfitDisplayTitle(outfit, '收藏穿搭')}</Text>
                 <Text className="favorite-meta">{formatMeta(outfit)}</Text>
               </View>
               <Text className={`favorite-badge ${getDeletedItemCount(outfit) > 0 ? 'incomplete' : ''}`}>

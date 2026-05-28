@@ -415,6 +415,25 @@ export async function removeFavoriteOutfit(favoriteOutfitId: string) {
   return result;
 }
 
+export interface RenameCloudOutfitInput {
+  outfitId?: string;
+  outfitKey?: string;
+  outfit?: Outfit;
+  userTitle: string;
+}
+
+export async function renameCloudOutfit(input: RenameCloudOutfitInput) {
+  const outfitResult = await callCloudFunction<Outfit>('generateOutfit', {
+    action: 'renameOutfit',
+    outfitId: input.outfitId,
+    outfitKey: input.outfitKey,
+    outfit: input.outfit,
+    userTitle: input.userTitle,
+  });
+  clearCloudCache(['generateOutfit:', 'favoriteOutfits:', 'outfitHistory:']);
+  return outfitResult;
+}
+
 export async function listFavoriteOutfits(params: { page?: number; pageSize?: number } = {}) {
   return callCloudFunction<{
     list: Outfit[];

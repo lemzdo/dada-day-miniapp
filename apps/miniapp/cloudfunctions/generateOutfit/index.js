@@ -13,6 +13,7 @@ exports.main = async (event = {}) => {
   try {
     const action = event.action || 'generate';
     if (action === 'detail') return ok(await getOutfitDetail(event));
+    if (action === 'renameOutfit') return ok(await renameOutfit(event));
     if (action === 'favorite') return ok(await updateFavorite(event.id, Boolean(event.isFavorite), event.outfit));
     if (action === 'wear') return ok(await confirmWear(event.id, event.date, event.outfit));
     if (action === 'list') return ok(await listOutfits(event));
@@ -151,6 +152,62 @@ async function getOutfit(id) {
   if (!outfit.data || outfit.data._openid !== OPENID) throw new Error('outfit not found');
   const clothes = await loadClothesByIds(OPENID, outfit.data.clothingIds || []);
   return enrichSingleOutfitState(toOutfit(outfit.data, clothes), { openid: OPENID });
+}
+
+async function renameOutfit(event) {
+  const { OPENID } = cloud.getWXContext();
+  const now = new Date().toISOString();
+  const nextUserTitle = normalizeUserTitleInput(event.userTitle);
+  validateUserTitle(nextUserTitle);
+
+  const payload = normalizeOutfitPayload(event.outfit);
+  let current = null;
+
+  if (event.outfitId) {
+    try {
+      const res = await db.collection('outfits').doc(event.outfitId).get();
+      if (res.data && res.data._openid === OPENID) current = res.data;
+    } catch {
+      current = null;
+    }
+  }
+
+  const lookupKey = event.outfitKey || payload?.outfitKey || getOutfitKey(readBaseClothingIds(payload));
+  if (!current && lookupKey) {
+    current = await findOutfitByKey(OPENID, lookupKey);
+  }
+
+  if (!current && payload && readBaseClothingIds(payload).length > 0) {
+    current = await upsertOutfitByKey({
+      openid: OPENID,
+      base: payload,
+      patch: {},
+      now,
+    });
+  }
+
+  if (!current) throw new Error('outfit not found');
+
+  const title = current.title || payload?.title || `${current.scene || payload?.scene || '今日'}搭配`;
+  const displayTitle = getDisplayTitle({ userTitle: nextUserTitle, title }, `${current.scene || payload?.scene || '今日'}搭配`);
+  const data = {
+    userTitle: nextUserTitle,
+    displayTitle,
+    updatedAt: now,
+  };
+
+  await db.collection('outfits').doc(current._id).update({ data });
+
+  const updated = {
+    ...current,
+    ...data,
+    title,
+  };
+  const clothes = await loadClothesByIds(OPENID, updated.clothingIds || []);
+  return enrichSingleOutfitState(toOutfit(updated, clothes), {
+    openid: OPENID,
+    targetDate: updated.targetDate || payload?.targetDate,
+  });
 }
 
 async function updateFavorite(id, isFavorite, outfitPayload) {
@@ -403,9 +460,13 @@ async function listFavoriteOutfits(event) {
     .get();
   const list = (res.data || []).filter((item) => !item.deletedAt);
   const pageList = list.slice((page - 1) * pageSize, page * pageSize);
+  const outfits = await enrichOutfitsState(pageList.map((item) => toSnapshotOutfit(item, 'favorite')), {
+    openid: OPENID,
+    targetDate: new Date().toISOString().slice(0, 10),
+  });
 
   return {
-    list: pageList.map((item) => toSnapshotOutfit(item, 'favorite')),
+    list: outfits,
     hasMore: page * pageSize < list.length,
     pagination: {
       total: list.length,
@@ -471,9 +532,13 @@ async function listOutfitHistory(event) {
     .get();
   const list = (res.data || []).sort((a, b) => getHistorySortTime(b) - getHistorySortTime(a));
   const pageList = list.slice((page - 1) * pageSize, page * pageSize);
+  const outfits = await enrichOutfitsState(pageList.map((item) => toSnapshotOutfit(item, 'history')), {
+    openid: OPENID,
+    targetDate: new Date().toISOString().slice(0, 10),
+  });
 
   return {
-    list: pageList.map((item) => toSnapshotOutfit(item, 'history')),
+    list: outfits,
     page,
     pageSize,
     hasMore: page * pageSize < list.length,
@@ -498,9 +563,10 @@ function createRecommendationBatchId(now) {
 
 async function enrichOutfitsState(outfits, { openid, targetDate, generatedAt, recommendationBatchId }) {
   const keys = uniqueStrings(outfits.map((outfit) => outfit.outfitKey || getOutfitKey(outfit.clothingIds || [])));
-  const [favoriteMap, historyMap] = await Promise.all([
+  const [favoriteMap, historyMap, assetMap] = await Promise.all([
     findFavoritesByKeys(openid, keys),
     findTodayHistoryByKeys(openid, keys, targetDate),
+    findOutfitsByKeys(openid, keys),
   ]);
 
   return outfits.map((outfit) => {
@@ -508,10 +574,17 @@ async function enrichOutfitsState(outfits, { openid, targetDate, generatedAt, re
     const outfitKey = outfit.outfitKey || getOutfitKey(clothingIds);
     const favorite = favoriteMap.get(outfitKey);
     const history = historyMap.get(outfitKey);
+    const asset = assetMap.get(outfitKey);
+    const title = outfit.title || asset?.title;
+    const userTitle = readTitle(outfit.userTitle) || readTitle(asset?.userTitle) || undefined;
+    const displayTitle = getDisplayTitle({ userTitle, title: title || outfit.displayTitle }, `${outfit.scene || asset?.scene || '今日'}搭配`);
     return {
       ...outfit,
-      outfitId: outfit.outfitId || (outfit.outfitKind === 'recommendation' ? outfit.id : undefined),
+      outfitId: outfit.outfitId || asset?._id || (outfit.outfitKind === 'recommendation' ? outfit.id : undefined),
       outfitKey,
+      title,
+      userTitle,
+      displayTitle,
       isFavorite: Boolean(favorite),
       favoriteOutfitId: favorite?._id || undefined,
       favoritedAt: favorite?.createdAt || favorite?.favoritedAt || undefined,
@@ -551,6 +624,21 @@ async function findFavoritesByKeys(openid, outfitKeys) {
     if (!current || getHistorySortTime(item) > getHistorySortTime(current)) {
       map.set(item.outfitKey, item);
     }
+  }
+  return map;
+}
+
+async function findOutfitsByKeys(openid, outfitKeys) {
+  const map = new Map();
+  const keys = uniqueStrings(outfitKeys);
+  if (!keys.length) return map;
+  const res = await db.collection('outfits')
+    .where({ _openid: openid, outfitKey: db.command.in(keys) })
+    .limit(100)
+    .get();
+  for (const item of res.data || []) {
+    if (!item.outfitKey) continue;
+    map.set(item.outfitKey, item);
   }
   return map;
 }
@@ -645,9 +733,13 @@ function buildSnapshotRecordData(base, { aiComment, outfitKey, now, source }) {
   const itemsSnapshot = buildDetailedSnapshotItems(clothingIds, base);
   const reason = base.reasoning || base.reason || '';
   const normalizedAiComment = normalizeAiComment(aiComment);
+  const fallbackTitle = `${base.scene || '今日'}搭配`;
 
   return {
-    title: base.title || `${base.scene || '今日'}搭配`,
+    title: base.title || fallbackTitle,
+    userTitle: readTitle(base.userTitle),
+    displayTitle: getDisplayTitle(base, fallbackTitle),
+    outfitId: base.outfitId || base.id,
     clothingIds,
     outfitKey,
     itemsSnapshot,
@@ -768,6 +860,8 @@ function toSnapshotOutfit(item, kind) {
     outfitId: item.outfitId || (kind === 'recommendation' ? item._id : undefined),
     userId: item._openid || item.userId,
     title: item.title,
+    userTitle: readTitle(item.userTitle) || undefined,
+    displayTitle: getDisplayTitle(item, `${item.scene || '今日'}搭配`),
     clothingIds: item.clothingIds || itemsSnapshot.map((snapshot) => snapshot.clothingId),
     outfitKey: item.outfitKey || getOutfitKey(item.clothingIds || []),
     outfitKind: kind,
@@ -847,9 +941,13 @@ function buildOutfitSaveData(base, { outfitKey, now, patch, current }) {
   const snapshotItems = buildSnapshotItems(clothingIds, base, current);
   const incomplete = snapshotItems.some((item) => item.isDeleted) || Boolean(current?.incomplete);
   const aiComment = normalizeAiComment(base.aiComment || current?.aiComment);
+  const title = base.title || current?.title || `${base.scene || current?.scene || '今日'}搭配`;
+  const userTitle = readTitle(current?.userTitle) || readTitle(base.userTitle);
 
   return {
-    title: base.title || current?.title || `${base.scene || current?.scene || '今日'}搭配`,
+    title,
+    userTitle,
+    displayTitle: getDisplayTitle({ userTitle, title }, `${base.scene || current?.scene || '今日'}搭配`),
     clothingIds,
     outfitKey,
     snapshotItems,
@@ -976,6 +1074,8 @@ function normalizeOutfitPayload(payload) {
     reason: payload.reason,
     outfitKey: payload.outfitKey,
     outfitId: payload.outfitId,
+    userTitle: payload.userTitle,
+    displayTitle: payload.displayTitle,
     favoriteOutfitId: payload.favoriteOutfitId,
     todayHistoryId: payload.todayHistoryId,
     historyId: payload.historyId,
@@ -1726,6 +1826,8 @@ function toOutfit(item, clothes) {
     outfitId: item.outfitId || item._id,
     userId: item._openid,
     title: item.title,
+    userTitle: readTitle(item.userTitle) || undefined,
+    displayTitle: getDisplayTitle(item, `${item.scene || '今日'}搭配`),
     clothingIds,
     outfitKey: item.outfitKey || getOutfitKey(clothingIds),
     snapshotItems,
@@ -1768,6 +1870,25 @@ function toOutfit(item, clothes) {
     reasoning: item.reasoning || item.reason,
     aiComment: normalizeAiComment(item.aiComment) || undefined,
   };
+}
+
+function normalizeUserTitleInput(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function validateUserTitle(value) {
+  if (!value) return;
+  if (Array.from(value).length > 20) {
+    throw new Error('穿搭名称最多 20 个字');
+  }
+}
+
+function readTitle(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function getDisplayTitle(outfit, fallback) {
+  return readTitle(outfit?.displayTitle) || readTitle(outfit?.userTitle) || readTitle(outfit?.title) || fallback;
 }
 
 function fallbackWeather() {

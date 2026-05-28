@@ -8,9 +8,11 @@ import {
   getFavoriteOutfitDetail,
   getOutfitHistoryDetail,
   removeFavoriteOutfit,
+  renameCloudOutfit,
   saveFavoriteOutfit,
 } from '@/lib/cloud';
-import { normalizeOutfitSnapshot, readOutfitDetailDraft } from '@/utils/outfitSnapshot';
+import { normalizeOutfitSnapshot, readOutfitDetailDraft, storeOutfitDetailDraft } from '@/utils/outfitSnapshot';
+import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
 import type { Outfit, OutfitScores } from '@starter-template/types';
 import './index.scss';
 
@@ -29,6 +31,13 @@ const scoreLabels: Record<keyof OutfitScores, string> = {
 };
 
 type DetailSource = 'recommendation' | 'favorite' | 'history';
+type EditableModalOptions = Parameters<typeof Taro.showModal>[0] & {
+  editable: boolean;
+  placeholderText: string;
+};
+type EditableModalResult = Awaited<ReturnType<typeof Taro.showModal>> & {
+  content?: string;
+};
 
 export default function OutfitDetailPage() {
   const router = useRouter();
@@ -140,6 +149,52 @@ export default function OutfitDetailPage() {
     }
   }
 
+  async function handleRenameOutfit() {
+    if (!outfit || operating) return;
+
+    try {
+      const modalResult = (await Taro.showModal({
+        title: outfit.userTitle ? '编辑名称' : '给这套起个名字',
+        content: outfit.userTitle || '',
+        editable: true,
+        placeholderText: '输入名称，清空可恢复系统名',
+        confirmText: '保存',
+        cancelText: '取消',
+      } as EditableModalOptions)) as EditableModalResult;
+
+      if (!modalResult.confirm) return;
+
+      setOperating(true);
+      const userTitle = typeof modalResult.content === 'string' ? modalResult.content : outfit.userTitle || '';
+      const saved = await renameCloudOutfit({
+        outfitId: outfit.outfitId || (detailSource === 'recommendation' ? outfit.id : undefined),
+        outfitKey: outfit.outfitKey,
+        outfit: normalizeOutfitSnapshot(outfit),
+        userTitle,
+      });
+      const nextOutfit = normalizeOutfitSnapshot({
+        ...outfit,
+        title: saved.title || outfit.title,
+        userTitle: saved.userTitle,
+        displayTitle: saved.displayTitle,
+        outfitId: saved.outfitId || saved.id || outfit.outfitId,
+        outfitKey: saved.outfitKey || outfit.outfitKey,
+        updatedAt: saved.updatedAt || outfit.updatedAt,
+      });
+
+      setOutfit(nextOutfit);
+      if (detailSource === 'recommendation') {
+        storeOutfitDetailDraft(nextOutfit);
+      }
+      Taro.showToast({ title: userTitle.trim() ? '已保存名称' : '已清空名称', icon: 'success' });
+    } catch (err) {
+      console.error('Rename outfit error:', err);
+      Taro.showToast({ title: '名称保存失败', icon: 'none' });
+    } finally {
+      setOperating(false);
+    }
+  }
+
   async function handleGenerateAiComment() {
     if (!outfit || commentLoading) return;
     if (outfit.aiComment) {
@@ -195,9 +250,12 @@ export default function OutfitDetailPage() {
         <View className="hero-card">
           <View className="hero-header">
             <View>
-              <Text className="hero-title">{outfit.title || '今日推荐穿搭'}</Text>
+              <Text className="hero-title">{getOutfitDisplayTitle(outfit, '今日推荐穿搭')}</Text>
               <Text className="hero-subtitle">
                 {[outfit.scene, formatTimeOfDay(outfit.timeOfDay), outfit.targetDate].filter(Boolean).join(' · ')}
+              </Text>
+              <Text className="name-action" onClick={handleRenameOutfit}>
+                {outfit.userTitle ? '编辑名称' : '给这套起个名字'}
               </Text>
             </View>
             <View className="detail-status-badges">

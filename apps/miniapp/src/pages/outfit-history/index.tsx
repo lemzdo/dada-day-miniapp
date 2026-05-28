@@ -2,6 +2,7 @@ import { Image, ScrollView, Text, View } from '@tarojs/components';
 import Taro, { useLoad, usePullDownRefresh, useReachBottom } from '@tarojs/taro';
 import { useState } from 'react';
 import { listOutfitHistory } from '@/lib/cloud';
+import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
 import type { Outfit } from '@starter-template/types';
 import './index.scss';
 
@@ -102,7 +103,7 @@ export default function OutfitHistoryPage() {
 
             <View className="history-main">
               <View className="history-header">
-                <Text className="history-title">{record.title || '穿搭记录'}</Text>
+                <Text className="history-title">{getOutfitDisplayTitle(record, '穿搭记录')}</Text>
                 <Text className="detail-hint">详情</Text>
               </View>
 

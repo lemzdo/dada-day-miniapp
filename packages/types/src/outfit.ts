@@ -58,6 +58,8 @@ export interface Outfit {
   userId: string;
   outfitId?: string;
   title?: string;
+  userTitle?: string;
+  displayTitle?: string;
   clothingIds: string[];
   outfitKey?: string;
   outfitKind?: OutfitKind;
@@ -145,6 +147,9 @@ export interface OutfitHistory {
   id: string;
   userId: string;
   outfitId?: string;
+  title?: string;
+  userTitle?: string;
+  displayTitle?: string;
   source?: 'recommendation' | 'favorite';
   sourceFavoriteOutfitId?: string;
   clothingIds: string[];

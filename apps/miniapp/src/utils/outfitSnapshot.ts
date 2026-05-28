@@ -1,5 +1,6 @@
 import Taro from '@tarojs/taro';
 import type { ClothingCategory, Outfit, OutfitSnapshotItem } from '@starter-template/types';
+import { getOutfitDisplayTitle } from './outfitTitle';
 
 const DETAIL_DRAFT_PREFIX = 'outfitDetailDraft:';
 
@@ -13,6 +14,7 @@ export function normalizeOutfitSnapshot(outfit: Outfit): Outfit {
     ...outfit,
     clothingIds,
     outfitKey: outfit.outfitKey ?? getOutfitKey(clothingIds),
+    displayTitle: getOutfitDisplayTitle(outfit),
     itemsSnapshot,
     snapshotItems: itemsSnapshot,
     items: itemsSnapshot.map((item) => ({

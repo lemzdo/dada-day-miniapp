@@ -4,6 +4,7 @@ import { useRef, useState } from 'react';
 import { WeatherCard } from '@/components/WeatherCard';
 import { addOutfitHistory, generateCloudOutfit, removeFavoriteOutfit, saveFavoriteOutfit } from '@/lib/cloud';
 import { normalizeOutfitSnapshot, storeOutfitDetailDraft } from '@/utils/outfitSnapshot';
+import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
 import sceneDate from '@/assets/scenes/scene-date-clean.png';
 import sceneDateActive from '@/assets/scenes/scene-date-active-clean.png';
 import sceneHome from '@/assets/scenes/scene-home-clean.png';
@@ -422,7 +423,7 @@ export default function TodayPage() {
                   >
                     <View className="outfit-header">
                       <View className="outfit-title-wrap">
-                        <Text className="outfit-title">{outfit.title || '今日推荐'}</Text>
+                        <Text className="outfit-title">{getOutfitDisplayTitle(outfit, '今日推荐')}</Text>
                         <Text className="outfit-meta">{formatOutfitMeta(outfit)}</Text>
                       </View>
                       <View className="status-badges">
