@@ -166,12 +166,30 @@
   margin-bottom: 20px;
   padding: 20px;
   background: #fff;
+  border: 2px solid transparent;
   border-radius: 16px;
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+  box-sizing: border-box;
+  transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
 }
 
 .draft-card.muted {
-  opacity: 0.52;
+  background: #fff;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
+}
+
+.draft-card.selectable:active {
+  transform: scale(0.992);
+}
+
+.draft-card.selected {
+  border-color: #FF8E53;
+  background: linear-gradient(180deg, #fffaf7 0%, #fff 100%);
+  box-shadow: 0 12px 32px rgba(255, 142, 83, 0.16);
+}
+
+.draft-card.readonly {
+  opacity: 0.86;
 }
 
 .draft-image {
@@ -192,30 +210,22 @@
   margin-bottom: 12px;
 }
 
-.select-dot {
-  display: flex;
-  width: 40px;
-  height: 40px;
+.draft-keep-badge {
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
-  border: 2px solid #cfd6dd;
-  border-radius: 50%;
-  box-sizing: border-box;
+  min-height: 42px;
+  padding: 0 18px;
+  color: #6b7280;
+  font-size: 23px;
+  font-weight: 600;
+  line-height: 42px;
+  background: #f3f4f6;
+  border-radius: 999px;
 }
 
-.select-dot.active {
-  border-color: #111827;
-  background: #111827;
-}
-
-.select-dot.disabled {
-  opacity: 0.45;
-}
-
-.select-mark {
-  color: #fff;
-  font-size: 24px;
-  line-height: 1;
+.draft-keep-badge.active {
+  color: #9a3412;
+  background: #ffedd5;
 }
 
 .status-line {
@@ -369,6 +379,7 @@
 
 .save-btn,
 .discard-batch-btn,
+.select-all-drafts-btn,
 .save-bar-placeholder {
   display: flex;
   height: 88px;
@@ -390,7 +401,7 @@
 }
 
 .discard-batch-btn {
-  flex: 0 0 240px;
+  flex: 0 0 220px;
   padding: 0 20px;
   border: 1px solid #fecaca;
   background: #fff1f2;
@@ -401,13 +412,29 @@
 }
 
 .save-bar-placeholder {
-  flex: 0 0 240px;
+  flex: 0 0 220px;
 }
 
 .discard-batch-text {
   color: #dc2626;
   font-size: 24px;
   font-weight: 500;
+}
+
+.select-all-drafts-btn {
+  flex: 0 0 148px;
+  padding: 0 18px;
+  background: #f3f4f6;
+}
+
+.select-all-drafts-btn.disabled {
+  opacity: 0.45;
+}
+
+.select-all-drafts-text {
+  color: #111827;
+  font-size: 24px;
+  font-weight: 600;
 }
 
 .draft-edit-overlay {

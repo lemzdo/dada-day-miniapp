@@ -438,6 +438,9 @@ export default function WardrobePage() {
 
       {selectionMode && (
         <View className="selection-toolbar">
+          <View className={`selection-cancel-btn ${batchDeleting ? 'disabled' : ''}`} onClick={exitSelectionMode}>
+            <Text className="selection-cancel-text">取消</Text>
+          </View>
           <View className="select-all-btn" onClick={handleSelectAllToggle}>
             <Text className="select-all-text">{allSelected ? '取消全选' : '全选'}</Text>
           </View>

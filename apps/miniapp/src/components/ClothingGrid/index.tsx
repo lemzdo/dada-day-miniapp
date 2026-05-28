@@ -57,10 +57,13 @@ export function ClothingGrid({
           >
             <View className="item-image-wrapper">
               <Image className="item-image" src={getDisplayImage(item)} mode="aspectFit" lazyLoad />
-              {selectionMode && (
-                <View className={`select-dot ${selected ? 'checked' : ''}`}>
-                  {selected && <Text className="select-check">✓</Text>}
-                </View>
+              {selectionMode && selected && (
+                <>
+                  <View className="selection-overlay" />
+                  <View className="selection-label">
+                    <Text className="selection-label-text">已选中</Text>
+                  </View>
+                </>
               )}
               {(item.aiRecognizeStatus === 'pending' || item.aiStatus === 'pending' || item.aiStatus === 'recognizing') && (
                 <View className="ai-status-badge recognizing">

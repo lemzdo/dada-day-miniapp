@@ -133,6 +133,18 @@ export default function UploadConfirmPage() {
     setDrafts((prev) => prev.map((draft) => (draft.id === id ? { ...draft, ...patch } : draft)));
   }
 
+  function toggleDraftSelected(draft: ClothesDraft) {
+    if (!canEditDrafts || !isDraftSelectable(draft)) return;
+    patchDraft(draft.id, { selected: !draft.selected });
+  }
+
+  function handleSelectAllDraftsToggle() {
+    if (!canEditDrafts || selectableDraftCount === 0) return;
+    setDrafts((prev) => prev.map((draft) => (
+      isDraftSelectable(draft) ? { ...draft, selected: !allSelectableDraftsSelected } : draft
+    )));
+  }
+
   function handleEditDraft(draft: ClothesDraft) {
     setEditingDraft(draft);
   }
@@ -312,6 +324,9 @@ export default function UploadConfirmPage() {
   const canSave = isBatchComplete && hasSavableDrafts && !saving;
   const saveDisabled = !canSave;
   const saveText = getSaveButtonText(pageState, processedImages, totalImages, saving);
+  const selectableDraftCount = drafts.filter(isDraftSelectable).length;
+  const allSelectableDraftsSelected = selectableDraftCount > 0 && drafts.filter(isDraftSelectable).every((draft) => draft.selected);
+  const selectAllText = allSelectableDraftsSelected ? '全不选' : '全选';
 
   if (loading) {
     return (
@@ -369,18 +384,15 @@ export default function UploadConfirmPage() {
         )}
 
         {drafts.map((draft) => (
-          <View key={draft.id} className={`draft-card ${draft.selected ? '' : 'muted'}`}>
+          <View
+            key={draft.id}
+            className={`draft-card ${draft.selected ? 'selected' : 'muted'} ${canEditDrafts && isDraftSelectable(draft) ? 'selectable' : 'readonly'}`}
+            onClick={() => toggleDraftSelected(draft)}
+          >
             <Image className="draft-image" src={getDraftDisplayImage(draft)} mode="aspectFill" />
             <View className="draft-body">
               <View className="draft-topline">
-                <View
-                  className={`select-dot ${draft.selected ? 'active' : ''} ${canEditDrafts ? '' : 'disabled'}`}
-                  onClick={() => {
-                    if (canEditDrafts) patchDraft(draft.id, { selected: !draft.selected });
-                  }}
-                >
-                  <Text className="select-mark">{draft.selected ? '✓' : ''}</Text>
-                </View>
+                <Text className={`draft-keep-badge ${draft.selected ? 'active' : ''}`}>{draft.selected ? '已保留' : '未保留'}</Text>
                 <Text className="confidence">置信度 {draft.confidence || 0}%</Text>
               </View>
               <View className="status-line">
@@ -408,13 +420,22 @@ export default function UploadConfirmPage() {
               <View className="draft-actions">
                 {canEditDrafts && (
                   <>
-                    <View className="edit-btn" onClick={() => handleEditDraft(draft)}>
+                    <View className="edit-btn" onClick={(event) => {
+                      event.stopPropagation();
+                      handleEditDraft(draft);
+                    }}>
                       <Text className="edit-text">编辑属性</Text>
                     </View>
-                    <View className="reprocess-btn" onClick={() => handleReprocessDraft(draft)}>
+                    <View className="reprocess-btn" onClick={(event) => {
+                      event.stopPropagation();
+                      handleReprocessDraft(draft);
+                    }}>
                       <Text className="reprocess-text">重新处理图片</Text>
                     </View>
-                    <View className="discard-btn" onClick={() => handleDiscard(draft)}>
+                    <View className="discard-btn" onClick={(event) => {
+                      event.stopPropagation();
+                      handleDiscard(draft);
+                    }}>
                       <Text className="discard-text">丢弃</Text>
                     </View>
                   </>
@@ -448,6 +469,12 @@ export default function UploadConfirmPage() {
         ) : (
           <View className="save-bar-placeholder" />
         )}
+        <View
+          className={`select-all-drafts-btn ${!canEditDrafts || selectableDraftCount === 0 ? 'disabled' : ''}`}
+          onClick={handleSelectAllDraftsToggle}
+        >
+          <Text className="select-all-drafts-text">{selectAllText}</Text>
+        </View>
         <View className={`save-btn ${saveDisabled ? 'disabled' : ''}`} onClick={handleSave}>
           <Text className="save-text">{saveText}</Text>
         </View>
@@ -606,6 +633,10 @@ function isSavableDraft(draft: ClothesDraft) {
     && !isDraftProcessing(draft)
     && Boolean(getSavableDraftImage(draft))
   );
+}
+
+function isDraftSelectable(draft: ClothesDraft) {
+  return draft.status === 'pending';
 }
 
 function isDraftProcessing(draft: ClothesDraft) {

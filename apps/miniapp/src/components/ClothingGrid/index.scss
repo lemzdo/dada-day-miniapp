@@ -47,11 +47,12 @@
     }
 
     &.selected {
-      border-color: #FF6B6B;
-      box-shadow: 0 8rpx 22rpx rgba(255, 107, 107, 0.18);
+      border-color: #1a1a1a;
+      background: #fffaf7;
+      box-shadow: 0 10rpx 26rpx rgba(15, 23, 42, 0.14);
 
       .item-image {
-        opacity: 0.78;
+        opacity: 0.92;
       }
     }
 
@@ -66,31 +67,34 @@
         height: 100%;
       }
 
-      .select-dot {
+      .selection-overlay {
         position: absolute;
-        top: 14rpx;
-        right: 14rpx;
-        width: 44rpx;
-        height: 44rpx;
-        border-radius: 50%;
-        border: 3rpx solid rgba(255, 255, 255, 0.96);
-        background: rgba(26, 26, 26, 0.26);
+        inset: 0;
+        background: rgba(255, 248, 242, 0.28);
+        border: 6rpx solid rgba(26, 26, 26, 0.08);
+        box-sizing: border-box;
+        pointer-events: none;
+        z-index: 1;
+      }
+
+      .selection-label {
+        position: absolute;
+        right: 16rpx;
+        bottom: 16rpx;
+        min-height: 48rpx;
+        padding: 0 18rpx;
+        border-radius: 999rpx;
+        background: rgba(26, 26, 26, 0.84);
         display: flex;
         align-items: center;
         justify-content: center;
-        box-shadow: 0 4rpx 12rpx rgba(0, 0, 0, 0.16);
-        box-sizing: border-box;
+        box-shadow: 0 6rpx 18rpx rgba(15, 23, 42, 0.22);
         z-index: 2;
 
-        &.checked {
-          background: #FF6B6B;
-          border-color: #FF6B6B;
-        }
-
-        .select-check {
+        .selection-label-text {
           color: #fff;
-          font-size: 28rpx;
-          font-weight: 700;
+          font-size: 23rpx;
+          font-weight: 600;
           line-height: 1;
         }
       }
