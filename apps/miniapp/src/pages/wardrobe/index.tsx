@@ -439,18 +439,20 @@ export default function WardrobePage() {
       {selectionMode && (
         <View className="selection-toolbar">
           <View className={`selection-cancel-btn ${batchDeleting ? 'disabled' : ''}`} onClick={exitSelectionMode}>
-            <Text className="selection-cancel-text">取消</Text>
+            <Text className="selection-cancel-text">退出</Text>
           </View>
-          <View className="select-all-btn" onClick={handleSelectAllToggle}>
-            <Text className="select-all-text">{allSelected ? '取消全选' : '全选'}</Text>
-          </View>
-          <View
-            className={`batch-delete-btn ${selectedCount === 0 || batchDeleting ? 'disabled' : ''} ${batchDeleting ? 'deleting' : ''}`}
-            onClick={handleBatchDelete}
-          >
-            <Text className="batch-delete-text">
-              {batchDeleting ? '清理中...' : selectedCount > 0 ? `清理 ${selectedCount} 件` : '清理'}
-            </Text>
+          <View className="selection-actions">
+            <View className="select-all-btn" onClick={handleSelectAllToggle}>
+              <Text className="select-all-text">{allSelected ? '取消全选' : '全选'}</Text>
+            </View>
+            <View
+              className={`batch-delete-btn ${selectedCount === 0 || batchDeleting ? 'disabled' : ''} ${batchDeleting ? 'deleting' : ''}`}
+              onClick={handleBatchDelete}
+            >
+              <Text className="batch-delete-text">
+                {batchDeleting ? '清理中...' : selectedCount > 0 ? `清理 ${selectedCount} 件` : '清理'}
+              </Text>
+            </View>
           </View>
         </View>
       )}
