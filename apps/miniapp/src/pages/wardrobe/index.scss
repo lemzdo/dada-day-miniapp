@@ -381,9 +381,13 @@
 
 .selection-cancel-btn {
   flex: 0 0 auto;
-  min-width: 84px;
+  min-width: 116px;
   height: 76px;
-  padding: 0 8px;
+  padding: 0 24px;
+  border: 1px solid #e5e7eb;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.06);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -415,8 +419,8 @@
 
 .selection-cancel-text {
   font-size: 26px;
-  font-weight: 500;
-  color: #666;
+  font-weight: 600;
+  color: #374151;
 }
 
 .select-all-text {
