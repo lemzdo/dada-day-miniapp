@@ -96,6 +96,26 @@
   line-height: 44px;
 }
 
+.detail-status-badges {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  max-width: 260px;
+}
+
+.worn-mark {
+  flex-shrink: 0;
+  height: 44px;
+  padding: 0 18px;
+  border-radius: 22px;
+  background: #e8f3ff;
+  color: #2474b8;
+  font-size: 22px;
+  line-height: 44px;
+}
+
 .deleted-notice {
   padding: 16px 18px;
   background: #fff4f2;

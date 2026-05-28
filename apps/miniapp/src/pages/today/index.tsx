@@ -3,7 +3,7 @@ import Taro, { useLoad, usePullDownRefresh } from '@tarojs/taro';
 import { useRef, useState } from 'react';
 import { WeatherCard } from '@/components/WeatherCard';
 import { addOutfitHistory, generateCloudOutfit, removeFavoriteOutfit, saveFavoriteOutfit } from '@/lib/cloud';
-import { getRecommendationOutfitId, normalizeOutfitSnapshot, storeOutfitDetailDraft } from '@/utils/outfitSnapshot';
+import { normalizeOutfitSnapshot, storeOutfitDetailDraft } from '@/utils/outfitSnapshot';
 import sceneDate from '@/assets/scenes/scene-date-clean.png';
 import sceneDateActive from '@/assets/scenes/scene-date-active-clean.png';
 import sceneHome from '@/assets/scenes/scene-home-clean.png';
@@ -45,7 +45,11 @@ export default function TodayPage() {
   const [hasRecommendations, setHasRecommendations] = useState(true);
   const [error, setError] = useState('');
   const [recommendationNotice, setRecommendationNotice] = useState('');
+  const [recommendationBatchId, setRecommendationBatchId] = useState('');
+  const [batchLimited, setBatchLimited] = useState(false);
+  const [batchExhausted, setBatchExhausted] = useState(false);
   const requestSeq = useRef(0);
+  const seenOutfitKeysRef = useRef<Set<string>>(new Set());
   const currentWeatherRef = useRef<WeatherSnapshot | undefined>(undefined);
   const [currentWeather, setCurrentWeather] = useState<WeatherSnapshot | undefined>(undefined);
   const selectedScene = SCENE_TAGS[selectedSceneKey];
@@ -60,7 +64,15 @@ export default function TodayPage() {
     });
   });
 
-  async function fetchRecommendations({ scene, weather = currentWeatherRef.current }: { scene: SceneTag; weather?: WeatherSnapshot }) {
+  async function fetchRecommendations({
+    scene,
+    weather = currentWeatherRef.current,
+    excludedOutfitKeys = [],
+  }: {
+    scene: SceneTag;
+    weather?: WeatherSnapshot;
+    excludedOutfitKeys?: string[];
+  }) {
     const seq = nextRequestSeq();
     console.log('[TodayPage] fetchRecommendations start', {
       requestSeq: seq,
@@ -71,6 +83,8 @@ export default function TodayPage() {
     setLoading(true);
     setError('');
     setRecommendationNotice('');
+    setBatchLimited(false);
+    setBatchExhausted(false);
     setCurrentIndex(0);
 
     try {
@@ -79,10 +93,11 @@ export default function TodayPage() {
         scene,
         timeOfDay: 'all_day',
         ...(weather ? { weather } : {}),
+        ...(excludedOutfitKeys.length > 0 ? { excludedOutfitKeys } : {}),
       });
 
       if (!isLatestRequest(seq)) return;
-      const nextOutfits = data.outfits.slice(0, 3).map((outfit) => normalizeOutfitSnapshot(outfit));
+      const nextOutfits = data.outfits.map((outfit) => normalizeOutfitSnapshot(outfit));
       console.log('[TodayPage] fetchRecommendations success', {
         requestSeq: seq,
         scene,
@@ -94,7 +109,11 @@ export default function TodayPage() {
       setOutfits(nextOutfits);
       setCurrentIndex(0);
       setHasRecommendations(data.outfits.length > 0);
-      setRecommendationNotice(data.recommendationNotice ?? '');
+      setRecommendationBatchId(data.recommendationBatchId ?? nextOutfits[0]?.recommendationBatchId ?? '');
+      setBatchLimited(Boolean(data.limited));
+      setBatchExhausted(Boolean(data.exhausted));
+      setRecommendationNotice(getBatchNotice(data.recommendationNotice, Boolean(data.limited), Boolean(data.exhausted)));
+      markOutfitShown(nextOutfits[0]);
     } catch (err) {
       if (!isLatestRequest(seq)) return;
       console.error('Fetch recommendations error:', err);
@@ -109,9 +128,9 @@ export default function TodayPage() {
 
   async function handleRefresh() {
     if (loading || operation) return;
-    if (outfits.length > 1) {
+    if (currentIndex + 1 < outfits.length) {
       setCurrentIndex((prev) => {
-        const next = (prev + 1) % outfits.length;
+        const next = prev + 1;
         console.log('[TodayPage] switch local outfit', {
           from: prev,
           to: next,
@@ -119,6 +138,7 @@ export default function TodayPage() {
           nextOutfitId: outfits[next]?.id,
           nextItemIds: outfits[next]?.clothingIds,
         });
+        markOutfitShown(outfits[next]);
         return next;
       });
       return;
@@ -136,12 +156,12 @@ export default function TodayPage() {
         scene: selectedScene,
         timeOfDay: 'all_day',
         ...(weatherForRefresh ? { weather: weatherForRefresh } : {}),
-        excludeClothingIdSets: outfits.map((outfit) => outfit.clothingIds),
+        excludedOutfitKeys: getSeenOutfitKeys(),
       });
 
       if (!isLatestRequest(seq)) return;
       if (data.outfits.length > 0) {
-        const nextOutfits = data.outfits.slice(0, 3).map((outfit) => normalizeOutfitSnapshot(outfit));
+        const nextOutfits = data.outfits.map((outfit) => normalizeOutfitSnapshot(outfit));
         console.log('[TodayPage] refresh success', {
           requestSeq: seq,
           scene: selectedScene,
@@ -153,9 +173,13 @@ export default function TodayPage() {
         setOutfits(nextOutfits);
         setCurrentIndex(0);
         setHasRecommendations(true);
-        setRecommendationNotice(data.recommendationNotice ?? '');
+        setRecommendationBatchId(data.recommendationBatchId ?? nextOutfits[0]?.recommendationBatchId ?? '');
+        setBatchLimited(Boolean(data.limited));
+        setBatchExhausted(Boolean(data.exhausted));
+        setRecommendationNotice(getBatchNotice(data.recommendationNotice, Boolean(data.limited), Boolean(data.exhausted)));
+        markOutfitShown(nextOutfits[0]);
       } else {
-        const notice = data.recommendationNotice ?? '暂时没有更多搭配';
+        const notice = getBatchNotice(data.recommendationNotice, Boolean(data.limited), true);
         setRecommendationNotice(notice);
         Taro.showToast({ title: notice, icon: 'none' });
       }
@@ -179,13 +203,17 @@ export default function TodayPage() {
     try {
       if (nextFavorite) {
         const saved = await saveFavoriteOutfit(normalizeOutfitSnapshot(current), current.aiComment);
-        replaceOutfitInList(current.id, normalizeOutfitSnapshot({ ...saved, isFavorite: true, outfitKind: 'favorite' }));
+        updateOutfitsByKey(current, {
+          isFavorite: true,
+          favoriteOutfitId: saved.favoriteOutfitId || saved.id,
+          favoritedAt: saved.favoritedAt || saved.createdAt,
+        });
       } else {
-        await removeFavoriteOutfit(current.id);
-        updateOutfitInList(current.id, {
-          id: getRecommendationOutfitId(current),
+        await removeFavoriteOutfit(current.favoriteOutfitId || current.id);
+        updateOutfitsByKey(current, {
           isFavorite: false,
-          outfitKind: 'recommendation',
+          favoriteOutfitId: undefined,
+          favoritedAt: undefined,
         });
       }
       Taro.showToast({ title: nextFavorite ? '已收藏' : '已取消收藏', icon: 'success' });
@@ -205,8 +233,18 @@ export default function TodayPage() {
     try {
       await addOutfitHistory(normalizeOutfitSnapshot(current), {
         source: current.outfitKind === 'favorite' || current.isFavorite ? 'favorite' : 'recommendation',
-        sourceFavoriteOutfitId: current.outfitKind === 'favorite' || current.isFavorite ? current.id : undefined,
+        sourceFavoriteOutfitId:
+          current.outfitKind === 'favorite' || current.isFavorite ? current.favoriteOutfitId || current.id : undefined,
         aiComment: current.aiComment,
+      }).then((saved) => {
+        updateOutfitsByKey(current, {
+          isWornToday: true,
+          todayHistoryId: saved.todayHistoryId || saved.historyId || saved.id,
+          historyId: saved.historyId || saved.id,
+          lastWornAt: saved.lastWornAt || saved.wornAt || new Date().toISOString(),
+          wornAt: saved.wornAt,
+          wornDate: saved.wornDate || getToday(),
+        });
       });
       Taro.showToast({ title: '已记录到穿搭历史', icon: 'success' });
     } catch (err) {
@@ -250,16 +288,33 @@ export default function TodayPage() {
     const current = outfits.find((outfit) => outfit.id === outfitId);
     if (!current) return;
     storeOutfitDetailDraft(current);
-    const source = current.outfitKind === 'favorite' || current.isFavorite ? 'favorite' : 'recommendation';
-    Taro.navigateTo({ url: `/pages/outfit-detail/index?id=${encodeURIComponent(outfitId)}&source=${source}` });
+    Taro.navigateTo({ url: `/pages/outfit-detail/index?id=${encodeURIComponent(outfitId)}&source=recommendation` });
   }
 
-  function updateOutfitInList(outfitId: string, patch: Partial<Outfit>) {
-    setOutfits((prev) => prev.map((outfit) => (outfit.id === outfitId ? { ...outfit, ...patch } : outfit)));
+  function updateOutfitsByKey(reference: Outfit, patch: Partial<Outfit>) {
+    const outfitKey = reference.outfitKey;
+    setOutfits((prev) =>
+      prev.map((outfit) =>
+        outfit.outfitKey === outfitKey || outfit.id === reference.id ? normalizeOutfitSnapshot({ ...outfit, ...patch }) : outfit,
+      ),
+    );
   }
 
-  function replaceOutfitInList(outfitId: string, next: Outfit) {
-    setOutfits((prev) => prev.map((outfit) => (outfit.id === outfitId ? next : outfit)));
+  function markOutfitShown(outfit: Outfit | undefined) {
+    if (outfit?.outfitKey) {
+      seenOutfitKeysRef.current.add(outfit.outfitKey);
+    }
+  }
+
+  function getSeenOutfitKeys() {
+    return [...seenOutfitKeysRef.current];
+  }
+
+  function getBatchNotice(notice: string | undefined, limited: boolean, exhausted: boolean) {
+    if (exhausted || limited) {
+      return notice || '小搭暂时只能搭出这些啦，多上传几件衣服，我就能给你更多灵感～';
+    }
+    return notice ?? '';
   }
 
   function nextRequestSeq() {
@@ -335,10 +390,18 @@ export default function TodayPage() {
         )}
 
         {!loading && currentOutfit && (
-          <View className="outfit-card" onClick={() => goToOutfitDetail(currentOutfit.id)}>
+          <View
+            className={`outfit-card ${recommendationBatchId ? 'has-batch' : ''} ${
+              batchLimited || batchExhausted ? 'limited' : ''
+            }`}
+            onClick={() => goToOutfitDetail(currentOutfit.id)}
+          >
             <View className="outfit-header">
               <Text className="outfit-title">{currentOutfit.title || '今日推荐'}</Text>
-              {currentOutfit.isFavorite && <Text className="favorite-badge">已收藏</Text>}
+              <View className="status-badges">
+                {currentOutfit.isFavorite && <Text className="status-badge favorite">已收藏</Text>}
+                {currentOutfit.isWornToday && <Text className="status-badge worn">今天穿过啦</Text>}
+              </View>
             </View>
 
             {getDeletedItemCount(currentOutfit) > 0 && (
@@ -391,7 +454,7 @@ export default function TodayPage() {
                 <Text className="btn-text">{currentOutfit.isFavorite ? '已收藏' : '收藏'}</Text>
               </View>
               <View className={`action-btn primary ${isWearBusy ? 'disabled' : ''}`} onClick={handleConfirmWear}>
-                <Text className="btn-text">{isWearBusy ? '记录中...' : '穿它'}</Text>
+                <Text className="btn-text">{isWearBusy ? '记录中...' : currentOutfit.isWornToday ? '今天穿过啦' : '穿它'}</Text>
               </View>
             </View>
           </View>

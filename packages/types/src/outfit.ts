@@ -56,6 +56,7 @@ export interface OutfitAiComment {
 export interface Outfit {
   id: string;
   userId: string;
+  outfitId?: string;
   title?: string;
   clothingIds: string[];
   outfitKey?: string;
@@ -76,10 +77,17 @@ export interface Outfit {
   source?: OutfitSource;
   sourceFavoriteOutfitId?: string;
   favoritedAt?: string;
+  favoriteOutfitId?: string;
   wornAt?: string;
   wornDate?: string;
   isFavorite?: boolean;
   isWornToday?: boolean;
+  todayHistoryId?: string;
+  historyId?: string;
+  lastWornAt?: string;
+  recommendationBatchId?: string;
+  generatedAt?: string;
+  styleTags?: string[];
   createdAt: string;
   updatedAt: string;
   reason?: string;
@@ -110,17 +118,25 @@ export interface RecommendRequest {
   weather?: WeatherSnapshot;
   sourceItemId?: string;
   excludeClothingIdSets?: string[][];
+  excludedOutfitKeys?: string[];
 }
 
 export interface RecommendResponse {
   outfits: Outfit[];
   weather: WeatherSnapshot;
   recommendationNotice?: string;
+  recommendationBatchId?: string;
+  limited?: boolean;
+  exhausted?: boolean;
   debug?: {
     inputScene?: SceneTag | string;
     matchedScene?: SceneTag | string;
     candidateCount: number;
     generatedCount: number;
+    filteredCandidateCount?: number;
+    excludedOutfitKeyCount?: number;
+    limited?: boolean;
+    exhausted?: boolean;
   };
 }
 

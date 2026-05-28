@@ -148,6 +148,33 @@
   font-size: 32px;
 }
 
+.status-badges {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  max-width: 260px;
+}
+
+.status-badge {
+  height: 40px;
+  padding: 0 14px;
+  border-radius: 20px;
+  font-size: 22px;
+  line-height: 40px;
+
+  &.favorite {
+    background: #ffe8e8;
+    color: #d94a4a;
+  }
+
+  &.worn {
+    background: #e8f3ff;
+    color: #2474b8;
+  }
+}
+
 .deleted-notice {
   padding: 14px 16px;
   background: #fff4f2;

@@ -349,7 +349,10 @@ function isRecommendationProfile(input: RecommendationProfile | UpdateCloudUserP
 }
 
 export async function generateCloudOutfit(params: RecommendRequest = {}) {
-  const ttl = Array.isArray(params.excludeClothingIdSets) && params.excludeClothingIdSets.length > 0 ? 0 : CACHE_TTL.outfit;
+  const hasExclusions =
+    (Array.isArray(params.excludeClothingIdSets) && params.excludeClothingIdSets.length > 0) ||
+    (Array.isArray(params.excludedOutfitKeys) && params.excludedOutfitKeys.length > 0);
+  const ttl = hasExclusions ? 0 : CACHE_TTL.outfit;
   console.log('[generateCloudOutfit] call generateOutfit', {
     scene: params.scene,
     date: params.date,
@@ -362,6 +365,7 @@ export async function generateCloudOutfit(params: RecommendRequest = {}) {
         }
       : undefined,
     excludeCount: params.excludeClothingIdSets?.length ?? 0,
+    excludedOutfitKeyCount: params.excludedOutfitKeys?.length ?? 0,
   });
   return callCachedCloudFunction<RecommendResponse>('generateOutfit', params as Record<string, unknown>, ttl);
 }

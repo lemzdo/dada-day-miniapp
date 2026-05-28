@@ -55,7 +55,7 @@ export default function OutfitDetailPage() {
       if (source === 'recommendation') {
         const draft = readOutfitDetailDraft(decodedId);
         if (draft) {
-          setOutfit(normalizeOutfitSnapshot({ ...draft, outfitKind: 'recommendation', isFavorite: false }));
+          setOutfit(normalizeOutfitSnapshot({ ...draft, outfitKind: draft.outfitKind || 'recommendation' }));
           return;
         }
       }
@@ -80,9 +80,9 @@ export default function OutfitDetailPage() {
 
     setOperating(true);
     try {
-      if (detailSource === 'favorite' && outfit.isFavorite) {
-        await removeFavoriteOutfit(outfit.id);
-        setOutfit({ ...outfit, isFavorite: false, outfitKind: 'recommendation' });
+      if (outfit.isFavorite) {
+        await removeFavoriteOutfit(outfit.favoriteOutfitId || outfit.id);
+        setOutfit({ ...outfit, isFavorite: false, favoriteOutfitId: undefined, outfitKind: 'recommendation' });
         setDetailSource('recommendation');
         Taro.showToast({ title: '已取消收藏', icon: 'success' });
         return;
@@ -90,8 +90,14 @@ export default function OutfitDetailPage() {
 
       const sourceForFavorite: Outfit = detailSource === 'history' ? { ...outfit, source: 'history' } : outfit;
       const saved = await saveFavoriteOutfit(normalizeOutfitSnapshot(sourceForFavorite), outfit.aiComment);
-      setOutfit(normalizeOutfitSnapshot({ ...saved, isFavorite: true, outfitKind: 'favorite' }));
-      setDetailSource('favorite');
+      setOutfit(
+        normalizeOutfitSnapshot({
+          ...outfit,
+          isFavorite: true,
+          favoriteOutfitId: saved.favoriteOutfitId || saved.id,
+          favoritedAt: saved.favoritedAt || saved.createdAt,
+        }),
+      );
       Taro.showToast({ title: '已收藏', icon: 'success' });
     } catch (err) {
       console.error('Toggle outfit favorite error:', err);
@@ -106,11 +112,25 @@ export default function OutfitDetailPage() {
 
     setOperating(true);
     try {
-      await addOutfitHistory(normalizeOutfitSnapshot(outfit), {
-        source: detailSource === 'favorite' ? 'favorite' : 'recommendation',
-        sourceFavoriteOutfitId: detailSource === 'favorite' ? outfit.id : outfit.sourceFavoriteOutfitId,
+      const saved = await addOutfitHistory(normalizeOutfitSnapshot(outfit), {
+        source: detailSource === 'favorite' || outfit.isFavorite ? 'favorite' : 'recommendation',
+        sourceFavoriteOutfitId:
+          detailSource === 'favorite' || outfit.isFavorite
+            ? outfit.favoriteOutfitId || outfit.id
+            : outfit.sourceFavoriteOutfitId,
         aiComment: outfit.aiComment,
       });
+      setOutfit(
+        normalizeOutfitSnapshot({
+          ...outfit,
+          isWornToday: true,
+          todayHistoryId: saved.todayHistoryId || saved.historyId || saved.id,
+          historyId: saved.historyId || saved.id,
+          lastWornAt: saved.lastWornAt || saved.wornAt || new Date().toISOString(),
+          wornAt: saved.wornAt,
+          wornDate: saved.wornDate || outfit.wornDate,
+        }),
+      );
       Taro.showToast({ title: '已记录到穿搭历史', icon: 'success' });
     } catch (err) {
       console.error('Confirm outfit wear error:', err);
@@ -167,7 +187,7 @@ export default function OutfitDetailPage() {
     ? (Object.entries(outfit.scores) as Array<[keyof OutfitScores, number]>)
     : [];
   const deletedItemCount = getDeletedItemCount(outfit);
-  const isFavoriteDetail = detailSource === 'favorite' && outfit.isFavorite;
+  const isFavoriteDetail = Boolean(outfit.isFavorite);
 
   return (
     <View className="outfit-detail-page">
@@ -180,7 +200,10 @@ export default function OutfitDetailPage() {
                 {[outfit.scene, outfit.timeOfDay, outfit.targetDate].filter(Boolean).join(' · ')}
               </Text>
             </View>
-            {isFavoriteDetail && <Text className="favorite-mark">已收藏</Text>}
+            <View className="detail-status-badges">
+              {isFavoriteDetail && <Text className="favorite-mark">已收藏</Text>}
+              {outfit.isWornToday && <Text className="worn-mark">今天穿过啦</Text>}
+            </View>
           </View>
 
           {deletedItemCount > 0 && (
@@ -268,7 +291,7 @@ export default function OutfitDetailPage() {
           <Text className="btn-text">{isFavoriteDetail ? '取消收藏' : '收藏'}</Text>
         </View>
         <View className={`action-btn wear ${operating ? 'disabled' : ''}`} onClick={handleConfirmWear}>
-          <Text className="btn-text">{operating ? '处理中...' : '穿它'}</Text>
+          <Text className="btn-text">{operating ? '处理中...' : outfit.isWornToday ? '今天穿过啦' : '穿它'}</Text>
         </View>
       </View>
     </View>

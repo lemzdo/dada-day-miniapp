@@ -36,11 +36,13 @@ async function generate(event) {
   const scene = inputScene || undefined;
   const targetDate = event.date || new Date().toISOString().slice(0, 10);
   const now = new Date().toISOString();
+  const recommendationBatchId = event.recommendationBatchId || createRecommendationBatchId(now);
   const clothesRes = await db.collection('clothes').where({ _openid: OPENID, status: 'active' }).limit(100).get();
   const clothes = clothesRes.data;
   const userRes = await db.collection('users').where({ _openid: OPENID }).limit(1).get();
   const recommendationProfile = normalizeRecommendationProfile(userRes.data[0] && userRes.data[0].styleProfile);
   const exclude = Array.isArray(event.excludeClothingIdSets) ? event.excludeClothingIdSets : [];
+  const excludedOutfitKeys = readStringArray(event.excludedOutfitKeys);
   const weather = normalizeWeather(event.weather) || fallbackWeather();
   const recommendations = generateRuleRecommendations({
     clothes,
@@ -48,13 +50,18 @@ async function generate(event) {
     weather,
     recommendationProfile,
     excludeClothingIdSets: exclude,
-    maxResults: 3,
+    excludedOutfitKeys,
+    maxResults: event.maxResults || 8,
   });
   const recommendationNotice = getRecommendationNotice(clothes, weather, recommendations.length);
   const debug = {
     inputScene,
     matchedScene: recommendations[0]?.matchedScene || '',
     candidateCount: recommendations.debug?.candidateCount ?? 0,
+    filteredCandidateCount: recommendations.debug?.filteredCandidateCount ?? 0,
+    excludedOutfitKeyCount: excludedOutfitKeys.length,
+    limited: Boolean(recommendations.limited),
+    exhausted: Boolean(recommendations.exhausted),
     generatedCount: recommendations.length,
   };
 
@@ -68,10 +75,18 @@ async function generate(event) {
   });
 
   if (recommendations.length === 0) {
-    return { outfits: [], weather, recommendationNotice, debug };
+    return {
+      outfits: [],
+      weather,
+      recommendationNotice,
+      recommendationBatchId,
+      limited: Boolean(recommendations.limited),
+      exhausted: true,
+      debug: { ...debug, exhausted: true },
+    };
   }
 
-  const outfits = recommendations.map((recommendation) =>
+  const tempOutfits = recommendations.map((recommendation) =>
     toTempOutfit(recommendation, {
       openid: OPENID,
       scene,
@@ -79,9 +94,47 @@ async function generate(event) {
       timeOfDay: event.timeOfDay || 'all_day',
       weather,
       now,
+      recommendationBatchId,
     }),
   );
-  return { outfits: outfits.slice(0, 3), weather, recommendationNotice, debug };
+  const outfits = [];
+  for (const tempOutfit of tempOutfits) {
+    const outfitRecord = await upsertOutfitByKey({
+      openid: OPENID,
+      base: tempOutfit,
+      patch: {},
+      now,
+    });
+    outfits.push({
+      ...tempOutfit,
+      id: outfitRecord._id,
+      outfitId: outfitRecord._id,
+      outfitKind: 'recommendation',
+    });
+  }
+  const hydratedOutfits = await enrichOutfitsState(outfits, {
+    openid: OPENID,
+    targetDate,
+    generatedAt: now,
+    recommendationBatchId,
+  });
+  await saveOutfitExposures({
+    openid: OPENID,
+    outfits: hydratedOutfits,
+    scene,
+    batchId: recommendationBatchId,
+    shownAt: now,
+  });
+
+  return {
+    outfits: hydratedOutfits,
+    weather,
+    recommendationNotice,
+    recommendationBatchId,
+    limited: Boolean(recommendations.limited),
+    exhausted: Boolean(recommendations.exhausted),
+    debug,
+  };
 }
 
 async function getOutfitDetail(event) {
@@ -97,7 +150,7 @@ async function getOutfit(id) {
   const outfit = await db.collection('outfits').doc(id).get();
   if (!outfit.data || outfit.data._openid !== OPENID) throw new Error('outfit not found');
   const clothes = await loadClothesByIds(OPENID, outfit.data.clothingIds || []);
-  return toOutfit(outfit.data, clothes);
+  return enrichSingleOutfitState(toOutfit(outfit.data, clothes), { openid: OPENID });
 }
 
 async function updateFavorite(id, isFavorite, outfitPayload) {
@@ -309,7 +362,10 @@ async function saveFavoriteOutfit(id, outfitPayload, aiCommentPayload) {
         deletedAt: null,
       },
     });
-    return toSnapshotOutfit({ ...existing, ...recordData, updatedAt: now, deletedAt: null }, 'favorite');
+    return enrichSingleOutfitState(toSnapshotOutfit({ ...existing, ...recordData, updatedAt: now, deletedAt: null }, 'favorite'), {
+      openid: OPENID,
+      targetDate: base.targetDate,
+    });
   }
 
   const addData = {
@@ -320,7 +376,10 @@ async function saveFavoriteOutfit(id, outfitPayload, aiCommentPayload) {
     updatedAt: now,
   };
   const addRes = await db.collection('favorite_outfits').add({ data: addData });
-  return toSnapshotOutfit({ ...addData, _id: addRes._id }, 'favorite');
+  return enrichSingleOutfitState(toSnapshotOutfit({ ...addData, _id: addRes._id }, 'favorite'), {
+    openid: OPENID,
+    targetDate: base.targetDate,
+  });
 }
 
 async function removeFavoriteOutfit(id) {
@@ -368,9 +427,18 @@ async function addOutfitHistory(event) {
   const sourceFavoriteOutfitId = source === 'favorite'
     ? event.sourceFavoriteOutfitId || event.id || base.id
     : null;
+  const targetDate = event.date || base.targetDate || now.slice(0, 10);
+  const outfitKey = getOutfitKey(clothingIds);
+  const existingTodayHistory = await findTodayHistoryByKey(OPENID, outfitKey, targetDate);
+  if (existingTodayHistory) {
+    return enrichSingleOutfitState(toSnapshotOutfit(existingTodayHistory, 'history'), {
+      openid: OPENID,
+      targetDate,
+    });
+  }
   const recordData = buildSnapshotRecordData(base, {
     aiComment: event.aiComment || base.aiComment,
-    outfitKey: getOutfitKey(clothingIds),
+    outfitKey,
     now,
     source,
   });
@@ -380,12 +448,17 @@ async function addOutfitHistory(event) {
     ...recordData,
     source,
     sourceFavoriteOutfitId,
+    wearDate: targetDate,
+    targetDate,
     wornAt: now,
     createdAt: now,
   };
 
   const addRes = await db.collection('outfit_history').add({ data: addData });
-  return toSnapshotOutfit({ ...addData, _id: addRes._id }, 'history');
+  return enrichSingleOutfitState(toSnapshotOutfit({ ...addData, _id: addRes._id }, 'history'), {
+    openid: OPENID,
+    targetDate,
+  });
 }
 
 async function listOutfitHistory(event) {
@@ -419,12 +492,136 @@ function getHistorySortTime(item) {
   return Number.isFinite(time) ? time : 0;
 }
 
+function createRecommendationBatchId(now) {
+  return `batch:${now}:${Math.random().toString(36).slice(2, 10)}`;
+}
+
+async function enrichOutfitsState(outfits, { openid, targetDate, generatedAt, recommendationBatchId }) {
+  const keys = uniqueStrings(outfits.map((outfit) => outfit.outfitKey || getOutfitKey(outfit.clothingIds || [])));
+  const [favoriteMap, historyMap] = await Promise.all([
+    findFavoritesByKeys(openid, keys),
+    findTodayHistoryByKeys(openid, keys, targetDate),
+  ]);
+
+  return outfits.map((outfit) => {
+    const clothingIds = outfit.clothingIds || [];
+    const outfitKey = outfit.outfitKey || getOutfitKey(clothingIds);
+    const favorite = favoriteMap.get(outfitKey);
+    const history = historyMap.get(outfitKey);
+    return {
+      ...outfit,
+      outfitId: outfit.outfitId || (outfit.outfitKind === 'recommendation' ? outfit.id : undefined),
+      outfitKey,
+      isFavorite: Boolean(favorite),
+      favoriteOutfitId: favorite?._id || undefined,
+      favoritedAt: favorite?.createdAt || favorite?.favoritedAt || undefined,
+      isWornToday: Boolean(history),
+      todayHistoryId: history?._id || undefined,
+      historyId: history?._id || outfit.historyId,
+      lastWornAt: history?.wornAt || outfit.lastWornAt || outfit.wornAt,
+      wornAt: outfit.wornAt || history?.wornAt,
+      wornDate: outfit.wornDate || (history?.wornAt ? String(history.wornAt).slice(0, 10) : undefined),
+      recommendationBatchId: outfit.recommendationBatchId || recommendationBatchId,
+      generatedAt: outfit.generatedAt || generatedAt,
+    };
+  });
+}
+
+async function enrichSingleOutfitState(outfit, { openid, targetDate }) {
+  const enriched = await enrichOutfitsState([outfit], {
+    openid,
+    targetDate: targetDate || new Date().toISOString().slice(0, 10),
+    generatedAt: outfit.generatedAt || outfit.createdAt || new Date().toISOString(),
+    recommendationBatchId: outfit.recommendationBatchId,
+  });
+  return enriched[0];
+}
+
+async function findFavoritesByKeys(openid, outfitKeys) {
+  const map = new Map();
+  const keys = uniqueStrings(outfitKeys);
+  if (!keys.length) return map;
+  const res = await db.collection('favorite_outfits')
+    .where({ _openid: openid, outfitKey: db.command.in(keys) })
+    .limit(100)
+    .get();
+  for (const item of res.data || []) {
+    if (item.deletedAt || !item.outfitKey) continue;
+    const current = map.get(item.outfitKey);
+    if (!current || getHistorySortTime(item) > getHistorySortTime(current)) {
+      map.set(item.outfitKey, item);
+    }
+  }
+  return map;
+}
+
+async function findTodayHistoryByKeys(openid, outfitKeys, targetDate) {
+  const map = new Map();
+  const keys = uniqueStrings(outfitKeys);
+  if (!keys.length) return map;
+  const res = await db.collection('outfit_history')
+    .where({ _openid: openid, outfitKey: db.command.in(keys) })
+    .limit(500)
+    .get();
+  for (const item of res.data || []) {
+    if (!item.outfitKey || !isHistoryOnDate(item, targetDate)) continue;
+    const current = map.get(item.outfitKey);
+    if (!current || getHistorySortTime(item) > getHistorySortTime(current)) {
+      map.set(item.outfitKey, item);
+    }
+  }
+  return map;
+}
+
+async function findTodayHistoryByKey(openid, outfitKey, targetDate) {
+  const map = await findTodayHistoryByKeys(openid, [outfitKey], targetDate);
+  return map.get(outfitKey) || null;
+}
+
+function isHistoryOnDate(item, targetDate) {
+  const candidates = [item.wearDate, item.wornDate, item.targetDate, item.wornAt, item.createdAt].filter(Boolean);
+  return candidates.some((value) => String(value).slice(0, 10) === targetDate);
+}
+
+async function saveOutfitExposures({ openid, outfits, scene, batchId, shownAt }) {
+  const uniqueOutfits = [];
+  const seen = new Set();
+  for (const outfit of outfits || []) {
+    const outfitKey = outfit.outfitKey || getOutfitKey(outfit.clothingIds || []);
+    if (!outfitKey || seen.has(outfitKey)) continue;
+    seen.add(outfitKey);
+    uniqueOutfits.push(outfitKey);
+  }
+
+  for (const outfitKey of uniqueOutfits) {
+    try {
+      await db.collection('outfit_exposures').add({
+        data: {
+          _openid: openid,
+          userId: openid,
+          outfitKey,
+          scene: scene || '',
+          batchId,
+          shownAt,
+          createdAt: shownAt,
+        },
+      });
+    } catch {
+      // Exposure is best-effort telemetry and must not block recommendations.
+    }
+  }
+}
+
+function uniqueStrings(values) {
+  return [...new Set((values || []).filter((value) => typeof value === 'string' && value.trim()).map((value) => value.trim()))];
+}
+
 async function getFavoriteOutfitById(id) {
   const { OPENID } = cloud.getWXContext();
   if (!id) throw new Error('id is required');
   const res = await db.collection('favorite_outfits').doc(id).get();
   if (!res.data || res.data._openid !== OPENID || res.data.deletedAt) throw new Error('favorite outfit not found');
-  return toSnapshotOutfit(res.data, 'favorite');
+  return enrichSingleOutfitState(toSnapshotOutfit(res.data, 'favorite'), { openid: OPENID });
 }
 
 async function getHistoryById(id) {
@@ -432,7 +629,7 @@ async function getHistoryById(id) {
   if (!id) throw new Error('id is required');
   const res = await db.collection('outfit_history').doc(id).get();
   if (!res.data || res.data._openid !== OPENID) throw new Error('history record not found');
-  return toSnapshotOutfit(res.data, 'history');
+  return enrichSingleOutfitState(toSnapshotOutfit(res.data, 'history'), { openid: OPENID });
 }
 
 async function findFavoriteByKey(openid, outfitKey) {
@@ -568,6 +765,7 @@ function toSnapshotOutfit(item, kind) {
 
   return {
     id: item._id,
+    outfitId: item.outfitId || (kind === 'recommendation' ? item._id : undefined),
     userId: item._openid || item.userId,
     title: item.title,
     clothingIds: item.clothingIds || itemsSnapshot.map((snapshot) => snapshot.clothingId),
@@ -595,11 +793,18 @@ function toSnapshotOutfit(item, kind) {
     sourceItemId: item.sourceItemId,
     source: item.source || (kind === 'history' ? 'recommendation' : 'recommendation'),
     sourceFavoriteOutfitId: item.sourceFavoriteOutfitId || undefined,
+    favoriteOutfitId: kind === 'favorite' ? item._id : item.favoriteOutfitId || item.sourceFavoriteOutfitId || undefined,
     isFavorite: kind === 'favorite',
     favoritedAt: kind === 'favorite' ? item.createdAt : undefined,
     wornAt: item.wornAt || undefined,
     wornDate: item.wornAt ? String(item.wornAt).slice(0, 10) : undefined,
-    isWornToday: false,
+    isWornToday: kind === 'history' && isHistoryOnDate(item, new Date().toISOString().slice(0, 10)),
+    todayHistoryId: kind === 'history' && isHistoryOnDate(item, new Date().toISOString().slice(0, 10)) ? item._id : undefined,
+    historyId: kind === 'history' ? item._id : undefined,
+    lastWornAt: item.wornAt || undefined,
+    recommendationBatchId: item.recommendationBatchId || undefined,
+    generatedAt: item.generatedAt || undefined,
+    styleTags: readSnapshotStyleTags(itemsSnapshot),
     createdAt: item.createdAt,
     updatedAt: item.updatedAt || item.createdAt,
     reason: item.reason || item.reasoning,
@@ -664,6 +869,9 @@ function buildOutfitSaveData(base, { outfitKey, now, patch, current }) {
     wornAt: patch.wornAt !== undefined ? patch.wornAt : current?.wornAt || null,
     wornDate: patch.wornDate !== undefined ? patch.wornDate : current?.wornDate || null,
     isWornToday: patch.isWornToday ?? Boolean(current?.isWornToday),
+    recommendationBatchId: base.recommendationBatchId || current?.recommendationBatchId,
+    generatedAt: base.generatedAt || current?.generatedAt,
+    styleTags: readStringArray(base.styleTags).length ? readStringArray(base.styleTags) : readSnapshotStyleTags(snapshotItems),
     reason,
     reasoning: reason,
     ...(aiComment ? { aiComment } : {}),
@@ -766,6 +974,15 @@ function normalizeOutfitPayload(payload) {
     source: payload.source || 'recommend',
     reasoning: payload.reasoning,
     reason: payload.reason,
+    outfitKey: payload.outfitKey,
+    outfitId: payload.outfitId,
+    favoriteOutfitId: payload.favoriteOutfitId,
+    todayHistoryId: payload.todayHistoryId,
+    historyId: payload.historyId,
+    lastWornAt: payload.lastWornAt,
+    recommendationBatchId: payload.recommendationBatchId,
+    generatedAt: payload.generatedAt,
+    styleTags: readStringArray(payload.styleTags),
     aiComment: normalizeAiComment(payload.aiComment),
   };
 }
@@ -783,6 +1000,7 @@ function toTempOutfit(recommendation, context) {
     _openid: context.openid,
     title: recommendation.title,
     clothingIds,
+    outfitKey: getOutfitKey(clothingIds),
     snapshotItems,
     incomplete: false,
     deletedItemCount: 0,
@@ -796,6 +1014,13 @@ function toTempOutfit(recommendation, context) {
     source: 'recommend',
     isFavorite: false,
     isWornToday: false,
+    favoriteOutfitId: undefined,
+    todayHistoryId: undefined,
+    historyId: undefined,
+    lastWornAt: undefined,
+    recommendationBatchId: context.recommendationBatchId,
+    generatedAt: context.now,
+    styleTags: uniqueStrings(recommendation.items.flatMap((item) => readArray(item.styleTags))),
     reasoning: recommendation.reasoning,
     createdAt: context.now,
     updatedAt: context.now,
@@ -804,7 +1029,15 @@ function toTempOutfit(recommendation, context) {
   return toOutfit(data, recommendation.items);
 }
 
-function generateRuleRecommendations({ clothes, scene, weather, recommendationProfile, excludeClothingIdSets, maxResults }) {
+function generateRuleRecommendations({
+  clothes,
+  scene,
+  weather,
+  recommendationProfile,
+  excludeClothingIdSets,
+  excludedOutfitKeys,
+  maxResults,
+}) {
   const tempConfig = getTemperatureConfig(Number(weather.temp || weather.temperature || 22));
   const filtered = clothes
     .filter((item) => item && item._id)
@@ -812,22 +1045,30 @@ function generateRuleRecommendations({ clothes, scene, weather, recommendationPr
     .filter((item) => matchesTemperature(item, tempConfig));
   const grouped = groupClothes(filtered);
   const combos = generateCandidateCombos(grouped);
-  const excluded = new Set((excludeClothingIdSets || []).filter(Array.isArray).map((ids) => signature(ids)));
+  const excluded = new Set([
+    ...(excludeClothingIdSets || []).filter(Array.isArray).map((ids) => signature(ids)),
+    ...readStringArray(excludedOutfitKeys),
+  ]);
+  const limit = Math.min(Math.max(Number(maxResults || 8), 1), 10);
 
   const scored = combos
     .map((items) => scoreCandidate(items, { scene, tempConfig, weather, recommendationProfile }))
-    .filter((rec) => !excluded.has(signature(rec.items.map((item) => item._id))))
-    .sort((a, b) => {
-      if (scene && b.scores.sceneMatch !== a.scores.sceneMatch) {
-        return b.scores.sceneMatch - a.scores.sceneMatch;
-      }
-      return b.scores.total - a.scores.total;
+    .map((rec) => {
+      const outfitKey = signature(rec.items.map((item) => item._id));
+      return {
+        ...rec,
+        outfitKey,
+        rankingScore: buildRankingScore(rec),
+      };
     });
+  const available = scored.filter((rec) => !excluded.has(rec.outfitKey));
+  const sortedAvailable = available.slice().sort((a, b) => b.rankingScore - a.rankingScore);
+  const sortedFallback = scored.slice().sort((a, b) => b.rankingScore - a.rankingScore);
 
   const results = [];
   const used = [];
-  for (const rec of scored) {
-    if (results.length >= Math.min(Math.max(Number(maxResults || 3), 1), 3)) break;
+  for (const rec of sortedAvailable) {
+    if (results.length >= limit) break;
     const ids = rec.items.map((item) => item._id);
     const tooSimilar = used.some((existingIds) => overlapRatio(existingIds, ids) > 0.5);
     if (!tooSimilar) {
@@ -836,10 +1077,41 @@ function generateRuleRecommendations({ clothes, scene, weather, recommendationPr
     }
   }
 
+  if (results.length < limit) {
+    for (const rec of sortedAvailable) {
+      if (results.length >= limit) break;
+      if (!results.some((item) => item.outfitKey === rec.outfitKey)) {
+        results.push(rec);
+      }
+    }
+  }
+
+  if (results.length < limit) {
+    for (const rec of sortedFallback) {
+      if (results.length >= limit) break;
+      if (!results.some((item) => item.outfitKey === rec.outfitKey)) {
+        results.push(rec);
+      }
+    }
+  }
+
   results.debug = {
     candidateCount: scored.length,
+    filteredCandidateCount: available.length,
   };
+  results.limited = results.length < limit || available.length < limit;
+  results.exhausted = available.length === 0 && excluded.size > 0;
   return results;
+}
+
+function buildRankingScore(rec) {
+  const scores = rec.scores || {};
+  const weather = Number(scores.weatherAdaptation || 0);
+  const scene = Number(scores.sceneMatch || 0);
+  const total = Number(scores.total || 0);
+  const base = weather * 0.38 + scene * 0.32 + total * 0.3;
+  const jitter = (Math.random() - 0.5) * 0.45;
+  return base + jitter;
 }
 
 function getRecommendationNotice(clothes, weather, recommendationCount) {
@@ -1251,6 +1523,10 @@ function readArray(value) {
   return Array.isArray(value) ? value.filter(Boolean) : [];
 }
 
+function readSnapshotStyleTags(items) {
+  return uniqueStrings((items || []).flatMap((item) => String(item.style || '').split(/[,/，、\s]+/)));
+}
+
 function readStringArray(value) {
   return Array.isArray(value) ? value.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim()) : [];
 }
@@ -1422,6 +1698,7 @@ function toOutfit(item, clothes) {
 
   return {
     id: item._id,
+    outfitId: item.outfitId || item._id,
     userId: item._openid,
     title: item.title,
     clothingIds,
@@ -1450,10 +1727,17 @@ function toOutfit(item, clothes) {
     sourceItemId: item.sourceItemId,
     source: item.source || 'recommend',
     isFavorite: Boolean(item.isFavorite),
+    favoriteOutfitId: item.favoriteOutfitId || undefined,
     favoritedAt: item.favoritedAt || undefined,
     wornAt: item.wornAt || undefined,
     wornDate: item.wornDate || undefined,
     isWornToday: Boolean(item.isWornToday) || item.wornDate === today,
+    todayHistoryId: item.todayHistoryId || undefined,
+    historyId: item.historyId || undefined,
+    lastWornAt: item.lastWornAt || item.wornAt || undefined,
+    recommendationBatchId: item.recommendationBatchId || undefined,
+    generatedAt: item.generatedAt || undefined,
+    styleTags: readSnapshotStyleTags(snapshotItems),
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
     reasoning: item.reasoning || item.reason,
