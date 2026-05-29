@@ -232,6 +232,11 @@ export default function TodayPage() {
     const current = outfits[currentIndex];
     if (!current || operation) return;
 
+    if (current.isWornToday) {
+      Taro.showToast({ title: '今天已经穿过这套啦～', icon: 'none' });
+      return;
+    }
+
     setOperation('wear');
     try {
       await addOutfitHistory(normalizeOutfitSnapshot(current), {

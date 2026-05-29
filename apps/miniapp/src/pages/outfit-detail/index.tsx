@@ -196,6 +196,8 @@ export default function OutfitDetailPage() {
   const [itemsExpanded, setItemsExpanded] = useState(false);
   const [showNameModal, setShowNameModal] = useState(false);
   const [draftName, setDraftName] = useState('');
+  const [favoriteOperating, setFavoriteOperating] = useState(false);
+  const [wearOperating, setWearOperating] = useState(false);
 
   useLoad(() => {
     if (id) fetchOutfit(id);
@@ -232,9 +234,9 @@ export default function OutfitDetailPage() {
   }
 
   async function handleToggleFavorite() {
-    if (!outfit || operating) return;
+    if (!outfit || favoriteOperating) return;
 
-    setOperating(true);
+    setFavoriteOperating(true);
     try {
       if (outfit.isFavorite) {
         await removeFavoriteOutfit(outfit.favoriteOutfitId || outfit.id, outfit.outfitKey);
@@ -267,14 +269,19 @@ export default function OutfitDetailPage() {
       console.error('Toggle outfit favorite error:', err);
       Taro.showToast({ title: '操作失败', icon: 'none' });
     } finally {
-      setOperating(false);
+      setFavoriteOperating(false);
     }
   }
 
   async function handleConfirmWear() {
-    if (!outfit || operating) return;
+    if (!outfit || wearOperating) return;
 
-    setOperating(true);
+    if (outfit.isWornToday) {
+      Taro.showToast({ title: '今天已经穿过这套啦～', icon: 'none' });
+      return;
+    }
+
+    setWearOperating(true);
     try {
       const saved = await addOutfitHistory(normalizeOutfitSnapshot(outfit), {
         source: detailSource === 'favorite' || outfit.isFavorite ? 'favorite' : 'recommendation',
@@ -300,7 +307,7 @@ export default function OutfitDetailPage() {
       console.error('Confirm outfit wear error:', err);
       Taro.showToast({ title: '操作失败', icon: 'none' });
     } finally {
-      setOperating(false);
+      setWearOperating(false);
     }
   }
 
@@ -573,13 +580,13 @@ export default function OutfitDetailPage() {
 
       <View className="action-bar">
         <View
-          className={`action-btn favorite ${isFavoriteDetail ? 'active' : ''} ${operating ? 'disabled' : ''}`}
+          className={`action-btn favorite ${isFavoriteDetail ? 'active' : ''} ${favoriteOperating ? 'disabled' : ''}`}
           onClick={handleToggleFavorite}
         >
           <Text className="btn-text">{isFavoriteDetail ? '取消收藏' : '收藏'}</Text>
         </View>
-        <View className={`action-btn wear ${operating ? 'disabled' : ''}`} onClick={handleConfirmWear}>
-          <Text className="btn-text">{operating ? '处理中...' : outfit.isWornToday ? '今天穿过啦' : '穿它'}</Text>
+        <View className={`action-btn wear ${wearOperating ? 'disabled' : ''}`} onClick={handleConfirmWear}>
+          <Text className="btn-text">{wearOperating ? '处理中...' : outfit.isWornToday ? '今天穿过啦' : '穿它'}</Text>
         </View>
       </View>
     </View>
