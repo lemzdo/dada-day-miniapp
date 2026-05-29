@@ -12,24 +12,18 @@ import {
   saveFavoriteOutfit,
 } from '@/lib/cloud';
 import { normalizeOutfitSnapshot, readOutfitDetailDraft, storeOutfitDetailDraft, storeOutfitStateSync } from '@/utils/outfitSnapshot';
-import { getOutfitPrimaryContext, getOutfitSecondaryContext } from '@/utils/outfitContextText';
+import {
+  getDateLabel,
+  getItemCountText,
+  getOutfitScoreLabels,
+  getOutfitStyleTags,
+  getOutfitWeatherSummary,
+  getSceneLabel,
+  getTimeLabel,
+} from '@/utils/outfitContextText';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
-import type { Outfit, OutfitScores } from '@starter-template/types';
+import type { Outfit } from '@starter-template/types';
 import './index.scss';
-
-const scoreLabels: Record<keyof OutfitScores, string> = {
-  total: '总分',
-  weatherAdaptation: '天气',
-  styleUnity: '风格',
-  freshness: '新鲜',
-  preference: '偏好',
-  fashion: '时尚',
-  comfort: '舒适',
-  warmth: '保暖',
-  coolness: '清爽',
-  sceneMatch: '场景',
-  colorHarmony: '配色',
-};
 
 type DetailSource = 'recommendation' | 'favorite' | 'history';
 type EditableModalOptions = Parameters<typeof Taro.showModal>[0] & {
@@ -202,10 +196,6 @@ export default function OutfitDetailPage() {
 
   async function handleGenerateAiComment() {
     if (!outfit || commentLoading) return;
-    if (outfit.aiComment) {
-      Taro.showToast({ title: '已展示小搭点评', icon: 'none' });
-      return;
-    }
 
     setCommentLoading(true);
     try {
@@ -251,30 +241,30 @@ export default function OutfitDetailPage() {
     );
   }
 
-  const scoreEntries = outfit.scores
-    ? (Object.entries(outfit.scores) as Array<[keyof OutfitScores, number]>)
-    : [];
   const deletedItemCount = getDeletedItemCount(outfit);
   const isFavoriteDetail = Boolean(outfit.isFavorite);
+  const styleTags = getOutfitStyleTags(outfit);
+  const weatherSummary = getOutfitWeatherSummary(outfit);
+  const scoreLabels = getOutfitScoreLabels(outfit);
+  const itemCountText = getItemCountText(outfit);
 
   return (
     <View className="outfit-detail-page">
       <View className="detail-scroll">
         <View className="hero-card">
           <View className="hero-header">
-            <View>
+            <View className="hero-title-block">
               <Text className="hero-title">{getOutfitDisplayTitle(outfit, '今日推荐穿搭')}</Text>
-              <Text className="hero-subtitle">{getOutfitPrimaryContext(outfit)}</Text>
-              {getOutfitSecondaryContext(outfit) && (
-                <Text className="hero-context">{getOutfitSecondaryContext(outfit)}</Text>
-              )}
-              <Text className="name-action" onClick={handleRenameOutfit}>
-                {outfit.userTitle ? '编辑名称' : '给这套起个名字'}
-              </Text>
+              <View className="fact-chips">
+                <Text className="fact-chip">{getSceneLabel(outfit)}</Text>
+                <Text className="fact-chip">{getDateLabel(outfit)}</Text>
+                <Text className="fact-chip">{weatherSummary.chip || getTimeLabel(outfit)}</Text>
+                {isFavoriteDetail && <Text className="fact-chip favorite">已收藏</Text>}
+                {outfit.isWornToday && <Text className="fact-chip worn">今天穿过啦</Text>}
+              </View>
             </View>
-            <View className="detail-status-badges">
-              {isFavoriteDetail && <Text className="favorite-mark">已收藏</Text>}
-              {outfit.isWornToday && <Text className="worn-mark">今天穿过啦</Text>}
+            <View className="name-action" onClick={handleRenameOutfit}>
+              <Text className="name-action-text">{outfit.userTitle ? '编辑' : '命名'}</Text>
             </View>
           </View>
 
@@ -283,41 +273,55 @@ export default function OutfitDetailPage() {
               <Text className="deleted-notice-text">部分单品已从衣柜删除，仍按当时快照展示。</Text>
             </View>
           )}
+        </View>
 
-          <View className="outfit-items">
+        <View className="visual-card">
+          <View className="visual-collage">
             {outfit.items?.map((item) => (
-              <View key={item.clothingId} className={`outfit-item ${item.isDeleted ? 'deleted' : ''}`}>
-                <Image className="item-image" src={item.imageUrl} mode="aspectFit" lazyLoad />
-                <Text className="item-name">{item.subcategory || item.category}</Text>
+              <View key={item.clothingId} className={`visual-item ${item.isDeleted ? 'deleted' : ''}`}>
+                <Image className="visual-image" src={item.imageUrl} mode="aspectFit" lazyLoad />
               </View>
             ))}
           </View>
         </View>
 
-        {outfit.weatherSnapshot && (
-          <View className="detail-card">
-            <Text className="card-title">天气参考</Text>
-            <View className="weather-grid">
-              <WeatherValue label="温度" value={`${outfit.weatherSnapshot.temp}度`} />
-              <WeatherValue label="天气" value={outfit.weatherSnapshot.weather} />
-              <WeatherValue label="湿度" value={`${outfit.weatherSnapshot.humidity}%`} />
-            </View>
-          </View>
-        )}
-
-        {scoreEntries.length > 0 && (
-          <View className="detail-card">
-            <Text className="card-title">穿搭评分</Text>
-            {scoreEntries.map(([key, value]) => (
-              <ScoreValue key={key} label={scoreLabels[key] ?? key} value={value} />
+        {styleTags.length > 0 && (
+          <View className="style-tags">
+            {styleTags.map((tag) => (
+              <Text key={tag} className="style-tag">
+                {tag}
+              </Text>
             ))}
           </View>
         )}
 
         {(outfit.reasoning || outfit.reason) && (
-          <View className="detail-card">
-            <Text className="card-title">搭配理由</Text>
+          <View className="detail-card reason-card">
+            <Text className="card-title">为什么推荐这套</Text>
             <Text className="reasoning-text">{outfit.reasoning || outfit.reason}</Text>
+          </View>
+        )}
+
+        <View className="detail-card weather-card">
+          <Text className="card-title">今日天气参考</Text>
+          <View className="weather-summary">
+            <Text className="weather-title">{weatherSummary.title}</Text>
+            <Text className="weather-tip">{weatherSummary.tip}</Text>
+          </View>
+        </View>
+
+        {scoreLabels.length > 0 && (
+          <View className="detail-card">
+            <Text className="card-title">搭配指数</Text>
+            <View className="score-cards">
+              {scoreLabels.map((score) => (
+                <View key={score.label} className="score-card">
+                  <Text className="score-card-label">{score.label}</Text>
+                  <Text className="score-card-value">{score.value}</Text>
+                  <Text className="score-card-text">{score.text}</Text>
+                </View>
+              ))}
+            </View>
           </View>
         )}
 
@@ -325,11 +329,11 @@ export default function OutfitDetailPage() {
           <View className="ai-comment-header">
             <Text className="card-title">小搭点评</Text>
             <View
-              className={`ai-comment-btn ${commentLoading || outfit.aiComment ? 'disabled' : ''}`}
+              className={`ai-comment-btn ${commentLoading ? 'disabled' : ''}`}
               onClick={handleGenerateAiComment}
             >
               <Text className="ai-comment-btn-text">
-                {commentLoading ? '点评中...' : outfit.aiComment ? '已生成' : '小搭点评这套'}
+                {commentLoading ? '点评中...' : outfit.aiComment ? '重新点评' : '让小搭点评这套'}
               </Text>
             </View>
           </View>
@@ -350,8 +354,20 @@ export default function OutfitDetailPage() {
               <Text className="ai-comment-tip">{outfit.aiComment.tip}</Text>
             </View>
           ) : (
-            <Text className="ai-comment-empty">需要更自然的点评时，可以手动生成一次。</Text>
+            <Text className="ai-comment-empty">想听听小搭怎么看这套时，可以手动生成一次。</Text>
           )}
+        </View>
+
+        <View className="detail-card item-list-card">
+          <Text className="card-title">用到的单品 {itemCountText}</Text>
+          <View className="outfit-items">
+            {outfit.items?.map((item) => (
+              <View key={item.clothingId} className={`outfit-item ${item.isDeleted ? 'deleted' : ''}`}>
+                <Image className="item-image" src={item.imageUrl} mode="aspectFit" lazyLoad />
+                <Text className="item-name">{item.subcategory || item.category}</Text>
+              </View>
+            ))}
+          </View>
         </View>
       </View>
 
@@ -370,29 +386,6 @@ export default function OutfitDetailPage() {
   );
 }
 
-function WeatherValue({ label, value }: { label: string; value: string }) {
-  return (
-    <View className="weather-item">
-      <Text className="weather-value">{value}</Text>
-      <Text className="weather-label">{label}</Text>
-    </View>
-  );
-}
-
-function ScoreValue({ label, value }: { label: string; value: number }) {
-  const score = formatScore(value);
-
-  return (
-    <View className="score-row">
-      <Text className="score-label">{label}</Text>
-      <View className="score-track">
-        <View className="score-fill" style={{ width: `${score * 10}%` }} />
-      </View>
-      <Text className="score-value">{score}</Text>
-    </View>
-  );
-}
-
 function normalizeSource(value?: string): DetailSource {
   if (value === 'favorite' || value === 'history') return value;
   return 'recommendation';
@@ -405,7 +398,3 @@ function getDeletedItemCount(outfit: Outfit) {
   return Math.max(snapshotCount, itemCount);
 }
 
-function formatScore(value: number) {
-  if (!Number.isFinite(value)) return 0;
-  return Math.max(0, Math.min(10, Math.round(value * 10) / 10));
-}

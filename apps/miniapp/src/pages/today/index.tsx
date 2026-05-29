@@ -4,7 +4,7 @@ import { useRef, useState } from 'react';
 import { WeatherCard } from '@/components/WeatherCard';
 import { addOutfitHistory, generateCloudOutfit, removeFavoriteOutfit, saveFavoriteOutfit } from '@/lib/cloud';
 import { consumeOutfitStateSync, normalizeOutfitSnapshot, storeOutfitDetailDraft } from '@/utils/outfitSnapshot';
-import { getOutfitPrimaryContext } from '@/utils/outfitContextText';
+import { getItemCountText, getOutfitStyleTags, getSceneLabel } from '@/utils/outfitContextText';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
 import sceneDate from '@/assets/scenes/scene-date-clean.png';
 import sceneDateActive from '@/assets/scenes/scene-date-active-clean.png';
@@ -326,8 +326,8 @@ export default function TodayPage() {
     return notice ?? '';
   }
 
-  function formatOutfitMeta(outfit: Outfit, index: number) {
-    return getOutfitPrimaryContext(outfit, index);
+  function formatOutfitMeta(outfit: Outfit) {
+    return `今日${getSceneLabel(outfit)} · ${getItemCountText(outfit)}`;
   }
 
   function nextRequestSeq() {
@@ -423,7 +423,7 @@ export default function TodayPage() {
                     <View className="outfit-header">
                       <View className="outfit-title-wrap">
                         <Text className="outfit-title">{getOutfitDisplayTitle(outfit, '今日推荐')}</Text>
-                        <Text className="outfit-meta">{formatOutfitMeta(outfit, index)}</Text>
+                        <Text className="outfit-meta">{formatOutfitMeta(outfit)}</Text>
                       </View>
                       <View className="status-badges">
                         {outfit.isFavorite && <Text className="status-badge favorite">已收藏</Text>}
@@ -449,24 +449,10 @@ export default function TodayPage() {
                     </View>
 
                     <View className="outfit-vibes">
-                      {getOutfitVibeTags(outfit).map((tag) => (
+                      {getOutfitStyleTags(outfit, index).map((tag) => (
                         <Text key={tag} className="vibe-tag">{tag}</Text>
                       ))}
                     </View>
-
-                    {outfit.scores && (
-                      <View className="outfit-scores">
-                        <ScoreRow label="时尚" value={outfit.scores.fashion} />
-                        <ScoreRow label="舒适" value={outfit.scores.comfort} />
-                        <ScoreRow label="场景" value={outfit.scores.sceneMatch} />
-                      </View>
-                    )}
-
-                    {(outfit.reasoning || outfit.reason) && (
-                      <View className="outfit-reasoning">
-                        <Text className="reasoning-text">{outfit.reasoning || outfit.reason}</Text>
-                      </View>
-                    )}
                   </View>
                 </SwiperItem>
               ))}
@@ -511,35 +497,6 @@ export default function TodayPage() {
       </View>
     </View>
   );
-}
-
-function getOutfitVibeTags(outfit: Outfit) {
-  const tags = [];
-  if ((outfit.scores?.comfort ?? 0) >= 8) tags.push('舒适耐看');
-  else tags.push('轻松好穿');
-  if ((outfit.scores?.colorHarmony ?? 0) >= 8) tags.push('清爽干净');
-  else tags.push('配色柔和');
-  tags.push(outfit.scene ? `适合${outfit.scene}` : '日常灵感');
-  return tags.slice(0, 3);
-}
-
-function ScoreRow({ label, value }: { label: string; value: number }) {
-  const score = formatScore(value);
-
-  return (
-    <View className="score-row">
-      <Text className="score-label">{label}</Text>
-      <View className="score-bar">
-        <View className="score-fill" style={{ width: `${score * 10}%` }} />
-      </View>
-      <Text className="score-value">{score}</Text>
-    </View>
-  );
-}
-
-function formatScore(value: number) {
-  if (!Number.isFinite(value)) return 0;
-  return Math.max(0, Math.min(10, Math.round(value * 10) / 10));
 }
 
 function getToday() {
