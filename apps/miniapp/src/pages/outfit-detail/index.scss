@@ -648,3 +648,109 @@
     opacity: 0.55;
   }
 }
+
+/* 自定义命名弹窗样式 */
+.name-modal-overlay {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  background: rgba(59, 44, 32, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 48px;
+}
+
+.name-modal-container {
+  width: 100%;
+  max-width: 600px;
+  background: #fffaf3;
+  border-radius: 40px;
+  padding: 48px 40px 40px;
+  box-shadow: 0 24px 60px rgba(164, 126, 84, 0.2);
+}
+
+.name-modal-title {
+  display: block;
+  font-size: 36px;
+  font-weight: 700;
+  color: #3b2c20;
+  text-align: center;
+  margin-bottom: 16px;
+}
+
+.name-modal-hint {
+  display: block;
+  font-size: 26px;
+  color: #8a745e;
+  text-align: center;
+  margin-bottom: 32px;
+}
+
+.name-input {
+  width: 100%;
+  height: 96px;
+  background: #f7f1e8;
+  border-radius: 24px;
+  padding: 0 28px;
+  font-size: 30px;
+  color: #3b2c20;
+  box-sizing: border-box;
+  margin-bottom: 16px;
+}
+
+.name-input-placeholder {
+  color: #c4b5a5;
+}
+
+.name-modal-tip {
+  display: block;
+  font-size: 22px;
+  color: #b8a690;
+  text-align: center;
+  margin-bottom: 32px;
+}
+
+.name-modal-actions {
+  display: flex;
+  gap: 20px;
+}
+
+.name-modal-cancel {
+  flex: 1;
+  height: 88px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f5ede3;
+  border-radius: 44px;
+}
+
+.name-modal-cancel .cancel-text {
+  font-size: 30px;
+  font-weight: 600;
+  color: #8a745e;
+}
+
+.name-modal-confirm {
+  flex: 1;
+  height: 88px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #caa378;
+  border-radius: 44px;
+
+  &.disabled {
+    background: #dbc9b6;
+  }
+
+  .confirm-text {
+    font-size: 30px;
+    font-weight: 600;
+    color: #fff;
+  }
+}

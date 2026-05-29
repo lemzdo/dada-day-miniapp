@@ -1,4 +1,4 @@
-import { Image, Text, View } from '@tarojs/components';
+import { Image, Input, Text, View } from '@tarojs/components';
 import Taro, { useLoad, useRouter } from '@tarojs/taro';
 import { useState } from 'react';
 import {
@@ -194,6 +194,8 @@ export default function OutfitDetailPage() {
   const [operating, setOperating] = useState(false);
   const [commentLoading, setCommentLoading] = useState(false);
   const [itemsExpanded, setItemsExpanded] = useState(false);
+  const [showNameModal, setShowNameModal] = useState(false);
+  const [draftName, setDraftName] = useState('');
 
   useLoad(() => {
     if (id) fetchOutfit(id);
@@ -305,20 +307,16 @@ export default function OutfitDetailPage() {
   async function handleRenameOutfit() {
     if (!outfit || operating) return;
 
+    setDraftName(outfit.userTitle || '');
+    setShowNameModal(true);
+  }
+
+  async function handleSaveNameFromModal() {
+    if (!outfit || operating) return;
+
+    setOperating(true);
     try {
-      const modalResult = (await Taro.showModal({
-        title: outfit.userTitle ? '编辑名称' : '给这套起个名字',
-        content: outfit.userTitle || '',
-        editable: true,
-        placeholderText: '输入名称，清空可恢复系统名',
-        confirmText: '保存',
-        cancelText: '取消',
-      } as EditableModalOptions)) as EditableModalResult;
-
-      if (!modalResult.confirm) return;
-
-      setOperating(true);
-      const userTitle = typeof modalResult.content === 'string' ? modalResult.content : outfit.userTitle || '';
+      const userTitle = draftName;
       const saved = await renameCloudOutfit({
         outfitId: outfit.outfitId || (detailSource === 'recommendation' ? outfit.id : undefined),
         outfitKey: outfit.outfitKey,
@@ -336,6 +334,7 @@ export default function OutfitDetailPage() {
       });
 
       persistOutfitUpdate(nextOutfit);
+      setShowNameModal(false);
       Taro.showToast({ title: userTitle.trim() ? '已保存名称' : '已清空名称', icon: 'success' });
     } catch (err) {
       console.error('Rename outfit error:', err);
@@ -343,6 +342,10 @@ export default function OutfitDetailPage() {
     } finally {
       setOperating(false);
     }
+  }
+
+  function handleCloseNameModal() {
+    setShowNameModal(false);
   }
 
   async function handleGenerateAiComment() {
@@ -533,6 +536,40 @@ export default function OutfitDetailPage() {
           </View>
         </View>
       </View>
+
+      {showNameModal && (
+        <View className="name-modal-overlay" onClick={handleCloseNameModal}>
+          <View className="name-modal-container" onClick={(e) => e.stopPropagation()}>
+            <Text className="name-modal-title">
+              {outfit?.userTitle ? '编辑穿搭名称' : '给这套起个名字'}
+            </Text>
+            <Text className="name-modal-hint">
+              {outfit?.userTitle ? '改个更好找的名字，小搭会帮你记住～' : '起一个你以后好找的名字吧'}
+            </Text>
+            <Input
+              className="name-input"
+              value={draftName}
+              onInput={(e) => setDraftName(e.detail.value)}
+              placeholder="例如：周一开会套装"
+              placeholderClass="name-input-placeholder"
+              maxlength={50}
+              focus
+            />
+            <Text className="name-modal-tip">留空保存，会恢复小搭默认名称</Text>
+            <View className="name-modal-actions">
+              <View className="name-modal-cancel" onClick={handleCloseNameModal}>
+                <Text className="cancel-text">取消</Text>
+              </View>
+              <View
+                className={`name-modal-confirm ${operating ? 'disabled' : ''}`}
+                onClick={handleSaveNameFromModal}
+              >
+                <Text className="confirm-text">{operating ? '保存中...' : '保存'}</Text>
+              </View>
+            </View>
+          </View>
+        </View>
+      )}
 
       <View className="action-bar">
         <View
