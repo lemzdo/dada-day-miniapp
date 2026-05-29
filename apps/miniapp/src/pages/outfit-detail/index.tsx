@@ -1,4 +1,4 @@
-import { Image, ScrollView, Text, View } from '@tarojs/components';
+import { Image, Text, View } from '@tarojs/components';
 import Taro, { useLoad, useRouter } from '@tarojs/taro';
 import { useState } from 'react';
 import {
@@ -12,6 +12,7 @@ import {
   saveFavoriteOutfit,
 } from '@/lib/cloud';
 import { normalizeOutfitSnapshot, readOutfitDetailDraft, storeOutfitDetailDraft, storeOutfitStateSync } from '@/utils/outfitSnapshot';
+import { getOutfitPrimaryContext, getOutfitSecondaryContext } from '@/utils/outfitContextText';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
 import type { Outfit, OutfitScores } from '@starter-template/types';
 import './index.scss';
@@ -258,14 +259,15 @@ export default function OutfitDetailPage() {
 
   return (
     <View className="outfit-detail-page">
-      <ScrollView scrollY className="detail-scroll">
+      <View className="detail-scroll">
         <View className="hero-card">
           <View className="hero-header">
             <View>
               <Text className="hero-title">{getOutfitDisplayTitle(outfit, '今日推荐穿搭')}</Text>
-              <Text className="hero-subtitle">
-                {[outfit.scene, formatTimeOfDay(outfit.timeOfDay), outfit.targetDate].filter(Boolean).join(' · ')}
-              </Text>
+              <Text className="hero-subtitle">{getOutfitPrimaryContext(outfit)}</Text>
+              {getOutfitSecondaryContext(outfit) && (
+                <Text className="hero-context">{getOutfitSecondaryContext(outfit)}</Text>
+              )}
               <Text className="name-action" onClick={handleRenameOutfit}>
                 {outfit.userTitle ? '编辑名称' : '给这套起个名字'}
               </Text>
@@ -351,7 +353,7 @@ export default function OutfitDetailPage() {
             <Text className="ai-comment-empty">需要更自然的点评时，可以手动生成一次。</Text>
           )}
         </View>
-      </ScrollView>
+      </View>
 
       <View className="action-bar">
         <View
@@ -394,14 +396,6 @@ function ScoreValue({ label, value }: { label: string; value: number }) {
 function normalizeSource(value?: string): DetailSource {
   if (value === 'favorite' || value === 'history') return value;
   return 'recommendation';
-}
-
-function formatTimeOfDay(value?: string) {
-  if (value === 'all_day') return '适合全天';
-  if (value === 'morning') return '适合早晨';
-  if (value === 'afternoon') return '适合下午';
-  if (value === 'evening') return '适合晚上';
-  return '';
 }
 
 function getDeletedItemCount(outfit: Outfit) {

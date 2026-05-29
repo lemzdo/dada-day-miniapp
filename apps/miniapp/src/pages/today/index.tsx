@@ -4,6 +4,7 @@ import { useRef, useState } from 'react';
 import { WeatherCard } from '@/components/WeatherCard';
 import { addOutfitHistory, generateCloudOutfit, removeFavoriteOutfit, saveFavoriteOutfit } from '@/lib/cloud';
 import { consumeOutfitStateSync, normalizeOutfitSnapshot, storeOutfitDetailDraft } from '@/utils/outfitSnapshot';
+import { getOutfitPrimaryContext } from '@/utils/outfitContextText';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
 import sceneDate from '@/assets/scenes/scene-date-clean.png';
 import sceneDateActive from '@/assets/scenes/scene-date-active-clean.png';
@@ -42,22 +43,6 @@ const SCENE_TAGS: Record<SceneKey, SceneTag> = {
   date: '约会' as SceneTag,
   sport: '运动' as SceneTag,
 };
-
-const SCENE_HIGHLIGHTS: Record<string, string> = {
-  居家: '舒服耐看',
-  上班: '干净利落',
-  约会: '温柔显气质',
-  运动: '轻便好活动',
-};
-
-const HIGHLIGHT_KEYWORDS = [
-  { keywords: ['通勤', '上班', '正式', '利落'], label: '干净利落' },
-  { keywords: ['约会', '温柔', '甜美', '优雅'], label: '温柔显气质' },
-  { keywords: ['运动', '轻便', '活力'], label: '轻便好活动' },
-  { keywords: ['清爽', '透气', '不闷', '夏'], label: '清爽不闷' },
-  { keywords: ['休闲', '居家', '舒适', '日常'], label: '舒服耐看' },
-  { keywords: ['简约', '干净'], label: '清爽干净' },
-];
 
 export default function TodayPage() {
   const [selectedSceneKey, setSelectedSceneKey] = useState<SceneKey>('home');
@@ -341,9 +326,8 @@ export default function TodayPage() {
     return notice ?? '';
   }
 
-  function formatOutfitMeta(outfit: Outfit) {
-    const sceneLabel = outfit.scene ? `今日${outfit.scene}` : '今日推荐';
-    return `${sceneLabel} · ${getOutfitHighlight(outfit)}`;
+  function formatOutfitMeta(outfit: Outfit, index: number) {
+    return getOutfitPrimaryContext(outfit, index);
   }
 
   function nextRequestSeq() {
@@ -439,7 +423,7 @@ export default function TodayPage() {
                     <View className="outfit-header">
                       <View className="outfit-title-wrap">
                         <Text className="outfit-title">{getOutfitDisplayTitle(outfit, '今日推荐')}</Text>
-                        <Text className="outfit-meta">{formatOutfitMeta(outfit)}</Text>
+                        <Text className="outfit-meta">{formatOutfitMeta(outfit, index)}</Text>
                       </View>
                       <View className="status-badges">
                         {outfit.isFavorite && <Text className="status-badge favorite">已收藏</Text>}
@@ -537,37 +521,6 @@ function getOutfitVibeTags(outfit: Outfit) {
   else tags.push('配色柔和');
   tags.push(outfit.scene ? `适合${outfit.scene}` : '日常灵感');
   return tags.slice(0, 3);
-}
-
-function getOutfitHighlight(outfit: Outfit) {
-  const styleTags = (outfit as { styleTags?: string[] }).styleTags ?? [];
-  const styleHighlight = pickHighlight(styleTags.join(' '));
-  if (styleHighlight) return styleHighlight;
-
-  const scoreHighlight = getScoreHighlight(outfit);
-  if (scoreHighlight) return scoreHighlight;
-
-  const sceneHighlight = outfit.scene ? SCENE_HIGHLIGHTS[String(outfit.scene)] : undefined;
-  if (sceneHighlight) return sceneHighlight;
-
-  const reasonHighlight = pickHighlight(`${outfit.reason ?? ''} ${outfit.reasoning ?? ''}`);
-  return reasonHighlight || '适合全天';
-}
-
-function getScoreHighlight(outfit: Outfit) {
-  const scores = outfit.scores;
-  if (!scores) return '';
-  if ((scores.comfort ?? 0) >= 8.5 && (scores.colorHarmony ?? 0) >= 8) return '舒服耐看';
-  if ((scores.colorHarmony ?? 0) >= 8.5) return '清爽干净';
-  if ((scores.sceneMatch ?? 0) >= 8.5) return outfit.scene ? SCENE_HIGHLIGHTS[String(outfit.scene)] || '适合场景' : '适合场景';
-  if ((scores.comfort ?? 0) >= 8) return '轻松好穿';
-  return '';
-}
-
-function pickHighlight(text: string) {
-  if (!text) return '';
-  const matched = HIGHLIGHT_KEYWORDS.find((item) => item.keywords.some((keyword) => text.includes(keyword)));
-  return matched?.label ?? '';
 }
 
 function ScoreRow({ label, value }: { label: string; value: number }) {
