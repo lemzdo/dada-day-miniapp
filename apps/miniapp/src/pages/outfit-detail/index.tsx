@@ -201,21 +201,14 @@ export default function OutfitDetailPage() {
     try {
       const result = await generateCloudOutfitComment(outfit);
       if (result.success && result.aiComment) {
-        const nextOutfit = normalizeOutfitSnapshot({ ...outfit, aiComment: result.aiComment });
-        if (result.saved) {
-          persistOutfitUpdate(nextOutfit);
-          Taro.showToast({ title: '小搭点评已保存', icon: 'success' });
-          return;
-        }
-
-        setOutfit(nextOutfit);
-        Taro.showToast({ title: result.message || '点评生成了，但保存失败', icon: 'none' });
+        setOutfit({ ...outfit, aiComment: result.aiComment });
+        Taro.showToast({ title: '小搭点评已生成', icon: 'success' });
         return;
       }
-      Taro.showToast({ title: result.message || '小搭刚刚走神了，稍后再试试～', icon: 'none' });
+      Taro.showToast({ title: result.message || '小搭点评暂时不可用', icon: 'none' });
     } catch (err) {
       console.error('Generate outfit AI comment error:', err);
-      Taro.showToast({ title: '小搭刚刚走神了，稍后再试试～', icon: 'none' });
+      Taro.showToast({ title: '小搭点评暂时不可用', icon: 'none' });
     } finally {
       setCommentLoading(false);
     }
@@ -334,10 +327,7 @@ export default function OutfitDetailPage() {
 
         <View className="detail-card ai-comment-card">
           <View className="ai-comment-header">
-            <View>
-              <Text className="card-title">小搭点评</Text>
-              {outfit.aiComment && <Text className="ai-comment-status">上次小搭点评 · 已保存</Text>}
-            </View>
+            <Text className="card-title">小搭点评</Text>
             <View
               className={`ai-comment-btn ${commentLoading ? 'disabled' : ''}`}
               onClick={handleGenerateAiComment}

@@ -236,49 +236,15 @@ async function listOutfits(event) {
 
 async function generateAiComment(event) {
   const fallbackMessage = 'AI 点评暂时不可用，请稍后再试';
-  const saveFailedMessage = '点评生成了，但保存失败';
-  const incompleteMessage = '这套搭配信息不完整，暂时不能保存点评';
 
   try {
     const commentInput = await buildAiCommentInput(event, null);
-    const now = new Date().toISOString();
     const aiComment = {
       ...(await callAiCommentModel(commentInput)),
-      generatedAt: now,
+      generatedAt: new Date().toISOString(),
     };
 
-    let identity;
-    try {
-      identity = resolveAiReviewIdentity(event);
-    } catch (error) {
-      return {
-        success: true,
-        aiComment,
-        saved: false,
-        message: incompleteMessage,
-        saveError: error && error.message ? error.message : 'missing_outfit_key',
-      };
-    }
-
-    try {
-      const savedReview = await upsertOutfitAiReview({
-        ...identity,
-        aiComment,
-        now,
-      });
-      return {
-        success: true,
-        aiComment: normalizeAiComment(savedReview.aiComment) || aiComment,
-        saved: true,
-      };
-    } catch {
-      return {
-        success: true,
-        aiComment,
-        saved: false,
-        message: saveFailedMessage,
-      };
-    }
+    return { success: true, aiComment, saved: false };
   } catch (error) {
     console.warn('[generateOutfit] aiComment fallback', error && error.message ? error.message : error);
     return { success: false, fallback: true, message: fallbackMessage };
@@ -294,68 +260,6 @@ async function buildAiCommentInput(event, existing) {
     scores: sanitizeScores(event.scores || existing?.scores || {}),
     reason: event.reason || existing?.reasoning || existing?.reason || '',
   };
-}
-
-function resolveAiReviewIdentity(event) {
-  const { OPENID } = cloud.getWXContext();
-  const payload = normalizeOutfitPayload(event.outfit);
-  const clothingIds = uniqueStrings([
-    ...readBaseClothingIds(payload),
-    ...readClothingIdsFromItems(payload?.items),
-    ...readClothingIdsFromItems(event.items),
-    ...readClothingIdsFromSnapshotItems(payload?.snapshotItems),
-    ...readClothingIdsFromSnapshotItems(payload?.itemsSnapshot),
-  ]);
-  const outfitKey = event.outfitKey || payload?.outfitKey || getOutfitKey(clothingIds);
-  const scene = event.scene || payload?.scene || '';
-  const eventOutfitId = typeof event.outfitId === 'string' && !isRecommendId(event.outfitId) ? event.outfitId : '';
-  const payloadOutfitId = typeof payload?.outfitId === 'string' ? payload.outfitId : '';
-  const payloadId = typeof payload?.id === 'string' && !isRecommendId(payload.id) ? payload.id : '';
-
-  if (!outfitKey) throw new Error('missing_outfit_key');
-  return {
-    openid: OPENID,
-    outfitKey,
-    scene,
-    outfitId: eventOutfitId || payloadOutfitId || payloadId || '',
-  };
-}
-
-async function upsertOutfitAiReview({ openid, outfitKey, outfitId, scene, aiComment, now }) {
-  const normalizedAiComment = normalizeAiComment(aiComment);
-  if (!normalizedAiComment) throw new Error('invalid_ai_comment');
-
-  const data = {
-    _openid: openid,
-    userId: openid,
-    outfitKey,
-    outfitId: outfitId || undefined,
-    scene: scene || '',
-    aiComment: {
-      ...normalizedAiComment,
-      generatedAt: normalizedAiComment.generatedAt || now,
-    },
-    generatedAt: normalizedAiComment.generatedAt || now,
-    updatedAt: now,
-  };
-
-  const existing = await db.collection('outfit_ai_reviews')
-    .where({ _openid: openid, outfitKey, scene: scene || '' })
-    .limit(1)
-    .get();
-  const current = existing.data && existing.data[0];
-
-  if (current) {
-    await db.collection('outfit_ai_reviews').doc(current._id).update({ data });
-    return { ...current, ...data };
-  }
-
-  const addData = {
-    ...data,
-    createdAt: now,
-  };
-  const addRes = await db.collection('outfit_ai_reviews').add({ data: addData });
-  return { ...addData, _id: addRes._id };
 }
 
 function buildAiCommentItems(payloadItems, existing, clothes) {
@@ -675,11 +579,10 @@ function createRecommendationBatchId(now) {
 
 async function enrichOutfitsState(outfits, { openid, targetDate, generatedAt, recommendationBatchId }) {
   const keys = uniqueStrings(outfits.map((outfit) => outfit.outfitKey || getOutfitKey(outfit.clothingIds || [])));
-  const [favoriteMap, historyMap, assetMap, aiReviewMap] = await Promise.all([
+  const [favoriteMap, historyMap, assetMap] = await Promise.all([
     findFavoritesByKeys(openid, keys),
     findTodayHistoryByKeys(openid, keys, targetDate),
     findOutfitsByKeys(openid, keys),
-    findAiReviewsByKeys(openid, keys),
   ]);
 
   return outfits.map((outfit) => {
@@ -688,8 +591,6 @@ async function enrichOutfitsState(outfits, { openid, targetDate, generatedAt, re
     const favorite = favoriteMap.get(outfitKey);
     const history = historyMap.get(outfitKey);
     const asset = assetMap.get(outfitKey);
-    const scene = outfit.scene || asset?.scene || '';
-    const aiReview = aiReviewMap.get(getAiReviewMapKey(outfitKey, scene));
     const title = outfit.title || asset?.title;
     const userTitle = readTitle(outfit.userTitle) || readTitle(asset?.userTitle) || undefined;
     const displayTitle = getDisplayTitle({ userTitle, title: title || outfit.displayTitle }, `${outfit.scene || asset?.scene || '今日'}搭配`);
@@ -711,7 +612,6 @@ async function enrichOutfitsState(outfits, { openid, targetDate, generatedAt, re
       wornDate: outfit.wornDate || (history?.wornAt ? String(history.wornAt).slice(0, 10) : undefined),
       recommendationBatchId: outfit.recommendationBatchId || recommendationBatchId,
       generatedAt: outfit.generatedAt || generatedAt,
-      aiComment: normalizeAiComment(aiReview?.aiComment) || normalizeAiComment(outfit.aiComment) || undefined,
     };
   });
 }
@@ -757,35 +657,6 @@ async function findOutfitsByKeys(openid, outfitKeys) {
     map.set(item.outfitKey, item);
   }
   return map;
-}
-
-async function findAiReviewsByKeys(openid, outfitKeys) {
-  const map = new Map();
-  const keys = uniqueStrings(outfitKeys);
-  if (!keys.length) return map;
-  const res = await db.collection('outfit_ai_reviews')
-    .where({ _openid: openid, outfitKey: db.command.in(keys) })
-    .limit(500)
-    .get();
-  for (const item of res.data || []) {
-    if (!item.outfitKey) continue;
-    const key = getAiReviewMapKey(item.outfitKey, item.scene || '');
-    const current = map.get(key);
-    if (!current || getAiReviewSortTime(item) > getAiReviewSortTime(current)) {
-      map.set(key, item);
-    }
-  }
-  return map;
-}
-
-function getAiReviewSortTime(item) {
-  const value = item?.updatedAt || item?.generatedAt || item?.createdAt || '';
-  const time = new Date(value).getTime();
-  return Number.isFinite(time) ? time : 0;
-}
-
-function getAiReviewMapKey(outfitKey, scene) {
-  return `${outfitKey}::${scene || ''}`;
 }
 
 async function findTodayHistoryByKeys(openid, outfitKeys, targetDate) {
@@ -1129,18 +1000,6 @@ async function findOutfitByKey(openid, outfitKey) {
 
 function readBaseClothingIds(base) {
   return base && Array.isArray(base.clothingIds) ? base.clothingIds : [];
-}
-
-function readClothingIdsFromItems(items) {
-  return Array.isArray(items)
-    ? items.map((item) => item && (item.clothingId || item.itemId)).filter((id) => typeof id === 'string' && id.trim())
-    : [];
-}
-
-function readClothingIdsFromSnapshotItems(items) {
-  return Array.isArray(items)
-    ? items.map((item) => item && (item.clothingId || item.itemId)).filter((id) => typeof id === 'string' && id.trim())
-    : [];
 }
 
 function buildSnapshotItems(clothingIds, base, current) {
