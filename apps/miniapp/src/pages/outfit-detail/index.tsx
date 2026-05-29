@@ -22,7 +22,7 @@ import {
   getTimeLabel,
 } from '@/utils/outfitContextText';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
-import type { Outfit } from '@starter-template/types';
+import type { Outfit, OutfitItemSummary, OutfitSnapshotItem } from '@starter-template/types';
 import './index.scss';
 
 type DetailSource = 'recommendation' | 'favorite' | 'history';
@@ -34,6 +34,156 @@ type EditableModalResult = Awaited<ReturnType<typeof Taro.showModal>> & {
   content?: string;
 };
 
+// 品类映射
+const categoryLabels: Record<string, string> = {
+  top: '上衣',
+  bottom: '下装',
+  onepiece: '连体',
+  shoes: '鞋子',
+  accessory: '配饰',
+};
+
+// 获取单品数据源（优先级：snapshotItems > itemsSnapshot > items）
+function getOutfitItems(outfit: Outfit): (OutfitSnapshotItem | OutfitItemSummary)[] {
+  if (outfit.snapshotItems && outfit.snapshotItems.length > 0) {
+    return outfit.snapshotItems;
+  }
+  if (outfit.itemsSnapshot && outfit.itemsSnapshot.length > 0) {
+    return outfit.itemsSnapshot;
+  }
+  if (outfit.items && outfit.items.length > 0) {
+    return outfit.items;
+  }
+  return [];
+}
+
+// 获取单品名称
+function getItemName(item: OutfitSnapshotItem | OutfitItemSummary): string {
+  const snapshotItem = item as OutfitSnapshotItem;
+  const summaryItem = item as OutfitItemSummary;
+  
+  return (
+    snapshotItem.name ||
+    summaryItem.subcategory ||
+    summaryItem.category ||
+    snapshotItem.category ||
+    snapshotItem.type ||
+    '单品'
+  );
+}
+
+// 获取单品图片
+function getItemImage(item: OutfitSnapshotItem | OutfitItemSummary): string {
+  const snapshotItem = item as OutfitSnapshotItem;
+  const summaryItem = item as OutfitItemSummary;
+  
+  return (
+    snapshotItem.thumbnailUrl ||
+    snapshotItem.displayImageUrl ||
+    summaryItem.imageUrl ||
+    snapshotItem.imageUrl ||
+    ''
+  );
+}
+
+// 获取单品副信息（最多3个关键词）
+function getItemMeta(item: OutfitSnapshotItem | OutfitItemSummary): string[] {
+  const snapshotItem = item as OutfitSnapshotItem;
+  const metas: string[] = [];
+  
+  if (snapshotItem.color) metas.push(snapshotItem.color);
+  if (snapshotItem.material) metas.push(snapshotItem.material);
+  if (snapshotItem.thickness) metas.push(snapshotItem.thickness);
+  if (snapshotItem.style) metas.push(snapshotItem.style);
+  
+  return metas.slice(0, 3);
+}
+
+// 获取品类标签
+function getItemCategory(item: OutfitSnapshotItem | OutfitItemSummary): string {
+  const snapshotItem = item as OutfitSnapshotItem;
+  const summaryItem = item as OutfitItemSummary;
+  const category = summaryItem.category || snapshotItem.category || snapshotItem.type || '';
+  return categoryLabels[category] || category;
+}
+
+// 获取 clothingId
+function getItemClothingId(item: OutfitSnapshotItem | OutfitItemSummary): string | undefined {
+  const snapshotItem = item as OutfitSnapshotItem;
+  const summaryItem = item as OutfitItemSummary;
+  return summaryItem.clothingId || snapshotItem.clothingId;
+}
+
+// 判断是否已删除
+function isItemDeleted(item: OutfitSnapshotItem | OutfitItemSummary): boolean {
+  const snapshotItem = item as OutfitSnapshotItem;
+  const summaryItem = item as OutfitItemSummary;
+  return Boolean(summaryItem.isDeleted || snapshotItem.isDeleted || snapshotItem.deletedAt);
+}
+
+// 单品卡片组件
+function OutfitItemRow({
+  item,
+  index,
+  total,
+}: {
+  item: OutfitSnapshotItem | OutfitItemSummary;
+  index: number;
+  total: number;
+}) {
+  const name = getItemName(item);
+  const image = getItemImage(item);
+  const metas = getItemMeta(item);
+  const category = getItemCategory(item);
+  const clothingId = getItemClothingId(item);
+  const isDeleted = isItemDeleted(item);
+  const isLast = index === total - 1;
+
+  const handleClick = () => {
+    if (isDeleted) {
+      Taro.showToast({ title: '这件衣服已不在衣橱里', icon: 'none' });
+      return;
+    }
+    if (clothingId) {
+      Taro.navigateTo({ url: `/pages/clothing-detail/index?id=${clothingId}` });
+    }
+  };
+
+  return (
+    <View
+      className={`outfit-item-row ${isDeleted ? 'deleted' : ''} ${isLast ? 'last' : ''}`}
+      onClick={handleClick}
+    >
+      <Image className="item-thumb" src={image} mode="aspectFill" lazyLoad />
+      <View className="item-info">
+        <Text className="item-name-row">{name}</Text>
+        <View className="item-meta">
+          {metas.length > 0 ? (
+            metas.map((meta, i) => (
+              <Text key={i} className="meta-text">
+                {i > 0 && ' · '}
+                {meta}
+              </Text>
+            ))
+          ) : (
+            <Text className="meta-text">{category || '已加入衣橱'}</Text>
+          )}
+        </View>
+        {category && (
+          <View className="category-tag">
+            <Text className="tag-text">{category}</Text>
+          </View>
+        )}
+      </View>
+      {!isDeleted && clothingId && (
+        <View className="item-arrow">
+          <Text className="arrow-icon">›</Text>
+        </View>
+      )}
+    </View>
+  );
+}
+
 export default function OutfitDetailPage() {
   const router = useRouter();
   const id = router.params.id;
@@ -43,6 +193,7 @@ export default function OutfitDetailPage() {
   const [loading, setLoading] = useState(true);
   const [operating, setOperating] = useState(false);
   const [commentLoading, setCommentLoading] = useState(false);
+  const [itemsExpanded, setItemsExpanded] = useState(false);
 
   useLoad(() => {
     if (id) fetchOutfit(id);
@@ -247,6 +398,9 @@ export default function OutfitDetailPage() {
   const weatherSummary = getOutfitWeatherSummary(outfit);
   const scoreLabels = getOutfitScoreLabels(outfit);
   const itemCountText = getItemCountText(outfit);
+  const items = getOutfitItems(outfit);
+  const showCount = itemsExpanded || items.length <= 4 ? items.length : 4;
+  const displayItems = items.slice(0, showCount);
 
   return (
     <View className="outfit-detail-page">
@@ -360,13 +514,22 @@ export default function OutfitDetailPage() {
 
         <View className="detail-card item-list-card">
           <Text className="card-title">用到的单品 {itemCountText}</Text>
-          <View className="outfit-items">
-            {outfit.items?.map((item) => (
-              <View key={item.clothingId} className={`outfit-item ${item.isDeleted ? 'deleted' : ''}`}>
-                <Image className="item-image" src={item.imageUrl} mode="aspectFit" lazyLoad />
-                <Text className="item-name">{item.subcategory || item.category}</Text>
-              </View>
+          <View className="outfit-item-list">
+            {displayItems.map((item, index) => (
+              <OutfitItemRow
+                key={getItemClothingId(item) || index}
+                item={item}
+                index={index}
+                total={displayItems.length}
+              />
             ))}
+            {items.length > 4 && (
+              <View className="expand-btn" onClick={() => setItemsExpanded(!itemsExpanded)}>
+                <Text className="expand-text">
+                  {itemsExpanded ? '收起部分单品' : `展开其余 ${items.length - 4} 件`}
+                </Text>
+              </View>
+            )}
           </View>
         </View>
       </View>
@@ -397,4 +560,3 @@ function getDeletedItemCount(outfit: Outfit) {
   const itemCount = outfit.items?.filter((item) => item.isDeleted).length ?? 0;
   return Math.max(snapshotCount, itemCount);
 }
-

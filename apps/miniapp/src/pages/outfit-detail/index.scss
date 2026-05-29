@@ -249,37 +249,104 @@
   color: #c2412d;
 }
 
-.outfit-items {
+/* 紧凑单品列表样式 */
+.outfit-item-list {
   display: flex;
-  flex-wrap: wrap;
-  gap: 18px;
+  flex-direction: column;
 }
 
-.outfit-item {
-  width: calc(50% - 9px);
-  padding: 14px;
-  border-radius: 18px;
-  background: #f7f7f7;
-  box-sizing: border-box;
+.outfit-item-row {
+  display: flex;
+  align-items: center;
+  padding: 24px 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.04);
+
+  &.last {
+    border-bottom: none;
+    padding-bottom: 0;
+  }
 
   &.deleted {
-    opacity: 0.62;
+    opacity: 0.55;
   }
 }
 
-.item-image {
-  width: 100%;
-  height: 240px;
-  border-radius: 14px;
-  background: #eee;
-  margin-bottom: 12px;
+.item-thumb {
+  width: 104rpx;
+  height: 104rpx;
+  border-radius: 20rpx;
+  background: #f7f3ec;
+  flex-shrink: 0;
+  margin-right: 20px;
 }
 
-.item-name {
+.item-info {
+  flex: 1;
+  min-width: 0;
+  margin-right: 16px;
+}
+
+.item-name-row {
   display: block;
+  font-size: 30px;
+  font-weight: 600;
+  color: #3b2c20;
+  margin-bottom: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.item-meta {
+  display: flex;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.meta-text {
   font-size: 24px;
-  color: #555;
-  text-align: center;
+  color: #8a745e;
+}
+
+.category-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 12px;
+  background: #f5ede3;
+  border-radius: 999px;
+}
+
+.tag-text {
+  font-size: 22px;
+  color: #9a7d60;
+}
+
+.item-arrow {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.arrow-icon {
+  font-size: 48px;
+  color: #c7b6a3;
+  line-height: 1;
+  font-weight: 300;
+}
+
+.expand-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px 0 0;
+}
+
+.expand-text {
+  font-size: 26px;
+  color: #9a7d60;
 }
 
 .card-title {
