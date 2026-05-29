@@ -487,12 +487,14 @@ export interface GenerateCloudOutfitCommentResult {
   saved?: boolean;
   fallback?: boolean;
   message?: string;
+  saveError?: string;
 }
 
 export async function generateCloudOutfitComment(outfit: Outfit) {
   const result = await callCloudFunction<GenerateCloudOutfitCommentResult>('generateOutfit', {
     action: 'aiComment',
-    outfitId: outfit.id,
+    outfitId: outfit.outfitId || (outfit.id?.startsWith('recommend:') ? undefined : outfit.id),
+    outfitKey: outfit.outfitKey,
     outfit,
     weather: outfit.weatherSnapshot,
     scene: outfit.scene,
@@ -500,6 +502,9 @@ export async function generateCloudOutfitComment(outfit: Outfit) {
     scores: outfit.scores,
     reason: outfit.reasoning || outfit.reason || '',
   });
+  if (result.success && result.saved) {
+    clearCloudCache(['generateOutfit:', 'favoriteOutfits:', 'outfitHistory:']);
+  }
   return result;
 }
 
