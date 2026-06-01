@@ -1,4 +1,4 @@
-﻿export default defineAppConfig({
+export default defineAppConfig({
   pages: [
     'pages/today/index',
     'pages/wardrobe/index',
@@ -15,9 +15,10 @@
   ],
   window: {
     backgroundTextStyle: 'light',
-    navigationBarBackgroundColor: '#fff',
-    navigationBarTitleText: '搭一搭',
+    navigationBarBackgroundColor: '#FAF6F1',
+    navigationBarTitleText: '搭搭day',
     navigationBarTextStyle: 'black',
+    backgroundColor: '#FAF6F1',
   },
   permission: {
     'scope.userLocation': {
@@ -26,18 +27,22 @@
   },
   requiredPrivateInfos: ['getLocation'],
   tabBar: {
-    color: '#999',
-    selectedColor: '#1a1a1a',
-    backgroundColor: '#fff',
+    color: '#A89584',
+    selectedColor: '#C9A06A',
+    backgroundColor: '#FFFDF9',
     borderStyle: 'white',
     list: [
       {
         pagePath: 'pages/today/index',
-        text: '今日',
+        text: '今日推荐',
       },
       {
         pagePath: 'pages/wardrobe/index',
         text: '衣橱',
+      },
+      {
+        pagePath: 'pages/outfit-history/index',
+        text: '日历',
       },
       {
         pagePath: 'pages/profile/index',

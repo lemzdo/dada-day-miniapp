@@ -6,14 +6,6 @@ import { addOutfitHistory, generateCloudOutfit, removeFavoriteOutfit, saveFavori
 import { consumeOutfitStateSync, normalizeOutfitSnapshot, storeOutfitDetailDraft } from '@/utils/outfitSnapshot';
 import { getItemCountText, getOutfitStyleTags, getSceneLabel } from '@/utils/outfitContextText';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
-import sceneDate from '@/assets/scenes/scene-date-clean.png';
-import sceneDateActive from '@/assets/scenes/scene-date-active-clean.png';
-import sceneHome from '@/assets/scenes/scene-home-clean.png';
-import sceneHomeActive from '@/assets/scenes/scene-home-active-clean.png';
-import sceneSport from '@/assets/scenes/scene-sport-clean.png';
-import sceneSportActive from '@/assets/scenes/scene-sport-active-clean.png';
-import sceneWork from '@/assets/scenes/scene-work-clean.png';
-import sceneWorkActive from '@/assets/scenes/scene-work-active-clean.png';
 import type { Outfit, SceneTag, WeatherSnapshot } from '@starter-template/types';
 import './index.scss';
 
@@ -31,10 +23,10 @@ type OutfitOperation = 'favorite' | 'wear' | 'refresh' | null;
 type SceneKey = 'home' | 'work' | 'date' | 'sport';
 
 const SCENES = [
-  { key: 'home', label: '居家', icon: sceneHome, activeIcon: sceneHomeActive },
-  { key: 'work', label: '上班', icon: sceneWork, activeIcon: sceneWorkActive },
-  { key: 'date', label: '约会', icon: sceneDate, activeIcon: sceneDateActive },
-  { key: 'sport', label: '运动', icon: sceneSport, activeIcon: sceneSportActive },
+  { key: 'home', label: '居家' },
+  { key: 'work', label: '通勤' },
+  { key: 'date', label: '约会' },
+  { key: 'sport', label: '运动' },
 ] as const;
 
 const SCENE_TAGS: Record<SceneKey, SceneTag> = {
@@ -43,6 +35,13 @@ const SCENE_TAGS: Record<SceneKey, SceneTag> = {
   date: '约会' as SceneTag,
   sport: '运动' as SceneTag,
 };
+
+function getGreeting() {
+  const hour = new Date().getHours();
+  if (hour < 12) return '早上好';
+  if (hour < 18) return '下午好';
+  return '晚上好';
+}
 
 export default function TodayPage() {
   const [selectedSceneKey, setSelectedSceneKey] = useState<SceneKey>('home');
@@ -165,7 +164,7 @@ export default function TodayPage() {
         const nextOutfits = data.outfits.map((outfit) => normalizeOutfitSnapshot(outfit));
         console.log('[TodayPage] refresh success', {
           requestSeq: seq,
-          scene: selectedScene,
+          selectedScene,
           debug: data.debug,
           outfitCount: nextOutfits.length,
           firstOutfitId: nextOutfits[0]?.id,
@@ -332,7 +331,7 @@ export default function TodayPage() {
   }
 
   function formatOutfitMeta(outfit: Outfit) {
-    return `今日${getSceneLabel(outfit)} · ${getItemCountText(outfit)}`;
+    return '适合全天';
   }
 
   function nextRequestSeq() {
@@ -351,20 +350,35 @@ export default function TodayPage() {
 
   return (
     <View className="today-page">
-      <WeatherCard city="上海" onWeatherChange={handleWeatherChange} />
+      <View className="top-section">
+        <View className="brand-area">
+          <View className="brand-title-wrap">
+            <Text className="brand-title">搭搭day</Text>
+            <Text className="brand-subtitle">你的每日穿搭灵感</Text>
+          </View>
+        </View>
 
-      <View className="scene-section">
+        <View className="greeting-area">
+          <View className="greeting-left">
+            <Text className="greeting-text">{getGreeting()}，搭搭</Text>
+            <Text className="greeting-sub">今天想穿什么风格呢？</Text>
+          </View>
+          <View className="greeting-right">
+            <WeatherCard city="上海" onWeatherChange={handleWeatherChange} />
+          </View>
+        </View>
+      </View>
+
+      <View className="scene-tabs">
         {SCENES.map((item) => {
           const active = selectedSceneKey === item.key;
-
           return (
             <View
               key={item.key}
-              className={`scene-card ${active ? 'active' : ''}`}
+              className={`scene-tab ${active ? 'active' : ''}`}
               onClick={() => handleSceneSelect(item.key)}
             >
-              <Image className="scene-card-image" src={active ? item.activeIcon : item.icon} mode="aspectFit" />
-              <Text className="scene-card-label">{item.label}</Text>
+              <Text className="scene-tab-text">{item.label}</Text>
             </View>
           );
         })}
@@ -372,44 +386,54 @@ export default function TodayPage() {
 
       <View className="outfit-section">
         <View className="section-header">
-          <Text className="section-title">今日穿搭</Text>
+          <View className="section-title-wrap">
+            <Text className="section-title">今日搭配推荐</Text>
+            <Text className="section-subtitle">为你精心搭配，每天不重样</Text>
+          </View>
+          <View className="section-action" onClick={goToWardrobe}>
+            <Text className="action-text">我的衣橱 &gt;</Text>
+          </View>
         </View>
 
         {loading && (
           <View className="loading-state">
-            <Text className="loading-text">正在推荐...</Text>
+            <View className="loading-spinner" />
+            <Text className="loading-text">正在为你搭配...</Text>
           </View>
         )}
 
         {!loading && error && !currentOutfit && (
           <View className="empty-state">
-            <View className="empty-icon">!</View>
+            <View className="empty-icon-wrap">
+              <View className="empty-icon" />
+            </View>
             <Text className="empty-text">{error}</Text>
             <View className="empty-action" onClick={() => fetchRecommendations({ scene: selectedScene })}>
-              <Text className="action-text">重新获取</Text>
+              <Text className="empty-action-text">重新获取</Text>
             </View>
           </View>
         )}
 
         {!loading && !error && !hasRecommendations && (
           <View className="empty-state">
-            <View className="empty-icon">衣</View>
-            <Text className="empty-text">{recommendationNotice || '暂时没有可推荐的搭配'}</Text>
-            <Text className="empty-desc">先去衣橱添加几件衣服吧</Text>
+            <View className="empty-icon-wrap">
+              <View className="empty-icon" />
+            </View>
+            <Text className="empty-text">{recommendationNotice || '小搭还没找到合适搭配'}</Text>
+            <Text className="empty-desc">先去衣橱放几件衣服，我再帮你搭得更准</Text>
             <View className="empty-action" onClick={goToWardrobe}>
-              <Text className="action-text">去添加衣服</Text>
+              <Text className="empty-action-text">去衣橱</Text>
             </View>
           </View>
         )}
 
         {!loading && currentOutfit && (
           <View className="recommendation-browser">
-            <Text className="browser-hint">左右滑动，查看更多穿搭灵感</Text>
             <Swiper
               className="outfit-swiper"
               current={currentIndex}
-              previousMargin="36px"
-              nextMargin="36px"
+              previousMargin="24rpx"
+              nextMargin="24rpx"
               circular={false}
               onChange={handleSwiperChange}
             >
@@ -421,19 +445,16 @@ export default function TodayPage() {
                     }`}
                     onClick={() => goToOutfitDetail(outfit.id)}
                   >
-                    <View className="outfit-card-top">
+                    <View className="outfit-card-header">
+                      <View className="card-badge">
+                        <Text className="badge-text">精选</Text>
+                      </View>
                       <Text className="card-count">{index + 1} / {outfits.length}</Text>
                     </View>
 
-                    <View className="outfit-header">
-                      <View className="outfit-title-wrap">
-                        <Text className="outfit-title">{getOutfitDisplayTitle(outfit, '今日推荐')}</Text>
-                        <Text className="outfit-meta">{formatOutfitMeta(outfit)}</Text>
-                      </View>
-                      <View className="status-badges">
-                        {outfit.isFavorite && <Text className="status-badge favorite">已收藏</Text>}
-                        {outfit.isWornToday && <Text className="status-badge worn">今天穿过啦</Text>}
-                      </View>
+                    <View className="outfit-title-section">
+                      <Text className="outfit-title">{getOutfitDisplayTitle(outfit, '今日推荐')}</Text>
+                      <Text className="outfit-meta">{formatOutfitMeta(outfit)}</Text>
                     </View>
 
                     {getDeletedItemCount(outfit) > 0 && (
@@ -446,16 +467,20 @@ export default function TodayPage() {
 
                     <View className="outfit-collage">
                       {outfit.items?.map((item) => (
-                        <View key={item.clothingId} className={`outfit-item ${item.isDeleted ? 'deleted' : ''}`}>
+                        <View key={item.clothingId} className={`collage-item ${item.isDeleted ? 'deleted' : ''}`}>
                           <Image className="item-image" src={item.imageUrl} mode="aspectFit" lazyLoad />
-                          <Text className="item-name">{item.subcategory || item.category}</Text>
                         </View>
                       ))}
                     </View>
 
-                    <View className="outfit-vibes">
-                      {getOutfitStyleTags(outfit, index).map((tag) => (
-                        <Text key={tag} className="vibe-tag">{tag}</Text>
+                    <View className="outfit-reason">
+                      <Text className="reason-label">搭配理由</Text>
+                      <Text className="reason-text">{outfit.reason || '这套穿搭很适合今天的天气和场景'}</Text>
+                    </View>
+
+                    <View className="outfit-tags">
+                      {getOutfitStyleTags(outfit, index).slice(0, 3).map((tag) => (
+                        <Text key={tag} className="style-tag">{tag}</Text>
                       ))}
                     </View>
                   </View>
@@ -472,8 +497,8 @@ export default function TodayPage() {
             </View>
 
             {(error || recommendationNotice) && (
-              <View className="inline-error">
-                <Text className="inline-error-text">{error || recommendationNotice}</Text>
+              <View className="inline-notice">
+                <Text className="inline-notice-text">{error || recommendationNotice}</Text>
               </View>
             )}
 
@@ -484,18 +509,18 @@ export default function TodayPage() {
                 }`}
                 onClick={handleToggleFavorite}
               >
-                <Text className="btn-text">{currentOutfit.isFavorite ? '已收藏' : '收藏'}</Text>
+                <Text className="action-text">{currentOutfit.isFavorite ? '已收藏' : '收藏'}</Text>
               </View>
               <View className={`action-btn primary ${isWearBusy ? 'disabled' : ''}`} onClick={handleConfirmWear}>
-                <Text className="btn-text">{isWearBusy ? '记录中...' : currentOutfit.isWornToday ? '今天穿过啦' : '穿它'}</Text>
+                <Text className="action-text">{isWearBusy ? '记录中...' : currentOutfit.isWornToday ? '今天穿过' : '穿它'}</Text>
               </View>
               <View className="action-btn detail" onClick={() => goToOutfitDetail(currentOutfit.id)}>
-                <Text className="btn-text">详情</Text>
+                <Text className="action-text">详情</Text>
               </View>
             </View>
 
-            <View className={`batch-btn ${isRefreshing ? 'disabled' : ''}`} onClick={handleRefresh}>
-              <Text className="batch-btn-text">{isRefreshing ? '正在找灵感...' : '换一批灵感'}</Text>
+            <View className={`refresh-btn ${isRefreshing ? 'disabled' : ''}`} onClick={handleRefresh}>
+              <Text className="refresh-text">{isRefreshing ? '正在找灵感...' : '换一批灵感'}</Text>
             </View>
           </View>
         )}

@@ -1,4 +1,4 @@
 export default definePageConfig({
-  navigationBarTitleText: '穿搭历史',
+  navigationBarTitleText: '日历',
   enablePullDownRefresh: true,
 });

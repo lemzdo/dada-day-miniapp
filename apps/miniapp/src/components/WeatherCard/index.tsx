@@ -96,53 +96,22 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
   }
 
   const displayLocation = weather.location.district || weather.location.city || weather.location.displayName || '当前位置';
-  const headline = hasWeather
-    ? `${displayLocation} · ${weather.weather.weather} ${weather.weather.temperature}℃`
-    : displayLocation;
+  const temperature = hasWeather ? `${weather.weather.temperature}℃` : '--';
+  const weatherText = hasWeather ? weather.weather.weather : '--';
 
   return (
-    <View className={`weather-card ${status === 'fallback' ? 'fallback' : ''}`}>
-      <View className="weather-main">
-        <View className="weather-left">
-          <Text className="weather-city">{headline}</Text>
-          <Text className="weather-desc">{hasWeather ? weather.location.city || weather.location.province : '天气获取失败，稍后重试'}</Text>
-          <Text className="weather-update">
-            {hasWeather ? `刷新于 ${formatRefreshTime(weather)}` : '请稍后重试'}
-          </Text>
+    <View className="weather-card">
+      <View className="weather-info">
+        <View className="weather-temp-wrap">
+          <Text className="weather-temp">{temperature}</Text>
+          <Text className="weather-status">{weatherText}</Text>
         </View>
-        <View className="weather-right">
-          <Text className="weather-temp">{hasWeather ? `${weather.weather.temperature}℃` : '--'}</Text>
+        <View className="weather-location">
+          <Text className="location-text">{displayLocation}</Text>
         </View>
       </View>
-      <View className="weather-detail">
-        <View className="detail-item">
-          <Text className="detail-label">湿度</Text>
-          <Text className="detail-value">{weather.weather.humidity === undefined ? '--' : `${weather.weather.humidity}%`}</Text>
-        </View>
-        <View className="detail-item">
-          <Text className="detail-label">风向</Text>
-          <Text className="detail-value">{weather.weather.windDirection || '--'}</Text>
-        </View>
-        <View className="detail-item">
-          <Text className="detail-label">风力</Text>
-          <Text className="detail-value">{weather.weather.windPower || '--'}</Text>
-        </View>
-      </View>
-      <View className="weather-footer">
-        <Text className="weather-hint">{hint}</Text>
-        <View className="weather-actions">
-          {status === 'fallback' && (
-            <View className="weather-retry" onClick={() => fetchWeather()}>
-              <Text className="weather-retry-text">重新定位</Text>
-            </View>
-          )}
-          <View
-            className={`weather-refresh ${refreshing ? 'disabled' : ''}`}
-            onClick={() => fetchWeather({ forceRefresh: true })}
-          >
-            <Text className="weather-refresh-text">{refreshing ? '刷新中...' : '刷新天气'}</Text>
-          </View>
-        </View>
+      <View className="weather-refresh-btn" onClick={() => fetchWeather({ forceRefresh: true })}>
+        <Text className="refresh-icon">↻</Text>
       </View>
     </View>
   );

@@ -244,10 +244,6 @@ export default function ProfilePage() {
     }
   }
 
-  function goToOutfitHistory() {
-    Taro.navigateTo({ url: '/pages/outfit-history/index' });
-  }
-
   function goToFavoriteOutfits() {
     Taro.navigateTo({ url: '/pages/favorite-outfits/index' });
   }
@@ -357,10 +353,6 @@ export default function ProfilePage() {
       </View>
 
       <View className="menu-section">
-        <View className="menu-item" onClick={goToOutfitHistory}>
-          <Text className="menu-label">穿搭历史</Text>
-          <Text className="menu-arrow">›</Text>
-        </View>
         <View className="menu-item" onClick={goToFavoriteOutfits}>
           <Text className="menu-label">我的收藏</Text>
           <Text className="menu-arrow">›</Text>
