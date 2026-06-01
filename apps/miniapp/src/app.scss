@@ -108,6 +108,35 @@ page {
   color: $text-primary;
   font-size: $font-body;
   line-height: 1.5;
+  
+  --dada-bg-page: #FAF6F1;
+  --dada-bg-card: #FFFDF9;
+  --dada-bg-card-alt: #FFF9F3;
+  --dada-bg-light: #F4E7D7;
+  --dada-text-primary: #2E241D;
+  --dada-text-secondary: #7E6A59;
+  --dada-text-tertiary: #A89584;
+  --dada-text-white: #FFFFFF;
+  --dada-milk-tea-gold: #C9A06A;
+  --dada-milk-tea-dark: #8B5E3C;
+  --dada-milk-tea-medium: #A67C52;
+  --dada-milk-tea-light: #D4B896;
+  --dada-milk-tea-border: #EADBC8;
+  --dada-soft-yellow: #F8E4B8;
+  --dada-soft-green-light: #EEF7E9;
+  --dada-soft-pink-light: #FFE8E5;
+  --dada-danger-red: #D97973;
+  --dada-success-green: #7BAE7F;
+  --dada-warning-orange: #D4A06A;
+  --dada-radius-button: 999rpx;
+  --dada-radius-medium: 32rpx;
+  --dada-radius-large: 40rpx;
+  --dada-radius-image: 24rpx;
+  --dada-shadow-primary: 0 20rpx 48rpx rgba(164, 126, 84, 0.12);
+  --dada-shadow-light: 0 12rpx 32rpx rgba(164, 126, 84, 0.08);
+  --dada-shadow-card: 0 8rpx 24rpx rgba(164, 126, 84, 0.06);
+  --dada-shadow-button: 0 10rpx 24rpx rgba(164, 126, 84, 0.16);
+  --dada-shadow-float: 0 24rpx 56rpx rgba(164, 126, 84, 0.14);
 }
 
 view, text {

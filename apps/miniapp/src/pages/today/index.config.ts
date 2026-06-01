@@ -1,3 +1,3 @@
-﻿export default definePageConfig({
-  navigationBarTitleText: '今日',
+export default definePageConfig({
+  navigationBarTitleText: '搭搭day',
 });

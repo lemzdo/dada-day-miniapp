@@ -371,38 +371,38 @@ export default function WardrobePage() {
 
   return (
     <View className={`wardrobe-page ${selectionMode ? 'selecting' : ''}`}>
-      <View className="wardrobe-header">
-        <View className="wardrobe-title-block">
-          <Text className="wardrobe-title">我的衣柜</Text>
+      {/* 衣橱状态卡 - 整合容量、识别任务、管理入口 */}
+      <View className="wardrobe-status-card">
+        <View className="status-card-header">
+          <Text className="status-card-title">衣橱状态</Text>
           {selectionMode && <Text className="selection-count">已选 {selectedCount} 件</Text>}
-        </View>
-        <View className={`manage-btn ${selectionMode ? 'active' : ''}`} onClick={toggleSelectionMode}>
-          <Text className="manage-btn-text">{selectionMode ? '取消' : '管理'}</Text>
-        </View>
-      </View>
-
-      <View className="capacity-bar">
-        <View className="capacity-info">
-          <Text className="capacity-label">衣橱容量</Text>
-          <Text className="capacity-num">
-            {stats.used} / {stats.total}
-          </Text>
-        </View>
-        <View className="capacity-track">
-          <View className="capacity-fill" style={{ width: `${percent}%` }} />
-        </View>
-      </View>
-
-      {recoverableBatches.length > 0 && recognitionEntryStatus && (
-        <View className={`recognition-task-card ${recognitionEntryStatus}`} onClick={handleRecoverableTaskClick}>
-          <View className="recognition-task-main">
-            <Text className="recognition-task-title">{getRecognitionTaskTitle(recoverableBatches)}</Text>
-            <Text className="recognition-task-desc">{getRecognitionTaskDesc(recoverableBatches)}</Text>
+          <View className={`manage-btn ${selectionMode ? 'active' : ''}`} onClick={toggleSelectionMode}>
+            <Text className="manage-btn-text">{selectionMode ? '取消' : '管理'}</Text>
           </View>
-          <Text className="recognition-task-action">{getRecognitionTaskAction(recoverableBatches)}</Text>
         </View>
-      )}
 
+        <View className="status-card-main">
+          <Text className="capacity-num">
+            {stats.used} / {stats.total} 件
+          </Text>
+          <View className="capacity-track">
+            <View className="capacity-fill" style={{ width: `${percent}%` }} />
+          </View>
+          <Text className="capacity-hint">还可以收纳 {stats.total - stats.used} 件衣服</Text>
+        </View>
+
+        {recoverableBatches.length > 0 && recognitionEntryStatus && (
+          <View className={`status-card-task ${recognitionEntryStatus}`} onClick={handleRecoverableTaskClick}>
+            <View className="task-main">
+              <Text className="task-title">{getRecognitionTaskTitle(recoverableBatches)}</Text>
+              <Text className="task-desc">{getRecognitionTaskDesc(recoverableBatches)}</Text>
+            </View>
+            <Text className="task-action">{getRecognitionTaskAction(recoverableBatches)}</Text>
+          </View>
+        )}
+      </View>
+
+      {/* 分类筛选栏 */}
       <View className="category-scroll">
         {categories.map((cat) => (
           <View
@@ -415,47 +415,72 @@ export default function WardrobePage() {
         ))}
       </View>
 
-      <ClothingGrid
-        clothes={clothes}
-        loading={loading && clothes.length === 0}
-        onItemClick={handleItemClick}
-        onItemLongPress={handleItemLongPress}
-        selectionMode={selectionMode}
-        selectedIds={selectedIds}
-      />
+      {/* 衣物内容区 */}
+      <View className="wardrobe-content">
+        {clothes.length === 0 && !loading ? (
+          <View className="empty-state">
+            <View className="empty-illustration">
+              <Text className="empty-icon">👗</Text>
+            </View>
+            <Text className="empty-title">衣橱还空着呢</Text>
+            <Text className="empty-desc">先上传几件衣服，小搭才能帮你搭得更准</Text>
+            <View className="empty-action" onClick={handleAdd}>
+              <Text className="empty-action-text">去添新衣</Text>
+            </View>
+          </View>
+        ) : (
+          <>
+            <ClothingGrid
+              clothes={clothes}
+              loading={loading && clothes.length === 0}
+              onItemClick={handleItemClick}
+              onItemLongPress={handleItemLongPress}
+              selectionMode={selectionMode}
+              selectedIds={selectedIds}
+            />
 
-      {clothes.length > 0 && (
-        <View className="load-more">
-          <Text className="load-more-text">
-            {loading ? '加载中...' : hasMore ? '上拉加载更多' : '没有更多了'}
-          </Text>
-        </View>
-      )}
-
-      <View className="fab-add" onClick={handleAdd}>
-        <Text className="fab-icon">+</Text>
+            {clothes.length > 0 && (
+              <View className="load-more">
+                <Text className="load-more-text">
+                  {loading ? '加载中...' : hasMore ? '上拉加载更多' : '没有更多了'}
+                </Text>
+              </View>
+            )}
+          </>
+        )}
       </View>
 
-      {selectionMode && (
-        <View className="selection-toolbar">
-          <View className={`selection-cancel-btn ${batchDeleting ? 'disabled' : ''}`} onClick={exitSelectionMode}>
-            <Text className="selection-cancel-text">完成</Text>
-          </View>
-          <View className="selection-actions">
-            <View className="select-all-btn" onClick={handleSelectAllToggle}>
-              <Text className="select-all-text">{allSelected ? '取消全选' : '全选'}</Text>
+      {/* 底部 Dock - 普通模式显示上传，管理模式显示整理栏 */}
+      <View className="bottom-dock">
+        <View className="dock-safe-area">
+          {!selectionMode ? (
+            <View className="upload-dock" onClick={handleAdd}>
+              <View className="upload-btn">
+                <Text className="upload-btn-text">+ 添新衣</Text>
+              </View>
             </View>
-            <View
-              className={`batch-delete-btn ${selectedCount === 0 || batchDeleting ? 'disabled' : ''} ${batchDeleting ? 'deleting' : ''}`}
-              onClick={handleBatchDelete}
-            >
-              <Text className="batch-delete-text">
-                {batchDeleting ? '清理中...' : selectedCount > 0 ? `清理 ${selectedCount} 件` : '清理'}
-              </Text>
+          ) : (
+            <View className="selection-toolbar">
+              <View className={`selection-cancel-btn ${batchDeleting ? 'disabled' : ''}`} onClick={exitSelectionMode}>
+                <Text className="selection-cancel-text">完成</Text>
+              </View>
+              <View className="selection-actions">
+                <View className="select-all-btn" onClick={handleSelectAllToggle}>
+                  <Text className="select-all-text">{allSelected ? '取消全选' : '全选'}</Text>
+                </View>
+                <View
+                  className={`batch-delete-btn ${selectedCount === 0 || batchDeleting ? 'disabled' : ''} ${batchDeleting ? 'deleting' : ''}`}
+                  onClick={handleBatchDelete}
+                >
+                  <Text className="batch-delete-text">
+                    {batchDeleting ? '清理中...' : selectedCount > 0 ? `清理 ${selectedCount} 件` : '清理'}
+                  </Text>
+                </View>
+              </View>
             </View>
-          </View>
+          )}
         </View>
-      )}
+      </View>
     </View>
   );
 }
@@ -580,38 +605,32 @@ function getRecoverableRecognizedCount(batch: RecoverableUploadBatch) {
 }
 
 function getRecognitionTaskTitle(batches: RecoverableUploadBatch[]) {
-  if (batches.length > 1) return `小搭正在整理 ${batches.length} 批新衣服`;
-
-  const status = getRecoverableTaskState(batches[0] as RecoverableUploadBatch);
-  if (status === 'processing') return '小搭正在整理新衣服';
-  if (status === 'ready') return '有一批新衣服待确认';
-  return '有一批新衣服需要看看';
+  const states = batches.map(getRecoverableTaskState).filter(Boolean) as RecoverableTaskStatus[];
+  
+  if (states.some((state) => state === 'failed')) {
+    const failedCount = states.filter((s) => s === 'failed').length;
+    if (failedCount > 1) {
+      return '有 ' + failedCount + ' 批新衣需要处理';
+    }
+    return '有 1 批新衣需要处理';
+  }
+  if (states.some((state) => state === 'ready')) {
+    const readyCount = states.filter((s) => s === 'ready').length;
+    if (readyCount > 1) {
+      return '小搭整理好 ' + readyCount + ' 批新衣';
+    }
+    return '小搭整理好 1 批新衣';
+  }
+  if (states.some((state) => state === 'processing')) {
+    if (batches.length > 1) {
+      return '小搭正在整理 ' + batches.length + ' 批新衣';
+    }
+    return '小搭正在整理新衣';
+  }
+  return '有新衣需要看看';
 }
 
 function getRecognitionTaskDesc(batches: RecoverableUploadBatch[]) {
-  if (batches.length > 1) return getRecognitionAggregateDesc(batches);
-
-  const batch = batches[0] as RecoverableUploadBatch;
-  const status = getRecoverableTaskState(batch);
-  const totalImages = getRecoverableTotalImages(batch);
-  const processedImages = getRecoverableProcessedImages(batch);
-  const recognizedCount = getRecoverableRecognizedCount(batch);
-
-  if (status === 'processing') {
-    if (recognizedCount > 0) {
-      return `已识别 ${recognizedCount} 件，剩下的还在慢慢整理`;
-    }
-    return `正在处理 ${processedImages}/${totalImages} 张图片`;
-  }
-
-  if (status === 'ready') {
-    return `小搭识别出 ${recognizedCount} 件衣服，待你确认保存`;
-  }
-
-  return '这批识别遇到一点问题，去看看怎么处理';
-}
-
-function getRecognitionAggregateDesc(batches: RecoverableUploadBatch[]) {
   const counts = batches.reduce(
     (acc, batch) => {
       const state = getRecoverableTaskState(batch);
@@ -622,18 +641,48 @@ function getRecognitionAggregateDesc(batches: RecoverableUploadBatch[]) {
     },
     { ready: 0, processing: 0, failed: 0 },
   );
-  const parts = [];
-  if (counts.ready > 0) parts.push(`${counts.ready} 批待确认`);
-  if (counts.processing > 0) parts.push(`${counts.processing} 批识别中`);
-  if (counts.failed > 0) parts.push(`${counts.failed} 批需要看看`);
-  return parts.length > 0 ? parts.join('，') : '小搭整理完会放在这里提醒你';
+
+  if (counts.failed > 0 && counts.ready === 0 && counts.processing === 0) {
+    return '部分图片没识别成功，可重新处理';
+  }
+  
+  if (counts.ready > 0 && counts.processing > 0) {
+    return counts.ready + ' 批待确认 · ' + counts.processing + ' 批识别中';
+  }
+  
+  if (counts.ready > 0) {
+    const readyCount = batches
+      .filter((b) => getRecoverableTaskState(b) === 'ready')
+      .reduce((sum, batch) => sum + getRecoverableRecognizedCount(batch), 0);
+    if (readyCount > 0) {
+      return '识别 ' + readyCount + ' 件 · 等你保存';
+    }
+    return '等你保存';
+  }
+  
+  if (counts.processing > 0) {
+    if (counts.processing > 1) {
+      return counts.processing + ' 批识别中，完成后会提醒你';
+    }
+    return '1 批识别中，完成后会提醒你';
+  }
+  
+  return '小搭整理完会提醒你';
 }
 
 function getRecognitionTaskAction(batches: RecoverableUploadBatch[]) {
-  if (batches.length > 1) return '查看全部';
-
-  const status = getRecoverableTaskState(batches[0] as RecoverableUploadBatch);
-  if (status === 'processing') return '点击查看进度';
-  if (status === 'ready') return '查看结果';
-  return '点击查看';
+  const states = batches.map(getRecoverableTaskState).filter(Boolean) as RecoverableTaskStatus[];
+  
+  if (states.some((state) => state === 'failed')) {
+    return '查看';
+  }
+  
+  if (states.some((state) => state === 'ready')) {
+    if (batches.length === 1) {
+      return '去确认';
+    }
+    return '查看';
+  }
+  
+  return '查看';
 }

@@ -36,13 +36,6 @@ const SCENE_TAGS: Record<SceneKey, SceneTag> = {
   sport: '运动' as SceneTag,
 };
 
-function getGreeting() {
-  const hour = new Date().getHours();
-  if (hour < 12) return '早上好';
-  if (hour < 18) return '下午好';
-  return '晚上好';
-}
-
 export default function TodayPage() {
   const [selectedSceneKey, setSelectedSceneKey] = useState<SceneKey>('home');
   const [outfits, setOutfits] = useState<Outfit[]>([]);
@@ -351,19 +344,12 @@ export default function TodayPage() {
   return (
     <View className="today-page">
       <View className="top-section">
-        <View className="brand-area">
-          <View className="brand-title-wrap">
-            <Text className="brand-title">搭搭day</Text>
-            <Text className="brand-subtitle">你的每日穿搭灵感</Text>
+        <View className="main-title-area">
+          <View className="title-left">
+            <Text className="main-title">今天穿什么</Text>
+            <Text className="main-subtitle">根据天气和衣橱，给你一套刚好搭配</Text>
           </View>
-        </View>
-
-        <View className="greeting-area">
-          <View className="greeting-left">
-            <Text className="greeting-text">{getGreeting()}，搭搭</Text>
-            <Text className="greeting-sub">今天想穿什么风格呢？</Text>
-          </View>
-          <View className="greeting-right">
+          <View className="title-right">
             <WeatherCard city="上海" onWeatherChange={handleWeatherChange} />
           </View>
         </View>
