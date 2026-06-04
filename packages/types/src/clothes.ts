@@ -1,4 +1,4 @@
-﻿// ── 衣服分类枚举 ──
+// ── 衣服分类枚举 ──
 
 export type ClothingCategory = 'top' | 'bottom' | 'onepiece' | 'shoes' | 'accessory' | 'other';
 
@@ -21,6 +21,36 @@ export type ClothingStatus = 'active' | 'archived' | 'deleted';
 export type ClothingAiStatus = 'pending' | 'recognizing' | 'recognized' | 'failed';
 export type ClothingCutoutStatus = 'not_started' | 'queued' | 'processing' | 'pending' | 'success' | 'failed' | 'manual' | 'skipped';
 export type ClothingRecognizeStatus = 'pending' | 'success' | 'partial' | 'failed' | 'skipped';
+
+export type UserClothingSubcategoryStatus = 'active' | 'archived';
+
+export interface UserClothingSubcategory {
+  id: string;
+  userId: string;
+  name: string;
+  normalizedName: string;
+  parentCategory: ClothingCategory;
+  sortOrder?: number;
+  usageCount?: number;
+  lastUsedAt?: string;
+  status: UserClothingSubcategoryStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type UserClothingMaterialStatus = 'active' | 'archived';
+
+export interface UserClothingMaterial {
+  id: string;
+  userId: string;
+  name: string;
+  normalizedName: string;
+  usageCount?: number;
+  lastUsedAt?: string;
+  status: UserClothingMaterialStatus;
+  createdAt: string;
+  updatedAt: string;
+}
 export type UploadBatchStatus =
   | 'pending'
   | 'processing'
@@ -128,6 +158,7 @@ export interface Clothing {
   category: ClothingCategory | string;
   subcategory?: ClothingSubcategory | string;
   subCategory?: string;
+  subcategoryId?: string;
   colorPalette?: ColorInfo[];
   colors?: string[];
   styleTags?: Array<StyleTag | string>;
@@ -184,6 +215,7 @@ export interface ClothingUpdateInput {
   customTags?: string[];
   category?: ClothingCategory;
   subcategory?: ClothingSubcategory;
+  subcategoryId?: string;
   styleTags?: Array<StyleTag | string>;
   seasonTags?: Array<Season | string>;
   sceneTags?: Array<SceneTag | string>;

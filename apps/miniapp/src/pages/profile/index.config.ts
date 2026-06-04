@@ -1,4 +1,4 @@
 export default definePageConfig({
-  navigationBarTitleText: '我的穿搭档案',
+  navigationBarTitleText: '我的',
   enablePullDownRefresh: true,
 });

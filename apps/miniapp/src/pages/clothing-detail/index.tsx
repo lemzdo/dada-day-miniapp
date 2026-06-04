@@ -1,270 +1,479 @@
-import { View, Image, Text } from '@tarojs/components';
-import Taro, { useLoad, useRouter } from '@tarojs/taro';
-import { useState } from 'react';
-import { deleteCloudClothing, getClothingById, inspectCloudClothingDelete, recognizeClothAttributes, segmentCloudClothing } from '@/lib/cloud';
-import { canRecognizeSingleClothing, categoryLabels, displayClothingTags, displayClothingText, getDisplayImage } from '@/utils/clothingLabels';
-import type { Clothing } from '@starter-template/types';
+import { Image, Text, View, ScrollView } from '@tarojs/components';
+import Taro, { useDidShow, useLoad, useRouter } from '@tarojs/taro';
+import { useCallback, useEffect, useState } from 'react';
+import {
+  getDisplayCategory,
+  getDisplayImage,
+  getSubcategoryDisplayLabel,
+} from '@/utils/clothingLabels';
+import {
+  normalizeCategory,
+  normalizeThickness,
+  getThicknessLabel,
+  normalizeSeason,
+  getSeasonLabel,
+  normalizeStyleTag,
+  normalizeSceneTag,
+  normalizeColor,
+  getColorSummaryLabel,
+  resolveMaterialDisplayName,
+} from '@/utils/clothingFieldNormalize';
+import {
+  getClothingById,
+  getUserClothingMaterials,
+  deleteCloudClothing,
+  segmentCloudClothing,
+  recognizeClothAttributes,
+  inspectCloudClothingDelete,
+} from '@/lib/cloud';
+import type { Clothing, UserClothingMaterial } from '@starter-template/types';
 import './index.scss';
 
 const WARDROBE_REFRESH_STORAGE_KEY = 'wardrobeNeedsRefresh';
-const WARDROBE_REFRESH_EVENT = 'wardrobe:refresh';
-
-function buildDeleteConfirmText(favoriteCount: number, historyCount: number) {
-  const impacts = [];
-  if (favoriteCount > 0) impacts.push(`${favoriteCount} 个收藏穿搭`);
-  if (historyCount > 0) impacts.push(`${historyCount} 个历史穿搭`);
-
-  if (impacts.length === 0) {
-    return '删除后这件衣服会从衣柜和推荐中移除，7天后清理图片。';
-  }
-
-  return `这件衣服被 ${impacts.join('、')} 使用。删除后会保留穿搭快照，并标记为不完整，7天后清理衣服图片。`;
-}
+const DETAIL_REFRESH_STORAGE_KEY = 'detailNeedsRefresh';
 
 export default function ClothingDetailPage() {
   const router = useRouter();
-  const id = router.params.id;
-  const [clothing, setClothing] = useState<Clothing | null>(null);
+  const id = router.params.id as string;
   const [loading, setLoading] = useState(true);
-  const [recognizing, setRecognizing] = useState(false);
-  const [reprocessing, setReprocessing] = useState(false);
+  const [processing, setProcessing] = useState(false);
+  const [clothing, setClothing] = useState<Clothing | null>(null);
+  const [userMaterials, setUserMaterials] = useState<UserClothingMaterial[]>([]);
+  const [colorExpanded, setColorExpanded] = useState(false);
 
-  useLoad(() => {
-    if (id) fetchClothing(id);
-  });
-
-  async function fetchClothing(clothingId: string) {
+  const fetchClothing = useCallback(async (itemId: string) => {
     setLoading(true);
     try {
-      setClothing(await getClothingById(clothingId));
+      const item = await getClothingById(itemId);
+      setClothing(item);
     } catch (err) {
       console.error('Fetch clothing error:', err);
       Taro.showToast({ title: '加载失败', icon: 'none' });
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
 
-  async function handleDelete() {
-    if (!clothing) return;
+  useLoad(() => fetchClothing(id));
 
-    try {
-      const impact = await inspectCloudClothingDelete(clothing.id);
-      const res = await Taro.showModal({
-        title: '确认删除',
-        content: buildDeleteConfirmText(impact.affectedFavoriteCount, impact.affectedHistoryCount),
-        confirmColor: '#FF6B6B',
+  useEffect(() => {
+    getUserClothingMaterials()
+      .then(setUserMaterials)
+      .catch((err) => {
+        console.error('Load user materials error:', err);
       });
-      if (!res.confirm) return;
+  }, []);
 
-      await deleteCloudClothing(clothing.id);
-      Taro.setStorageSync(WARDROBE_REFRESH_STORAGE_KEY, '1');
-      Taro.eventCenter.trigger(WARDROBE_REFRESH_EVENT, { deletedId: clothing.id });
-      Taro.showToast({ title: '已删除', icon: 'success' });
-      setTimeout(() => Taro.navigateBack(), 800);
+  useEffect(() => {
+    setColorExpanded(false);
+  }, [clothing?.id]);
+
+  useDidShow(() => {
+    // 检查是否需要强制刷新（从编辑页返回）
+    try {
+      const needsRefresh = Taro.getStorageSync(DETAIL_REFRESH_STORAGE_KEY);
+      if (needsRefresh) {
+        // 清除标记并强制刷新
+        Taro.removeStorageSync(DETAIL_REFRESH_STORAGE_KEY);
+        fetchClothing(id);
+      }
     } catch (err) {
-      console.error('Delete clothing error:', err);
-      Taro.showToast({ title: '删除失败', icon: 'none' });
+      console.error('Check refresh flag error:', err);
     }
-  }
+  });
 
-  function handleEdit() {
+  const handleEdit = useCallback(() => {
     if (!clothing) return;
     Taro.navigateTo({ url: `/pages/clothing-form/index?id=${clothing.id}` });
-  }
+  }, [clothing]);
 
-  async function handleReprocessImage() {
-    if (!clothing || reprocessing) return;
-
-    setReprocessing(true);
+  const handleDelete = useCallback(async () => {
+    if (!clothing) return;
     try {
-      const updated = await segmentCloudClothing(clothing.id);
-      setClothing(updated);
-      Taro.showToast({ title: updated.segmentStatus === 'success' ? '图片已处理' : '需要确认图片', icon: 'none' });
-    } catch (err) {
-      console.error('Reprocess clothing image error:', err);
-      Taro.showToast({ title: '图片处理失败，已保留可用图片', icon: 'none' });
-    } finally {
-      setReprocessing(false);
-    }
-  }
-
-  async function handleRecognize() {
-    if (!clothing || recognizing) return;
-    if (!canSafelyRecognize(clothing)) {
-      Taro.showModal({
-        title: '暂不支持重新识别',
-        content: '当前使用的是原图，暂不支持单独重新识别这件衣服。你可以手动编辑信息。',
-        showCancel: false,
+      const impact = await inspectCloudClothingDelete(clothing.id);
+      
+      let content = '删除后这件衣服会从衣柜和推荐中移除，7天后清理图片。';
+      const impacts: string[] = [];
+      if (impact.affectedFavoriteCount > 0) {
+        impacts.push(`${impact.affectedFavoriteCount} 个收藏穿搭`);
+      }
+      if (impact.affectedHistoryCount > 0) {
+        impacts.push(`${impact.affectedHistoryCount} 个历史穿搭`);
+      }
+      if (impacts.length > 0) {
+        content = `这件衣服被 ${impacts.join('、')} 使用。删除后会保留穿搭快照，并标记为不完整，7天后清理衣服图片。`;
+      }
+      
+      const modalRes = await Taro.showModal({
+        title: '删除这件衣服',
+        content,
+        confirmColor: '#D4635E',
       });
+      
+      if (modalRes.confirm) {
+        await deleteCloudClothing(clothing.id);
+        // 标记需要刷新衣橱
+        Taro.setStorageSync(WARDROBE_REFRESH_STORAGE_KEY, true);
+        Taro.showToast({ title: '已删除', icon: 'success' });
+        setTimeout(() => Taro.navigateBack(), 600);
+      }
+    } catch (err) {
+      console.error('Delete error:', err);
+      Taro.showToast({ title: '删除失败', icon: 'none' });
+    }
+  }, [clothing]);
+
+  const handleReprocessImage = useCallback(async () => {
+    if (!clothing) return;
+    
+    const isProcessing = isAiProcessing(clothing);
+    if (isProcessing) {
+      Taro.showToast({ title: '正在处理中，请稍后...', icon: 'none' });
       return;
     }
-
-    setRecognizing(true);
-    setClothing({ ...clothing, aiStatus: 'recognizing' });
-
-    try {
-      const updated = await recognizeClothAttributes(clothing.id);
-      setClothing(updated);
-      Taro.showToast({ title: '识别完成', icon: 'success' });
-    } catch (err) {
-      console.error('Recognize clothing error:', err);
-      setClothing({ ...clothing, aiStatus: 'failed' });
-      Taro.showToast({ title: '小搭暂时没整理好，可手动编辑或重新整理', icon: 'none' });
-    } finally {
-      setRecognizing(false);
+    
+    const modalRes = await Taro.showModal({
+      title: '重新处理图片',
+      content: '需要重新处理这张图片吗？',
+    });
+    
+    if (modalRes.confirm) {
+      try {
+        setProcessing(true);
+        await segmentCloudClothing(clothing.id);
+        Taro.showToast({ title: '开始处理...', icon: 'none' });
+        // 立即刷新页面
+        await fetchClothing(id);
+        Taro.showToast({ title: '处理完成', icon: 'success' });
+      } catch (err) {
+        console.error('Reprocess error:', err);
+        Taro.showToast({ title: '处理失败', icon: 'none' });
+      } finally {
+        setProcessing(false);
+      }
     }
-  }
+  }, [clothing, id, fetchClothing]);
+
+  const handleReRecognize = useCallback(async () => {
+    if (!clothing) return;
+    
+    const isProcessing = isAiProcessing(clothing);
+    if (isProcessing) {
+      Taro.showToast({ title: '正在识别中，请稍后...', icon: 'none' });
+      return;
+    }
+    
+    const modalRes = await Taro.showModal({
+      title: '重新识别属性',
+      content: '让AI重新识别这张图片的属性吗？',
+    });
+    
+    if (modalRes.confirm) {
+      try {
+        setProcessing(true);
+        await recognizeClothAttributes(clothing.id);
+        Taro.showToast({ title: '开始识别...', icon: 'none' });
+        // 立即刷新页面
+        await fetchClothing(id);
+        Taro.showToast({ title: '识别完成', icon: 'success' });
+      } catch (err) {
+        console.error('Re-recognize error:', err);
+        Taro.showToast({ title: '识别失败', icon: 'none' });
+      } finally {
+        setProcessing(false);
+      }
+    }
+  }, [clothing, id, fetchClothing]);
 
   if (loading) {
     return (
-      <View className="clothing-detail-page loading">
-        <View className="skeleton-image" />
-        <View className="skeleton-content">
-          <View className="skeleton-line" />
-          <View className="skeleton-line short" />
+      <View className="clothing-detail-page">
+        <View className="detail-header">
+          <Text className="page-title">衣物小档案</Text>
         </View>
+        <ScrollView className="detail-content" scrollY>
+          <View className="main-card">
+            <View className="skeleton-image" />
+            <View className="skeleton-line" />
+            <View className="skeleton-line short" />
+          </View>
+        </ScrollView>
       </View>
     );
   }
 
   if (!clothing) {
     return (
-      <View className="clothing-detail-page error">
-        <Text className="error-text">衣服不存在或已删除</Text>
+      <View className="clothing-detail-page">
+        <View className="detail-header">
+          <Text className="page-title">衣物小档案</Text>
+        </View>
+        <ScrollView className="detail-content" scrollY>
+          <View className="empty-state">
+            <Text className="empty-text">衣物不存在</Text>
+          </View>
+        </ScrollView>
       </View>
     );
   }
 
-  const material = displayClothingText(clothing.materialGuess || clothing.material);
-  const colors = clothing.colorPalette?.map((color) => ({
-    ...color,
-    name: displayClothingText(color.name),
-  }));
+  const colorPaletteItems = getColorItems(clothing);
+  const colorSummaryText = getColorSummaryText(colorPaletteItems);
+  const visibleColorItems = colorExpanded ? colorPaletteItems : colorPaletteItems.slice(0, 3);
+  const canToggleColors = colorPaletteItems.length > 3;
+  const featureTags = getFeatureTags(clothing, userMaterials);
+  const styleTags = getNormalizedStyleTags(clothing);
+  const sceneTags = getNormalizedSceneTags(clothing);
+  const seasonTags = clothing.seasonTags?.map(tag => getSeasonLabel(normalizeSeason(tag))) || [];
+  const allFitTags = [...styleTags, ...seasonTags, ...sceneTags];
+  const customTags = (clothing.customTags || []).map(tag => tag.trim()).filter(Boolean);
+  const isProcessingState = isAiProcessing(clothing);
 
   return (
     <View className="clothing-detail-page">
-      <View className="image-section">
-        <Image className="clothing-image" src={getDisplayImage(clothing)} mode="aspectFit" />
+      <View className="detail-header">
+        <Text className="page-title">衣物小档案</Text>
+        <View className="detail-edit-link" onClick={handleEdit}>
+          <Text className="detail-edit-link-text">编辑</Text>
+        </View>
       </View>
 
-      {(clothing.aiRecognizeStatus === 'pending' || clothing.aiRecognizeStatus === 'failed' || (clothing.aiStatus && clothing.aiStatus !== 'recognized')) && (
-        <View className={`ai-status-card ${clothing.aiStatus}`}>
-          <Text className="ai-status-title">
-            {clothing.aiRecognizeStatus === 'failed' || clothing.aiStatus === 'failed' ? '小搭暂时没整理好' : '小搭正在整理属性...'}
-          </Text>
-          <Text className="ai-status-desc">
-            {clothing.aiRecognizeStatus === 'failed' || clothing.aiStatus === 'failed'
-              ? '可手动编辑或重新识别'
-              : '衣服已加入衣橱，识别完成后会自动补全属性'}
-          </Text>
-          {(clothing.aiRecognizeStatus === 'failed' || clothing.aiStatus === 'failed') && (
-            <View className="retry-btn" onClick={handleRecognize}>
-          <Text className="retry-text">{recognizing ? '识别中...' : '重新识别信息'}</Text>
-            </View>
-          )}
-        </View>
-      )}
-
-      <View className="info-card">
-        <View className="info-section">
-          <Text className="section-title">基础信息</Text>
-          <View className="info-grid">
-            <InfoItem label="品类" value={categoryLabels[clothing.category] || displayClothingText(clothing.category)} />
-            {clothing.subcategory && <InfoItem label="子类" value={displayClothingText(clothing.subcategory)} />}
-            {material && <InfoItem label="材质" value={material} />}
-            {clothing.thickness && <InfoItem label="厚薄" value={displayClothingText(clothing.thickness)} />}
-            {typeof clothing.aiConfidence === 'number' && clothing.aiConfidence > 0 && (
-              <InfoItem label="小搭置信度" value={`${formatConfidence(clothing.aiConfidence)}%`} />
+      <ScrollView className="detail-content" scrollY>
+        {/* 主视觉卡 */}
+        <View className="main-card">
+          <View className="image-wrapper">
+            <Image
+              className="clothing-image"
+              src={getDisplayImage(clothing)}
+              mode="aspectFit"
+            />
+            {isProcessingState && (
+              <View className="ai-status-badge processing">
+                <Text className="ai-status-text">处理中</Text>
+              </View>
             )}
-            {clothing.brand && <InfoItem label="品牌" value={clothing.brand} />}
+          </View>
+
+          <View className="identity-section">
+            <View className="identity-header">
+              <View className="identity-text">
+                <Text className="clothing-name">
+                  {clothing.customName || getSubcategoryDisplayLabel(normalizeCategory(clothing.category), clothing.subcategory) || '未命名衣物'}
+                </Text>
+                <Text className="clothing-category">
+                  {getDisplayCategory({
+                    category: normalizeCategory(clothing.category),
+                    subcategory: clothing.subcategory,
+                  })}
+                </Text>
+              </View>
+            </View>
+
+            <View className="core-tags">
+              {featureTags.map((tag, idx) => (
+                <Text key={idx} className="core-tag">{tag}</Text>
+              ))}
+              {seasonTags.slice(0, 2).map((tag, idx) => (
+                <Text key={`season-${idx}`} className="core-tag">{tag}</Text>
+              ))}
+            </View>
           </View>
         </View>
 
-        {colors && colors.length > 0 && (
-          <View className="info-section">
-            <Text className="section-title">颜色</Text>
-            <View className="color-list">
-              {colors.map((color, idx) => (
-                <View key={idx} className="color-item">
-                  <View className="color-dot" style={{ backgroundColor: color.hex }} />
-                  <Text className="color-name">{color.name}</Text>
-                  <Text className="color-ratio">{Math.round(color.ratio * 100)}%</Text>
+        {/* 主色调 */}
+        {colorPaletteItems.length > 0 && (
+          <View className="section-card">
+            <Text className="section-title">主色调</Text>
+            <View className="color-summary-card">
+              <View className="color-summary-main">
+                <View className="color-swatch-row">
+                  {visibleColorItems.slice(0, 3).map((item, idx) => (
+                    <View
+                      key={`${item.key}-${idx}`}
+                      className="color-swatch"
+                      style={{ backgroundColor: item.hex, borderColor: item.border }}
+                    />
+                  ))}
                 </View>
+                <Text className="color-summary-name">{colorSummaryText}</Text>
+                {canToggleColors && (
+                  <Text className="color-toggle" onClick={() => setColorExpanded(prev => !prev)}>
+                    {colorExpanded ? '收起' : '展开'}
+                  </Text>
+                )}
+              </View>
+              {colorExpanded && (
+                <View className="color-detail-list">
+                  {colorPaletteItems.map((item, idx) => (
+                    <View key={`${item.key}-${idx}`} className="color-detail-chip">
+                      <View
+                        className="color-detail-swatch"
+                        style={{ backgroundColor: item.hex, borderColor: item.border }}
+                      />
+                      <Text className="color-detail-name">{item.name}</Text>
+                    </View>
+                  ))}
+                </View>
+              )}
+            </View>
+          </View>
+        )}
+
+        {/* 适合穿去 */}
+        {allFitTags.length > 0 && (
+          <View className="section-card">
+            <Text className="section-title">适合穿去</Text>
+            <View className="fit-tags">
+              {allFitTags.map((tag, idx) => (
+                <Text key={idx} className="fit-tag">{tag}</Text>
               ))}
             </View>
           </View>
         )}
 
-        <TagSection title="风格" tags={displayClothingTags(clothing.styleTags)} />
-        <TagSection title="适用场景" tags={displayClothingTags(clothing.sceneTags)} className="scene" />
-        <TagSection title="适用季节" tags={displayClothingTags(clothing.seasonTags)} className="season" />
-
-        {clothing.customName && (
-          <View className="info-section">
-            <Text className="section-title">备注名称</Text>
-            <Text className="custom-name">{clothing.customName}</Text>
+        {/* 我的标签 */}
+        {customTags.length > 0 && (
+          <View className="section-card">
+            <Text className="section-title">我的标签</Text>
+            <View className="custom-tags-section">
+              {customTags.map((tag, idx) => (
+                <Text key={idx} className="custom-tag-chip">{tag}</Text>
+              ))}
+            </View>
           </View>
         )}
-      </View>
 
-      <View className="action-bar">
-        <View className="action-btn edit" onClick={handleEdit}>
-          <Text className="btn-text">编辑信息</Text>
-        </View>
-        <View className={`action-btn reprocess ${reprocessing ? 'disabled' : ''}`} onClick={handleReprocessImage}>
-          <Text className="btn-text">{reprocessing ? '处理中...' : '处理图片'}</Text>
-        </View>
-        <View className={`action-btn recognize ${recognizing ? 'disabled' : ''}`} onClick={handleRecognize}>
-          <Text className="btn-text">{recognizing ? '识别中...' : '识别信息'}</Text>
-        </View>
-        <View className="action-btn delete" onClick={handleDelete}>
-          <Text className="btn-text">删除</Text>
-        </View>
-      </View>
-    </View>
-  );
-}
+        {/* 更多整理 */}
+        <View className="section-card manage-card">
+          <Text className="section-title">更多整理</Text>
+          <View className="manage-list">
+            <View 
+              className={`manage-item ${isProcessingState ? 'disabled' : ''}`} 
+              onClick={isProcessingState ? undefined : handleReprocessImage}
+            >
+              <View className="manage-item-content">
+                <Text className="manage-text">重新处理图片</Text>
+                <Text className="manage-desc">图片不自然时，让小搭重新整理</Text>
+              </View>
+              {isProcessingState ? (
+                <View className="status-badge">
+                  <Text className="status-text">处理中</Text>
+                </View>
+              ) : (
+                <Text className="manage-arrow">›</Text>
+              )}
+            </View>
 
-function InfoItem({ label, value }: { label: string; value: string }) {
-  return (
-    <View className="info-item">
-      <Text className="info-label">{label}</Text>
-      <Text className="info-value">{value}</Text>
-    </View>
-  );
-}
+            <View 
+              className={`manage-item ${isProcessingState ? 'disabled' : ''}`} 
+              onClick={isProcessingState ? undefined : handleReRecognize}
+            >
+              <View className="manage-item-content">
+                <Text className="manage-text">重新识别属性</Text>
+                <Text className="manage-desc">颜色、材质或风格不准时，可以再识别</Text>
+              </View>
+              {isProcessingState ? (
+                <View className="status-badge">
+                  <Text className="status-text">识别中</Text>
+                </View>
+              ) : (
+                <Text className="manage-arrow">›</Text>
+              )}
+            </View>
 
-function canSafelyRecognize(clothing: Clothing) {
-  if (canRecognizeSingleClothing(clothing)) return true;
-  return !clothing.batchId && !clothing.sourceImageId;
-}
-
-function formatConfidence(value: number) {
-  return Math.round(value <= 1 ? value * 100 : value);
-}
-
-function TagSection({
-  title,
-  tags,
-  className = '',
-}: {
-  title: string;
-  tags?: string[];
-  className?: string;
-}) {
-  if (!tags?.length) return null;
-
-  return (
-    <View className="info-section">
-      <Text className="section-title">{title}</Text>
-      <View className="tag-list">
-        {tags.map((tag) => (
-          <View key={tag} className={`tag-item ${className}`}>
-            <Text className="tag-text">{tag}</Text>
+            <View className="manage-item danger" onClick={handleDelete}>
+              <View className="manage-item-content">
+                <Text className="manage-text">删除这件衣服</Text>
+                <Text className="manage-desc">从衣橱移除，已保存的搭配尽量保留灵感记录</Text>
+              </View>
+              <Text className="manage-arrow">›</Text>
+            </View>
           </View>
-        ))}
-      </View>
+        </View>
+
+        <View className="bottom-padding" />
+      </ScrollView>
+
+      {processing && (
+        <View className="loading-overlay">
+          <View className="loading-spinner" />
+          <Text className="loading-text">处理中...</Text>
+        </View>
+      )}
     </View>
   );
+}
+
+function isAiProcessing(item: Clothing): boolean {
+  const status = item.aiStatus || item.aiRecognizeStatus;
+  return status === 'pending' || status === 'recognizing';
+}
+
+interface DetailColorItem {
+  name: string;
+  key: string;
+  hex: string;
+  border: string;
+}
+
+function getColorItems(item: Clothing): DetailColorItem[] {
+  const palette = item.colorPalette;
+  if (palette && palette.length > 0) {
+    return palette.map((cp) => {
+      const colorMeta = normalizeColor(cp.name || cp.hex);
+      return {
+        name: colorMeta.label || cp.name || cp.hex || '',
+        key: colorMeta.key,
+        hex: cp.hex || colorMeta.hex,
+        border: colorMeta.border,
+      };
+    });
+  }
+
+  const colors = item.colors;
+  if (colors && colors.length > 0) {
+    return colors.map((c) => {
+      const colorMeta = normalizeColor(c);
+      return { name: colorMeta.label || c, key: colorMeta.key, hex: colorMeta.hex, border: colorMeta.border };
+    });
+  }
+
+  return [];
+}
+
+function getColorSummaryText(colors: DetailColorItem[]) {
+  return getColorSummaryLabel(colors.map((item) => item.name));
+}
+
+function getFeatureTags(item: Clothing, userMaterials: UserClothingMaterial[]): string[] {
+  const tags: string[] = [];
+  const material = item.material || item.materialGuess;
+  if (material) {
+    const label = resolveMaterialDisplayName(material, userMaterials, '自定义材质');
+    if (label) tags.push(label);
+  }
+  if (item.thickness) {
+    const normalized = normalizeThickness(item.thickness);
+    tags.push(getThicknessLabel(normalized));
+  }
+  if (item.brand) {
+    tags.push(item.brand);
+  }
+  return tags;
+}
+
+function getNormalizedStyleTags(item: Clothing): string[] {
+  if (!item.styleTags || item.styleTags.length === 0) return [];
+  return item.styleTags.map(tag => {
+    const normalized = normalizeStyleTag(tag);
+    return normalized;
+  }).filter(Boolean);
+}
+
+function getNormalizedSceneTags(item: Clothing): string[] {
+  if (!item.sceneTags || item.sceneTags.length === 0) return [];
+  return item.sceneTags.map(tag => {
+    const normalized = normalizeSceneTag(tag);
+    return normalized;
+  }).filter(Boolean);
 }

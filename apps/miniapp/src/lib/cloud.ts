@@ -1,4 +1,4 @@
-﻿import Taro from '@tarojs/taro';
+import Taro from '@tarojs/taro';
 import type {
   Clothing,
   ClothingCategory,
@@ -14,6 +14,8 @@ import type {
   StyleDictItem,
   UploadBatch,
   UploadImage,
+  UserClothingSubcategory,
+  UserClothingMaterial,
 } from '@starter-template/types';
 import { CLOUD_ENV_ID } from '@/config/cloud';
 
@@ -54,6 +56,7 @@ const CACHE_TTL = {
   wardrobe: 15 * 1000,
   outfit: 30 * 1000,
   weather: 10 * 60 * 1000,
+  clothingSubcategories: 5 * 60 * 1000,
 };
 
 export const WEATHER_CACHE_KEY = 'd1d:lastWeather';
@@ -170,14 +173,6 @@ export interface CloudUserProfile {
 
 export async function loginWithCloud() {
   return callCachedCloudFunction<CloudUserProfile>('login', {}, CACHE_TTL.login);
-}
-
-export interface GetWardrobeParams {
-  id?: string;
-  category?: ClothingCategory | 'all';
-  status?: 'active' | 'archived' | 'deleted';
-  page?: number;
-  pageSize?: number;
 }
 
 export async function getWardrobe(params: GetWardrobeParams = {}) {
@@ -579,4 +574,103 @@ export function getFallbackResolvedWeather(displayName = '当前位置'): Resolv
     fetchedAt: now,
     updatedAt: now,
   };
+}
+
+export interface GetUserClothingSubcategoriesParams {
+  parentCategory?: ClothingCategory;
+}
+
+export async function getUserClothingSubcategories(params: GetUserClothingSubcategoriesParams = {}) {
+  return callCachedCloudFunction<UserClothingSubcategory[]>(
+    'getUserClothingSubcategories',
+    params as Record<string, unknown>,
+    CACHE_TTL.clothingSubcategories,
+  );
+}
+
+export interface CreateUserClothingSubcategoryParams {
+  name: string;
+  parentCategory: ClothingCategory;
+}
+
+export interface CreateUserClothingSubcategoryResult {
+  id: string;
+  userId: string;
+  name: string;
+  normalizedName: string;
+  parentCategory: ClothingCategory;
+  status: 'active';
+  reused?: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function createUserClothingSubcategory(params: CreateUserClothingSubcategoryParams) {
+  const result = await callCloudFunction<CreateUserClothingSubcategoryResult>(
+    'createUserClothingSubcategory',
+    params as unknown as Record<string, unknown>,
+  );
+  clearCloudCache(['getUserClothingSubcategories:']);
+  return result;
+}
+
+export function clearUserClothingSubcategoriesCache() {
+  clearCloudCache(['getUserClothingSubcategories:']);
+}
+
+export async function getUserClothingMaterials() {
+  return callCachedCloudFunction<UserClothingMaterial[]>(
+    'getUserClothingMaterials',
+    {},
+    CACHE_TTL.clothingSubcategories,
+  );
+}
+
+export interface CreateUserClothingMaterialParams {
+  name: string;
+}
+
+export interface CreateUserClothingMaterialResult {
+  id: string;
+  userId: string;
+  name: string;
+  normalizedName: string;
+  status: 'active';
+  reused?: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function createUserClothingMaterial(params: CreateUserClothingMaterialParams) {
+  const result = await callCloudFunction<CreateUserClothingMaterialResult>(
+    'createUserClothingMaterial',
+    params as unknown as Record<string, unknown>,
+  );
+  clearCloudCache(['getUserClothingMaterials']);
+  return result;
+}
+
+export interface ArchiveUserClothingMaterialResult {
+  ok: boolean;
+  id: string;
+}
+
+export async function archiveUserClothingMaterial(id: string) {
+  const result = await callCloudFunction<ArchiveUserClothingMaterialResult>('archiveUserClothingMaterial', { id });
+  clearCloudCache(['getUserClothingMaterials']);
+  return result;
+}
+
+export function clearUserClothingMaterialsCache() {
+  clearCloudCache(['getUserClothingMaterials']);
+}
+
+export interface GetWardrobeParams {
+  id?: string;
+  category?: ClothingCategory | 'all';
+  subcategory?: string | 'all';
+  subcategoryId?: string;
+  status?: 'active' | 'archived' | 'deleted';
+  page?: number;
+  pageSize?: number;
 }

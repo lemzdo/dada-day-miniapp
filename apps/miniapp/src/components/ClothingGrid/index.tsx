@@ -1,5 +1,11 @@
 import { View, Image, Text } from '@tarojs/components';
-import { categoryLabels, displayClothingTags, displayClothingText, getDisplayImage } from '@/utils/clothingLabels';
+import {
+  categoryLabels,
+  displayClothingTags,
+  displayClothingText,
+  getDisplayImage,
+  getSubcategoryDisplayLabel,
+} from '@/utils/clothingLabels';
 import type { Clothing } from '@starter-template/types';
 import './index.scss';
 
@@ -45,7 +51,15 @@ export function ClothingGrid({
   return (
     <View className="clothing-grid">
       {clothes.map((item) => {
-        const styleTags = displayClothingTags(item.styleTags).slice(0, 2);
+        const itemName = item.customName
+          || getSubcategoryDisplayLabel(item.category, item.subcategory)
+          || categoryLabels[item.category]
+          || displayClothingText(item.category)
+          || '未命名衣物';
+        const displayTags = displayClothingTags([
+          ...(item.styleTags ?? []),
+          ...(item.seasonTags ?? []),
+        ]).slice(0, 3);
         const selected = selectedIds.includes(item.id);
 
         return (
@@ -75,17 +89,12 @@ export function ClothingGrid({
                   <Text className="ai-status-text">识别失败</Text>
                 </View>
               )}
-              {item.customName && (
-                <View className="item-badge">
-                  <Text className="badge-text">{item.customName}</Text>
-                </View>
-              )}
             </View>
             <View className="item-info">
-              <Text className="item-category">{categoryLabels[item.category] || displayClothingText(item.category)}</Text>
-              {styleTags.length > 0 && (
+              <Text className="item-name">{itemName}</Text>
+              {displayTags.length > 0 && (
                 <View className="item-tags">
-                  {styleTags.map((tag, idx) => (
+                  {displayTags.map((tag, idx) => (
                     <Text key={idx} className="tag">
                       {tag}
                     </Text>

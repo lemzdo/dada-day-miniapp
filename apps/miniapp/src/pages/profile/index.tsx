@@ -1,4 +1,4 @@
-import { Button, Image, Input, Text, View } from '@tarojs/components';
+import { Button, Image, Input, ScrollView, Text, View } from '@tarojs/components';
 import Taro, { useDidShow, useLoad, usePullDownRefresh, useUnload } from '@tarojs/taro';
 import { useRef, useState } from 'react';
 import { getWardrobe, loginWithCloud, updateCloudUserProfile } from '@/lib/cloud';
@@ -35,6 +35,9 @@ interface ProfileState {
   capacityRemaining: number;
   capacityLoaded: boolean;
   preferredStyles: string[];
+  genderPreference?: string;
+  fitPreference?: string;
+  temperatureSensitivity?: string;
 }
 
 const DEFAULT_NICKNAME = '今日搭子';
@@ -73,7 +76,7 @@ export default function ProfilePage() {
   const [draftAvatarUrl, setDraftAvatarUrl] = useState('');
   const [draftAvatarType, setDraftAvatarType] = useState<AvatarType>('default');
   const [draftPresetId, setDraftPresetId] = useState(AVATAR_PRESETS[0]!.id);
-  const [editing, setEditing] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
   const [saving, setSaving] = useState(false);
   const [dataNotice, setDataNotice] = useState('');
   const didShowOnceRef = useRef(false);
@@ -125,6 +128,9 @@ export default function ProfilePage() {
         const styleProfile = user?.styleProfile ?? {};
         const preferredStyles = user ? readPreferredStyles(styleProfile) : prev.preferredStyles;
         const avatarType = user ? readAvatarType(user.avatarType ?? styleProfile['avatarType']) : prev.avatarType;
+        
+        const recommendationProfile = styleProfile['recommendationProfile'] as Record<string, unknown> | undefined;
+        
         const nextProfile: ProfileState = {
           ...prev,
           nickname: user ? normalizeNickname(user.nickname) : prev.nickname,
@@ -138,13 +144,16 @@ export default function ProfilePage() {
           capacityRemaining: wardrobe?.capacity.remaining ?? prev.capacityRemaining,
           capacityLoaded: wardrobe ? true : user ? true : prev.capacityLoaded,
           preferredStyles,
+          genderPreference: recommendationProfile?.['genderPreference'] as string | undefined,
+          fitPreference: recommendationProfile?.['fitPreference'] as string | undefined,
+          temperatureSensitivity: recommendationProfile?.['temperatureSensitivity'] as string | undefined,
         };
 
         writeCachedProfile(nextProfile);
         nextProfileForDraft = nextProfile;
         return nextProfile;
       });
-      if (!editing && nextProfileForDraft) {
+      if (!showEditModal && nextProfileForDraft) {
         syncDraft(nextProfileForDraft);
       }
 
@@ -180,14 +189,14 @@ export default function ProfilePage() {
     setDraftPresetId(getPresetIdFromUrl(nextProfile.avatarUrl) ?? AVATAR_PRESETS[0]!.id);
   }
 
-  function startEdit() {
+  function openEditModal() {
     syncDraft();
-    setEditing(true);
+    setShowEditModal(true);
   }
 
-  function cancelEdit() {
+  function closeEditModal() {
     syncDraft();
-    setEditing(false);
+    setShowEditModal(false);
   }
 
   function handleChooseAvatar(event: { detail?: { avatarUrl?: string } }) {
@@ -234,7 +243,7 @@ export default function ProfilePage() {
         profileCompleted: true,
         updatedAt: now,
       }));
-      setEditing(false);
+      closeEditModal();
       Taro.showToast({ title: '搭配档案已更新', icon: 'success' });
     } catch (error) {
       console.error('Save profile failed:', error);
@@ -253,7 +262,7 @@ export default function ProfilePage() {
   }
 
   function showComingSoon(title: string) {
-    Taro.showToast({ title: `${title}待上线`, icon: 'none' });
+    Taro.showToast({ title: `${title}即将上线`, icon: 'none' });
   }
 
   const capacityPercent =
@@ -261,115 +270,169 @@ export default function ProfilePage() {
       ? Math.min(100, Math.round((profile.capacityUsed / profile.capacityTotal) * 100))
       : 0;
   const preferenceSummary = getPreferenceSummary(profile.preferredStyles);
-  const profileActionDesc = getProfileActionDesc(profile);
-  const profileActionText = profile.preferredStyles.length > 0 ? '编辑' : '去完善';
+  const profileCompletedCount = getProfileCompletedCount(profile);
+  const profileActionText = profileCompletedCount >= 4 ? '调整风格画像' : '完善风格画像';
   const activePreset = AVATAR_PRESETS.find((item) => item.id === draftPresetId) ?? AVATAR_PRESETS[0]!;
 
   return (
     <View className="profile-page">
-      <View className="user-card" onClick={startEdit}>
+      <View className="profile-header">
+        <Text className="profile-title">我的穿搭档案</Text>
+        <Text className="profile-subtitle">记录你的风格，让小搭更懂你</Text>
+      </View>
+
+      <View className="identity-card">
         <AvatarView avatarUrl={profile.avatarUrl} avatarType={profile.avatarType} />
-        <View className="user-info">
-          <Text className="nickname">{profile.nickname}</Text>
-          <Text className="slogan">少纠结，多好看 ✦</Text>
-          <Text className="preference-summary">{preferenceSummary}</Text>
-        </View>
-      </View>
-
-      <View className="profile-action-card">
-        <View className="profile-action-copy">
-          <Text className="profile-action-title">我的穿搭档案</Text>
-          <Text className="profile-action-desc">{profileActionDesc}</Text>
-        </View>
-        <View className="profile-action-btn" onClick={goToStylePreferences}>
-          <Text className="profile-action-text">{profileActionText}</Text>
-        </View>
-      </View>
-
-      {editing && (
-        <View className="edit-card">
-          <View className="edit-header">
-            <View>
-              <Text className="edit-title">换个头像和昵称</Text>
-              <Text className="edit-subtitle">可以随时改，也可以继续用搭搭头像。</Text>
+        <View className="identity-info">
+          <Text className="identity-nickname">{profile.nickname}</Text>
+          <Text className="identity-slogan">小搭正在学习你的穿衣偏好</Text>
+          {profile.preferredStyles.length > 0 && (
+            <View className="identity-tags">
+              {profile.preferredStyles.slice(0, 3).map((style) => (
+                <Text key={style} className="identity-tag">{style}</Text>
+              ))}
             </View>
-            <Text className="edit-close" onClick={cancelEdit}>×</Text>
-          </View>
+          )}
+        </View>
+        <View className="edit-btn" onClick={openEditModal}>
+          <Text className="edit-btn-text">编辑资料</Text>
+        </View>
+      </View>
 
-          <View className="avatar-editor">
-            <AvatarView avatarUrl={draftAvatarUrl} avatarType={draftAvatarType} presetId={draftPresetId} />
-            <Button className="wechat-avatar-btn" openType="chooseAvatar" onChooseAvatar={handleChooseAvatar}>
-              选择微信头像
-            </Button>
+      <View className="style-portrait-card" onClick={goToStylePreferences}>
+        <View className="card-header">
+          <View className="card-title-wrap">
+            <Text className="card-title">我的风格画像</Text>
+            <Text className="card-progress">已完成 {profileCompletedCount}/4</Text>
           </View>
-
-          <View className="input-wrap">
-            <Input
-              className="nickname-input"
-              type="nickname"
-              value={draftNickname}
-              maxlength={16}
-              placeholder="比如：今日搭子、黑白灰选手、通勤懒人"
-              onInput={(event) => setDraftNickname(String(event.detail.value ?? ''))}
-            />
+          <Text className="card-action">{profileActionText}</Text>
+        </View>
+        <View className="portrait-content">
+          <View className="portrait-row">
+            <Text className="portrait-label">搭配倾向</Text>
+            <Text className="portrait-value">{formatGenderPreference(profile.genderPreference)}</Text>
           </View>
-
-          <View className="preset-header">
-            <Text className="preset-title">搭搭day 默认头像</Text>
-            <Text className="preset-random" onClick={randomPreset}>换一个搭搭头像</Text>
+          <View className="portrait-row">
+            <Text className="portrait-label">风格偏好</Text>
+            <Text className="portrait-value">{preferenceSummary}</Text>
           </View>
-
-          <View className="preset-grid">
-            {AVATAR_PRESETS.map((preset) => (
-              <View
-                key={preset.id}
-                className={`preset-option ${activePreset.id === preset.id && draftAvatarType !== 'wechat' ? 'active' : ''}`}
-                onClick={() => choosePreset(preset.id)}
-              >
-                <Image className="preset-image" src={preset.image} mode="aspectFill" />
-                <Text className="preset-name">{preset.name}</Text>
-              </View>
-            ))}
+          <View className="portrait-row">
+            <Text className="portrait-label">版型偏好</Text>
+            <Text className="portrait-value">{formatFitPreference(profile.fitPreference)}</Text>
           </View>
-
-          <View className={`save-profile-btn ${saving ? 'disabled' : ''}`} onClick={saveProfile}>
-            <Text className="save-profile-text">{saving ? '保存中...' : '保存我的搭配档案'}</Text>
+          <View className="portrait-row">
+            <Text className="portrait-label">冷热敏感</Text>
+            <Text className="portrait-value">{formatTempPreference(profile.temperatureSensitivity)}</Text>
           </View>
         </View>
-      )}
+        <View className="portrait-hint">完善画像，让推荐更贴近你的喜好</View>
+      </View>
 
-      <View className="capacity-card">
-        <View className="capacity-header">
-          <Text className="capacity-title">衣橱容量</Text>
-          <View className="capacity-meta">
-            <Text className="capacity-num">{formatCapacity(profile)}</Text>
-          </View>
+      <View className="wardrobe-status-card">
+        <View className="wardrobe-header">
+          <Text className="wardrobe-title">衣橱状态</Text>
+          <Text className="wardrobe-count">{profile.capacityLoaded ? `${profile.capacityUsed}/${profile.capacityTotal}` : '--'}</Text>
         </View>
-        <View className="capacity-track">
-          <View className="capacity-fill" style={{ width: `${capacityPercent}%` }} />
+        <View className="wardrobe-track">
+          <View className="wardrobe-fill" style={{ width: `${capacityPercent}%` }} />
         </View>
-        <Text className="capacity-tip">{formatRemaining(profile)}</Text>
+        <Text className="wardrobe-tip">
+          {profile.capacityLoaded ? `还可收纳 ${profile.capacityRemaining} 件衣物` : '容量数据稍后更新'}
+        </Text>
+        <Text className="wardrobe-hint">衣服越丰富，推荐越懂你</Text>
         {dataNotice && <Text className="data-notice">{dataNotice}</Text>}
       </View>
 
-      <View className="menu-section">
-        <View className="menu-item" onClick={goToFavoriteOutfits}>
-          <Text className="menu-label">我的收藏</Text>
-          <Text className="menu-arrow">›</Text>
+      <View className="favorite-card" onClick={goToFavoriteOutfits}>
+        <View className="favorite-icon">✦</View>
+        <View className="favorite-content">
+          <Text className="favorite-title">我的收藏</Text>
+          <Text className="favorite-desc">喜欢的搭配，都帮你收好了</Text>
         </View>
-        <View className="menu-item" onClick={() => showComingSoon('衣柜分析')}>
-          <Text className="menu-label">衣柜分析</Text>
-          <Text className="menu-value">待上线</Text>
-        </View>
-        <View className="menu-item" onClick={() => showComingSoon('穿搭提醒')}>
-          <Text className="menu-label">穿搭提醒</Text>
-          <Text className="menu-value">未开启</Text>
+        <Text className="favorite-arrow">›</Text>
+      </View>
+
+      <View className="coming-soon-section">
+        <Text className="section-label">即将上线</Text>
+        <View className="coming-soon-list">
+          <View className="coming-soon-item" onClick={() => showComingSoon('衣柜分析')}>
+            <Text className="coming-soon-icon">📊</Text>
+            <Text className="coming-soon-text">衣柜分析</Text>
+            <Text className="coming-soon-badge">待上线</Text>
+          </View>
+          <View className="coming-soon-item" onClick={() => showComingSoon('穿搭提醒')}>
+            <Text className="coming-soon-icon">🔔</Text>
+            <Text className="coming-soon-text">穿搭提醒</Text>
+            <Text className="coming-soon-badge">待上线</Text>
+          </View>
         </View>
       </View>
 
-      <View className="vip-card" onClick={() => showComingSoon('升级会员')}>
-        <Text className="vip-text">升级会员 · 更大衣橱</Text>
+      <View className="membership-card" onClick={() => showComingSoon('搭搭会员')}>
+        <View className="membership-content">
+          <Text className="membership-title">搭搭会员</Text>
+          <Text className="membership-desc">更大衣橱、更多穿搭灵感，正在准备中</Text>
+        </View>
+        <Text className="membership-badge">即将上线</Text>
       </View>
+
+      <View className="page-footer">
+        <Text className="footer-text">搭搭day · 少纠结，多好看</Text>
+      </View>
+
+      {showEditModal && (
+        <View className="edit-overlay" onClick={closeEditModal}>
+          <View className="edit-modal" onClick={(e) => e.stopPropagation()}>
+            <View className="modal-header">
+              <Text className="modal-title">编辑我的资料</Text>
+              <Text className="modal-close" onClick={closeEditModal}>×</Text>
+            </View>
+
+            <ScrollView scrollY className="modal-content">
+              <View className="avatar-section">
+                <AvatarView avatarUrl={draftAvatarUrl} avatarType={draftAvatarType} presetId={draftPresetId} />
+                <Button className="wechat-avatar-btn" openType="chooseAvatar" onChooseAvatar={handleChooseAvatar}>
+                  使用微信头像
+                </Button>
+              </View>
+
+              <View className="nickname-section">
+                <Text className="nickname-label">昵称</Text>
+                <View className="input-wrap">
+                  <Input
+                    className="nickname-input"
+                    type="nickname"
+                    value={draftNickname}
+                    maxlength={16}
+                    placeholder="比如：今日搭子、黑白灰选手、通勤懒人"
+                    onInput={(event) => setDraftNickname(String(event.detail.value ?? ''))}
+                  />
+                </View>
+              </View>
+
+              <View className="preset-section">
+                <Text className="preset-title">选择一个搭搭头像</Text>
+
+                <View className="preset-grid">
+                  {AVATAR_PRESETS.map((preset) => (
+                    <View
+                      key={preset.id}
+                      className={`preset-option ${activePreset.id === preset.id && draftAvatarType !== 'wechat' ? 'active' : ''}`}
+                      onClick={() => choosePreset(preset.id)}
+                    >
+                      <Image className="preset-image" src={preset.image} mode="aspectFill" />
+                    </View>
+                  ))}
+                </View>
+              </View>
+            </ScrollView>
+
+            <View className={`save-profile-btn ${saving ? 'disabled' : ''}`} onClick={saveProfile}>
+              <Text className="save-profile-text">{saving ? '保存中...' : '保存我的资料'}</Text>
+            </View>
+          </View>
+        </View>
+      )}
     </View>
   );
 }
@@ -414,24 +477,44 @@ function getPreferenceSummary(styles: string[]) {
   return styles.slice(0, 2).join(' / ');
 }
 
-function getProfileActionDesc(profile: ProfileState) {
-  if (profile.preferredStyles.length === 0) {
-    return '完善风格、版型和冷热偏好，让推荐更贴合你。';
-  }
-
-  if (profile.preferredStyles.length < 3) {
-    return '已记录你的部分偏好，继续补充会更准。';
-  }
-
-  return `已根据 ${profile.preferredStyles.slice(0, 3).join(' / ')} 优化每日推荐。`;
+function getProfileCompletedCount(profile: ProfileState) {
+  let count = 0;
+  if (profile.genderPreference && profile.genderPreference !== 'unknown') count++;
+  if (profile.preferredStyles.length > 0) count++;
+  if (profile.fitPreference && profile.fitPreference !== 'unknown') count++;
+  if (profile.temperatureSensitivity) count++;
+  return count;
 }
 
-function formatCapacity(profile: ProfileState) {
-  return profile.capacityLoaded ? `${profile.capacityUsed} / ${profile.capacityTotal}` : '--';
+function formatGenderPreference(gender?: string) {
+  const map: Record<string, string> = {
+    male_style: '偏男性穿搭',
+    female_style: '偏女性穿搭',
+    neutral_style: '中性/无性别',
+    all: '都可以',
+    unknown: '暂未选择',
+  };
+  return map[gender ?? ''] || '暂未选择';
 }
 
-function formatRemaining(profile: ProfileState) {
-  return profile.capacityLoaded ? `还可收纳 ${profile.capacityRemaining} 件衣物` : '容量数据稍后更新';
+function formatFitPreference(fit?: string) {
+  const map: Record<string, string> = {
+    loose: '宽松',
+    regular: '合身',
+    slim: '修身',
+    oversize: 'Oversize',
+    unknown: '看单品决定',
+  };
+  return map[fit ?? ''] || '暂未选择';
+}
+
+function formatTempPreference(temp?: string) {
+  const map: Record<string, string> = {
+    cold_sensitive: '怕冷',
+    normal: '正常',
+    heat_sensitive: '怕热',
+  };
+  return map[temp ?? ''] || '暂未选择';
 }
 
 function readCachedProfile(): ProfileState {

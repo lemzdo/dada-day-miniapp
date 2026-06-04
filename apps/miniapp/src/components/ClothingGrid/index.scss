@@ -119,21 +119,6 @@
         }
       }
 
-      .item-badge {
-        position: absolute;
-        bottom: 0;
-        left: 0;
-        right: 0;
-        padding: 14rpx 16rpx;
-        background: linear-gradient(transparent, rgba(46, 36, 29, 0.5));
-
-        .badge-text {
-          font-size: 22rpx;
-          color: var(--dada-text-white, #FFFFFF);
-          font-weight: 500;
-        }
-      }
-
       .ai-status-badge {
         position: absolute;
         top: 12rpx;
@@ -156,28 +141,36 @@
     }
 
     .item-info {
-      padding: 16rpx 16rpx 20rpx;
+      min-height: 104rpx;
+      padding: 18rpx 18rpx 22rpx;
+      background: rgba(255, 253, 249, 0.98);
+      border-top: 1rpx solid rgba(234, 219, 200, 0.38);
 
-      .item-category {
+      .item-name {
         font-size: 26rpx;
-        font-weight: 600;
+        font-weight: 700;
         color: var(--dada-text-primary, #2E241D);
-        margin-bottom: 8rpx;
-        letter-spacing: 0.5rpx;
+        margin-bottom: 10rpx;
+        line-height: 1.32;
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
 
       .item-tags {
         display: flex;
         flex-wrap: wrap;
-        gap: 6rpx;
+        gap: 8rpx;
 
         .tag {
           font-size: 20rpx;
           color: var(--dada-milk-tea-dark, #8B5E3C);
-          background: rgba(244, 231, 215, 0.6);
-          padding: 4rpx 12rpx;
+          background: rgba(244, 231, 215, 0.58);
+          padding: 5rpx 14rpx;
           border-radius: var(--dada-radius-button, 999rpx);
           font-weight: 500;
+          line-height: 1.2;
         }
       }
     }

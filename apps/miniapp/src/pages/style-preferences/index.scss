@@ -1,271 +1,190 @@
+/* ============================================
+ * 搭搭day · 风格画像编辑页
+ * 清新奶油风 / 低饱和奶茶色系 / 大圆角 / 柔和阴影
+ * ============================================ */
+
 .style-preferences-page {
   min-height: 100vh;
-  background: #f7f5f0;
-  padding-bottom: 190px;
+  background: var(--dada-bg-page, #FAF6F1);
 }
 
 .style-scroll {
-  height: calc(100vh - 190px);
+  height: calc(100vh - 200rpx);
 }
 
-.brand-card {
-  position: relative;
-  margin: 28px 28px 20px;
-  min-height: 220px;
-  padding: 34px 34px;
-  overflow: hidden;
-  border-radius: 34px;
-  background:
-    radial-gradient(circle at 86% 18%, rgba(255, 255, 255, 0.85) 0, rgba(255, 255, 255, 0) 130px),
-    linear-gradient(135deg, #657ff4 0%, #8361cf 56%, #c78d9e 100%);
-  box-shadow: 0 22px 48px rgba(99, 92, 183, 0.24);
+/* ============== 页面头部 ============== */
+
+.page-header {
+  padding: 32rpx 28rpx 24rpx;
 }
 
-.brand-copy {
-  position: relative;
-  z-index: 2;
-  display: flex;
-  flex-direction: column;
-}
-
-.brand-name {
-  font-size: 32px;
-  font-weight: 700;
-  color: rgba(255, 255, 255, 0.92);
-  margin-bottom: 20px;
-}
-
-.brand-slogan {
-  font-size: 48px;
-  line-height: 1.15;
-  font-weight: 800;
-  color: #fff;
-  margin-bottom: 14px;
-}
-
-.brand-desc {
-  max-width: 410px;
-  font-size: 25px;
-  line-height: 1.5;
-  color: rgba(255, 255, 255, 0.78);
-}
-
-.brand-orbit {
-  position: absolute;
-  right: 24px;
-  bottom: 22px;
-  width: 210px;
-  height: 152px;
-}
-
-.orbit-icon {
-  position: absolute;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid rgba(255, 255, 255, 0.36);
-  background: rgba(255, 255, 255, 0.18);
-  color: #fff;
-  box-shadow: 0 16px 32px rgba(52, 45, 125, 0.18);
-  backdrop-filter: blur(12px);
-}
-
-.orbit-shirt {
-  right: 112px;
-  bottom: 10px;
-  width: 74px;
-  height: 74px;
-  border-radius: 24px;
-  font-size: 38px;
-  font-weight: 800;
-}
-
-.orbit-weather {
-  right: 14px;
-  bottom: 50px;
-  width: 96px;
-  height: 58px;
-  border-radius: 999px;
-  font-size: 26px;
-  font-weight: 700;
-}
-
-.orbit-spark {
-  right: 70px;
-  top: 0;
-  width: 62px;
-  height: 62px;
-  border-radius: 22px;
-  font-size: 24px;
-  font-weight: 800;
-}
-
-.hero-copy {
-  margin: 0 28px 18px;
-  padding: 10px 2px 0;
-}
-
-.hero-title {
+.page-title {
   display: block;
-  font-size: 44px;
-  line-height: 1.2;
-  font-weight: 800;
-  color: #171717;
-  margin-bottom: 16px;
+  font-size: 44rpx;
+  font-weight: 700;
+  color: var(--dada-text-primary, #2E241D);
+  line-height: 1.25;
 }
 
-.hero-desc {
+.page-subtitle {
   display: block;
-  font-size: 27px;
+  margin-top: 12rpx;
+  font-size: 26rpx;
+  color: var(--dada-text-secondary, #7E6A59);
   line-height: 1.55;
-  color: #77736d;
 }
+
+/* ============== 偏好卡片 ============== */
 
 .preference-card {
-  margin: 22px 28px;
-  padding: 30px 26px 28px;
-  border-radius: 30px;
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid rgba(230, 226, 218, 0.86);
-  box-shadow: 0 14px 34px rgba(29, 29, 31, 0.06);
+  margin: 22rpx 24rpx;
+  padding: 28rpx 24rpx;
+  background: var(--dada-bg-card, #FFFDF9);
+  border-radius: 32rpx;
+  border: 1.5rpx solid rgba(234, 219, 200, 0.5);
+  box-shadow: var(--dada-shadow-card, 0 8rpx 24rpx rgba(164, 126, 84, 0.06));
 }
 
-.section-meta {
+.section-header {
+  margin-bottom: 20rpx;
+}
+
+.section-title-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 12px;
-}
-
-.section-eyebrow,
-.section-aside {
-  font-size: 21px;
-  font-weight: 700;
-  letter-spacing: 1px;
-  color: #8b82d9;
 }
 
 .section-title {
-  display: block;
-  font-size: 31px;
+  font-size: 30rpx;
+  font-weight: 700;
+  color: var(--dada-text-primary, #2E241D);
   line-height: 1.35;
-  font-weight: 760;
-  color: #1d1d1f;
+}
+
+.section-aside {
+  font-size: 24rpx;
+  font-weight: 600;
+  color: var(--dada-milk-tea-dark, #8B5E3C);
 }
 
 .section-hint {
   display: block;
-  margin-top: 10px;
-  font-size: 24px;
+  margin-top: 8rpx;
+  font-size: 24rpx;
+  color: var(--dada-text-tertiary, #A89584);
   line-height: 1.5;
-  color: #8a867e;
 }
+
+/* ============== 标签列表 ============== */
 
 .tag-list {
   display: flex;
   flex-wrap: wrap;
-  gap: 16px;
-  margin-top: 24px;
-
+  gap: 14rpx;
+  
   &.compact {
     .taste-tag {
-      min-width: 138px;
+      min-width: 140rpx;
       justify-content: center;
     }
   }
 }
+
+/* ============== 标签按钮 ============== */
 
 .taste-tag {
   position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 62px;
-  padding: 0 22px;
-  border-radius: 999px;
-  border: 2px solid #ebe8e2;
-  background: #fff;
-  box-shadow: 0 8px 18px rgba(31, 31, 31, 0.045);
+  min-height: 64rpx;
+  padding: 0 24rpx;
+  border-radius: 999rpx;
+  background: var(--dada-bg-card, #FFFDF9);
+  border: 1.5rpx solid rgba(234, 219, 200, 0.6);
+  box-shadow: 0 6rpx 16rpx rgba(31, 31, 31, 0.04);
   transition: all 0.18s ease;
-
+  
+  &:active {
+    transform: scale(0.98);
+  }
+  
   &.active {
-    border-color: rgba(117, 105, 229, 0.62);
-    background: linear-gradient(135deg, #f0f2ff 0%, #fff4fb 100%);
-    box-shadow: 0 12px 24px rgba(117, 105, 229, 0.14);
-
+    border-color: var(--dada-milk-tea-gold, #C9A06A);
+    background: rgba(244, 231, 215, 0.55);
+    box-shadow: 0 8rpx 20rpx rgba(164, 126, 84, 0.1);
+    
     .taste-tag-mark {
-      color: #7668e5;
+      color: var(--dada-milk-tea-gold, #C9A06A);
     }
-
+    
     .taste-tag-text {
-      color: #413c7a;
-      font-weight: 700;
+      color: var(--dada-milk-tea-dark, #8B5E3C);
+      font-weight: 600;
     }
   }
 }
 
 .taste-tag-mark {
   position: absolute;
-  left: 18px;
-  width: 24px;
-  font-size: 20px;
+  left: 18rpx;
+  width: 24rpx;
+  font-size: 20rpx;
   color: transparent;
   text-align: center;
 }
 
 .taste-tag-text {
   display: block;
-  font-size: 25px;
+  font-size: 26rpx;
   line-height: 1;
-  color: #3f3d39;
-  font-weight: 560;
-  text-align: center;
+  color: var(--dada-text-secondary, #7E6A59);
+  font-weight: 500;
 }
+
+/* ============== 底部占位 ============== */
+
+.bottom-space {
+  height: 40rpx;
+}
+
+/* ============== 底部操作栏 ============== */
 
 .action-bar {
   position: fixed;
   right: 0;
   bottom: 0;
   left: 0;
-  padding: 18px 28px;
-  padding-bottom: calc(18px + env(safe-area-inset-bottom));
-  background: rgba(250, 250, 250, 0.94);
-  border-top: 1px solid rgba(232, 229, 223, 0.9);
-  box-shadow: 0 -12px 34px rgba(24, 24, 24, 0.06);
-}
-
-.primary-btn,
-.secondary-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 86px;
-  border-radius: 999px;
-
-  &.disabled {
-    opacity: 0.62;
-  }
+  padding: 18rpx 24rpx;
+  padding-bottom: calc(18rpx + env(safe-area-inset-bottom));
+  background: rgba(255, 253, 249, 0.96);
+  border-top: 1rpx solid rgba(232, 229, 223, 0.8);
+  box-shadow: 0 -8rpx 32rpx rgba(24, 24, 24, 0.06);
+  backdrop-filter: blur(20rpx);
 }
 
 .primary-btn {
-  background: linear-gradient(135deg, #627ff2 0%, #8351c9 100%);
-  box-shadow: 0 14px 28px rgba(98, 127, 242, 0.24);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999rpx;
+  height: 88rpx;
+  background: linear-gradient(135deg, var(--dada-milk-tea-gold, #C9A06A) 0%, var(--dada-milk-tea-medium, #A67C52) 100%);
+  box-shadow: 0 12rpx 28rpx rgba(164, 126, 84, 0.18);
+  
+  &.disabled {
+    opacity: 0.62;
+  }
+  
+  &:active {
+    transform: scale(0.985);
+  }
 }
 
 .primary-text {
-  font-size: 30px;
-  color: #fff;
-  font-weight: 760;
-}
-
-.secondary-btn {
-  height: 70px;
-  margin-top: 8px;
-  background: transparent;
-}
-
-.secondary-text {
-  font-size: 27px;
-  color: #77736d;
-  font-weight: 600;
+  font-size: 30rpx;
+  font-weight: 700;
+  color: var(--dada-text-white, #FFFFFF);
+  letter-spacing: 0.5rpx;
 }

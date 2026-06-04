@@ -16,6 +16,12 @@ exports.main = async (event = {}) => {
     if (event.id) filter._id = event.id;
     if (status) filter.status = status;
     if (event.category && event.category !== 'all') filter.category = _.in(resolveCategoryValues(event.category));
+    
+    if (event.subcategoryId) {
+      filter.subcategoryId = event.subcategoryId;
+    } else if (event.subcategory && event.subcategory !== 'all') {
+      filter.subcategory = _.in(resolveSubcategoryValues(event.subcategory));
+    }
 
     const collection = db.collection('clothes');
     const [totalRes, listRes, activeCountRes, userRes] = await Promise.all([
@@ -99,6 +105,7 @@ function toClothing(item) {
     category: item.category || 'other',
     subcategory: item.subcategory,
     subCategory: item.subCategory || item.subcategory,
+    subcategoryId: item.subcategoryId,
     colors: item.colors || [],
     colorPalette: item.colorPalette || [],
     styleTags: item.styleTags || [],
@@ -165,6 +172,42 @@ function resolveCategoryValues(category) {
     other: ['other', '其他'],
   };
   return map[category] || [category];
+}
+
+function resolveSubcategoryValues(subcategory) {
+  const map = {
+    tshirt: ['tshirt', 'T恤', '短袖'],
+    shirt: ['shirt', '衬衫', '长袖'],
+    sweater: ['sweater', '毛衣', '针织'],
+    hoodie: ['hoodie', '卫衣'],
+    jacket: ['jacket', '夹克', '外套'],
+    down_jacket: ['down_jacket', '羽绒服'],
+    blazer: ['blazer', '西装'],
+    vest: ['vest', '马甲'],
+    jeans: ['jeans', '牛仔裤'],
+    trousers: ['trousers', '裤子', '长裤'],
+    shorts: ['shorts', '短裤'],
+    skirt: ['skirt', '裙子'],
+    leggings: ['leggings', '打底裤', '紧身裤'],
+    dress: ['dress', '连衣裙'],
+    suit_set: ['suit_set', '套装'],
+    jumpsuit: ['jumpsuit', '连体裤'],
+    sneakers: ['sneakers', '运动鞋'],
+    heels: ['heels', '高跟鞋'],
+    boots: ['boots', '靴子'],
+    sandals: ['sandals', '凉鞋'],
+    loafers: ['loafers', '乐福鞋'],
+    flats: ['flats', '平底鞋'],
+    hat: ['hat', '帽子'],
+    scarf: ['scarf', '围巾'],
+    necklace: ['necklace', '项链'],
+    bag: ['bag', '包包', '包'],
+    glasses: ['glasses', '眼镜'],
+    belt: ['belt', '腰带'],
+    watch: ['watch', '手表'],
+    other: ['other', '其他'],
+  };
+  return map[subcategory] || [subcategory];
 }
 
 function ok(data) {

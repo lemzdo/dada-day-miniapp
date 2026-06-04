@@ -212,6 +212,42 @@
   }
 }
 
+/* 二级细分类筛选栏 */
+.subcategory-scroll {
+  display: flex;
+  gap: 12rpx;
+  padding: 0 24rpx 20rpx;
+  overflow-x: auto;
+  white-space: nowrap;
+  background: rgba(250, 246, 241, 0.8);
+}
+
+.subcategory-tag {
+  padding: 10rpx 22rpx;
+  border-radius: var(--dada-radius-button, 999rpx);
+  background: rgba(255, 253, 249, 0.8);
+  border: 1.5rpx solid rgba(234, 219, 200, 0.5);
+  font-size: 23rpx;
+  color: var(--dada-text-tertiary, #A89584);
+  font-weight: 400;
+  flex-shrink: 0;
+
+  &.active {
+    background: rgba(201, 160, 106, 0.15);
+    border-color: rgba(201, 160, 106, 0.4);
+    color: var(--dada-milk-tea-dark, #8B5E3C);
+    font-weight: 500;
+  }
+
+  &.custom {
+    border-style: dashed;
+  }
+
+  &:active {
+    opacity: 0.8;
+  }
+}
+
 /* 衣物内容区 */
 .wardrobe-content {
   width: 100%;

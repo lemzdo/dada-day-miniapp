@@ -10,6 +10,7 @@ const ALLOWED_FIELDS = [
   'customTags',
   'category',
   'subcategory',
+  'subcategoryId',
   'styleTags',
   'seasonTags',
   'sceneTags',
@@ -111,6 +112,12 @@ exports.main = async (event = {}) => {
         }
       }
     });
+    if (Object.prototype.hasOwnProperty.call(data, 'material')) {
+      data.material = await resolveMaterialNameForStorage(data.material, OPENID);
+    }
+    if (Object.prototype.hasOwnProperty.call(data, 'materialGuess')) {
+      data.materialGuess = await resolveMaterialNameForStorage(data.materialGuess, OPENID) || data.material || '';
+    }
     if (data.displayImageUrl && !data.imageUrl) {
       data.imageUrl = data.displayImageUrl;
     }
@@ -173,6 +180,7 @@ function toClothing(item) {
     category: item.category || 'other',
     subcategory: item.subcategory,
     subCategory: item.subCategory || item.subcategory,
+    subcategoryId: item.subcategoryId,
     colors: item.colors || [],
     colorPalette: item.colorPalette || [],
     styleTags: item.styleTags || [],
@@ -227,6 +235,77 @@ function normalizeImageSourceType(item) {
   if (item.cleanImageUrl || item.aiSegmentImageUrl) return 'clean';
   if (item.cropImageUrl || item.croppedImageUrl || item.manualCropImageUrl) return 'crop';
   return 'original';
+}
+
+async function resolveMaterialNameForStorage(value, userId) {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+
+  const standard = getStandardMaterialLabel(trimmed);
+  if (standard) return standard;
+
+  if (isLikelyMaterialUid(trimmed)) {
+    try {
+      const material = await db.collection('user_clothing_materials').doc(trimmed).get();
+      if (material.data && material.data.userId === userId && material.data.status === 'active' && material.data.name) {
+        return String(material.data.name).trim();
+      }
+    } catch {
+      return '';
+    }
+    return '';
+  }
+
+  return trimmed;
+}
+
+function isLikelyMaterialUid(value) {
+  if (/[\u4e00-\u9fa5]/.test(value)) return false;
+  return /^[a-z0-9_-]{16,}$/i.test(value) || /^[a-f0-9]{24}$/i.test(value);
+}
+
+function getStandardMaterialLabel(value) {
+  const lower = value.toLowerCase();
+  const map = {
+    '棉': '棉质',
+    '棉质': '棉质',
+    cotton: '棉质',
+    '麻': '亚麻',
+    '亚麻': '亚麻',
+    linen: '亚麻',
+    '丝绸': '丝绸',
+    silk: '丝绸',
+    '羊毛': '羊毛',
+    wool: '羊毛',
+    '皮革': '皮革',
+    leather: '皮革',
+    '牛仔': '牛仔',
+    denim: '牛仔',
+    '化纤': '化纤',
+    chemical: '化纤',
+    '混纺': '混纺',
+    blend: '混纺',
+    '羽绒': '羽绒',
+    down: '羽绒',
+    '针织': '针织',
+    knit: '针织',
+    '聚酯纤维': '聚酯纤维',
+    polyester: '聚酯纤维',
+    '莫代尔': '莫代尔',
+    modal: '莫代尔',
+    '醋酸': '醋酸',
+    acetate: '醋酸',
+    '灯芯绒': '灯芯绒',
+    corduroy: '灯芯绒',
+    '摇粒绒': '摇粒绒',
+    fleece: '摇粒绒',
+    '冰丝': '冰丝',
+    icesilk: '冰丝',
+    '羊绒': '羊绒',
+    cashmere: '羊绒',
+  };
+  return map[value] || map[lower] || '';
 }
 
 function ok(data) {

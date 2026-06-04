@@ -1,6 +1,6 @@
 import { View, Text, ScrollView } from '@tarojs/components';
-import Taro, { useLoad } from '@tarojs/taro';
-import { useState, type ReactNode } from 'react';
+import Taro, { useLoad, useUnload } from '@tarojs/taro';
+import { useState, useRef, type ReactNode } from 'react';
 import { useUserStore } from '@/stores/userStore';
 import type {
   FitPreference,
@@ -52,14 +52,40 @@ const TEMP_OPTIONS: Array<{ value: TemperatureSensitivity; label: string }> = [
   { value: 'heat_sensitive', label: '怕热' },
 ];
 
+function normalizeProfile(profile: RecommendationProfile): RecommendationProfile {
+  return {
+    ...profile,
+    styleTags: [...new Set(profile.styleTags)].sort((a, b) =>
+      STYLE_OPTIONS.indexOf(a) - STYLE_OPTIONS.indexOf(b)
+    ),
+  };
+}
+
+function areProfilesEqual(a: RecommendationProfile, b: RecommendationProfile): boolean {
+  const normA = normalizeProfile(a);
+  const normB = normalizeProfile(b);
+  return (
+    normA.genderPreference === normB.genderPreference &&
+    normA.fitPreference === normB.fitPreference &&
+    normA.temperatureSensitivity === normB.temperatureSensitivity &&
+    normA.styleTags.length === normB.styleTags.length &&
+    normA.styleTags.every((tag, index) => tag === normB.styleTags[index])
+  );
+}
+
 export default function StylePreferencesPage() {
   const [profile, setProfile] = useState<RecommendationProfile>(DEFAULT_RECOMMENDATION_PROFILE);
   const [saving, setSaving] = useState(false);
+  const initialSnapshot = useRef<RecommendationProfile>(DEFAULT_RECOMMENDATION_PROFILE);
   const saveRecommendationProfile = useUserStore((state) => state.saveRecommendationProfile);
 
   useLoad(() => {
-    setProfile(useUserStore.getState().recommendationProfile);
+    const savedProfile = useUserStore.getState().recommendationProfile;
+    setProfile(savedProfile);
+    initialSnapshot.current = savedProfile;
   });
+
+  const isDirty = !areProfilesEqual(profile, initialSnapshot.current);
 
   function setGenderPreference(genderPreference: RecommendationGenderPreference) {
     setProfile((prev) => ({ ...prev, genderPreference }));
@@ -89,20 +115,18 @@ export default function StylePreferencesPage() {
   }
 
   async function handleSave() {
-    await saveAndLeave(profile);
-  }
-
-  async function handleSkip() {
-    await saveAndLeave(profile);
-  }
-
-  async function saveAndLeave(nextProfile: RecommendationProfile) {
     if (saving) return;
+
+    if (!isDirty) {
+      goNext();
+      return;
+    }
 
     setSaving(true);
     try {
-      await saveRecommendationProfile(nextProfile);
-      Taro.showToast({ title: '已保存', icon: 'success' });
+      await saveRecommendationProfile(profile);
+      Taro.showToast({ title: '已保存风格画像', icon: 'success' });
+      initialSnapshot.current = profile;
       setTimeout(goNext, 500);
     } catch (error) {
       console.error('Save recommendation profile failed:', error);
@@ -121,31 +145,42 @@ export default function StylePreferencesPage() {
     Taro.switchTab({ url: '/pages/today/index' });
   }
 
+  useUnload(() => {
+    if (isDirty && !saving) {
+      Taro.showModal({
+        title: '提示',
+        content: '还没保存这次调整，离开后不会同步到你的风格画像。',
+        confirmText: '保存',
+        cancelText: '离开',
+        success: async (res) => {
+          if (res.confirm) {
+            setSaving(true);
+            try {
+              await saveRecommendationProfile(profile);
+              initialSnapshot.current = profile;
+              Taro.showToast({ title: '已保存风格画像', icon: 'success' });
+            } catch (error) {
+              console.error('Save recommendation profile failed:', error);
+            } finally {
+              setSaving(false);
+            }
+          }
+        },
+      });
+    }
+  });
+
   return (
     <View className="style-preferences-page">
       <ScrollView scrollY className="style-scroll" showScrollbar={false}>
-        <View className="brand-card">
-          <View className="brand-copy">
-            <Text className="brand-name">搭搭day</Text>
-            <Text className="brand-slogan">少纠结，多好看 ✦</Text>
-            <Text className="brand-desc">每天出门前，给你一套刚刚好的搭配</Text>
-          </View>
-          <View className="brand-orbit">
-            <Text className="orbit-icon orbit-shirt">衣</Text>
-            <Text className="orbit-icon orbit-weather">23°</Text>
-            <Text className="orbit-icon orbit-spark">搭</Text>
-          </View>
-        </View>
-
-        <View className="hero-copy">
-          <Text className="hero-title">我的穿搭档案</Text>
-          <Text className="hero-desc">记录风格、版型和冷热偏好，让每日推荐更贴合你。</Text>
+        <View className="page-header">
+          <Text className="page-title">我的风格画像</Text>
+          <Text className="page-subtitle">告诉小搭你的偏好，推荐会更贴近你</Text>
         </View>
 
         <PreferenceSection
-          eyebrow="档案 01"
-          title="你希望推荐更偏向哪类穿搭？"
-          hint="这不是性别选择，只是搭配风格偏好，可以随时修改。"
+          title="搭配倾向"
+          hint="你更希望推荐偏向哪种穿搭表达？"
         >
           <View className="tag-list">
             {GENDER_OPTIONS.map((option) => (
@@ -160,9 +195,8 @@ export default function StylePreferencesPage() {
         </PreferenceSection>
 
         <PreferenceSection
-          eyebrow="档案 02"
-          title="你常喜欢哪些风格？"
-          hint="最多选 5 个，搭搭day会优先按这些口味推荐。"
+          title="喜欢的风格"
+          hint="最多选 5 个，小搭会优先参考这些风格。"
           aside={`${profile.styleTags.length}/${STYLE_LIMIT}`}
         >
           <View className="tag-list">
@@ -177,7 +211,10 @@ export default function StylePreferencesPage() {
           </View>
         </PreferenceSection>
 
-        <PreferenceSection eyebrow="档案 03" title="你更喜欢衣服怎么穿在身上？">
+        <PreferenceSection
+          title="版型偏好"
+          hint="你平时更喜欢什么样的衣服轮廓？"
+        >
           <View className="tag-list">
             {FIT_OPTIONS.map((option) => (
               <TagButton
@@ -191,9 +228,8 @@ export default function StylePreferencesPage() {
         </PreferenceSection>
 
         <PreferenceSection
-          eyebrow="档案 04"
-          title="你对冷热敏感吗？"
-          hint="同样 18℃，有人要外套，有人只想短袖。"
+          title="冷热敏感"
+          hint="同样的天气，小搭会按你的体感调整厚薄。"
         >
           <View className="tag-list compact">
             {TEMP_OPTIONS.map((option) => (
@@ -206,14 +242,13 @@ export default function StylePreferencesPage() {
             ))}
           </View>
         </PreferenceSection>
+
+        <View className="bottom-space" />
       </ScrollView>
 
       <View className="action-bar">
         <View className={`primary-btn ${saving ? 'disabled' : ''}`} onClick={handleSave}>
-          <Text className="primary-text">{saving ? '保存中...' : '保存我的穿搭档案'}</Text>
-        </View>
-        <View className={`secondary-btn ${saving ? 'disabled' : ''}`} onClick={handleSkip}>
-          <Text className="secondary-text">稍后再补</Text>
+          <Text className="primary-text">{saving ? '保存中...' : '保存并返回我的页'}</Text>
         </View>
       </View>
     </View>
@@ -221,13 +256,11 @@ export default function StylePreferencesPage() {
 }
 
 function PreferenceSection({
-  eyebrow,
   title,
   hint,
   aside,
   children,
 }: {
-  eyebrow: string;
   title: string;
   hint?: string;
   aside?: string;
@@ -235,12 +268,13 @@ function PreferenceSection({
 }) {
   return (
     <View className="preference-card">
-      <View className="section-meta">
-        <Text className="section-eyebrow">{eyebrow}</Text>
-        {aside && <Text className="section-aside">{aside}</Text>}
+      <View className="section-header">
+        <View className="section-title-row">
+          <Text className="section-title">{title}</Text>
+          {aside && <Text className="section-aside">{aside}</Text>}
+        </View>
+        {hint && <Text className="section-hint">{hint}</Text>}
       </View>
-      <Text className="section-title">{title}</Text>
-      {hint && <Text className="section-hint">{hint}</Text>}
       {children}
     </View>
   );

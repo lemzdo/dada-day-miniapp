@@ -1,6 +1,6 @@
 import { View, Text } from '@tarojs/components';
 import Taro, { useDidShow, useLoad, usePullDownRefresh, useReachBottom } from '@tarojs/taro';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ClothingGrid } from '@/components/ClothingGrid';
 import {
   CloudFunctionError,
@@ -9,14 +9,19 @@ import {
   deleteCloudClothing,
   deleteCloudClothingBatch,
   getRecoverableUploadBatches,
+  getUserClothingSubcategories,
   getWardrobe,
   inspectCloudClothingDelete,
   recognizeClothAttributes,
   uploadBatchSourceImage,
 } from '@/lib/cloud';
-import { canRecognizeSingleClothing } from '@/utils/clothingLabels';
-import type { Clothing, ClothingCategory } from '@starter-template/types';
+import { canRecognizeSingleClothing, getSubcategoryDisplayLabel } from '@/utils/clothingLabels';
+import type { Clothing, ClothingCategory, UserClothingSubcategory } from '@starter-template/types';
 import type { RecoverableUploadBatch } from '@/lib/cloud';
+import {
+  SUBCATEGORY_OPTIONS,
+  type SelectOption,
+} from '@/components/ClothingEditForm/constants';
 import './index.scss';
 
 const WARDROBE_REFRESH_STORAGE_KEY = 'wardrobeNeedsRefresh';
@@ -59,6 +64,9 @@ export default function WardrobePage() {
   const [hasMore, setHasMore] = useState(true);
   const [page, setPage] = useState(1);
   const [activeCategory, setActiveCategory] = useState<ClothingCategory | 'all'>('all');
+  const [activeSubcategory, setActiveSubcategory] = useState<string>('all');
+  const [activeSubcategoryId, setActiveSubcategoryId] = useState<string>('');
+  const [userSubcategories, setUserSubcategories] = useState<UserClothingSubcategory[]>([]);
   const [stats, setStats] = useState({ total: 50, used: 0 });
   const [recoverableBatches, setRecoverableBatches] = useState<RecoverableUploadBatch[]>([]);
   const [selectionMode, setSelectionMode] = useState(false);
@@ -69,18 +77,33 @@ export default function WardrobePage() {
   const lastFetchAtRef = useRef(0);
 
   const fetchClothes = useCallback(
-    async (pageNum: number, reset = false, category: ClothingCategory | 'all' = activeCategory, force = false) => {
+    async (
+      pageNum: number, 
+      reset = false, 
+      category: ClothingCategory | 'all' = activeCategory, 
+      subcategoryParam: string = activeSubcategory,
+      subcategoryIdParam: string = activeSubcategoryId,
+      force = false
+    ) => {
       if (loadingRef.current && !force) return;
       loadingRef.current = true;
       setLoading(true);
 
       try {
-        const res = await getWardrobe({
+        const params: Parameters<typeof getWardrobe>[0] = {
           category,
           page: pageNum,
           pageSize: 10,
           status: 'active',
-        });
+        };
+
+        if (subcategoryIdParam) {
+          params.subcategoryId = subcategoryIdParam;
+        } else if (subcategoryParam !== 'all') {
+          params.subcategory = subcategoryParam;
+        }
+
+        const res = await getWardrobe(params);
 
         setClothes((prev) => {
           const next = reset ? dedupeClothesById(res.list) : mergeUniqueClothes(prev, res.list);
@@ -105,7 +128,7 @@ export default function WardrobePage() {
         Taro.stopPullDownRefresh();
       }
     },
-    [activeCategory],
+    [activeCategory, activeSubcategory, activeSubcategoryId],
   );
 
   const fetchRecoverableUploadTask = useCallback(async () => {
@@ -122,6 +145,7 @@ export default function WardrobePage() {
     skipNextShowRefreshRef.current = true;
     fetchClothes(1, true);
     void fetchRecoverableUploadTask();
+    void loadUserSubcategories();
   });
 
   useDidShow(() => {
@@ -155,6 +179,15 @@ export default function WardrobePage() {
     setSelectedIds((prev) => prev.filter((id) => clothes.some((item) => item.id === id)));
   }, [clothes]);
 
+  async function loadUserSubcategories() {
+    try {
+      const categories = await getUserClothingSubcategories();
+      setUserSubcategories(categories);
+    } catch (err) {
+      console.error('Load user subcategories failed:', err);
+    }
+  }
+
   usePullDownRefresh(() => {
     refreshWardrobe();
     void fetchRecoverableUploadTask();
@@ -169,8 +202,25 @@ export default function WardrobePage() {
 
   function handleCategoryChange(key: ClothingCategory | 'all') {
     setActiveCategory(key);
+    setActiveSubcategory('all');
+    setActiveSubcategoryId('');
     setPage(1);
-    fetchClothes(1, true, key);
+    fetchClothes(1, true, key, 'all', '');
+  }
+
+  function handleSubcategoryChange(value: string, isCustom: boolean, customId?: string) {
+    const newSubcategory = value;
+    const newSubcategoryId = isCustom && customId ? customId : '';
+    
+    if (value === 'all') {
+      setActiveSubcategory('all');
+      setActiveSubcategoryId('');
+    } else {
+      setActiveSubcategory(value);
+      setActiveSubcategoryId(newSubcategoryId);
+    }
+    setPage(1);
+    fetchClothes(1, true, activeCategory, newSubcategory, newSubcategoryId);
   }
 
   async function handleAdd() {
@@ -258,7 +308,7 @@ export default function WardrobePage() {
 
   function refreshWardrobe() {
     setPage(1);
-    fetchClothes(1, true, activeCategory, true);
+    fetchClothes(1, true, activeCategory, activeSubcategory, activeSubcategoryId, true);
   }
 
   function handleRecoverableTaskClick() {
@@ -369,6 +419,25 @@ export default function WardrobePage() {
   const allSelected = clothes.length > 0 && clothes.every((item) => selectedIds.includes(item.id));
   const selectedCount = selectedIds.length;
 
+  const subcategoryOptions = useMemo(() => {
+    if (activeCategory === 'all') return [];
+    
+    const systemOptions = SUBCATEGORY_OPTIONS[activeCategory] ?? [];
+    const customOptions = userSubcategories
+      .filter((cat) => cat.parentCategory === activeCategory && cat.status === 'active')
+      .map((cat) => ({ value: cat.id, label: cat.name, isCustom: true as const }));
+    
+    return [
+      { value: 'all', label: '全部', isCustom: false as const },
+      ...systemOptions.map((opt) => ({
+        ...opt,
+        label: getSubcategoryDisplayLabel(activeCategory, opt.value, userSubcategories),
+        isCustom: false as const,
+      })),
+      ...customOptions,
+    ];
+  }, [activeCategory, userSubcategories]);
+
   return (
     <View className={`wardrobe-page ${selectionMode ? 'selecting' : ''}`}>
       {/* 衣橱状态卡 - 整合容量、识别任务、管理入口 */}
@@ -414,6 +483,21 @@ export default function WardrobePage() {
           </View>
         ))}
       </View>
+
+      {/* 二级细分类筛选栏 */}
+      {subcategoryOptions.length > 1 && (
+        <View className="subcategory-scroll">
+          {subcategoryOptions.map((opt) => (
+            <View
+              key={opt.value}
+              className={`subcategory-tag ${activeSubcategory === opt.value || (opt.isCustom && activeSubcategoryId === opt.value) ? 'active' : ''} ${opt.isCustom ? 'custom' : ''}`}
+              onClick={() => handleSubcategoryChange(opt.value, opt.isCustom, opt.isCustom ? opt.value : undefined)}
+            >
+              <Text>{opt.label}</Text>
+            </View>
+          ))}
+        </View>
+      )}
 
       {/* 衣物内容区 */}
       <View className="wardrobe-content">

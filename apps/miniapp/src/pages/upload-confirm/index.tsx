@@ -11,7 +11,7 @@ import {
   processUploadImage,
   segmentClothesDraft,
 } from '@/lib/cloud';
-import { displayClothingTags, displayClothingText } from '@/utils/clothingLabels';
+import { displayClothingTags, displayClothingText, getSubcategoryDisplayLabel } from '@/utils/clothingLabels';
 import type { ClothesDraft, ClothingCategory, ClothingImageSourceType, UploadBatch, UploadImage } from '@starter-template/types';
 import './index.scss';
 
@@ -284,7 +284,7 @@ export default function UploadConfirmPage() {
       content: '舍弃后，本次上传的识别结果将不会保存到衣柜。',
       cancelText: '取消',
       confirmText: '确认舍弃',
-      confirmColor: '#ef4444',
+      confirmColor: '#D97973',
     });
     if (!modalRes.confirm) return;
 
@@ -323,15 +323,19 @@ export default function UploadConfirmPage() {
   const canDiscardBatch = taskStatus === 'processing' || taskStatus === 'ready' || taskStatus === 'failed';
   const canSave = isBatchComplete && hasSavableDrafts && !saving;
   const saveDisabled = !canSave;
-  const saveText = getSaveButtonText(pageState, processedImages, totalImages, saving);
+  const saveText = getSaveButtonText(pageState, processedImages, totalImages, saving, savableDrafts.length);
   const selectableDraftCount = drafts.filter(isDraftSelectable).length;
   const allSelectableDraftsSelected = selectableDraftCount > 0 && drafts.filter(isDraftSelectable).every((draft) => draft.selected);
   const selectAllText = allSelectableDraftsSelected ? '全不选' : '全选';
+  const failedImageCount = images.filter((item) => item.status === 'failed').length;
 
   if (loading) {
     return (
       <View className="upload-confirm-page loading">
-        <Text className="loading-text">正在加载整理任务...</Text>
+        <View className="loading-panel">
+          <View className="loading-dot" />
+          <Text className="loading-text">小搭正在整理这批新衣...</Text>
+        </View>
       </View>
     );
   }
@@ -348,7 +352,7 @@ export default function UploadConfirmPage() {
             </View>
             <View className="progress-stat-list">
               <Text className="progress-stat">正在处理 {processedImages}/{totalImages} 张图片</Text>
-              <Text className="progress-stat">已识别 {detectedCount} 件衣服</Text>
+              {detectedCount > 0 && <Text className="progress-stat">已识别 {detectedCount} 件衣服</Text>}
             </View>
           </>
         )}
@@ -357,18 +361,18 @@ export default function UploadConfirmPage() {
         )}
         {(taskStatus === 'saved' || taskStatus === 'discarded') && (
           <View className="return-btn" onClick={() => Taro.navigateBack()}>
-            <Text className="return-text">返回衣柜</Text>
+            <Text className="return-text">返回衣橱</Text>
           </View>
         )}
       </View>
 
-      {images.some((item) => item.status === 'failed') && (
+      {failedImageCount > 0 && (
         <View className="image-status-panel">
           {images.filter((item) => item.status === 'failed').map((item) => (
             <View key={item.id} className="failed-row">
-              <Text className="failed-text">有图片暂时没整理好，可稍后重试{item.errorMessage ? `：${item.errorMessage}` : ''}</Text>
+              <Text className="failed-text">有 {failedImageCount} 张图片暂时没整理好，可稍后重试</Text>
               <View className="retry-btn" onClick={() => handleRetry(item)}>
-                <Text className="retry-text">重试</Text>
+                <Text className="retry-text">重新处理</Text>
               </View>
             </View>
           ))}
@@ -378,6 +382,9 @@ export default function UploadConfirmPage() {
       <View className="draft-list">
         {drafts.length === 0 && pageState !== 'processing' && (
           <View className="empty-state">
+            <View className="empty-illustration">
+              <Text className="empty-icon">衣</Text>
+            </View>
             <Text className="empty-title">{getEmptyTitle(pageState, taskStatus)}</Text>
             <Text className="empty-desc">{getEmptyDesc(pageState, taskStatus, batch)}</Text>
           </View>
@@ -389,10 +396,14 @@ export default function UploadConfirmPage() {
             className={`draft-card ${draft.selected ? 'selected' : 'muted'} ${canEditDrafts && isDraftSelectable(draft) ? 'selectable' : 'readonly'}`}
             onClick={() => toggleDraftSelected(draft)}
           >
-            <Image className="draft-image" src={getDraftDisplayImage(draft)} mode="aspectFill" />
+            <View className="draft-image-wrapper">
+              <Image className="draft-image" src={getDraftDisplayImage(draft)} mode="aspectFill" />
+            </View>
             <View className="draft-body">
               <View className="draft-topline">
-                <Text className={`draft-keep-badge ${draft.selected ? 'active' : ''}`}>{draft.selected ? '已保留' : '未保留'}</Text>
+                <Text className={`draft-keep-badge ${draft.selected ? 'active' : ''}`}>
+                  {draft.selected ? '已保留' : '未保留'}
+                </Text>
                 <Text className="confidence">置信度 {draft.confidence || 0}%</Text>
               </View>
               <View className="status-line">
@@ -429,7 +440,7 @@ export default function UploadConfirmPage() {
                       event.stopPropagation();
                       handleReprocessDraft(draft);
                     }}>
-                      <Text className="reprocess-text">重新处理图片</Text>
+                      <Text className="reprocess-text">重新处理</Text>
                     </View>
                     <View className="discard-btn" onClick={(event) => {
                       event.stopPropagation();
@@ -455,6 +466,7 @@ export default function UploadConfirmPage() {
               submitText="保存属性"
               onSave={handleDraftFormSave}
               onCancel={() => setEditingDraft(null)}
+              mode="draft-confirm"
             />
           </View>
         </View>
@@ -463,7 +475,7 @@ export default function UploadConfirmPage() {
       <View className="save-bar">
         {canDiscardBatch ? (
           <View className={`discard-batch-btn ${discardingBatch ? 'disabled' : ''}`} onClick={handleDiscardBatch}>
-            <Text className="discard-batch-text">{discardingBatch ? '舍弃中...' : '舍弃本次识别'}</Text>
+            <Text className="discard-batch-text">{discardingBatch ? '舍弃中...' : '舍弃本次'}</Text>
           </View>
         ) : (
           <View className="save-bar-placeholder" />
@@ -533,7 +545,7 @@ function toDraftFormValue(draft: ClothesDraft): ClothingEditFormValue {
 
 function getDraftSummaryTitle(draft: ClothesDraft) {
   const category = getCategoryLabel(draft.type);
-  const subcategory = displayClothingText(draft.categoryName);
+  const subcategory = getSubcategoryDisplayLabel(normalizeCategory(draft.type), draft.categoryName);
   return subcategory ? `${category} · ${subcategory}` : category;
 }
 
@@ -597,9 +609,9 @@ function normalizeUploadBatchStatus(status?: string): UploadBatchViewStatus {
 }
 
 function getProgressTitle(state: UploadConfirmPageState, status: UploadBatchViewStatus) {
-  if (status === 'saved') return '这批衣服已保存到衣柜';
+  if (status === 'saved') return '这批衣服已保存到衣橱';
   if (status === 'discarded') return '这批识别已舍弃';
-  if (state === 'processing') return '小搭正在帮你识别新衣服';
+  if (state === 'processing') return '小搭正在帮你整理新衣服';
   if (state === 'ready') return '小搭整理好啦';
   return '这次没识别出可保存的衣服';
 }
@@ -611,18 +623,18 @@ function getProgressDesc(
   totalImages: number,
   status: UploadBatchViewStatus,
 ) {
-  if (status === 'saved') return '返回衣柜，就能看到刚刚保存好的衣服啦。';
-  if (status === 'discarded') return '这批识别结果不会保存到衣柜。';
-  if (state === 'ready') return `已识别出 ${recognizedCount} 件衣服，可以保存到衣柜啦。`;
+  if (status === 'saved') return '返回衣橱，就能看到刚刚保存好的衣服啦。';
+  if (status === 'discarded') return '这批识别结果不会保存到衣橱。';
+  if (state === 'ready') return `已识别出 ${recognizedCount} 件衣服，确认后就能放进衣橱`;
   if (state === 'empty') return '可以换张更清晰的照片再试试，或先舍弃本次识别。';
   if (recognizedCount > 0) {
-    return `小搭已经识别出 ${recognizedCount} 件衣服，还在处理剩下的图片，全部完成后就可以一起保存啦。`;
+    return `小搭已经识别出 ${recognizedCount} 件衣服，正在处理剩下的图片，全部完成后就可以一起确认啦。`;
   }
-  return `正在处理 ${processedImages}/${totalImages} 张图片，识别完成后就可以保存啦。`;
+  return `正在处理 ${processedImages}/${totalImages} 张图片，整理完成后就可以确认啦。`;
 }
 
 function getFailedStatusMessage(batch?: UploadBatch | null) {
-  return batch?.errorMessage || batch?.summaryMessage || '本次识别未成功，可查看已有结果或返回衣柜。';
+  return batch?.errorMessage || batch?.summaryMessage || '本次识别未成功，可以返回衣橱重新上传更清晰的照片。';
 }
 
 function isSavableDraft(draft: ClothesDraft) {
@@ -651,25 +663,27 @@ function getSaveButtonText(
   processedImages: number,
   totalImages: number,
   saving: boolean,
+  savableCount: number,
 ) {
   if (saving) return '保存中...';
-  if (state === 'ready') return '保存到衣柜';
+  if (state === 'ready' && savableCount > 0) return `保存 ${savableCount} 件`;
+  if (state === 'ready') return '保存到衣橱';
   if (state === 'processing') return `识别中 ${processedImages}/${totalImages}`;
   return '暂无可保存衣服';
 }
 
 function getEmptyTitle(state: UploadConfirmPageState, status: UploadBatchViewStatus) {
-  if (status === 'saved') return '这批衣服已保存到衣柜';
+  if (status === 'saved') return '这批衣服已保存到衣橱';
   if (status === 'discarded') return '这批识别已舍弃';
-  if (state === 'empty') return '这次没识别出可保存的衣服';
+  if (state === 'empty') return '这批新衣暂时没有可确认的结果';
   if (status === 'failed') return '暂无可确认的衣物';
   return '暂无可确认的衣物';
 }
 
 function getEmptyDesc(state: UploadConfirmPageState, status: UploadBatchViewStatus, batch?: UploadBatch | null) {
-  if (status === 'saved') return '返回衣柜即可查看已保存的衣服。';
-  if (status === 'discarded') return '这批识别结果不会保存到衣柜。';
-  if (state === 'empty') return '可以换张更清晰的照片再试试，或先舍弃本次识别。';
+  if (status === 'saved') return '返回衣橱即可查看已保存的衣服。';
+  if (status === 'discarded') return '这批识别结果不会保存到衣橱。';
+  if (state === 'empty') return '可以返回衣橱重新上传更清晰的照片。';
   if (status === 'failed') return getFailedStatusMessage(batch);
   return '可以下拉刷新，或对失败图片重新整理。';
 }
