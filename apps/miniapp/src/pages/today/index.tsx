@@ -346,13 +346,11 @@ export default function TodayPage() {
     <View className="today-page">
       <View className="top-section">
         <View className="main-title-area">
-          <View className="title-left">
-            <Text className="main-title">今天穿什么</Text>
-            <Text className="main-subtitle">根据天气和衣橱，给你一套刚好搭配</Text>
-          </View>
-          <View className="title-right">
-            <WeatherCard city="上海" onWeatherChange={handleWeatherChange} />
-          </View>
+          <Text className="main-title">今天穿什么</Text>
+          <Text className="main-subtitle">根据天气和衣橱，给你一套刚好搭配</Text>
+        </View>
+        <View className="weather-basis">
+          <WeatherCard city="上海" onWeatherChange={handleWeatherChange} />
         </View>
       </View>
 

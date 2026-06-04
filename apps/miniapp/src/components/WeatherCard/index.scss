@@ -1,97 +1,79 @@
 .weather-card {
-  width: 320rpx;
-  padding: 16rpx 18rpx;
-  background: #FFFDF9;
-  border-radius: 24rpx;
+  width: 100%;
+  min-height: 96rpx;
+  padding: 16rpx 18rpx 16rpx 22rpx;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18rpx;
+  background: #FFFDF8;
   border: 2rpx solid #EADBC8;
-  box-shadow: 0 8rpx 22rpx rgba(164, 126, 84, 0.08);
+  border-radius: 28rpx;
+  box-shadow: 0 8rpx 20rpx rgba(164, 126, 84, 0.07);
+  box-sizing: border-box;
 }
 
 .weather-card.denied,
-.weather-card.failed {
-  border-color: #E4C7AE;
-  background: #FFF8EF;
+.weather-card.failed,
+.weather-card.needPermission {
+  background: #FFF9F0;
 }
 
 .weather-card.locating,
-.weather-card.loadingWeather,
-.weather-card.checkingAuth {
-  border-color: #DCC6A6;
+.weather-card.loadingWeather {
+  background: #FFF7EA;
 }
 
-.weather-main {
-  display: flex;
-  flex-direction: column;
-  gap: 12rpx;
-}
-
-.weather-info {
-  display: flex;
-  align-items: flex-start;
-  gap: 16rpx;
-}
-
-.weather-temp-wrap {
-  width: 92rpx;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4rpx;
-}
-
-.weather-temp {
-  font-size: 36rpx;
-  font-weight: 700;
-  color: #2E241D;
-  line-height: 1;
-}
-
-.weather-status {
-  font-size: 22rpx;
-  color: #7E6A59;
-  line-height: 1.2;
-}
-
-.weather-location {
+.weather-copy {
   min-width: 0;
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 6rpx;
+  gap: 8rpx;
 }
 
-.location-text {
-  font-size: 24rpx;
-  font-weight: 600;
-  color: #6F5948;
-  line-height: 1.2;
+.weather-primary {
+  font-size: 32rpx;
+  font-weight: 700;
+  color: #2E241D;
+  line-height: 1.15;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.weather-hint {
-  font-size: 20rpx;
-  color: #A89584;
-  line-height: 1.35;
+.weather-secondary {
+  font-size: 23rpx;
+  color: #8C7664;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.weather-action-wrap {
+  flex-shrink: 0;
 }
 
 .weather-action {
-  align-self: flex-end;
-  min-width: 132rpx;
+  min-width: 88rpx;
   height: 48rpx;
-  padding: 0 18rpx;
+  padding: 0 20rpx;
   display: flex;
   align-items: center;
   justify-content: center;
   border-radius: 999rpx;
-  background: #F4E7D7;
+  background: #F1E1CB;
 }
 
 .weather-action.disabled {
-  opacity: 0.7;
+  opacity: 0.58;
 }
 
 .weather-action-text {
-  font-size: 22rpx;
+  font-size: 23rpx;
   font-weight: 600;
   color: #8B5E3C;
   line-height: 1;
+  white-space: nowrap;
 }

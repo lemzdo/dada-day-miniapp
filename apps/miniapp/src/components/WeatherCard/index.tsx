@@ -32,38 +32,27 @@ interface TaroLocationResult {
   longitude: number;
 }
 
-const DEFAULT_HINT = '今天先按默认天气搭～ 开启本地天气后，小搭会按你所在城市的温度推荐更合适的衣服。';
-const DENIED_HINT = '还没开启本地天气。没关系，先用默认天气也能搭；想更准一点，可以重新开启定位。';
-const LOCATING_HINT = '小搭正在看看你那边的天气…';
-const LOADING_HINT = '位置拿到啦，正在同步本地天气…';
-const FAILED_HINT = '天气暂时没拿到，先按默认天气给你搭，稍后可以再试一次。';
-
 export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherCardProps) {
   const [weather, setWeather] = useState<ResolvedWeatherResponse>(() => readCachedWeather() ?? getFallbackResolvedWeather(city));
   const [status, setStatus] = useState<WeatherStatus>('checkingAuth');
-  const [hint, setHint] = useState(DEFAULT_HINT);
   const [permission, setPermission] = useState<LocationPermission>('unknown');
   const [refreshing, setRefreshing] = useState(false);
   const busyRef = useRef(false);
   const lastNotifiedKeyRef = useRef('');
 
-  const hasWeather = Boolean(weather.weather.weather);
   const hasUsableWeather = Boolean(toWeatherSnapshot(weather));
 
   useEffect(() => {
     const cached = readCachedWeather();
-    if (cached) {
-      setWeather(cached);
-      setHint(`缓存天气刷新于 ${formatRefreshTime(cached)}，也可以再同步一次本地天气。`);
-    } else {
-      setWeather(getFallbackResolvedWeather(city));
-      setHint(DEFAULT_HINT);
-    }
+    const nextWeather = cached ?? getFallbackResolvedWeather(city);
+    setWeather(nextWeather);
 
-    checkAuthAndMaybeFetch();
+    checkAuthAndMaybeFetch(nextWeather);
   }, [city]);
 
-  async function checkAuthAndMaybeFetch() {
+  async function checkAuthAndMaybeFetch(currentWeather = weather) {
+    const currentHasUsableWeather = Boolean(toWeatherSnapshot(currentWeather));
+
     setStatus('checkingAuth');
 
     try {
@@ -77,28 +66,25 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
 
       if (nextPermission === 'denied') {
         setStatus('denied');
-        setHint(DENIED_HINT);
         return;
       }
 
-      setStatus(hasUsableWeather ? 'ready' : 'needPermission');
-      if (!hasUsableWeather) setHint(DEFAULT_HINT);
+      setStatus(currentHasUsableWeather ? 'ready' : 'needPermission');
     } catch (error) {
       console.warn('[WeatherCard] getSetting failed', error);
-      setStatus(hasUsableWeather ? 'ready' : 'needPermission');
-      setHint(DEFAULT_HINT);
+      setStatus(currentHasUsableWeather ? 'ready' : 'needPermission');
     }
   }
 
   async function handleWeatherAction() {
-    if (busyRef.current) return;
+    if (busyRef.current || status === 'locating' || status === 'loadingWeather') return;
 
     if (permission === 'denied' || status === 'denied') {
       await requestReauthorize();
       return;
     }
 
-    const forceRefresh = permission === 'authorized' || status === 'ready' || status === 'failed';
+    const forceRefresh = permission === 'authorized' || hasUsableWeather;
     await fetchWeather({ forceRefresh, source: 'manual' });
   }
 
@@ -119,11 +105,9 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
       }
 
       setStatus('denied');
-      setHint(DENIED_HINT);
     } catch (error) {
       console.warn('[WeatherCard] openSetting failed', error);
       setStatus('denied');
-      setHint(DENIED_HINT);
     } finally {
       busyRef.current = false;
       setRefreshing(false);
@@ -148,7 +132,6 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
       busyRef.current = true;
       if (source === 'manual' || forceRefresh) setRefreshing(true);
       setStatus('locating');
-      setHint(LOCATING_HINT);
 
       const location = await withTimeout(
         Taro.getLocation({
@@ -161,7 +144,6 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
 
       setPermission('authorized');
       setStatus('loadingWeather');
-      setHint(LOADING_HINT);
 
       const data = await withTimeout(
         getCloudWeather(
@@ -177,11 +159,10 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
 
       setWeather(data);
       setStatus('ready');
-      setHint(data.cacheHit ? `缓存天气刷新于 ${formatRefreshTime(data)}，适合先参考一下。` : `本地天气刷新于 ${formatRefreshTime(data)}`);
       notifyWeatherChange(data, { forceRefresh });
 
-      if (source === 'manual' && !data.cacheHit) {
-        Taro.showToast({ title: '已切换为本地天气，今天的推荐会更准啦', icon: 'none' });
+      if (source === 'manual') {
+        Taro.showToast({ title: '天气同步好啦，已为你重新搭配～', icon: 'none' });
       }
     } catch (error) {
       const message = getErrorMessage(error);
@@ -190,7 +171,6 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
       if (isPermissionDeniedError(message)) {
         setPermission('denied');
         setStatus('denied');
-        setHint(DENIED_HINT);
         return;
       }
 
@@ -198,21 +178,24 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
       if (cached) {
         setWeather(cached);
         setStatus('ready');
-        setHint(`天气暂时没拿到，先展示缓存 ${formatRefreshTime(cached)}。`);
         notifyWeatherChange(cached, { forceRefresh: false });
+        if (source === 'manual') {
+          Taro.showToast({ title: '天气没刷新成功，先按刚才的推荐搭～', icon: 'none' });
+        }
         return;
       }
 
       if (hadUsableWeather) {
         setWeather(previousWeather);
-        setStatus('failed');
-        setHint('天气暂时没拿到，先保留上次天气，稍后可以再试一次。');
+        setStatus('ready');
+        if (source === 'manual') {
+          Taro.showToast({ title: '天气没刷新成功，先按刚才的推荐搭～', icon: 'none' });
+        }
         return;
       }
 
       setWeather(getFallbackResolvedWeather(city));
       setStatus('failed');
-      setHint(FAILED_HINT);
     } finally {
       busyRef.current = false;
       setRefreshing(false);
@@ -231,26 +214,18 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
   }
 
   const displayLocation = weather.location.district || weather.location.city || weather.location.displayName || '当前位置';
-  const temperature = hasWeather ? `${weather.weather.temperature}℃` : '--';
-  const weatherText = hasWeather ? weather.weather.weather : '默认天气';
-  const actionText = getActionText(status, permission, refreshing);
+  const presentation = getWeatherPresentation({ status, permission, refreshing, weather, displayLocation });
   const statusClass = `weather-card ${status}`;
 
   return (
     <View className={statusClass}>
-      <View className="weather-main">
-        <View className="weather-info">
-          <View className="weather-temp-wrap">
-            <Text className="weather-temp">{temperature}</Text>
-            <Text className="weather-status">{weatherText}</Text>
-          </View>
-          <View className="weather-location">
-            <Text className="location-text">{displayLocation}</Text>
-            <Text className="weather-hint">{hint}</Text>
-          </View>
-        </View>
+      <View className="weather-copy">
+        <Text className="weather-primary">{presentation.primary}</Text>
+        <Text className="weather-secondary">{presentation.secondary}</Text>
+      </View>
+      <View className="weather-action-wrap">
         <View className={`weather-action ${refreshing ? 'disabled' : ''}`} onClick={handleWeatherAction}>
-          <Text className="weather-action-text">{actionText}</Text>
+          <Text className="weather-action-text">{presentation.actionText}</Text>
         </View>
       </View>
     </View>
@@ -282,20 +257,74 @@ function readLocationPermission(authSetting: LocationAuthSetting | undefined): L
 
 function showReauthorizeModal() {
   return Taro.showModal({
-    title: '开启本地天气',
-    content: '小搭只会用定位获取本地天气，让穿搭推荐更贴近今天温度。',
+    title: '打开更准推荐？',
+    content: '小搭只用位置判断天气，让今天的穿搭更贴合你。',
     confirmText: '去开启',
     cancelText: '先不用',
   }).then((result) => result.confirm);
 }
 
-function getActionText(status: WeatherStatus, permission: LocationPermission, refreshing: boolean) {
-  if (refreshing || status === 'locating' || status === 'loadingWeather') return '同步中';
-  if (status === 'checkingAuth') return '检查中';
-  if (permission === 'denied' || status === 'denied') return '重新授权';
-  if (status === 'failed') return '再试一次';
-  if (permission === 'unknown' || status === 'needPermission' || status === 'fallback') return '开启本地天气';
-  return '刷新天气';
+function getWeatherPresentation({
+  status,
+  permission,
+  refreshing,
+  weather,
+  displayLocation,
+}: {
+  status: WeatherStatus;
+  permission: LocationPermission;
+  refreshing: boolean;
+  weather: ResolvedWeatherResponse;
+  displayLocation: string;
+}) {
+  const snapshot = toWeatherSnapshot(weather);
+  const isBusy = refreshing || status === 'locating' || status === 'loadingWeather';
+
+  if (isBusy) {
+    return {
+      primary: '小搭正在看天气',
+      secondary: '马上换成更贴合今天的一套',
+      actionText: '同步中',
+    };
+  }
+
+  if (permission === 'denied' || status === 'denied') {
+    return {
+      primary: '按常规天气先搭',
+      secondary: '开启后，推荐会更贴合你所在的位置',
+      actionText: '去开启',
+    };
+  }
+
+  if (snapshot && status !== 'failed') {
+    return {
+      primary: `${snapshot.temp}° ${snapshot.weather}`,
+      secondary: `${displayLocation} · 今天适合${getWearHint(snapshot.temp)}`,
+      actionText: '刷新',
+    };
+  }
+
+  if (status === 'failed') {
+    return {
+      primary: '先按常规天气搭',
+      secondary: '天气暂时没拿到，稍后再试也可以',
+      actionText: '重试',
+    };
+  }
+
+  return {
+    primary: '按常规天气先搭',
+    secondary: '开启后，推荐会更贴合你所在的位置',
+    actionText: '开启',
+  };
+}
+
+function getWearHint(temp: number) {
+  if (temp >= 30) return '清爽透气';
+  if (temp >= 24) return '轻薄透气';
+  if (temp >= 18) return '舒适薄外套';
+  if (temp >= 10) return '加件外套';
+  return '注意保暖';
 }
 
 function getErrorMessage(error: unknown) {
@@ -327,19 +356,4 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
         reject(error);
       });
   });
-}
-
-function formatUpdateTime(value?: string) {
-  if (!value) return '刚刚';
-  const date = new Date(value.includes('T') ? value : value.replace(/-/g, '/'));
-  if (Number.isNaN(date.getTime())) return '刚刚';
-  return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
-function formatRefreshTime(value: ResolvedWeatherResponse) {
-  return formatUpdateTime(value.fetchedAt ?? value.updatedAt);
-}
-
-function pad(value: number) {
-  return String(value).padStart(2, '0');
 }

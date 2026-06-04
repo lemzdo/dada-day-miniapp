@@ -6,17 +6,11 @@
 }
 
 .top-section {
-  padding: 28rpx 32rpx 24rpx;
+  padding: 28rpx 32rpx 20rpx;
   background: linear-gradient(180deg, #FFFDF9 0%, #FAF6F1 100%);
 }
 
 .main-title-area {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.title-left {
   display: flex;
   flex-direction: column;
 }
@@ -35,14 +29,15 @@
   line-height: 1.5;
 }
 
-.title-right {
-  flex-shrink: 0;
+.weather-basis {
+  margin-top: 20rpx;
 }
 
 .scene-tabs {
   display: flex;
   gap: 12rpx;
   padding: 0 32rpx;
+  margin-top: 4rpx;
   margin-bottom: 24rpx;
 }
 
