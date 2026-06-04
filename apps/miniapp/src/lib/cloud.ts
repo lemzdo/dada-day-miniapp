@@ -129,6 +129,8 @@ export function clearCloudRecommendationCache() {
 }
 
 export function writeLocalWeatherCache(value: ResolvedWeatherResponse) {
+  if (value.source === 'fallback' || !value.weather.weather) return;
+
   const cacheValue: ResolvedWeatherResponse = {
     location: value.location,
     weather: value.weather,
@@ -139,6 +141,10 @@ export function writeLocalWeatherCache(value: ResolvedWeatherResponse) {
     updatedAt: value.updatedAt,
   };
   Taro.setStorageSync(WEATHER_CACHE_KEY, cacheValue);
+}
+
+export function clearLocalWeatherCache() {
+  Taro.removeStorageSync(WEATHER_CACHE_KEY);
 }
 
 function getCloudCacheKey(name: string, data: Record<string, unknown>) {
@@ -511,6 +517,7 @@ export async function getCloudWeather(
   const payload = options.forceRefresh ? { ...location, forceRefresh: true } : location;
   if (options.forceRefresh) {
     clearCloudCache(['getWeather:']);
+    clearLocalWeatherCache();
   }
   const data = options.forceRefresh
     ? await callCloudFunction<ResolvedWeatherResponse>('getWeather', payload)

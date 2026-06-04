@@ -2,6 +2,8 @@ import type { ResolvedWeatherResponse, WeatherSnapshot } from '@starter-template
 
 export function toWeatherSnapshot(value: ResolvedWeatherResponse | null | undefined): WeatherSnapshot | undefined {
   if (!value?.weather) return undefined;
+  if (value.source === 'fallback') return undefined;
+  if (!value.weather.weather.trim()) return undefined;
 
   const temp = Number(value.weather.temperature);
   if (!Number.isFinite(temp)) return undefined;

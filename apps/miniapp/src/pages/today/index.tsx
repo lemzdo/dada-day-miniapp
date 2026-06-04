@@ -2,7 +2,7 @@ import { Image, Swiper, SwiperItem, Text, View } from '@tarojs/components';
 import Taro, { useDidShow, useLoad, usePullDownRefresh } from '@tarojs/taro';
 import { useRef, useState } from 'react';
 import { WeatherCard } from '@/components/WeatherCard';
-import { addOutfitHistory, generateCloudOutfit, removeFavoriteOutfit, saveFavoriteOutfit } from '@/lib/cloud';
+import { addOutfitHistory, clearCloudRecommendationCache, generateCloudOutfit, removeFavoriteOutfit, saveFavoriteOutfit } from '@/lib/cloud';
 import { consumeOutfitStateSync, normalizeOutfitSnapshot, storeOutfitDetailDraft } from '@/utils/outfitSnapshot';
 import { getItemCountText, getOutfitStyleTags, getSceneLabel } from '@/utils/outfitContextText';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
@@ -271,6 +271,7 @@ export default function TodayPage() {
   function handleWeatherChange(weather: WeatherSnapshot, options: { forceRefresh?: boolean } = {}) {
     currentWeatherRef.current = weather;
     setCurrentWeather(weather);
+    clearCloudRecommendationCache();
     fetchRecommendations({ scene: selectedScene, weather });
     if (options.forceRefresh) {
       console.log('[TodayPage] weather refreshed, recommendations reloaded', {
