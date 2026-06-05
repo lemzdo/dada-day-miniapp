@@ -4,7 +4,7 @@ import { useRef, useState } from 'react';
 import { WeatherCard } from '@/components/WeatherCard';
 import { addOutfitHistory, clearCloudRecommendationCache, generateCloudOutfit, removeFavoriteOutfit, saveFavoriteOutfit } from '@/lib/cloud';
 import { consumeOutfitStateSync, normalizeOutfitSnapshot, storeOutfitDetailDraft } from '@/utils/outfitSnapshot';
-import { getItemCountText, getOutfitStyleTags, getSceneLabel } from '@/utils/outfitContextText';
+import { getOutfitStyleTags } from '@/utils/outfitContextText';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
 import type { Outfit, SceneTag, WeatherSnapshot } from '@starter-template/types';
 import './index.scss';
@@ -53,6 +53,8 @@ export default function TodayPage() {
   const currentWeatherRef = useRef<WeatherSnapshot | undefined>(undefined);
   const [currentWeather, setCurrentWeather] = useState<WeatherSnapshot | undefined>(undefined);
   const selectedScene = SCENE_TAGS[selectedSceneKey];
+  const selectedSceneRef = useRef<SceneTag>(selectedScene);
+  selectedSceneRef.current = selectedScene;
 
   useLoad(() => {
     fetchRecommendations({ scene: selectedScene });
@@ -75,11 +77,13 @@ export default function TodayPage() {
     scene,
     weather = currentWeatherRef.current,
     excludedOutfitKeys = [],
+    silent = false,
   }: {
     scene: SceneTag;
     weather?: WeatherSnapshot;
     excludedOutfitKeys?: string[];
-  }) {
+    silent?: boolean;
+  }): Promise<boolean> {
     const seq = nextRequestSeq();
     console.log('[TodayPage] fetchRecommendations start', {
       requestSeq: seq,
@@ -87,12 +91,14 @@ export default function TodayPage() {
       scene,
       weather,
     });
-    setLoading(true);
-    setError('');
-    setRecommendationNotice('');
-    setBatchLimited(false);
-    setBatchExhausted(false);
-    setCurrentIndex(0);
+    if (!silent) {
+      setLoading(true);
+      setError('');
+      setRecommendationNotice('');
+      setBatchLimited(false);
+      setBatchExhausted(false);
+      setCurrentIndex(0);
+    }
 
     try {
       const data = await generateCloudOutfit({
@@ -104,7 +110,7 @@ export default function TodayPage() {
         ...(excludedOutfitKeys.length > 0 ? { excludedOutfitKeys } : {}),
       });
 
-      if (!isLatestRequest(seq)) return;
+      if (!isLatestRequest(seq)) return false;
       const nextOutfits = data.outfits.map((outfit) => normalizeOutfitSnapshot(outfit));
       console.log('[TodayPage] fetchRecommendations success', {
         requestSeq: seq,
@@ -122,15 +128,19 @@ export default function TodayPage() {
       setBatchExhausted(Boolean(data.exhausted));
       setRecommendationNotice(getBatchNotice(data.recommendationNotice, Boolean(data.limited), Boolean(data.exhausted)));
       markOutfitShown(nextOutfits[0]);
+      return true;
     } catch (err) {
-      if (!isLatestRequest(seq)) return;
+      if (!isLatestRequest(seq)) return false;
       console.error('Fetch recommendations error:', err);
-      setError('获取推荐失败，请稍后再试');
-      setOutfits([]);
-      setHasRecommendations(false);
-      Taro.showToast({ title: '获取推荐失败', icon: 'none' });
+      if (!silent) {
+        setError('获取推荐失败，请稍后再试');
+        setOutfits([]);
+        setHasRecommendations(false);
+        Taro.showToast({ title: '获取推荐失败', icon: 'none' });
+      }
+      return false;
     } finally {
-      if (isLatestRequest(seq)) setLoading(false);
+      if (!silent && isLatestRequest(seq)) setLoading(false);
     }
   }
 
@@ -268,14 +278,15 @@ export default function TodayPage() {
     fetchRecommendations({ scene: SCENE_TAGS[key], weather: currentWeather ?? currentWeatherRef.current });
   }
 
-  function handleWeatherChange(weather: WeatherSnapshot, options: { forceRefresh?: boolean } = {}) {
+  async function handleWeatherChange(weather: WeatherSnapshot, options: { forceRefresh?: boolean } = {}) {
     currentWeatherRef.current = weather;
     setCurrentWeather(weather);
     clearCloudRecommendationCache();
-    fetchRecommendations({ scene: selectedScene, weather });
+    const scene = selectedSceneRef.current;
+    await fetchRecommendations({ scene, weather, silent: true });
     if (options.forceRefresh) {
       console.log('[TodayPage] weather refreshed, recommendations reloaded', {
-        scene: selectedScene,
+        scene,
         weather,
       });
     }
@@ -325,7 +336,8 @@ export default function TodayPage() {
   }
 
   function formatOutfitMeta(outfit: Outfit) {
-    return '适合全天';
+    if (currentWeather) return '适合今天';
+    return `适合${getSceneText(outfit.scene || selectedScene)}`;
   }
 
   function nextRequestSeq() {
@@ -345,11 +357,11 @@ export default function TodayPage() {
   return (
     <View className="today-page">
       <View className="top-section">
-        <View className="main-title-area">
-          <Text className="main-title">今天穿什么</Text>
-          <Text className="main-subtitle">根据天气和衣橱，给你一套刚好搭配</Text>
-        </View>
-        <View className="weather-basis">
+        <View className="hero-header">
+          <View className="hero-brand">
+            <Text className="hero-brand-cn">搭搭</Text>
+            <Text className="hero-brand-day">day</Text>
+          </View>
           <WeatherCard city="上海" onWeatherChange={handleWeatherChange} />
         </View>
       </View>
@@ -364,22 +376,13 @@ export default function TodayPage() {
               onClick={() => handleSceneSelect(item.key)}
             >
               <Text className="scene-tab-text">{item.label}</Text>
+              <View className="scene-tab-indicator" />
             </View>
           );
         })}
       </View>
 
       <View className="outfit-section">
-        <View className="section-header">
-          <View className="section-title-wrap">
-            <Text className="section-title">今日搭配推荐</Text>
-            <Text className="section-subtitle">为你精心搭配，每天不重样</Text>
-          </View>
-          <View className="section-action" onClick={goToWardrobe}>
-            <Text className="action-text">我的衣橱 &gt;</Text>
-          </View>
-        </View>
-
         {loading && (
           <View className="loading-state">
             <View className="loading-spinner" />
@@ -431,15 +434,11 @@ export default function TodayPage() {
                     onClick={() => goToOutfitDetail(outfit.id)}
                   >
                     <View className="outfit-card-header">
-                      <View className="card-badge">
-                        <Text className="badge-text">精选</Text>
+                      <View className="outfit-title-section">
+                        <Text className="outfit-title">{getOutfitDisplayTitle(outfit, '今日推荐')}</Text>
+                        <Text className="outfit-meta">{formatOutfitMeta(outfit)}</Text>
                       </View>
                       <Text className="card-count">{index + 1} / {outfits.length}</Text>
-                    </View>
-
-                    <View className="outfit-title-section">
-                      <Text className="outfit-title">{getOutfitDisplayTitle(outfit, '今日推荐')}</Text>
-                      <Text className="outfit-meta">{formatOutfitMeta(outfit)}</Text>
                     </View>
 
                     {getDeletedItemCount(outfit) > 0 && (
@@ -459,8 +458,8 @@ export default function TodayPage() {
                     </View>
 
                     <View className="outfit-reason">
-                      <Text className="reason-label">搭配理由</Text>
-                      <Text className="reason-text">{outfit.reason || '这套穿搭很适合今天的天气和场景'}</Text>
+                      <Text className="reason-label">小搭推荐</Text>
+                      <Text className="reason-text">{outfit.reason || getFallbackReason(outfit.scene || selectedScene, Boolean(currentWeather))}</Text>
                     </View>
 
                     <View className="outfit-tags">
@@ -523,4 +522,13 @@ function getDeletedItemCount(outfit: Outfit) {
   const snapshotCount = outfit.snapshotItems?.filter((item) => item.isDeleted || item.deletedAt).length ?? 0;
   const itemCount = outfit.items?.filter((item) => item.isDeleted).length ?? 0;
   return Math.max(snapshotCount, itemCount);
+}
+
+function getFallbackReason(scene: SceneTag, hasWeather: boolean) {
+  if (hasWeather) return '这套穿搭适合今天的节奏，和当前衣橱也很好配';
+  return `这套穿搭适合${getSceneText(scene)}，简约舒适，日常也好穿`;
+}
+
+function getSceneText(scene: SceneTag) {
+  return scene === '上班' ? '通勤' : String(scene);
 }

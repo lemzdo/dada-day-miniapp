@@ -377,7 +377,7 @@ export default function ProfilePage() {
       </View>
 
       <View className="page-footer">
-        <Text className="footer-text">搭搭day · 少纠结，多好看</Text>
+        <Text className="footer-text">搭搭day · 少纠结，也好看</Text>
       </View>
 
       {showEditModal && (

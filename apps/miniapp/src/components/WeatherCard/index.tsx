@@ -8,7 +8,7 @@ import './index.scss';
 
 interface WeatherCardProps {
   city?: string;
-  onWeatherChange?: (weather: WeatherSnapshot, options?: { forceRefresh?: boolean }) => void;
+  onWeatherChange?: (weather: WeatherSnapshot, options?: { forceRefresh?: boolean }) => void | Promise<void>;
 }
 
 type WeatherStatus =
@@ -89,9 +89,6 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
   }
 
   async function requestReauthorize() {
-    const confirmed = await showReauthorizeModal();
-    if (!confirmed) return;
-
     try {
       busyRef.current = true;
       setRefreshing(true);
@@ -105,9 +102,11 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
       }
 
       setStatus('denied');
+      Taro.showToast({ title: '没关系，先按当前推荐搭～', icon: 'none' });
     } catch (error) {
       console.warn('[WeatherCard] openSetting failed', error);
       setStatus('denied');
+      Taro.showToast({ title: '没关系，先按当前推荐搭～', icon: 'none' });
     } finally {
       busyRef.current = false;
       setRefreshing(false);
@@ -159,9 +158,9 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
 
       setWeather(data);
       setStatus('ready');
-      notifyWeatherChange(data, { forceRefresh });
+      const notified = await notifyWeatherChange(data, { forceRefresh });
 
-      if (source === 'manual') {
+      if (source === 'manual' && notified) {
         Taro.showToast({ title: '天气同步好啦，已为你重新搭配～', icon: 'none' });
       }
     } catch (error) {
@@ -171,6 +170,9 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
       if (isPermissionDeniedError(message)) {
         setPermission('denied');
         setStatus('denied');
+        if (source === 'manual') {
+          Taro.showToast({ title: '没关系，先按当前推荐搭～', icon: 'none' });
+        }
         return;
       }
 
@@ -196,38 +198,33 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
 
       setWeather(getFallbackResolvedWeather(city));
       setStatus('failed');
+      if (source === 'manual') {
+        Taro.showToast({ title: '天气暂时没同步，先按当前推荐搭～', icon: 'none' });
+      }
     } finally {
       busyRef.current = false;
       setRefreshing(false);
     }
   }
 
-  function notifyWeatherChange(value: ResolvedWeatherResponse, options?: { forceRefresh?: boolean }) {
+  async function notifyWeatherChange(value: ResolvedWeatherResponse, options?: { forceRefresh?: boolean }) {
     const snapshot = toWeatherSnapshot(value);
-    if (!snapshot) return;
+    if (!snapshot) return false;
 
     const notifyKey = `${snapshot.temp}:${snapshot.humidity}:${snapshot.weather}:${snapshot.wind}:${snapshot.uv}`;
-    if (!options?.forceRefresh && notifyKey === lastNotifiedKeyRef.current) return;
+    if (!options?.forceRefresh && notifyKey === lastNotifiedKeyRef.current) return false;
 
     lastNotifiedKeyRef.current = notifyKey;
-    onWeatherChange?.(snapshot, options);
+    await onWeatherChange?.(snapshot, options);
+    return true;
   }
 
-  const displayLocation = weather.location.district || weather.location.city || weather.location.displayName || '当前位置';
-  const presentation = getWeatherPresentation({ status, permission, refreshing, weather, displayLocation });
+  const text = getWeatherCapsuleText({ status, permission, refreshing, weather });
   const statusClass = `weather-card ${status}`;
 
   return (
-    <View className={statusClass}>
-      <View className="weather-copy">
-        <Text className="weather-primary">{presentation.primary}</Text>
-        <Text className="weather-secondary">{presentation.secondary}</Text>
-      </View>
-      <View className="weather-action-wrap">
-        <View className={`weather-action ${refreshing ? 'disabled' : ''}`} onClick={handleWeatherAction}>
-          <Text className="weather-action-text">{presentation.actionText}</Text>
-        </View>
-      </View>
+    <View className={`${statusClass} ${refreshing ? 'disabled' : ''}`} onClick={handleWeatherAction}>
+      <Text className="weather-capsule-text">{text}</Text>
     </View>
   );
 }
@@ -255,76 +252,35 @@ function readLocationPermission(authSetting: LocationAuthSetting | undefined): L
   return 'unknown';
 }
 
-function showReauthorizeModal() {
-  return Taro.showModal({
-    title: '打开更准推荐？',
-    content: '小搭只用位置判断天气，让今天的穿搭更贴合你。',
-    confirmText: '去开启',
-    cancelText: '先不用',
-  }).then((result) => result.confirm);
-}
-
-function getWeatherPresentation({
+function getWeatherCapsuleText({
   status,
   permission,
   refreshing,
   weather,
-  displayLocation,
 }: {
   status: WeatherStatus;
   permission: LocationPermission;
   refreshing: boolean;
   weather: ResolvedWeatherResponse;
-  displayLocation: string;
 }) {
   const snapshot = toWeatherSnapshot(weather);
   const isBusy = refreshing || status === 'locating' || status === 'loadingWeather';
 
-  if (isBusy) {
-    return {
-      primary: '小搭正在看天气',
-      secondary: '马上换成更贴合今天的一套',
-      actionText: '同步中',
-    };
-  }
+  if (isBusy) return '同步中…';
+  if (permission === 'denied' || status === 'denied') return '去开启';
+  if (snapshot && status !== 'failed') return `${getWeatherIcon(snapshot.weather)} ${snapshot.temp}° ${snapshot.weather} ↻`;
+  if (status === 'failed') return '再试试';
 
-  if (permission === 'denied' || status === 'denied') {
-    return {
-      primary: '按常规天气先搭',
-      secondary: '开启后，推荐会更贴合你所在的位置',
-      actionText: '去开启',
-    };
-  }
-
-  if (snapshot && status !== 'failed') {
-    return {
-      primary: `${snapshot.temp}° ${snapshot.weather}`,
-      secondary: `${displayLocation} · 今天适合${getWearHint(snapshot.temp)}`,
-      actionText: '刷新',
-    };
-  }
-
-  if (status === 'failed') {
-    return {
-      primary: '先按常规天气搭',
-      secondary: '天气暂时没拿到，稍后再试也可以',
-      actionText: '重试',
-    };
-  }
-
-  return {
-    primary: '按常规天气先搭',
-    secondary: '开启后，推荐会更贴合你所在的位置',
-    actionText: '开启',
-  };
+  return '开启天气';
 }
 
-function getWearHint(temp: number) {
-  if (temp >= 30) return '清爽透气';
-  if (temp >= 24) return '轻薄透气';
-  if (temp >= 18) return '舒适薄外套';
-  if (temp >= 10) return '加件外套';
-  return '注意保暖';
+function getWeatherIcon(weather: string) {
+  if (/雨|阵雨|雷/.test(weather)) return '🌧';
+  if (/雪|冰/.test(weather)) return '❄';
+  if (/阴/.test(weather)) return '☁';
+  if (/云/.test(weather)) return '☁';
+  if (/晴/.test(weather)) return '☀';
+  return '☁';
 }
 
 function getErrorMessage(error: unknown) {
