@@ -13,6 +13,7 @@ const db = cloud.database();
 exports.main = async (event = {}) => {
   const { OPENID } = cloud.getWXContext();
   const imageId = event.imageId || event.uploadImageId;
+  const startedAt = Date.now();
 
   try {
     if (!imageId) throw new Error('imageId is required');
@@ -38,7 +39,22 @@ exports.main = async (event = {}) => {
         errorMessage: '',
         updatedAt: nowIso(),
       });
-      await refreshBatch(image.batchId, OPENID);
+      const usedBatchFallback = await safeUpdateBatchAfterImage({
+        batchId: image.batchId,
+        openid: OPENID,
+        imageBefore: image,
+        status: 'detected',
+        detectedCount: existingDrafts.length,
+      });
+      logImageProcessed({
+        batchId: image.batchId,
+        imageId,
+        startedAt,
+        assetCount: existingDrafts.length,
+        mergedShoePairCount: 0,
+        usedBatchFallback,
+        reusedDrafts: true,
+      });
       return ok({ imageId, drafts: existingDrafts.map(toDraftResponse) });
     }
 
@@ -74,7 +90,21 @@ exports.main = async (event = {}) => {
           routerResult: pipelineResult.routerResult,
           updatedAt: nowIso(),
         });
-        await refreshBatch(image.batchId, OPENID);
+        const usedBatchFallback = await safeUpdateBatchAfterImage({
+          batchId: image.batchId,
+          openid: OPENID,
+          imageBefore: image,
+          status: shouldMarkEmpty ? 'empty' : 'failed',
+          detectedCount: 0,
+        });
+        logImageProcessed({
+          batchId: image.batchId,
+          imageId,
+          startedAt,
+          assetCount: 0,
+          mergedShoePairCount: pipelineResult.mergedShoePairCount || 0,
+          usedBatchFallback,
+        });
         return ok({ imageId, drafts: [], emptyReason: pipelineResult.emptyReason, errorMessage: noAssetError });
       }
 
@@ -104,7 +134,23 @@ exports.main = async (event = {}) => {
           routerResult: pipelineResult.routerResult,
           updatedAt: nowIso(),
         });
-        await refreshBatch(image.batchId, OPENID);
+        const usedBatchFallback = await safeUpdateBatchAfterImage({
+          batchId: image.batchId,
+          openid: OPENID,
+          imageBefore: image,
+          status: createdDrafts.length > 0 ? 'detected' : 'failed',
+          detectedCount: createdDrafts.length,
+        });
+        logImageProcessed({
+          batchId: image.batchId,
+          imageId,
+          startedAt,
+          assetCount: pipelineResult.assets.length,
+          createdDraftCount: createdDrafts.length,
+          mergedShoePairCount: pipelineResult.mergedShoePairCount || 0,
+          usedBatchFallback,
+          errorMessage: message,
+        });
         return ok({ imageId, drafts: createdDrafts, errorMessage: message });
       }
 
@@ -124,13 +170,23 @@ exports.main = async (event = {}) => {
         routerResult: pipelineResult.routerResult,
         updatedAt: nowIso(),
       });
-      await refreshBatch(image.batchId, OPENID);
+      const usedBatchFallback = await safeUpdateBatchAfterImage({
+        batchId: image.batchId,
+        openid: OPENID,
+        imageBefore: image,
+        status: 'detected',
+        detectedCount: createdDrafts.length,
+      });
 
       console.log('[processUploadImage] pipeline v2 completed', {
         batchId: image.batchId,
         imageId,
         detectedCount: createdDrafts.length,
         reviewCount: createdDrafts.filter((draft) => draft.assetStatus !== 'ready').length,
+        durationMs: Date.now() - startedAt,
+        assetCount: pipelineResult.assets.length,
+        mergedShoePairCount: pipelineResult.mergedShoePairCount || 0,
+        usedBatchFallback,
       });
 
       return ok({ imageId, drafts: createdDrafts, warnings: pipelineResult.warnings });
@@ -145,7 +201,22 @@ exports.main = async (event = {}) => {
         errorMessage: message,
         updatedAt: nowIso(),
       });
-      await refreshBatch(image.batchId, OPENID);
+      const usedBatchFallback = await safeUpdateBatchAfterImage({
+        batchId: image.batchId,
+        openid: OPENID,
+        imageBefore: image,
+        status: 'failed',
+        detectedCount: 0,
+      });
+      logImageProcessed({
+        batchId: image.batchId,
+        imageId,
+        startedAt,
+        assetCount: 0,
+        mergedShoePairCount: 0,
+        usedBatchFallback,
+        errorMessage: message,
+      });
       return ok({ imageId, drafts: [], errorMessage: message });
     }
   } catch (error) {
@@ -199,6 +270,64 @@ async function refreshBatch(batchId, openid) {
   });
 }
 
+async function safeUpdateBatchAfterImage(input) {
+  try {
+    await updateBatchAfterImage(input);
+    return false;
+  } catch (error) {
+    console.warn('[processUploadImage] local batch update failed, fallback to refreshBatch', {
+      batchId: input.batchId,
+      imageId: input.imageBefore && input.imageBefore._id,
+      message: getErrorMessage(error),
+    });
+    await refreshBatch(input.batchId, input.openid);
+    return true;
+  }
+}
+
+async function updateBatchAfterImage({ batchId, openid, imageBefore, status, detectedCount }) {
+  const batchRes = await db.collection('upload_batches').doc(batchId).get();
+  const currentBatch = batchRes.data || {};
+  if (currentBatch._openid !== openid) throw new Error('batch not found');
+  const preservedStatus = normalizeUploadBatchStatus(currentBatch.status);
+  if (preservedStatus === 'saved' || preservedStatus === 'discarded') return;
+
+  const totalImages = Math.max(0, Number(currentBatch.totalImages || 0));
+  const previousDetectedCount = Math.max(0, Number(imageBefore && imageBefore.detectedCount ? imageBefore.detectedCount : 0));
+  const wasProcessed = isImageProcessed(imageBefore || {});
+  const processedImages = Math.min(
+    totalImages,
+    Math.max(0, Number(currentBatch.processedImages || 0)) + (wasProcessed ? 0 : 1),
+  );
+  const totalDetectedClothes = Math.max(
+    0,
+    Number(currentBatch.totalDetectedClothes || 0) - previousDetectedCount + Math.max(0, Number(detectedCount || 0)),
+  );
+  const nextStatus = processedImages < totalImages
+    ? 'processing'
+    : totalDetectedClothes > 0
+      ? 'ready'
+      : 'failed';
+  const summaryMessage = buildBatchSummaryMessage({
+    status: nextStatus,
+    failedImages: status === 'failed' ? 1 : 0,
+    emptyImages: status === 'empty' ? 1 : 0,
+    totalImages,
+    totalDetectedClothes,
+  });
+
+  await db.collection('upload_batches').doc(batchId).update({
+    data: {
+      processedImages,
+      totalDetectedClothes,
+      status: nextStatus,
+      errorMessage: nextStatus === 'failed' ? summaryMessage : '',
+      summaryMessage,
+      updatedAt: nowIso(),
+    },
+  });
+}
+
 async function markImage(imageId, data) {
   await db.collection('upload_images').doc(imageId).update({ data });
 }
@@ -232,6 +361,7 @@ function buildImageRawResult(result) {
     warnings: result.warnings,
     detectedCount: result.detectedCount || 0,
     rawDetectedCount: result.rawDetectedCount || 0,
+    mergedShoePairCount: result.mergedShoePairCount || 0,
     emptyReason: result.emptyReason || '',
     hadDetectionError: Boolean(result.hadDetectionError),
     hadProviderError: Boolean(result.hadProviderError),
@@ -239,6 +369,20 @@ function buildImageRawResult(result) {
     assetCount: result.assets.length,
     parsedAt: nowIso(),
   };
+}
+
+function logImageProcessed(input) {
+  console.log('[processUploadImage] image processed', {
+    batchId: input.batchId,
+    imageId: input.imageId,
+    durationMs: Date.now() - input.startedAt,
+    assetCount: input.assetCount || 0,
+    createdDraftCount: input.createdDraftCount,
+    mergedShoePairCount: input.mergedShoePairCount || 0,
+    usedBatchFallback: Boolean(input.usedBatchFallback),
+    reusedDrafts: Boolean(input.reusedDrafts),
+    errorMessage: input.errorMessage || '',
+  });
 }
 
 function getNoAssetErrorMessage(result) {

@@ -3,8 +3,10 @@ const cloud = require('wx-server-sdk');
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
 const db = cloud.database();
+const CONFIRM_CONCURRENCY = 3;
 
 exports.main = async (event = {}) => {
+  const startedAt = Date.now();
   try {
     const { OPENID } = cloud.getWXContext();
     const batchId = event.batchId;
@@ -33,7 +35,7 @@ exports.main = async (event = {}) => {
       throw new Error('no confirmable drafts');
     }
 
-    await Promise.all(updates.map((draft) => updateDraftFromInput(draft, OPENID)));
+    await mapWithConcurrency(updates, CONFIRM_CONCURRENCY, (draft) => updateDraftFromInput(draft, OPENID));
 
     const draftRes = await db.collection('clothes_drafts').where({ batchId, _openid: OPENID }).get();
     const allDrafts = draftRes.data || [];
@@ -58,43 +60,17 @@ exports.main = async (event = {}) => {
       throw new Error('no confirmable drafts');
     }
 
-    const created = [];
-    let actualCreatedCount = 0;
-    let skippedDuplicateCount = 0;
-    for (const draft of confirmableDrafts) {
-      const existing = await findExistingClothing(OPENID, draft);
-      if (existing) {
-        skippedDuplicateCount += 1;
-        await markDraftConfirmed(draft._id, existing._id);
-        created.push(toClothing(existing));
-        continue;
-      }
-
-      const reserved = await reserveDraftForConfirm(draft._id, OPENID);
-      if (!reserved) {
-        skippedDuplicateCount += 1;
-        const existingAfterReserve = await findExistingClothing(OPENID, draft);
-        if (existingAfterReserve) {
-          created.push(toClothing(existingAfterReserve));
-        }
-        continue;
-      }
-
-      const clothing = buildClothingFromDraft(draft, OPENID);
-      const thumbnailUrl = await createThumbnailForClothing(clothing, draft._id).catch((error) => {
-        console.warn('[confirmClothesDrafts] create thumbnail failed', {
-          draftId: draft._id,
-          imageUrl: resolveThumbnailSourceImage(clothing),
-          message: getErrorMessage(error),
-        });
-        return '';
-      });
-      if (thumbnailUrl) clothing.thumbnailUrl = thumbnailUrl;
-      await db.collection('clothes').doc(draft._id).set({ data: clothing });
-      await markDraftConfirmed(draft._id, draft._id);
-      actualCreatedCount += 1;
-      created.push(toClothing({ ...clothing, _id: draft._id }));
-    }
+    const confirmResults = await mapWithConcurrency(
+      confirmableDrafts,
+      CONFIRM_CONCURRENCY,
+      (draft) => confirmSingleDraft(OPENID, draft),
+    );
+    const created = confirmResults
+      .filter((item) => item && item.clothing)
+      .map((item) => item.clothing);
+    const actualCreatedCount = confirmResults.filter((item) => item && item.created).length;
+    const skippedDuplicateCount = confirmResults.filter((item) => item && item.duplicate).length;
+    const failedCount = confirmResults.filter((item) => item && item.failed).length;
 
     await Promise.all(discardedDrafts.map((draft) => (
       db.collection('clothes_drafts').doc(draft._id).update({
@@ -131,13 +107,21 @@ exports.main = async (event = {}) => {
       actualCreatedCount,
       returnedCount: created.length,
       skippedDuplicateCount,
+      failedCount,
+      durationMs: Date.now() - startedAt,
+      concurrency: CONFIRM_CONCURRENCY,
     });
+
+    if (created.length === 0 && failedCount > 0) {
+      throw new Error('confirm drafts failed');
+    }
 
     return ok({
       list: created,
       count: created.length,
       skippedDuplicateCount,
       actualCreatedCount,
+      failedCount,
     });
   } catch (error) {
     console.error('[confirmClothesDrafts] failed', error);
@@ -173,6 +157,75 @@ async function findExistingClothing(openid, draft) {
   return null;
 }
 
+async function confirmSingleDraft(openid, draft) {
+  const startedAt = Date.now();
+  try {
+    const existing = await findExistingClothing(openid, draft);
+    if (existing) {
+      await markDraftConfirmed(draft._id, existing._id);
+      return {
+        clothing: toClothing(existing),
+        duplicate: true,
+        created: false,
+        failed: false,
+      };
+    }
+
+    const reserved = await reserveDraftForConfirm(draft._id, openid);
+    if (!reserved) {
+      const existingAfterReserve = await findExistingClothing(openid, draft);
+      return {
+        clothing: existingAfterReserve ? toClothing(existingAfterReserve) : null,
+        duplicate: true,
+        created: false,
+        failed: false,
+      };
+    }
+
+    const clothing = buildClothingFromDraft(draft, openid);
+    const thumbnailUrl = await createThumbnailForClothing(clothing, draft._id).catch((error) => {
+      console.warn('[confirmClothesDrafts] create thumbnail failed', {
+        draftId: draft._id,
+        imageUrl: resolveThumbnailSourceImage(clothing),
+        message: getErrorMessage(error),
+      });
+      return '';
+    });
+    if (thumbnailUrl) clothing.thumbnailUrl = thumbnailUrl;
+    await db.collection('clothes').doc(draft._id).set({ data: clothing });
+    await markDraftConfirmed(draft._id, draft._id);
+
+    console.log('[confirmClothesDrafts] draft confirmed', {
+      draftId: draft._id,
+      durationMs: Date.now() - startedAt,
+      created: true,
+      thumbnailCreated: Boolean(thumbnailUrl),
+    });
+
+    return {
+      clothing: toClothing({ ...clothing, _id: draft._id }),
+      duplicate: false,
+      created: true,
+      failed: false,
+    };
+  } catch (error) {
+    const message = getErrorMessage(error);
+    console.warn('[confirmClothesDrafts] draft confirm failed', {
+      draftId: draft && draft._id,
+      durationMs: Date.now() - startedAt,
+      message,
+    });
+    await releaseDraftConfirmReservation(draft._id, openid, message).catch(() => undefined);
+    return {
+      clothing: null,
+      duplicate: false,
+      created: false,
+      failed: true,
+      errorMessage: message,
+    };
+  }
+}
+
 async function reserveDraftForConfirm(draftId, openid) {
   const res = await db.collection('clothes_drafts').where({
     _id: draftId,
@@ -187,6 +240,21 @@ async function reserveDraftForConfirm(draftId, openid) {
   });
 
   return getUpdatedCount(res) > 0;
+}
+
+async function releaseDraftConfirmReservation(draftId, openid, message) {
+  await db.collection('clothes_drafts').where({
+    _id: draftId,
+    _openid: openid,
+    status: 'confirming',
+  }).update({
+    data: {
+      status: 'pending',
+      selected: true,
+      errorMessage: message || '',
+      updatedAt: nowIso(),
+    },
+  });
 }
 
 function getUpdatedCount(res) {
@@ -258,6 +326,24 @@ async function updateDraftFromInput(input, openid) {
   if (data.imageSourceType === 'manual_crop') data.displayImageUrl = current.data.manualCropImageUrl || input.manualCropImageUrl || current.data.originalImageUrl;
 
   await db.collection('clothes_drafts').doc(input.id).update({ data });
+}
+
+async function mapWithConcurrency(items, limit, worker) {
+  const source = Array.isArray(items) ? items : [];
+  const results = new Array(source.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(1, Number(limit) || 1), source.length || 1);
+
+  async function runWorker() {
+    while (nextIndex < source.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await worker(source[currentIndex], currentIndex);
+    }
+  }
+
+  await Promise.all(Array.from({ length: workerCount }, runWorker));
+  return results;
 }
 
 function buildClothingFromDraft(draft, openid) {

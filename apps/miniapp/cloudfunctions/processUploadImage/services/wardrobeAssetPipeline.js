@@ -174,14 +174,20 @@ async function runWardrobeAssetPipeline({ cloud, openid, image }) {
   }
 
   removeDuplicateCleanImages(assets, warnings);
+  const shoeMergeResult = await mergeShoePairAssets({
+    cloud,
+    assets,
+    warnings,
+  });
 
   return {
     routerResult,
     detectionRaw: detectionStage.raw,
     warnings,
-    assets,
+    assets: shoeMergeResult.assets,
     detectedCount: candidates.length,
     rawDetectedCount: detectionStage.rawDetectedCount || 0,
+    mergedShoePairCount: shoeMergeResult.mergedCount,
     hadDetectionError: detectionStage.status === 'failed',
     hadProviderError: providerTrace.some((trace) => trace && trace.status === 'failed'),
     hadPipelineError: false,
@@ -1327,6 +1333,316 @@ function removeDuplicateCleanImages(assets, warnings) {
       });
     }
   }
+}
+
+async function mergeShoePairAssets({ cloud, assets, warnings }) {
+  if (!Array.isArray(assets) || assets.length < 2) {
+    return { assets, mergedCount: 0 };
+  }
+
+  const usedIndexes = new Set();
+  const mergedAssets = [];
+  let mergedCount = 0;
+
+  for (let index = 0; index < assets.length; index += 1) {
+    if (usedIndexes.has(index)) continue;
+    const current = assets[index];
+    if (!isShoeAsset(current)) {
+      mergedAssets.push(current);
+      continue;
+    }
+
+    const match = findConservativeShoePair(current, assets, index, usedIndexes);
+    if (!match) {
+      mergedAssets.push(current);
+      continue;
+    }
+
+    usedIndexes.add(index);
+    usedIndexes.add(match.index);
+    const mergedAsset = await buildMergedShoePairAsset({
+      cloud,
+      left: match.left,
+      right: match.right,
+      reason: match.reason,
+      pairIndex: mergedCount,
+    });
+    mergedAssets.push(mergedAsset);
+    mergedCount += 1;
+  }
+
+  if (mergedCount > 0) warnings.push(`merged_shoe_pairs:${mergedCount}`);
+  return { assets: mergedAssets, mergedCount };
+}
+
+function findConservativeShoePair(asset, assets, assetIndex, usedIndexes) {
+  const matches = [];
+  for (let index = assetIndex + 1; index < assets.length; index += 1) {
+    if (usedIndexes.has(index)) continue;
+    const other = assets[index];
+    if (!isShoeAsset(other)) continue;
+    const match = getShoePairMatch(asset, other);
+    if (match) matches.push({ ...match, index });
+  }
+
+  if (matches.length !== 1) return null;
+  const matched = matches[0];
+  const reverseMatches = countShoePairMatches(assets[matched.index], assets, matched.index, usedIndexes);
+  if (reverseMatches !== 1) return null;
+  return matched;
+}
+
+function getShoePairMatch(first, second) {
+  if (!first || !second) return null;
+  if (first.sourceImageId !== second.sourceImageId) return null;
+  if (!isShoeAsset(first) || !isShoeAsset(second)) return null;
+  const firstBox = normalizeAssetBbox(first);
+  const secondBox = normalizeAssetBbox(second);
+  if (!firstBox || !secondBox) return null;
+
+  const firstCenter = getBboxCenter(firstBox);
+  const secondCenter = getBboxCenter(secondBox);
+  const widthRatio = ratioWithin(firstBox.width, secondBox.width);
+  const heightRatio = ratioWithin(firstBox.height, secondBox.height);
+  if (widthRatio < 0.58 || heightRatio < 0.62) return null;
+
+  const avgHeight = (firstBox.height + secondBox.height) / 2;
+  const avgWidth = (firstBox.width + secondBox.width) / 2;
+  if (Math.abs(firstCenter.y - secondCenter.y) > avgHeight * 0.45) return null;
+
+  const left = firstCenter.x <= secondCenter.x ? first : second;
+  const right = firstCenter.x <= secondCenter.x ? second : first;
+  const leftBox = firstCenter.x <= secondCenter.x ? firstBox : secondBox;
+  const rightBox = firstCenter.x <= secondCenter.x ? secondBox : firstBox;
+  const gap = rightBox.x - (leftBox.x + leftBox.width);
+  if (gap > avgWidth * 0.75) return null;
+  if (gap < -avgWidth * 0.45) return null;
+
+  const unionBox = unionBbox(leftBox, rightBox);
+  if (!isReasonableShoePairUnion(unionBox, firstBox, secondBox)) return null;
+
+  return {
+    left,
+    right,
+    unionBox,
+    reason: 'conservative_horizontal_shoe_pair',
+  };
+}
+
+function countShoePairMatches(asset, assets, assetIndex, usedIndexes) {
+  let count = 0;
+  for (let index = 0; index < assets.length; index += 1) {
+    if (index === assetIndex || usedIndexes.has(index)) continue;
+    if (getShoePairMatch(asset, assets[index])) count += 1;
+  }
+  return count;
+}
+
+function isReasonableShoePairUnion(unionBox, firstBox, secondBox) {
+  if (!unionBox) return false;
+  const area = unionBox.width * unionBox.height;
+  if (area <= 0 || area > 0.42) return false;
+  if (unionBox.width > 0.86 || unionBox.height > 0.6) return false;
+  const maxSingleArea = Math.max(firstBox.width * firstBox.height, secondBox.width * secondBox.height);
+  if (maxSingleArea <= 0 || area > maxSingleArea * 3.1) return false;
+  return true;
+}
+
+async function buildMergedShoePairAsset({ cloud, left, right, reason, pairIndex }) {
+  const leftBox = normalizeAssetBbox(left);
+  const rightBox = normalizeAssetBbox(right);
+  const unionBox = unionBbox(leftBox, rightBox);
+  const primary = chooseShoePairPrimaryAsset(left, right);
+  const secondary = primary === left ? right : left;
+  const now = new Date().toISOString();
+  const merged = {
+    ...cloneJson(primary),
+    itemIndex: Math.min(Number(left.itemIndex || 0), Number(right.itemIndex || 0)),
+    type: 'shoes',
+    category: 'shoes',
+    subCategory: getShoeSubcategory(primary, secondary),
+    categoryName: getShoeSubcategory(primary, secondary),
+    bbox: unionBox,
+    cropBox: unionBox,
+    confidence: Math.max(Number(left.confidence || 0), Number(right.confidence || 0)),
+    qualityScore: Math.max(Number(left.qualityScore || 0), Number(right.qualityScore || 0)),
+    needsUserConfirm: true,
+    confirmReasons: Array.from(new Set([
+      ...(primary.confirmReasons || []),
+      ...(secondary.confirmReasons || []),
+      'merged_shoe_pair_needs_review',
+    ])),
+    createdAt: primary.createdAt || now,
+    updatedAt: now,
+    aiRawResult: {
+      ...(primary.aiRawResult || {}),
+      mergedPair: true,
+      mergedFromItemIndexes: [left.itemIndex, right.itemIndex],
+      mergeReason: reason,
+      mergeMetadata: {
+        sourceImageId: primary.sourceImageId,
+        leftItemIndex: left.itemIndex,
+        rightItemIndex: right.itemIndex,
+        leftBbox: leftBox,
+        rightBbox: rightBox,
+        unionBbox: unionBox,
+      },
+    },
+  };
+
+  const cropStage = await cropGarment({
+    cloud,
+    originalImageUrl: primary.originalImageUrl,
+    bbox: unionBox,
+    batchId: primary.batchId,
+    sourceImageId: primary.sourceImageId,
+    itemIndex: `shoe-pair-${pairIndex}`,
+    allowLargeBbox: false,
+  });
+
+  merged.stageStatus = {
+    ...(merged.stageStatus || DEFAULT_STAGE_STATUS),
+    crop: cropStage.status,
+    segment: 'skipped',
+  };
+  merged.providerTrace = [
+    ...(merged.providerTrace || []),
+    cropStage.trace,
+  ];
+  merged.cleanImageUrl = '';
+  merged.aiSegmentImageUrl = '';
+  merged.maskImageUrl = '';
+  merged.segmentStatus = 'skipped';
+
+  if (cropStage.output && cropStage.output.cropImageUrl && cropStage.output.bbox) {
+    merged.cropImageUrl = cropStage.output.cropImageUrl;
+    merged.croppedImageUrl = cropStage.output.cropImageUrl;
+    merged.displayImageUrl = cropStage.output.cropImageUrl;
+    merged.imageUrl = cropStage.output.cropImageUrl;
+    merged.imageSourceType = 'crop';
+    merged.bbox = cropStage.output.bbox;
+    merged.cropBox = cropStage.output.bbox;
+    merged.aiRawResult.mergeCrop = {
+      status: 'success',
+      cropImageUrl: cropStage.output.cropImageUrl,
+      bboxNormalize: cropStage.output.bboxNormalize || null,
+    };
+  } else {
+    merged.displayImageUrl = primary.cropImageUrl || primary.displayImageUrl || primary.originalImageUrl;
+    merged.imageUrl = merged.displayImageUrl;
+    merged.imageSourceType = primary.cropImageUrl ? 'crop' : (primary.imageSourceType || 'original');
+    merged.aiRawResult.mergeCrop = {
+      status: 'fallback',
+      reason: cropStage.errorMessage || 'merge_crop_failed',
+      fallbackImageSourceType: merged.imageSourceType,
+    };
+    addConfirmReason(merged, 'merged_shoe_pair_crop_fallback');
+  }
+
+  applyQualityScore(merged, {
+    routerFailed: merged.stageStatus.router === 'failed',
+    detectionFailed: merged.stageStatus.detection === 'failed',
+    suspiciousMultiItem: false,
+    bboxTooLarge: false,
+  });
+  merged.needsUserConfirm = true;
+  addConfirmReason(merged, 'merged_shoe_pair_needs_review');
+  return merged;
+}
+
+function chooseShoePairPrimaryAsset(first, second) {
+  const firstScore = Number(first.qualityScore || 0) + Number(first.confidence || 0);
+  const secondScore = Number(second.qualityScore || 0) + Number(second.confidence || 0);
+  return firstScore >= secondScore ? first : second;
+}
+
+function getShoeSubcategory(primary, secondary) {
+  const values = [
+    primary.categoryName,
+    primary.subCategory,
+    primary.category,
+    secondary.categoryName,
+    secondary.subCategory,
+    secondary.category,
+  ];
+  return values.find((value) => isShoeLikeText(value) && String(value).trim().toLowerCase() !== 'shoes') || 'shoes';
+}
+
+function isShoeAsset(asset) {
+  if (!asset) return false;
+  return [
+    asset.type,
+    asset.category,
+    asset.subCategory,
+    asset.categoryName,
+    asset.aiRawResult && asset.aiRawResult.candidate && asset.aiRawResult.candidate.category,
+    asset.aiRawResult && asset.aiRawResult.candidate && asset.aiRawResult.candidate.roughCategory,
+  ].some(isShoeLikeText);
+}
+
+function isShoeLikeText(value) {
+  const text = String(value || '').trim().toLowerCase();
+  if (!text) return false;
+  if (normalizeType(text) === 'shoes') return true;
+  if (text.includes('鞋') || text.includes('靴')) return true;
+  return [
+    'shoe',
+    'shoes',
+    'footwear',
+    'sneaker',
+    'sneakers',
+    'boot',
+    'boots',
+    'loafer',
+    'loafers',
+    'sandal',
+    'sandals',
+    'trainer',
+    'trainers',
+    'slipper',
+    'slippers',
+    'heel',
+    'heels',
+  ].includes(text);
+}
+
+function normalizeAssetBbox(asset) {
+  const bbox = asset && (asset.bbox || asset.cropBox);
+  if (!bbox) return null;
+  const x = Number(bbox.x);
+  const y = Number(bbox.y);
+  const width = Number(bbox.width);
+  const height = Number(bbox.height);
+  if (![x, y, width, height].every(Number.isFinite)) return null;
+  if (x < 0 || y < 0 || width <= 0 || height <= 0 || x + width > 1 || y + height > 1) return null;
+  return { x, y, width, height };
+}
+
+function getBboxCenter(bbox) {
+  return {
+    x: bbox.x + bbox.width / 2,
+    y: bbox.y + bbox.height / 2,
+  };
+}
+
+function ratioWithin(first, second) {
+  const min = Math.min(Number(first), Number(second));
+  const max = Math.max(Number(first), Number(second));
+  return max > 0 ? min / max : 0;
+}
+
+function unionBbox(first, second) {
+  if (!first || !second) return null;
+  const x1 = Math.min(first.x, second.x);
+  const y1 = Math.min(first.y, second.y);
+  const x2 = Math.max(first.x + first.width, second.x + second.width);
+  const y2 = Math.max(first.y + first.height, second.y + second.height);
+  return {
+    x: x1,
+    y: y1,
+    width: x2 - x1,
+    height: y2 - y1,
+  };
 }
 
 function toDraftData(asset, openid) {
