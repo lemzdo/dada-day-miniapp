@@ -467,28 +467,41 @@ async function removeFavoriteOutfit(id, outfitKey) {
 
 async function listFavoriteOutfits(event) {
   const { OPENID } = cloud.getWXContext();
+  const startedAt = Date.now();
   const page = Math.max(Number(event.page || 1), 1);
   const pageSize = Math.min(Math.max(Number(event.pageSize || 10), 1), 50);
-  const res = await db.collection('favorite_outfits')
-    .where({ _openid: OPENID })
-    .orderBy('createdAt', 'desc')
-    .limit(500)
-    .get();
-  const list = (res.data || []).filter((item) => !item.deletedAt);
-  const pageList = list.slice((page - 1) * pageSize, page * pageSize);
+  const query = db.collection('favorite_outfits')
+    .where({ _openid: OPENID });
+  const [totalRes, pageRes] = await Promise.all([
+    query.count(),
+    query
+      .orderBy('createdAt', 'desc')
+      .skip((page - 1) * pageSize)
+      .limit(pageSize)
+      .get(),
+  ]);
+  const pageList = (pageRes.data || []).filter((item) => !item.deletedAt);
   const outfits = await enrichOutfitsState(pageList.map((item) => toSnapshotOutfit(item, 'favorite')), {
     openid: OPENID,
     targetDate: new Date().toISOString().slice(0, 10),
   });
 
+  console.log('[generateOutfit] listFavoriteOutfits', {
+    page,
+    pageSize,
+    returned: outfits.length,
+    total: totalRes.total,
+    durationMs: Date.now() - startedAt,
+  });
+
   return {
     list: outfits,
-    hasMore: page * pageSize < list.length,
+    hasMore: page * pageSize < totalRes.total,
     pagination: {
-      total: list.length,
+      total: totalRes.total,
       page,
       pageSize,
-      totalPages: Math.max(1, Math.ceil(list.length / pageSize)),
+      totalPages: Math.max(1, Math.ceil(totalRes.total / pageSize)),
     },
   };
 }
@@ -540,29 +553,43 @@ async function addOutfitHistory(event) {
 
 async function listOutfitHistory(event) {
   const { OPENID } = cloud.getWXContext();
+  const startedAt = Date.now();
   const page = Math.max(Number(event.page || 1), 1);
   const pageSize = Math.min(Math.max(Number(event.pageSize || 10), 1), 50);
-  const res = await db.collection('outfit_history')
-    .where({ _openid: OPENID })
-    .limit(500)
-    .get();
-  const list = (res.data || []).sort((a, b) => getHistorySortTime(b) - getHistorySortTime(a));
-  const pageList = list.slice((page - 1) * pageSize, page * pageSize);
+  const query = db.collection('outfit_history')
+    .where({ _openid: OPENID });
+  const [totalRes, pageRes] = await Promise.all([
+    query.count(),
+    query
+      .orderBy('wornAt', 'desc')
+      .skip((page - 1) * pageSize)
+      .limit(pageSize)
+      .get(),
+  ]);
+  const pageList = pageRes.data || [];
   const outfits = await enrichOutfitsState(pageList.map((item) => toSnapshotOutfit(item, 'history')), {
     openid: OPENID,
     targetDate: new Date().toISOString().slice(0, 10),
+  });
+
+  console.log('[generateOutfit] listOutfitHistory', {
+    page,
+    pageSize,
+    returned: outfits.length,
+    total: totalRes.total,
+    durationMs: Date.now() - startedAt,
   });
 
   return {
     list: outfits,
     page,
     pageSize,
-    hasMore: page * pageSize < list.length,
+    hasMore: page * pageSize < totalRes.total,
     pagination: {
-      total: list.length,
+      total: totalRes.total,
       page,
       pageSize,
-      totalPages: Math.max(1, Math.ceil(list.length / pageSize)),
+      totalPages: Math.max(1, Math.ceil(totalRes.total / pageSize)),
     },
   };
 }
@@ -764,7 +791,7 @@ function buildSnapshotRecordData(base, { aiComment, outfitKey, now, source }) {
       name: item.name || item.category || '衣服',
       category: item.category || 'other',
       color: item.color || '',
-      thumbnailUrl: item.displayImageUrl || item.imageUrl || '',
+      thumbnailUrl: item.thumbnailUrl || item.displayImageUrl || item.imageUrl || '',
       isDeleted: Boolean(item.deletedAt),
     })),
     scene: base.scene,
@@ -803,6 +830,7 @@ function buildDetailedSnapshotItems(clothingIds, base) {
       material: snapshot?.material || '',
       imageUrl: snapshot?.imageUrl || snapshot?.displayImageUrl || '',
       displayImageUrl: snapshot?.displayImageUrl || snapshot?.imageUrl || '',
+      thumbnailUrl: snapshot?.thumbnailUrl || snapshot?.imageUrl || snapshot?.displayImageUrl || '',
       name: snapshot?.name || snapshot?.category || '衣服',
       deletedAt: snapshot?.deletedAt || null,
     };
@@ -826,6 +854,7 @@ function normalizeDetailedSnapshotItems(value) {
             material: item.material || '',
             imageUrl: item.imageUrl || item.thumbnailUrl || item.displayImageUrl || '',
             displayImageUrl: item.displayImageUrl || item.thumbnailUrl || item.imageUrl || '',
+            thumbnailUrl: item.thumbnailUrl || item.imageUrl || item.displayImageUrl || '',
             name: item.name || item.subcategory || item.category || '衣服',
             deletedAt: item.deletedAt || (item.isDeleted ? new Date().toISOString() : null),
           };
@@ -849,6 +878,7 @@ function normalizeDetailedPayloadItems(value) {
           material: item.material || item.materialGuess || '',
           imageUrl: item.imageUrl || '',
           displayImageUrl: item.displayImageUrl || item.imageUrl || '',
+          thumbnailUrl: item.thumbnailUrl || item.imageUrl || '',
           name: item.name || item.subcategory || item.category || '衣服',
           deletedAt: item.deletedAt || (item.isDeleted ? new Date().toISOString() : null),
         }))
@@ -866,7 +896,7 @@ function toSnapshotOutfit(item, kind) {
     name: snapshot.name || snapshot.category || '衣服',
     category: snapshot.category || 'other',
     color: snapshot.color || '',
-    thumbnailUrl: snapshot.displayImageUrl || snapshot.imageUrl || '',
+    thumbnailUrl: snapshot.thumbnailUrl || snapshot.displayImageUrl || snapshot.imageUrl || '',
     isDeleted: Boolean(snapshot.deletedAt),
   }));
   const deletedItemCount = itemsSnapshot.filter((snapshot) => snapshot.deletedAt).length;
@@ -889,7 +919,7 @@ function toSnapshotOutfit(item, kind) {
       clothingId: snapshot.clothingId,
       category: snapshot.category || 'other',
       subcategory: snapshot.name || snapshot.type || snapshot.category,
-      imageUrl: snapshot.displayImageUrl || snapshot.imageUrl || '',
+      imageUrl: snapshot.thumbnailUrl || snapshot.displayImageUrl || snapshot.imageUrl || '',
       colorPalette: snapshot.color ? [{ name: snapshot.color, hex: '' }] : [],
       isDeleted: Boolean(snapshot.deletedAt),
     })),
@@ -1059,7 +1089,7 @@ function snapshotFromClothing(item, fallback, itemId) {
     name: item?.customName || item?.subcategory || item?.subCategory || item?.category || fallback?.name || '衣服',
     category: item?.category || fallback?.category || 'other',
     color: readColorText(item) || fallback?.color || '',
-    thumbnailUrl: getDisplayImage(item) || fallback?.thumbnailUrl || '',
+    thumbnailUrl: getThumbnailImage(item) || fallback?.thumbnailUrl || '',
     isDeleted: Boolean(item?.status === DELETED_STATUS || fallback?.isDeleted),
   };
 }
@@ -1934,7 +1964,19 @@ function resolveCategoryValues(category) {
 
 function getDisplayImage(item) {
   if (!item) return '';
-  return item.displayImageUrl || item.originalImageUrl || '';
+  return item.displayImageUrl
+    || item.cleanImageUrl
+    || item.aiSegmentImageUrl
+    || item.cropImageUrl
+    || item.croppedImageUrl
+    || item.imageUrl
+    || item.originalImageUrl
+    || '';
+}
+
+function getThumbnailImage(item) {
+  if (!item) return '';
+  return item.thumbnailUrl || item.thumbImageUrl || getDisplayImage(item);
 }
 
 function ok(data) {

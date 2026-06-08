@@ -1,6 +1,7 @@
-import { Image, Swiper, SwiperItem, Text, View } from '@tarojs/components';
-import Taro, { useDidShow, useLoad, usePullDownRefresh } from '@tarojs/taro';
+import { Swiper, SwiperItem, Text, View } from '@tarojs/components';
+import Taro, { useDidShow, useLoad, usePullDownRefresh, useUnload } from '@tarojs/taro';
 import { useRef, useState } from 'react';
+import { SafeImage } from '@/components/SafeImage';
 import { WeatherCard } from '@/components/WeatherCard';
 import { addOutfitHistory, clearCloudRecommendationCache, generateCloudOutfit, removeFavoriteOutfit, saveFavoriteOutfit } from '@/lib/cloud';
 import { consumeOutfitStateSync, normalizeOutfitSnapshot, storeOutfitDetailDraft } from '@/utils/outfitSnapshot';
@@ -51,17 +52,23 @@ export default function TodayPage() {
   const requestSeq = useRef(0);
   const seenOutfitKeysRef = useRef<Set<string>>(new Set());
   const currentWeatherRef = useRef<WeatherSnapshot | undefined>(undefined);
+  const lastRecommendationWeatherKeyRef = useRef('');
+  const initialRecommendationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [currentWeather, setCurrentWeather] = useState<WeatherSnapshot | undefined>(undefined);
   const selectedScene = SCENE_TAGS[selectedSceneKey];
   const selectedSceneRef = useRef<SceneTag>(selectedScene);
   selectedSceneRef.current = selectedScene;
 
   useLoad(() => {
-    fetchRecommendations({ scene: selectedScene });
+    scheduleInitialRecommendation();
+  });
+
+  useUnload(() => {
+    clearInitialRecommendationTimer();
   });
 
   usePullDownRefresh(() => {
-    fetchRecommendations({ scene: selectedScene }).finally(() => {
+    fetchRecommendations({ scene: selectedScene, trigger: 'pull-down' }).finally(() => {
       Taro.stopPullDownRefresh();
     });
   });
@@ -78,18 +85,21 @@ export default function TodayPage() {
     weather = currentWeatherRef.current,
     excludedOutfitKeys = [],
     silent = false,
+    trigger = 'unknown',
   }: {
     scene: SceneTag;
     weather?: WeatherSnapshot;
     excludedOutfitKeys?: string[];
     silent?: boolean;
+    trigger?: string;
   }): Promise<boolean> {
     const seq = nextRequestSeq();
     console.log('[TodayPage] fetchRecommendations start', {
       requestSeq: seq,
+      trigger,
       selectedScene,
       scene,
-      weather,
+      hasWeather: Boolean(weather),
     });
     if (!silent) {
       setLoading(true);
@@ -114,6 +124,7 @@ export default function TodayPage() {
       const nextOutfits = data.outfits.map((outfit) => normalizeOutfitSnapshot(outfit));
       console.log('[TodayPage] fetchRecommendations success', {
         requestSeq: seq,
+        trigger,
         scene,
         debug: data.debug,
         outfitCount: nextOutfits.length,
@@ -152,6 +163,13 @@ export default function TodayPage() {
     setRecommendationNotice('');
 
     try {
+      console.log('[TodayPage] fetchRecommendations start', {
+        requestSeq: seq,
+        trigger: 'refresh',
+        selectedScene,
+        scene: selectedScene,
+        hasWeather: Boolean(currentWeather ?? currentWeatherRef.current),
+      });
       const weatherForRefresh = currentWeather ?? currentWeatherRef.current;
       const data = await generateCloudOutfit({
         date: getToday(),
@@ -167,6 +185,7 @@ export default function TodayPage() {
         const nextOutfits = data.outfits.map((outfit) => normalizeOutfitSnapshot(outfit));
         console.log('[TodayPage] refresh success', {
           requestSeq: seq,
+          trigger: 'refresh',
           selectedScene,
           debug: data.debug,
           outfitCount: nextOutfits.length,
@@ -275,15 +294,26 @@ export default function TodayPage() {
     setCurrentIndex(0);
     setOutfits([]);
     setHasRecommendations(true);
-    fetchRecommendations({ scene: SCENE_TAGS[key], weather: currentWeather ?? currentWeatherRef.current });
+    fetchRecommendations({ scene: SCENE_TAGS[key], weather: currentWeather ?? currentWeatherRef.current, trigger: 'scene' });
   }
 
   async function handleWeatherChange(weather: WeatherSnapshot, options: { forceRefresh?: boolean } = {}) {
+    const weatherKey = getWeatherKey(weather);
+    const sameWeather = weatherKey === lastRecommendationWeatherKeyRef.current;
+    if (!options.forceRefresh && sameWeather && outfits.length > 0) {
+      console.log('[TodayPage] weather unchanged, skip recommendation refresh', {
+        weatherKey,
+      });
+      return;
+    }
+
+    clearInitialRecommendationTimer();
     currentWeatherRef.current = weather;
+    lastRecommendationWeatherKeyRef.current = weatherKey;
     setCurrentWeather(weather);
     clearCloudRecommendationCache();
     const scene = selectedSceneRef.current;
-    await fetchRecommendations({ scene, weather, silent: true });
+    await fetchRecommendations({ scene, weather, silent: true, trigger: options.forceRefresh ? 'weather-force' : 'weather' });
     if (options.forceRefresh) {
       console.log('[TodayPage] weather refreshed, recommendations reloaded', {
         scene,
@@ -307,6 +337,20 @@ export default function TodayPage() {
     const next = event.detail.current;
     setCurrentIndex(next);
     markOutfitShown(outfits[next]);
+  }
+
+  function scheduleInitialRecommendation() {
+    clearInitialRecommendationTimer();
+    initialRecommendationTimerRef.current = setTimeout(() => {
+      if (currentWeatherRef.current || outfits.length > 0) return;
+      fetchRecommendations({ scene: selectedSceneRef.current, trigger: 'initial-fallback' });
+    }, 700);
+  }
+
+  function clearInitialRecommendationTimer() {
+    if (!initialRecommendationTimerRef.current) return;
+    clearTimeout(initialRecommendationTimerRef.current);
+    initialRecommendationTimerRef.current = null;
   }
 
   function updateOutfitsByKey(reference: Outfit, patch: Partial<Outfit>) {
@@ -396,7 +440,7 @@ export default function TodayPage() {
               <View className="empty-icon" />
             </View>
             <Text className="empty-text">{error}</Text>
-            <View className="empty-action" onClick={() => fetchRecommendations({ scene: selectedScene })}>
+            <View className="empty-action" onClick={() => fetchRecommendations({ scene: selectedScene, trigger: 'retry' })}>
               <Text className="empty-action-text">重新获取</Text>
             </View>
           </View>
@@ -452,7 +496,7 @@ export default function TodayPage() {
                     <View className="outfit-collage">
                       {outfit.items?.map((item) => (
                         <View key={item.clothingId} className={`collage-item ${item.isDeleted ? 'deleted' : ''}`}>
-                          <Image className="item-image" src={item.imageUrl} mode="aspectFit" lazyLoad />
+                          <SafeImage className="item-image" src={item.imageUrl} mode="aspectFit" lazyLoad />
                         </View>
                       ))}
                     </View>
@@ -515,6 +559,16 @@ export default function TodayPage() {
 
 function getToday() {
   return new Date().toISOString().split('T')[0]!;
+}
+
+function getWeatherKey(weather: WeatherSnapshot) {
+  return [
+    weather.temp,
+    weather.humidity,
+    weather.weather,
+    weather.wind,
+    weather.uv,
+  ].join(':');
 }
 
 function getDeletedItemCount(outfit: Outfit) {

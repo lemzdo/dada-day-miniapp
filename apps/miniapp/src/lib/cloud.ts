@@ -190,7 +190,11 @@ export async function getWardrobe(params: GetWardrobeParams = {}) {
 }
 
 export async function getClothingById(id: string) {
-  const data = await getWardrobe({ id });
+  const data = await callCachedCloudFunction<{
+    list: Clothing[];
+    pagination: { total: number; page: number; pageSize: number; totalPages: number };
+    capacity: { total: number; used: number; remaining: number };
+  }>('getWardrobe', { id, detail: true, includeTotal: false, includeCapacity: false }, CACHE_TTL.wardrobe);
   const item = data.list[0];
   if (!item) throw new Error('Clothing not found');
   return item;
@@ -674,6 +678,9 @@ export function clearUserClothingMaterialsCache() {
 
 export interface GetWardrobeParams {
   id?: string;
+  detail?: boolean;
+  includeTotal?: boolean;
+  includeCapacity?: boolean;
   category?: ClothingCategory | 'all';
   subcategory?: string | 'all';
   subcategoryId?: string;

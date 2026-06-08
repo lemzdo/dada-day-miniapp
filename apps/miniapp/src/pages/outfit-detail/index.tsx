@@ -1,6 +1,7 @@
-import { Image, Input, Text, View } from '@tarojs/components';
+import { Input, Text, View } from '@tarojs/components';
 import Taro, { useLoad, useRouter } from '@tarojs/taro';
 import { useState } from 'react';
+import { SafeImage } from '@/components/SafeImage';
 import {
   addOutfitHistory,
   generateCloudOutfitComment,
@@ -86,6 +87,19 @@ function getItemImage(item: OutfitSnapshotItem | OutfitItemSummary): string {
   );
 }
 
+function getItemDetailImage(item: OutfitSnapshotItem | OutfitItemSummary): string {
+  const snapshotItem = item as OutfitSnapshotItem;
+  const summaryItem = item as OutfitItemSummary;
+
+  return (
+    snapshotItem.displayImageUrl ||
+    summaryItem.imageUrl ||
+    snapshotItem.imageUrl ||
+    snapshotItem.thumbnailUrl ||
+    ''
+  );
+}
+
 // 获取单品副信息（最多3个关键词）
 function getItemMeta(item: OutfitSnapshotItem | OutfitItemSummary): string[] {
   const snapshotItem = item as OutfitSnapshotItem;
@@ -154,7 +168,7 @@ function OutfitItemRow({
       className={`outfit-item-row ${isDeleted ? 'deleted' : ''} ${isLast ? 'last' : ''}`}
       onClick={handleClick}
     >
-      <Image className="item-thumb" src={image} mode="aspectFill" lazyLoad />
+      <SafeImage className="item-thumb" src={image} mode="aspectFill" lazyLoad />
       <View className="item-info">
         <Text className="item-name-row">{name}</Text>
         <View className="item-meta">
@@ -441,9 +455,9 @@ export default function OutfitDetailPage() {
 
         <View className="visual-card">
           <View className="visual-collage">
-            {outfit.items?.map((item) => (
-              <View key={item.clothingId} className={`visual-item ${item.isDeleted ? 'deleted' : ''}`}>
-                <Image className="visual-image" src={item.imageUrl} mode="aspectFit" lazyLoad />
+            {getOutfitItems(outfit).map((item, index) => (
+              <View key={getItemClothingId(item) || index} className={`visual-item ${isItemDeleted(item) ? 'deleted' : ''}`}>
+                <SafeImage className="visual-image" src={getItemDetailImage(item)} mode="aspectFit" lazyLoad />
               </View>
             ))}
           </View>

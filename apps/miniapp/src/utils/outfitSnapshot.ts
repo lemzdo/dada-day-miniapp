@@ -22,7 +22,7 @@ export function normalizeOutfitSnapshot(outfit: Outfit): Outfit {
       clothingId: item.clothingId ?? item.itemId,
       category: item.category as ClothingCategory,
       subcategory: item.name || item.type || item.category,
-      imageUrl: item.displayImageUrl || item.imageUrl || item.thumbnailUrl || '',
+      imageUrl: item.thumbnailUrl || item.displayImageUrl || item.imageUrl || '',
       colorPalette: item.color ? [{ name: item.color, hex: '' }] : [],
       isDeleted: Boolean(item.deletedAt || item.isDeleted),
     })),
@@ -73,24 +73,31 @@ function buildSnapshots(outfit: Outfit): OutfitSnapshotItem[] {
   return [
     ...(outfit.itemsSnapshot ?? []),
     ...(outfit.snapshotItems ?? []),
-    ...(outfit.items ?? []).map((item) => ({
-      itemId: item.clothingId,
-      clothingId: item.clothingId,
-      type: item.subcategory || item.category,
-      name: item.subcategory || item.category,
-      category: item.category,
-      color: item.colorPalette?.map((color) => color.name).filter(Boolean).join(' / ') ?? '',
-      imageUrl: item.imageUrl,
-      displayImageUrl: item.imageUrl,
-      thumbnailUrl: item.imageUrl,
-      isDeleted: Boolean(item.isDeleted),
-      deletedAt: item.isDeleted ? new Date().toISOString() : null,
-    })),
+    ...(outfit.items ?? []).map((item) => {
+      const imageItem = item as typeof item & {
+        thumbnailUrl?: string;
+        displayImageUrl?: string;
+      };
+      return {
+        itemId: item.clothingId,
+        clothingId: item.clothingId,
+        type: item.subcategory || item.category,
+        name: item.subcategory || item.category,
+        category: item.category,
+        color: item.colorPalette?.map((color) => color.name).filter(Boolean).join(' / ') ?? '',
+        imageUrl: imageItem.thumbnailUrl || item.imageUrl,
+        displayImageUrl: imageItem.displayImageUrl || item.imageUrl,
+        thumbnailUrl: imageItem.thumbnailUrl || item.imageUrl,
+        isDeleted: Boolean(item.isDeleted),
+        deletedAt: item.isDeleted ? new Date().toISOString() : null,
+      };
+    }),
   ];
 }
 
 function normalizeSnapshotItem(item: OutfitSnapshotItem | undefined, clothingId: string): OutfitSnapshotItem {
-  const imageUrl = item?.displayImageUrl || item?.imageUrl || item?.thumbnailUrl || '';
+  const displayImageUrl = item?.displayImageUrl || item?.imageUrl || item?.thumbnailUrl || '';
+  const thumbnailUrl = item?.thumbnailUrl || item?.imageUrl || displayImageUrl;
 
   return {
     itemId: clothingId,
@@ -102,9 +109,9 @@ function normalizeSnapshotItem(item: OutfitSnapshotItem | undefined, clothingId:
     style: item?.style || '',
     thickness: item?.thickness || '',
     material: item?.material || '',
-    imageUrl,
-    displayImageUrl: imageUrl,
-    thumbnailUrl: imageUrl,
+    imageUrl: item?.imageUrl || displayImageUrl,
+    displayImageUrl,
+    thumbnailUrl,
     deletedAt: item?.deletedAt ?? (item?.isDeleted ? new Date().toISOString() : null),
     isDeleted: Boolean(item?.isDeleted || item?.deletedAt),
   };

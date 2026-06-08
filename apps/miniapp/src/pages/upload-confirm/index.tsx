@@ -1,6 +1,7 @@
-import { Image, Text, View } from '@tarojs/components';
+import { Text, View } from '@tarojs/components';
 import Taro, { useLoad, usePullDownRefresh, useRouter, useUnload } from '@tarojs/taro';
 import { useCallback, useRef, useState } from 'react';
+import { SafeImage } from '@/components/SafeImage';
 import { ClothingEditForm, type ClothingEditFormValue } from '@/components/ClothingEditForm';
 import { CATEGORY_OPTIONS } from '@/components/ClothingEditForm/constants';
 import {
@@ -11,7 +12,7 @@ import {
   processUploadImage,
   segmentClothesDraft,
 } from '@/lib/cloud';
-import { displayClothingTags, displayClothingText, getSubcategoryDisplayLabel } from '@/utils/clothingLabels';
+import { displayClothingTags, displayClothingText, getSubcategoryDisplayLabel, getUploadDraftDisplayImage } from '@/utils/clothingLabels';
 import type { ClothesDraft, ClothingCategory, ClothingImageSourceType, UploadBatch, UploadImage } from '@starter-template/types';
 import './index.scss';
 
@@ -33,10 +34,12 @@ export default function UploadConfirmPage() {
   const discardRequestedRef = useRef(false);
   const segmentingDraftIdsRef = useRef(new Set<string>());
   const savingRef = useRef(false);
+  const batchRefreshCountRef = useRef(0);
 
   const refresh = useCallback(async () => {
     if (!batchId) return;
     try {
+      batchRefreshCountRef.current += 1;
       const detail = await getUploadBatchDetail(batchId);
       if (!mountedRef.current) return detail;
       setBatch(detail.batch);
@@ -77,6 +80,8 @@ export default function UploadConfirmPage() {
     if (!batchId || processingLoopRef.current || !mountedRef.current || discardRequestedRef.current) return;
     processingLoopRef.current = true;
     setProcessing(true);
+    batchRefreshCountRef.current = 0;
+    const startedAt = Date.now();
 
     const stored = Taro.getStorageSync(`uploadBatchImages:${batchId}`) as string[] | undefined;
     const sourceImages = imagesOverride ?? images;
@@ -100,9 +105,9 @@ export default function UploadConfirmPage() {
         if (!mountedRef.current || discardRequestedRef.current) return;
         const imageId = targetIds[index];
         if (!imageId) continue;
-        await processUploadImage(imageId);
+        const result = await processUploadImage(imageId);
         if (!mountedRef.current || discardRequestedRef.current) return;
-        await refresh();
+        applyProcessedImageResult(imageId, result);
       }
       Taro.removeStorageSync(`uploadBatchImages:${batchId}`);
     } finally {
@@ -110,8 +115,46 @@ export default function UploadConfirmPage() {
       if (mountedRef.current && !discardRequestedRef.current) {
         setProcessing(false);
         await refresh();
+        console.log('[upload-confirm] processPendingImages completed', {
+          batchId,
+          totalImages: targetIds.length,
+          durationMs: Date.now() - startedAt,
+          batchRefreshCount: batchRefreshCountRef.current,
+        });
       }
     }
+  }
+
+  function applyProcessedImageResult(
+    imageId: string,
+    result: Awaited<ReturnType<typeof processUploadImage>>,
+  ) {
+    const nextDrafts = result.drafts || [];
+    const nextStatus = nextDrafts.length > 0 ? 'detected' : result.errorMessage ? 'failed' : 'empty';
+    setImages((prev) => prev.map((item) => (
+      item.id === imageId
+        ? {
+            ...item,
+            status: nextStatus,
+            detectStatus: nextStatus === 'failed' ? 'failed' : 'success',
+            detectedCount: nextDrafts.length,
+            errorMessage: result.errorMessage || '',
+          }
+        : item
+    )));
+    setDrafts((prev) => mergeDrafts(prev, nextDrafts));
+    setBatch((prev) => {
+      if (!prev) return prev;
+      const totalImages = Math.max(0, Number(prev.totalImages || images.length || 0));
+      const processedImages = Math.min(totalImages, Math.max(0, Number(prev.processedImages || 0)) + 1);
+      const totalDetectedClothes = Math.max(0, Number(prev.totalDetectedClothes || 0)) + nextDrafts.length;
+      return {
+        ...prev,
+        processedImages,
+        totalDetectedClothes,
+        status: processedImages >= totalImages ? (totalDetectedClothes > 0 ? 'ready' : 'failed') : 'processing',
+      };
+    });
   }
 
   async function handleRetry(image: UploadImage) {
@@ -397,7 +440,7 @@ export default function UploadConfirmPage() {
             onClick={() => toggleDraftSelected(draft)}
           >
             <View className="draft-image-wrapper">
-              <Image className="draft-image" src={getDraftDisplayImage(draft)} mode="aspectFill" />
+              <SafeImage className="draft-image" src={getDraftDisplayImage(draft)} mode="aspectFill" lazyLoad />
             </View>
             <View className="draft-body">
               <View className="draft-topline">
@@ -570,6 +613,15 @@ function isImagePendingForProcess(image: UploadImage) {
   return image.status === 'pending' || image.status === 'detecting' || image.status === 'processing';
 }
 
+function mergeDrafts(prev: ClothesDraft[], next: ClothesDraft[]) {
+  if (next.length === 0) return prev;
+  const byId = new Map(prev.map((draft) => [draft.id, draft]));
+  next.forEach((draft) => {
+    byId.set(draft.id, draft);
+  });
+  return Array.from(byId.values());
+}
+
 type UploadBatchViewStatus = 'processing' | 'ready' | 'failed' | 'saved' | 'discarded';
 type UploadConfirmPageState = 'processing' | 'ready' | 'empty';
 
@@ -704,14 +756,7 @@ function getDraftPrimaryStatusClass(draft: ClothesDraft) {
 }
 
 function getDraftDisplayImage(draft: ClothesDraft) {
-  if (draft.cleanImageUrl) return draft.cleanImageUrl;
-  if (draft.aiSegmentImageUrl && draft.segmentStatus === 'success') return draft.aiSegmentImageUrl;
-  if (draft.cropImageUrl) return draft.cropImageUrl;
-  if (draft.croppedImageUrl) return draft.croppedImageUrl;
-  if (draft.displayImageUrl) return draft.displayImageUrl;
-  if (draft.imageUrl) return draft.imageUrl;
-  if (draft.manualCropImageUrl && draft.manualCropStatus === 'success') return draft.manualCropImageUrl;
-  return draft.originalImageUrl;
+  return getUploadDraftDisplayImage(draft);
 }
 
 function getDraftImageSourceType(draft: ClothesDraft): ClothingImageSourceType {

@@ -1,9 +1,10 @@
-import { View, Image, Text } from '@tarojs/components';
+import { View, Text } from '@tarojs/components';
+import { SafeImage } from '@/components/SafeImage';
 import {
   categoryLabels,
   displayClothingTags,
   displayClothingText,
-  getDisplayImage,
+  getListDisplayImage,
   getSubcategoryDisplayLabel,
 } from '@/utils/clothingLabels';
 import type { Clothing } from '@starter-template/types';
@@ -70,7 +71,7 @@ export function ClothingGrid({
             onLongPress={() => onItemLongPress?.(item)}
           >
             <View className="item-image-wrapper">
-              <Image className="item-image" src={getDisplayImage(item)} mode="aspectFit" lazyLoad />
+              <SafeImage className="item-image" src={getListDisplayImage(item)} mode="aspectFit" lazyLoad />
               {selectionMode && selected && (
                 <>
                   <View className="selection-overlay" />

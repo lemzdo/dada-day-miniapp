@@ -1,6 +1,7 @@
-import { Image, ScrollView, Text, View } from '@tarojs/components';
+import { ScrollView, Text, View } from '@tarojs/components';
 import Taro, { useLoad, usePullDownRefresh, useReachBottom } from '@tarojs/taro';
 import { useState } from 'react';
+import { SafeImage } from '@/components/SafeImage';
 import { listFavoriteOutfits, removeFavoriteOutfit } from '@/lib/cloud';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
 import type { Outfit } from '@starter-template/types';
@@ -149,7 +150,7 @@ export default function FavoriteOutfitsPage() {
             <View className="card-images">
               {outfit.items?.slice(0, 3).map((item, idx) => (
                 <View key={item.clothingId} className={`card-img-wrap ${item.isDeleted ? 'deleted' : ''}`}>
-                  <Image
+                  <SafeImage
                     className="card-img"
                     src={item.imageUrl}
                     mode="aspectFill"

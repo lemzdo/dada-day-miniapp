@@ -1,6 +1,7 @@
-import { Image, ScrollView, Text, View } from '@tarojs/components';
+import { ScrollView, Text, View } from '@tarojs/components';
 import Taro, { useLoad, usePullDownRefresh } from '@tarojs/taro';
 import { useMemo, useRef, useState } from 'react';
+import { SafeImage } from '@/components/SafeImage';
 import { listOutfitHistory } from '@/lib/cloud';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
 import type { Outfit } from '@starter-template/types';
@@ -303,7 +304,7 @@ export default function OutfitHistoryPage() {
 
                     <View className="record-thumbs">
                       {record.items?.slice(0, 3).map((item) => (
-                        <Image
+                        <SafeImage
                           key={item.clothingId}
                           className="record-thumb"
                           src={item.imageUrl}

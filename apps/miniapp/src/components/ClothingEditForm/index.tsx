@@ -1,6 +1,7 @@
-import { Image, Input, Text, View, ScrollView } from '@tarojs/components';
+import { Input, Text, View, ScrollView } from '@tarojs/components';
 import Taro from '@tarojs/taro';
 import { useEffect, useMemo, useState } from 'react';
+import { SafeImage } from '@/components/SafeImage';
 import {
   normalizeCategory,
   normalizeMaterial,
@@ -763,7 +764,7 @@ export function ClothingEditForm({
         {showImage && value.imageUrl && !isDraftConfirm && (
           <View className="preview-card">
             <View className="preview-image-wrapper">
-              <Image className="preview-image" src={value.imageUrl} mode="aspectFit" />
+              <SafeImage className="preview-image" src={value.imageUrl} mode="aspectFit" />
             </View>
             <Text className="preview-title">编辑衣物档案</Text>
             <Text className="preview-subtitle">把这件衣服整理得更懂你</Text>
@@ -773,7 +774,7 @@ export function ClothingEditForm({
         {showImage && value.imageUrl && isDraftConfirm && (
           <View className="preview-card">
             <View className="preview-image-wrapper">
-              <Image className="preview-image" src={value.imageUrl} mode="aspectFit" />
+              <SafeImage className="preview-image" src={value.imageUrl} mode="aspectFit" />
             </View>
             <Text className="preview-title">编辑属性</Text>
             <Text className="preview-subtitle">调整一下这件衣服的信息</Text>

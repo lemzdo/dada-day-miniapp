@@ -129,12 +129,47 @@ export function displayClothingTags(tags?: Array<string | undefined>) {
   return tags?.map(displayClothingText).filter(Boolean) ?? [];
 }
 
+type ClothingImageLike = Pick<Clothing, 'originalImageUrl' | 'displayImageUrl' | 'aiSegmentImageUrl' | 'manualCropImageUrl' | 'cleanImageUrl' | 'cropImageUrl' | 'croppedImageUrl'> & {
+  imageUrl?: string;
+  thumbnailUrl?: string;
+  thumbImageUrl?: string;
+};
+
+export const IMAGE_FALLBACK_SRC =
+  'data:image/svg+xml;charset=UTF-8,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20width%3D%222%22%20height%3D%222%22%20viewBox%3D%220%200%202%202%22%3E%3Crect%20width%3D%222%22%20height%3D%222%22%20fill%3D%22%23f3eee7%22/%3E%3C/svg%3E';
+
 export function getClothDisplayImage(
-  item: Pick<Clothing, 'originalImageUrl' | 'displayImageUrl' | 'aiSegmentImageUrl' | 'manualCropImageUrl' | 'cleanImageUrl' | 'cropImageUrl' | 'croppedImageUrl'> & {
-    imageUrl?: string;
-    thumbnailUrl?: string;
-  },
+  item: ClothingImageLike,
 ) {
+  return [
+    item.displayImageUrl,
+    item.cleanImageUrl,
+    item.aiSegmentImageUrl,
+    item.cropImageUrl,
+    item.croppedImageUrl,
+    item.imageUrl,
+    item.manualCropImageUrl,
+    item.originalImageUrl,
+  ].find((value): value is string => typeof value === 'string' && value.trim().length > 0) ?? '';
+}
+
+export const getDisplayImage = getClothDisplayImage;
+
+export function getListDisplayImage(item: ClothingImageLike) {
+  return [
+    item.thumbnailUrl,
+    item.thumbImageUrl,
+    item.displayImageUrl,
+    item.cleanImageUrl,
+    item.aiSegmentImageUrl,
+    item.cropImageUrl,
+    item.croppedImageUrl,
+    item.imageUrl,
+    item.originalImageUrl,
+  ].find((value): value is string => typeof value === 'string' && value.trim().length > 0) ?? IMAGE_FALLBACK_SRC;
+}
+
+export function getUploadDraftDisplayImage(item: ClothingImageLike) {
   return [
     item.cleanImageUrl,
     item.aiSegmentImageUrl,
@@ -144,11 +179,8 @@ export function getClothDisplayImage(
     item.imageUrl,
     item.manualCropImageUrl,
     item.originalImageUrl,
-    item.thumbnailUrl,
-  ].find((value): value is string => typeof value === 'string' && value.trim().length > 0) ?? '';
+  ].find((value): value is string => typeof value === 'string' && value.trim().length > 0) ?? IMAGE_FALLBACK_SRC;
 }
-
-export const getDisplayImage = getClothDisplayImage;
 
 export function getSingleClothRecognizeImage(
   item: Pick<Clothing, 'aiSegmentImageUrl' | 'manualCropImageUrl' | 'segmentStatus' | 'manualCropStatus' | 'cleanImageUrl' | 'cropImageUrl' | 'croppedImageUrl'>,

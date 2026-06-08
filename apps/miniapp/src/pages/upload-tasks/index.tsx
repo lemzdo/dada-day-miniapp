@@ -1,6 +1,6 @@
 import { Text, View } from '@tarojs/components';
 import Taro, { useDidShow, useLoad, usePullDownRefresh } from '@tarojs/taro';
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { getRecoverableUploadBatches } from '@/lib/cloud';
 import type { RecoverableUploadBatch } from '@/lib/cloud';
 import './index.scss';
@@ -11,12 +11,22 @@ export default function UploadTasksPage() {
   const [batches, setBatches] = useState<RecoverableUploadBatch[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorState, setErrorState] = useState(false);
+  const skipFirstDidShowRef = useRef(false);
+  const inflightRef = useRef<Promise<void> | null>(null);
 
   const fetchBatches = useCallback(async () => {
-    try {
+    if (inflightRef.current) return inflightRef.current;
+
+    const request = (async () => {
+      const startedAt = Date.now();
+      try {
       setErrorState(false);
       const result = await getRecoverableUploadBatches(10);
       setBatches((result.list || []).filter(isActiveUploadBatch));
+      console.log('[UploadTasksPage] fetchBatches', {
+        returned: result.list?.length ?? 0,
+        durationMs: Date.now() - startedAt,
+      });
     } catch (error) {
       console.warn('Fetch upload tasks failed:', error);
       setErrorState(true);
@@ -26,13 +36,24 @@ export default function UploadTasksPage() {
       setLoading(false);
       Taro.stopPullDownRefresh();
     }
+    })().finally(() => {
+      inflightRef.current = null;
+    });
+
+    inflightRef.current = request;
+    return request;
   }, []);
 
   useLoad(() => {
+    skipFirstDidShowRef.current = true;
     void fetchBatches();
   });
 
   useDidShow(() => {
+    if (skipFirstDidShowRef.current) {
+      skipFirstDidShowRef.current = false;
+      return;
+    }
     void fetchBatches();
   });
 

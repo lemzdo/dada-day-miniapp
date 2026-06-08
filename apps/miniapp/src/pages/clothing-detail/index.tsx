@@ -1,6 +1,7 @@
-import { Image, Text, View, ScrollView } from '@tarojs/components';
+import { Text, View, ScrollView } from '@tarojs/components';
 import Taro, { useDidShow, useLoad, useRouter } from '@tarojs/taro';
 import { useCallback, useEffect, useState } from 'react';
+import { SafeImage } from '@/components/SafeImage';
 import {
   getDisplayCategory,
   getDisplayImage,
@@ -242,7 +243,7 @@ export default function ClothingDetailPage() {
         {/* 主视觉卡 */}
         <View className="main-card">
           <View className="image-wrapper">
-            <Image
+            <SafeImage
               className="clothing-image"
               src={getDisplayImage(clothing)}
               mode="aspectFit"

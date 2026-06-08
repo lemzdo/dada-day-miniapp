@@ -7,13 +7,60 @@ const _ = db.command;
 
 exports.main = async (event = {}) => {
   try {
+    const startedAt = Date.now();
     const { OPENID } = cloud.getWXContext();
     const page = Math.max(Number(event.page || 1), 1);
     const pageSize = Math.min(Math.max(Number(event.pageSize || 10), 1), 50);
     const status = event.status || 'active';
     const filter = { _openid: OPENID };
+    const isDetail = Boolean(event.id || event.detail);
 
-    if (event.id) filter._id = event.id;
+    if (event.id) {
+      const itemRes = await db.collection('clothes').doc(event.id).get();
+      const item = itemRes.data;
+      if (!item || item._openid !== OPENID || (status && item.status !== status)) {
+        console.log('[getWardrobe] detail', {
+          id: event.id,
+          found: false,
+          durationMs: Date.now() - startedAt,
+        });
+        return ok({
+          list: [],
+          pagination: {
+            total: 0,
+            page: 1,
+            pageSize: 1,
+            totalPages: 1,
+          },
+          capacity: {
+            total: 0,
+            used: 0,
+            remaining: 0,
+          },
+        });
+      }
+
+      console.log('[getWardrobe] detail', {
+        id: event.id,
+        found: true,
+        durationMs: Date.now() - startedAt,
+      });
+      return ok({
+        list: [toClothing(item)],
+        pagination: {
+          total: 1,
+          page: 1,
+          pageSize: 1,
+          totalPages: 1,
+        },
+        capacity: {
+          total: 0,
+          used: 0,
+          remaining: 0,
+        },
+      });
+    }
+
     if (status) filter.status = status;
     if (event.category && event.category !== 'all') filter.category = _.in(resolveCategoryValues(event.category));
     
@@ -24,26 +71,46 @@ exports.main = async (event = {}) => {
     }
 
     const collection = db.collection('clothes');
+    const includeTotal = event.includeTotal !== false;
+    const includeCapacity = event.includeCapacity !== false && !isDetail;
+    const totalPromise = includeTotal ? collection.where(filter).count() : Promise.resolve({ total: 0 });
+    const capacityPromise = includeCapacity
+      ? collection.where({ _openid: OPENID, status: 'active' }).count()
+      : Promise.resolve({ total: 0 });
+    const userPromise = includeCapacity
+      ? db.collection('users').where({ _openid: OPENID }).limit(1).get()
+      : Promise.resolve({ data: [] });
     const [totalRes, listRes, activeCountRes, userRes] = await Promise.all([
-      collection.where(filter).count(),
+      totalPromise,
       collection
         .where(filter)
         .orderBy('createdAt', 'desc')
         .skip((page - 1) * pageSize)
         .limit(pageSize)
         .get(),
-      collection.where({ _openid: OPENID, status: 'active' }).count(),
-      db.collection('users').where({ _openid: OPENID }).limit(1).get(),
+      capacityPromise,
+      userPromise,
     ]);
     const capacityTotal = userRes.data[0] && userRes.data[0].capacityTotal ? userRes.data[0].capacityTotal : 50;
+    const total = includeTotal ? totalRes.total : listRes.data.length;
+
+    console.log('[getWardrobe] list', {
+      page,
+      pageSize,
+      returned: listRes.data.length,
+      total,
+      includeTotal,
+      includeCapacity,
+      durationMs: Date.now() - startedAt,
+    });
 
     return ok({
       list: listRes.data.map(toClothing),
       pagination: {
-        total: totalRes.total,
+        total,
         page,
         pageSize,
-        totalPages: Math.max(1, Math.ceil(totalRes.total / pageSize)),
+        totalPages: Math.max(1, Math.ceil(total / pageSize)),
       },
       capacity: {
         total: capacityTotal,
