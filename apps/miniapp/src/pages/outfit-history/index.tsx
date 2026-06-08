@@ -307,7 +307,7 @@ export default function OutfitHistoryPage() {
                         <SafeImage
                           key={item.clothingId}
                           className="record-thumb"
-                          src={item.imageUrl}
+                          src={item.thumbnailUrl || item.imageUrl}
                           mode="aspectFill"
                           lazyLoad
                         />

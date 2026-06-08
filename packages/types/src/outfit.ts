@@ -18,6 +18,8 @@ export interface OutfitItemSummary {
   category: ClothingCategory;
   subcategory?: string;
   imageUrl: string;
+  displayImageUrl?: string;
+  thumbnailUrl?: string;
   colorPalette?: { name: string; hex: string }[];
   isDeleted?: boolean;
 }

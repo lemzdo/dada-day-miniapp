@@ -81,6 +81,15 @@ exports.main = async (event = {}) => {
       }
 
       const clothing = buildClothingFromDraft(draft, OPENID);
+      const thumbnailUrl = await createThumbnailForClothing(clothing, draft._id).catch((error) => {
+        console.warn('[confirmClothesDrafts] create thumbnail failed', {
+          draftId: draft._id,
+          imageUrl: resolveThumbnailSourceImage(clothing),
+          message: getErrorMessage(error),
+        });
+        return '';
+      });
+      if (thumbnailUrl) clothing.thumbnailUrl = thumbnailUrl;
       await db.collection('clothes').doc(draft._id).set({ data: clothing });
       await markDraftConfirmed(draft._id, draft._id);
       actualCreatedCount += 1;
@@ -334,6 +343,54 @@ function resolveDisplayImage(draft) {
     || '';
 }
 
+function resolveThumbnailSourceImage(item) {
+  return item.displayImageUrl
+    || item.cleanImageUrl
+    || item.aiSegmentImageUrl
+    || item.cropImageUrl
+    || item.croppedImageUrl
+    || item.imageUrl
+    || item.manualCropImageUrl
+    || '';
+}
+
+async function createThumbnailForClothing(item, draftId) {
+  const sourceImageUrl = resolveThumbnailSourceImage(item);
+  if (!sourceImageUrl) return '';
+
+  const sourceBuffer = await downloadImageSource(sourceImageUrl);
+  const Jimp = require('jimp');
+  const image = await Jimp.read(sourceBuffer);
+  image.scaleToFit(360, 360).quality(76);
+  const buffer = await image.getBufferAsync(Jimp.MIME_JPEG);
+  const cloudPath = `wardrobe_uploads/thumbnails/${item.batchId || 'confirmed'}/${draftId}.jpg`;
+  const uploadRes = await cloud.uploadFile({ cloudPath, fileContent: buffer });
+  if (!uploadRes.fileID) throw new Error('thumbnail upload returned empty fileID');
+  return uploadRes.fileID;
+}
+
+async function downloadImageSource(fileID) {
+  if (fileID && typeof fileID === 'string' && /^https?:\/\//.test(fileID)) {
+    const fetch = require('node-fetch');
+    const response = await fetch(fileID, { timeout: getImageFetchTimeoutMs() });
+    if (!response.ok) throw new Error(`download_image_failed_${response.status}`);
+    return response.buffer();
+  }
+  if (!fileID || typeof fileID !== 'string' || !fileID.startsWith('cloud://')) {
+    throw new Error('image must be a WeChat cloud fileID or http url');
+  }
+  const res = await cloud.downloadFile({ fileID });
+  const buffer = res && res.fileContent;
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+    throw new Error('downloaded image is empty');
+  }
+  return buffer;
+}
+
+function getImageFetchTimeoutMs() {
+  return Number(process.env.IMAGE_FETCH_TIMEOUT_MS || process.env.AI_TIMEOUT_MS || 30000);
+}
+
 function resolveImageSourceType(draft, displayImageUrl) {
   if (draft.imageSourceType === 'clean' && (draft.cleanImageUrl || draft.aiSegmentImageUrl)) return 'clean';
   if (draft.imageSourceType === 'crop' && (draft.cropImageUrl || draft.croppedImageUrl || draft.manualCropImageUrl)) return 'crop';
@@ -364,6 +421,7 @@ function toClothing(item) {
     croppedImageUrl: item.croppedImageUrl || item.cropImageUrl || '',
     maskImageUrl: item.maskImageUrl || '',
     cleanImageUrl: item.cleanImageUrl || item.aiSegmentImageUrl || '',
+    thumbnailUrl: item.thumbnailUrl || '',
     imageUrl: item.imageUrl || displayImageUrl,
     displayImageUrl,
     imageSourceType: item.imageSourceType || 'original',
@@ -430,4 +488,8 @@ function ok(data) {
 
 function fail(error) {
   return { code: 1, data: null, message: error && error.message ? error.message : 'unknown error' };
+}
+
+function getErrorMessage(error) {
+  return error && error.message ? error.message : String(error || 'unknown error');
 }

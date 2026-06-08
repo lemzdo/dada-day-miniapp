@@ -152,7 +152,7 @@ export default function FavoriteOutfitsPage() {
                 <View key={item.clothingId} className={`card-img-wrap ${item.isDeleted ? 'deleted' : ''}`}>
                   <SafeImage
                     className="card-img"
-                    src={item.imageUrl}
+                    src={item.thumbnailUrl || item.imageUrl}
                     mode="aspectFill"
                     lazyLoad
                   />

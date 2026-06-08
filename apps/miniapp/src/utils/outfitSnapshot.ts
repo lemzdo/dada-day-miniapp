@@ -22,7 +22,9 @@ export function normalizeOutfitSnapshot(outfit: Outfit): Outfit {
       clothingId: item.clothingId ?? item.itemId,
       category: item.category as ClothingCategory,
       subcategory: item.name || item.type || item.category,
-      imageUrl: item.thumbnailUrl || item.displayImageUrl || item.imageUrl || '',
+      imageUrl: item.imageUrl || item.displayImageUrl || item.thumbnailUrl || '',
+      displayImageUrl: item.displayImageUrl || item.imageUrl || item.thumbnailUrl || '',
+      thumbnailUrl: item.thumbnailUrl || item.displayImageUrl || item.imageUrl || '',
       colorPalette: item.color ? [{ name: item.color, hex: '' }] : [],
       isDeleted: Boolean(item.deletedAt || item.isDeleted),
     })),
@@ -85,9 +87,9 @@ function buildSnapshots(outfit: Outfit): OutfitSnapshotItem[] {
         name: item.subcategory || item.category,
         category: item.category,
         color: item.colorPalette?.map((color) => color.name).filter(Boolean).join(' / ') ?? '',
-        imageUrl: imageItem.thumbnailUrl || item.imageUrl,
-        displayImageUrl: imageItem.displayImageUrl || item.imageUrl,
-        thumbnailUrl: imageItem.thumbnailUrl || item.imageUrl,
+        imageUrl: item.imageUrl || imageItem.displayImageUrl || imageItem.thumbnailUrl || '',
+        displayImageUrl: imageItem.displayImageUrl || item.imageUrl || imageItem.thumbnailUrl || '',
+        thumbnailUrl: imageItem.thumbnailUrl || imageItem.displayImageUrl || item.imageUrl || '',
         isDeleted: Boolean(item.isDeleted),
         deletedAt: item.isDeleted ? new Date().toISOString() : null,
       };
@@ -97,7 +99,7 @@ function buildSnapshots(outfit: Outfit): OutfitSnapshotItem[] {
 
 function normalizeSnapshotItem(item: OutfitSnapshotItem | undefined, clothingId: string): OutfitSnapshotItem {
   const displayImageUrl = item?.displayImageUrl || item?.imageUrl || item?.thumbnailUrl || '';
-  const thumbnailUrl = item?.thumbnailUrl || item?.imageUrl || displayImageUrl;
+  const thumbnailUrl = item?.thumbnailUrl || displayImageUrl || item?.imageUrl || '';
 
   return {
     itemId: clothingId,
@@ -109,7 +111,7 @@ function normalizeSnapshotItem(item: OutfitSnapshotItem | undefined, clothingId:
     style: item?.style || '',
     thickness: item?.thickness || '',
     material: item?.material || '',
-    imageUrl: item?.imageUrl || displayImageUrl,
+    imageUrl: item?.imageUrl || displayImageUrl || thumbnailUrl,
     displayImageUrl,
     thumbnailUrl,
     deletedAt: item?.deletedAt ?? (item?.isDeleted ? new Date().toISOString() : null),

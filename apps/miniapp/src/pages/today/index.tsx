@@ -496,7 +496,7 @@ export default function TodayPage() {
                     <View className="outfit-collage">
                       {outfit.items?.map((item) => (
                         <View key={item.clothingId} className={`collage-item ${item.isDeleted ? 'deleted' : ''}`}>
-                          <SafeImage className="item-image" src={item.imageUrl} mode="aspectFit" lazyLoad />
+                          <SafeImage className="item-image" src={item.thumbnailUrl || item.imageUrl} mode="aspectFit" lazyLoad />
                         </View>
                       ))}
                     </View>

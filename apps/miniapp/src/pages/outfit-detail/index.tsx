@@ -80,7 +80,9 @@ function getItemImage(item: OutfitSnapshotItem | OutfitItemSummary): string {
   
   return (
     snapshotItem.thumbnailUrl ||
+    summaryItem.thumbnailUrl ||
     snapshotItem.displayImageUrl ||
+    summaryItem.displayImageUrl ||
     summaryItem.imageUrl ||
     snapshotItem.imageUrl ||
     ''
@@ -93,9 +95,11 @@ function getItemDetailImage(item: OutfitSnapshotItem | OutfitItemSummary): strin
 
   return (
     snapshotItem.displayImageUrl ||
+    summaryItem.displayImageUrl ||
     summaryItem.imageUrl ||
     snapshotItem.imageUrl ||
     snapshotItem.thumbnailUrl ||
+    summaryItem.thumbnailUrl ||
     ''
   );
 }

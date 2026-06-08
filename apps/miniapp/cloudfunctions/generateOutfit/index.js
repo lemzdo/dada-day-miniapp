@@ -791,6 +791,8 @@ function buildSnapshotRecordData(base, { aiComment, outfitKey, now, source }) {
       name: item.name || item.category || '衣服',
       category: item.category || 'other',
       color: item.color || '',
+      imageUrl: item.imageUrl || item.displayImageUrl || item.thumbnailUrl || '',
+      displayImageUrl: item.displayImageUrl || item.imageUrl || item.thumbnailUrl || '',
       thumbnailUrl: item.thumbnailUrl || item.displayImageUrl || item.imageUrl || '',
       isDeleted: Boolean(item.deletedAt),
     })),
@@ -828,9 +830,9 @@ function buildDetailedSnapshotItems(clothingIds, base) {
       style: snapshot?.style || '',
       thickness: snapshot?.thickness || '',
       material: snapshot?.material || '',
-      imageUrl: snapshot?.imageUrl || snapshot?.displayImageUrl || '',
-      displayImageUrl: snapshot?.displayImageUrl || snapshot?.imageUrl || '',
-      thumbnailUrl: snapshot?.thumbnailUrl || snapshot?.imageUrl || snapshot?.displayImageUrl || '',
+      imageUrl: snapshot?.imageUrl || snapshot?.displayImageUrl || snapshot?.thumbnailUrl || '',
+      displayImageUrl: snapshot?.displayImageUrl || snapshot?.imageUrl || snapshot?.thumbnailUrl || '',
+      thumbnailUrl: snapshot?.thumbnailUrl || snapshot?.displayImageUrl || snapshot?.imageUrl || '',
       name: snapshot?.name || snapshot?.category || '衣服',
       deletedAt: snapshot?.deletedAt || null,
     };
@@ -852,9 +854,9 @@ function normalizeDetailedSnapshotItems(value) {
             style: item.style || readArray(item.styleTags).join(' / '),
             thickness: item.thickness || '',
             material: item.material || '',
-            imageUrl: item.imageUrl || item.thumbnailUrl || item.displayImageUrl || '',
-            displayImageUrl: item.displayImageUrl || item.thumbnailUrl || item.imageUrl || '',
-            thumbnailUrl: item.thumbnailUrl || item.imageUrl || item.displayImageUrl || '',
+            imageUrl: item.imageUrl || item.displayImageUrl || item.thumbnailUrl || '',
+            displayImageUrl: item.displayImageUrl || item.imageUrl || item.thumbnailUrl || '',
+            thumbnailUrl: item.thumbnailUrl || item.displayImageUrl || item.imageUrl || '',
             name: item.name || item.subcategory || item.category || '衣服',
             deletedAt: item.deletedAt || (item.isDeleted ? new Date().toISOString() : null),
           };
@@ -876,9 +878,9 @@ function normalizeDetailedPayloadItems(value) {
           style: readArray(item.styleTags).join(' / '),
           thickness: item.thickness || '',
           material: item.material || item.materialGuess || '',
-          imageUrl: item.imageUrl || '',
-          displayImageUrl: item.displayImageUrl || item.imageUrl || '',
-          thumbnailUrl: item.thumbnailUrl || item.imageUrl || '',
+          imageUrl: item.imageUrl || item.displayImageUrl || item.thumbnailUrl || '',
+          displayImageUrl: item.displayImageUrl || item.imageUrl || item.thumbnailUrl || '',
+          thumbnailUrl: item.thumbnailUrl || item.displayImageUrl || item.imageUrl || '',
           name: item.name || item.subcategory || item.category || '衣服',
           deletedAt: item.deletedAt || (item.isDeleted ? new Date().toISOString() : null),
         }))
@@ -896,6 +898,8 @@ function toSnapshotOutfit(item, kind) {
     name: snapshot.name || snapshot.category || '衣服',
     category: snapshot.category || 'other',
     color: snapshot.color || '',
+    imageUrl: snapshot.imageUrl || snapshot.displayImageUrl || snapshot.thumbnailUrl || '',
+    displayImageUrl: snapshot.displayImageUrl || snapshot.imageUrl || snapshot.thumbnailUrl || '',
     thumbnailUrl: snapshot.thumbnailUrl || snapshot.displayImageUrl || snapshot.imageUrl || '',
     isDeleted: Boolean(snapshot.deletedAt),
   }));
@@ -919,7 +923,9 @@ function toSnapshotOutfit(item, kind) {
       clothingId: snapshot.clothingId,
       category: snapshot.category || 'other',
       subcategory: snapshot.name || snapshot.type || snapshot.category,
-      imageUrl: snapshot.thumbnailUrl || snapshot.displayImageUrl || snapshot.imageUrl || '',
+      imageUrl: snapshot.imageUrl || snapshot.displayImageUrl || snapshot.thumbnailUrl || '',
+      displayImageUrl: snapshot.displayImageUrl || snapshot.imageUrl || snapshot.thumbnailUrl || '',
+      thumbnailUrl: snapshot.thumbnailUrl || snapshot.displayImageUrl || snapshot.imageUrl || '',
       colorPalette: snapshot.color ? [{ name: snapshot.color, hex: '' }] : [],
       isDeleted: Boolean(snapshot.deletedAt),
     })),
@@ -1047,7 +1053,9 @@ function buildSnapshotItems(clothingIds, base, current) {
       name: snapshot?.name || snapshot?.category || '衣服',
       category: snapshot?.category || 'other',
       color: snapshot?.color || '',
-      thumbnailUrl: snapshot?.thumbnailUrl || '',
+      imageUrl: snapshot?.imageUrl || snapshot?.displayImageUrl || snapshot?.thumbnailUrl || '',
+      displayImageUrl: snapshot?.displayImageUrl || snapshot?.imageUrl || snapshot?.thumbnailUrl || '',
+      thumbnailUrl: snapshot?.thumbnailUrl || snapshot?.displayImageUrl || snapshot?.imageUrl || '',
       isDeleted: Boolean(snapshot?.isDeleted),
     };
   });
@@ -1062,7 +1070,9 @@ function normalizeSnapshotItems(value) {
           name: item.name || item.category || '衣服',
           category: item.category || 'other',
           color: item.color || '',
-          thumbnailUrl: item.thumbnailUrl || '',
+          imageUrl: item.imageUrl || item.displayImageUrl || item.thumbnailUrl || '',
+          displayImageUrl: item.displayImageUrl || item.imageUrl || item.thumbnailUrl || '',
+          thumbnailUrl: item.thumbnailUrl || item.displayImageUrl || item.imageUrl || '',
           isDeleted: Boolean(item.isDeleted),
         }))
     : [];
@@ -1077,19 +1087,25 @@ function normalizePayloadItems(value) {
           name: item.subcategory || item.category || '衣服',
           category: item.category || 'other',
           color: readColorText(item),
-          thumbnailUrl: item.imageUrl || '',
+          imageUrl: item.imageUrl || item.displayImageUrl || item.thumbnailUrl || '',
+          displayImageUrl: item.displayImageUrl || item.imageUrl || item.thumbnailUrl || '',
+          thumbnailUrl: item.thumbnailUrl || item.displayImageUrl || item.imageUrl || '',
           isDeleted: Boolean(item.isDeleted),
         }))
     : [];
 }
 
 function snapshotFromClothing(item, fallback, itemId) {
+  const displayImageUrl = getDisplayImage(item) || fallback?.displayImageUrl || fallback?.imageUrl || '';
+  const thumbnailUrl = getThumbnailImage(item) || fallback?.thumbnailUrl || displayImageUrl;
   return {
     itemId,
     name: item?.customName || item?.subcategory || item?.subCategory || item?.category || fallback?.name || '衣服',
     category: item?.category || fallback?.category || 'other',
     color: readColorText(item) || fallback?.color || '',
-    thumbnailUrl: getThumbnailImage(item) || fallback?.thumbnailUrl || '',
+    imageUrl: item?.imageUrl || fallback?.imageUrl || displayImageUrl,
+    displayImageUrl,
+    thumbnailUrl,
     isDeleted: Boolean(item?.status === DELETED_STATUS || fallback?.isDeleted),
   };
 }
@@ -1881,11 +1897,15 @@ function toOutfit(item, clothes) {
     deletedItemCount,
     items: snapshotItems.map((snapshot) => {
       const clothing = clothesMap.get(snapshot.itemId);
+      const displayImageUrl = getDisplayImage(clothing) || snapshot.displayImageUrl || snapshot.imageUrl || '';
+      const thumbnailUrl = getThumbnailImage(clothing) || snapshot.thumbnailUrl || displayImageUrl;
       return {
         clothingId: snapshot.itemId,
         category: clothing?.category || snapshot.category || 'other',
         subcategory: clothing?.subcategory || snapshot.name,
-        imageUrl: getDisplayImage(clothing) || snapshot.thumbnailUrl || '',
+        imageUrl: clothing?.imageUrl || snapshot.imageUrl || displayImageUrl || thumbnailUrl,
+        displayImageUrl,
+        thumbnailUrl,
         colorPalette: clothing?.colorPalette || [],
         isDeleted: Boolean(snapshot.isDeleted || !clothing),
       };
