@@ -253,6 +253,14 @@ export async function uploadBatchSourceImage(filePath: string) {
   return uploadRes.fileID;
 }
 
+export async function uploadFeedbackImage(filePath: string) {
+  if (!taroCloud) throw new Error('wx.cloud is not available');
+  const openid = String(Taro.getStorageSync('openid') || 'anonymous').replace(/[^a-zA-Z0-9_-]/g, '');
+  const cloudPath = `user_feedback/${openid || 'anonymous'}/${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
+  const uploadRes = await taroCloud.uploadFile({ cloudPath, filePath });
+  return uploadRes.fileID;
+}
+
 export async function processUploadImage(imageId: string) {
   return callCloudFunction<{ imageId: string; drafts: ClothesDraft[]; errorMessage?: string }>('processUploadImage', {
     imageId,
@@ -506,6 +514,22 @@ export async function generateCloudOutfitComment(outfit: Outfit) {
     reason: outfit.reasoning || outfit.reason || '',
   });
   return result;
+}
+
+export interface SubmitFeedbackInput {
+  type: string;
+  content: string;
+  images: string[];
+  contact?: string;
+  page?: string;
+  systemInfo?: Record<string, unknown>;
+}
+
+export async function submitFeedback(input: SubmitFeedbackInput) {
+  return callCloudFunction<{ id: string; status: 'new' }>('submitFeedback', {
+    ...input,
+    contact: typeof input.contact === 'string' ? input.contact.trim() : '',
+  } as unknown as Record<string, unknown>);
 }
 
 export async function getCloudOutfitList(params: { isFavorite?: boolean; wornOnly?: boolean; page?: number; pageSize?: number } = {}) {

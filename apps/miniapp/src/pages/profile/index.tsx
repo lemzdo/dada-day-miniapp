@@ -261,8 +261,12 @@ export default function ProfilePage() {
     Taro.navigateTo({ url: '/pages/style-preferences/index' });
   }
 
-  function showComingSoon(title: string) {
-    Taro.showToast({ title: `${title}即将上线`, icon: 'none' });
+  function goToFeedback() {
+    Taro.navigateTo({ url: '/pages/feedback/index?page=profile' });
+  }
+
+  function goToAbout() {
+    Taro.navigateTo({ url: '/pages/about/index' });
   }
 
   const capacityPercent =
@@ -352,28 +356,29 @@ export default function ProfilePage() {
         <Text className="favorite-arrow">›</Text>
       </View>
 
-      <View className="coming-soon-section">
-        <Text className="section-label">即将上线</Text>
-        <View className="coming-soon-list">
-          <View className="coming-soon-item" onClick={() => showComingSoon('衣柜分析')}>
-            <Text className="coming-soon-icon">📊</Text>
-            <Text className="coming-soon-text">衣柜分析</Text>
-            <Text className="coming-soon-badge">待上线</Text>
+      <View className="help-card">
+        <Text className="section-label">帮助与关于</Text>
+        <View className="help-row" onClick={goToFeedback}>
+          <View className="help-icon">
+            <Text className="help-icon-text">?</Text>
           </View>
-          <View className="coming-soon-item" onClick={() => showComingSoon('穿搭提醒')}>
-            <Text className="coming-soon-icon">🔔</Text>
-            <Text className="coming-soon-text">穿搭提醒</Text>
-            <Text className="coming-soon-badge">待上线</Text>
+          <View className="help-content">
+            <Text className="help-title">意见反馈</Text>
+            <Text className="help-desc">识别不准、推荐不喜欢，都可以告诉小搭</Text>
           </View>
+          <Text className="help-arrow">›</Text>
         </View>
-      </View>
-
-      <View className="membership-card" onClick={() => showComingSoon('搭搭会员')}>
-        <View className="membership-content">
-          <Text className="membership-title">搭搭会员</Text>
-          <Text className="membership-desc">更大衣橱、更多穿搭灵感，正在准备中</Text>
+        <View className="help-divider" />
+        <View className="help-row" onClick={goToAbout}>
+          <View className="help-icon">
+            <Text className="help-icon-text">i</Text>
+          </View>
+          <View className="help-content">
+            <Text className="help-title">关于搭搭day</Text>
+            <Text className="help-desc">版本信息、隐私和服务说明</Text>
+          </View>
+          <Text className="help-arrow">›</Text>
         </View>
-        <Text className="membership-badge">即将上线</Text>
       </View>
 
       <View className="page-footer">
@@ -481,7 +486,7 @@ function getProfileCompletedCount(profile: ProfileState) {
   let count = 0;
   if (profile.genderPreference && profile.genderPreference !== 'unknown') count++;
   if (profile.preferredStyles.length > 0) count++;
-  if (profile.fitPreference && profile.fitPreference !== 'unknown') count++;
+  if (profile.fitPreference) count++;
   if (profile.temperatureSensitivity) count++;
   return count;
 }

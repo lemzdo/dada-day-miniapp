@@ -49,6 +49,15 @@ const categories: Array<{ key: ClothingCategory | 'all'; label: string }> = [
   { key: 'accessory', label: '配饰' },
 ];
 
+interface WardrobeEmptyState {
+  title: string;
+  desc: string;
+  actionText: string;
+  illustrationClass: string;
+  action: 'add' | 'recover';
+  secondaryText?: string;
+}
+
 type CompressableTaro = typeof Taro & {
   compressImage?: (options: {
     src: string;
@@ -311,6 +320,14 @@ export default function WardrobePage() {
     fetchClothes(1, true, activeCategory, activeSubcategory, activeSubcategoryId, true);
   }
 
+  function handleShowAll() {
+    setActiveCategory('all');
+    setActiveSubcategory('all');
+    setActiveSubcategoryId('');
+    setPage(1);
+    fetchClothes(1, true, 'all', 'all', '', true);
+  }
+
   function handleRecoverableTaskClick() {
     const firstBatch = recoverableBatches[0];
     if (!firstBatch) return;
@@ -418,6 +435,8 @@ export default function WardrobePage() {
   const recognitionEntryStatus = getRecognitionEntryStatus(recoverableBatches);
   const allSelected = clothes.length > 0 && clothes.every((item) => selectedIds.includes(item.id));
   const selectedCount = selectedIds.length;
+  const showEmptyState = clothes.length === 0 && !loading;
+  const hideUploadDock = showEmptyState;
 
   const subcategoryOptions = useMemo(() => {
     if (activeCategory === 'all') return [];
@@ -437,6 +456,22 @@ export default function WardrobePage() {
       ...customOptions,
     ];
   }, [activeCategory, userSubcategories]);
+  const emptyState = getWardrobeEmptyState({
+    statsUsed: stats.used,
+    activeCategory,
+    activeCategoryLabel: getCategoryLabel(activeCategory),
+    activeSubcategory,
+    activeSubcategoryLabel: getActiveSubcategoryLabel(activeSubcategory, activeSubcategoryId, subcategoryOptions),
+    hasReadyRecoverableBatch: recoverableBatches.some((batch) => getRecoverableTaskState(batch) === 'ready'),
+  });
+
+  function handleEmptyPrimaryAction() {
+    if (emptyState.action === 'recover') {
+      handleRecoverableTaskClick();
+      return;
+    }
+    handleAdd();
+  }
 
   return (
     <View className={`wardrobe-page ${selectionMode ? 'selecting' : ''}`}>
@@ -501,16 +536,23 @@ export default function WardrobePage() {
 
       {/* 衣物内容区 */}
       <View className="wardrobe-content">
-        {clothes.length === 0 && !loading ? (
+        {showEmptyState ? (
           <View className="empty-state">
-            <View className="empty-illustration">
-              <Text className="empty-icon">👗</Text>
+            <View className={`empty-illustration ${emptyState.illustrationClass}`}>
+              <View className="empty-rail" />
+              <View className="empty-hanger" />
+              <View className="empty-box" />
             </View>
-            <Text className="empty-title">衣橱还空着呢</Text>
-            <Text className="empty-desc">先上传几件衣服，小搭才能帮你搭得更准</Text>
-            <View className="empty-action" onClick={handleAdd}>
-              <Text className="empty-action-text">去添新衣</Text>
+            <Text className="empty-title">{emptyState.title}</Text>
+            <Text className="empty-desc">{emptyState.desc}</Text>
+            <View className="empty-action" onClick={handleEmptyPrimaryAction}>
+              <Text className="empty-action-text">{emptyState.actionText}</Text>
             </View>
+            {emptyState.secondaryText && (
+              <View className="empty-secondary-action" onClick={handleShowAll}>
+                <Text className="empty-secondary-text">{emptyState.secondaryText}</Text>
+              </View>
+            )}
           </View>
         ) : (
           <>
@@ -535,36 +577,38 @@ export default function WardrobePage() {
       </View>
 
       {/* 底部 Dock - 普通模式显示上传，管理模式显示整理栏 */}
-      <View className="bottom-dock">
-        <View className="dock-safe-area">
-          {!selectionMode ? (
-            <View className="upload-dock" onClick={handleAdd}>
-              <View className="upload-btn">
-                <Text className="upload-btn-text">+ 添新衣</Text>
-              </View>
-            </View>
-          ) : (
-            <View className="selection-toolbar">
-              <View className={`selection-cancel-btn ${batchDeleting ? 'disabled' : ''}`} onClick={exitSelectionMode}>
-                <Text className="selection-cancel-text">完成</Text>
-              </View>
-              <View className="selection-actions">
-                <View className="select-all-btn" onClick={handleSelectAllToggle}>
-                  <Text className="select-all-text">{allSelected ? '取消全选' : '全选'}</Text>
-                </View>
-                <View
-                  className={`batch-delete-btn ${selectedCount === 0 || batchDeleting ? 'disabled' : ''} ${batchDeleting ? 'deleting' : ''}`}
-                  onClick={handleBatchDelete}
-                >
-                  <Text className="batch-delete-text">
-                    {batchDeleting ? '清理中...' : selectedCount > 0 ? `清理 ${selectedCount} 件` : '清理'}
-                  </Text>
+      {!hideUploadDock && (
+        <View className="bottom-dock">
+          <View className="dock-safe-area">
+            {!selectionMode ? (
+              <View className="upload-dock" onClick={handleAdd}>
+                <View className="upload-btn">
+                  <Text className="upload-btn-text">+ 添新衣</Text>
                 </View>
               </View>
-            </View>
-          )}
+            ) : (
+              <View className="selection-toolbar">
+                <View className={`selection-cancel-btn ${batchDeleting ? 'disabled' : ''}`} onClick={exitSelectionMode}>
+                  <Text className="selection-cancel-text">完成</Text>
+                </View>
+                <View className="selection-actions">
+                  <View className="select-all-btn" onClick={handleSelectAllToggle}>
+                    <Text className="select-all-text">{allSelected ? '取消全选' : '全选'}</Text>
+                  </View>
+                  <View
+                    className={`batch-delete-btn ${selectedCount === 0 || batchDeleting ? 'disabled' : ''} ${batchDeleting ? 'deleting' : ''}`}
+                    onClick={handleBatchDelete}
+                  >
+                    <Text className="batch-delete-text">
+                      {batchDeleting ? '清理中...' : selectedCount > 0 ? `清理 ${selectedCount} 件` : '清理'}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+            )}
+          </View>
         </View>
-      </View>
+      )}
     </View>
   );
 }
@@ -636,6 +680,81 @@ function mergeUniqueClothes(prev: Clothing[], nextPage: Clothing[]) {
     return true;
   });
   return [...prev, ...uniqueNext];
+}
+
+function getWardrobeEmptyState({
+  statsUsed,
+  activeCategory,
+  activeCategoryLabel,
+  activeSubcategory,
+  activeSubcategoryLabel,
+  hasReadyRecoverableBatch,
+}: {
+  statsUsed: number;
+  activeCategory: ClothingCategory | 'all';
+  activeCategoryLabel: string;
+  activeSubcategory: string;
+  activeSubcategoryLabel: string;
+  hasReadyRecoverableBatch: boolean;
+}): WardrobeEmptyState {
+  if (hasReadyRecoverableBatch) {
+    return {
+      title: '还有新衣等你保存',
+      desc: '小搭已经整理好识别结果，保存后就能出现在衣橱里',
+      actionText: '查看待保存衣服',
+      illustrationClass: 'pending',
+      action: 'recover',
+    };
+  }
+
+  if (statsUsed === 0) {
+    return {
+      title: '衣橱还空着呢',
+      desc: '先上传几件常穿衣服，小搭才能帮你搭得更准',
+      actionText: '添加第一件衣服',
+      illustrationClass: 'wardrobe',
+      action: 'add',
+    };
+  }
+
+  if (activeSubcategory !== 'all') {
+    return {
+      title: `还没有${activeSubcategoryLabel}`,
+      desc: '换个分类看看，或者给小搭添几件新的单品',
+      actionText: '添加衣服',
+      secondaryText: '查看全部',
+      illustrationClass: 'shoebox',
+      action: 'add',
+    };
+  }
+
+  if (activeCategory !== 'all') {
+    return {
+      title: `还没有${activeCategoryLabel}`,
+      desc: '换个分类看看，或者给小搭添几件新的单品',
+      actionText: '添加衣服',
+      secondaryText: '查看全部',
+      illustrationClass: 'category',
+      action: 'add',
+    };
+  }
+
+  return {
+    title: '衣橱还空着呢',
+    desc: '先上传几件常穿衣服，小搭才能帮你搭得更准',
+    actionText: '添加第一件衣服',
+    illustrationClass: 'wardrobe',
+    action: 'add',
+  };
+}
+
+function getCategoryLabel(category: ClothingCategory | 'all') {
+  return categories.find((item) => item.key === category)?.label ?? '这个分类';
+}
+
+function getActiveSubcategoryLabel(activeSubcategory: string, activeSubcategoryId: string, options: SelectOption[]) {
+  const activeValue = activeSubcategoryId || activeSubcategory;
+  return options.find((item) => item.value === activeValue)?.label ?? '这个细分类';
 }
 
 type RecoverableTaskStatus = 'processing' | 'ready' | 'failed';

@@ -183,14 +183,18 @@
 
 .recommendation-browser {
   margin-bottom: 20rpx;
+  width: 100%;
+  overflow: hidden;
 }
 
 .outfit-swiper {
+  width: 100%;
   height: 800rpx;
 }
 
 .outfit-slide {
-  padding: 0 8rpx;
+  padding: 0;
+  box-sizing: border-box;
 }
 
 .outfit-card {
@@ -272,7 +276,7 @@
   width: 100%;
   height: 100%;
   border-radius: 28rpx;
-  background: #F4E7D7;
+  background: rgba(244, 231, 215, 0.42);
   overflow: hidden;
   box-shadow: inset 0 0 0 1rpx rgba(234, 219, 200, 0.4);
 
@@ -289,6 +293,68 @@
   width: 100%;
   height: 100%;
   background: transparent;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+
+.item-image.loaded {
+  opacity: 1;
+}
+
+.image-stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.image-skeleton,
+.image-fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 18rpx;
+  text-align: center;
+  background: linear-gradient(135deg, rgba(250, 246, 241, 0.92) 0%, rgba(255, 253, 249, 0.82) 100%);
+}
+
+.image-skeleton {
+  overflow: hidden;
+}
+
+.image-skeleton-shine {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.54) 45%, transparent 72%);
+  transform: translateX(-100%);
+  animation: imageShimmer 1.6s ease-in-out infinite;
+}
+
+@keyframes imageShimmer {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+.image-skeleton-text,
+.image-fallback-text {
+  position: relative;
+  z-index: 1;
+  font-size: 22rpx;
+  color: #A89584;
+  line-height: 1.4;
+}
+
+.image-fallback.failed {
+  background: rgba(255, 246, 233, 0.9);
+}
+
+.image-retry-text {
+  margin-top: 8rpx;
+  font-size: 20rpx;
+  color: #8B5E3C;
 }
 
 .outfit-reason {

@@ -7,5 +7,7 @@ export const CLOUD_COLLECTIONS = {
   favoriteOutfits: 'favorite_outfits',
   outfitHistory: 'outfit_history',
   aiTasks: 'ai_tasks',
+  userFeedback: 'user_feedback',
+  // Legacy behavior feedback collection from the old wear-confirm flow. Do not use for user feedback.
   feedback: 'feedback',
 } as const;

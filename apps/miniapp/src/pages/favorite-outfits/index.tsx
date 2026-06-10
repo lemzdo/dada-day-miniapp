@@ -1,13 +1,18 @@
-import { ScrollView, Text, View } from '@tarojs/components';
+import { Input, ScrollView, Text, View } from '@tarojs/components';
 import Taro, { useLoad, usePullDownRefresh, useReachBottom } from '@tarojs/taro';
 import { useState } from 'react';
 import { SafeImage } from '@/components/SafeImage';
-import { listFavoriteOutfits, removeFavoriteOutfit } from '@/lib/cloud';
+import { listFavoriteOutfits, removeFavoriteOutfit, renameCloudOutfit } from '@/lib/cloud';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
 import type { Outfit } from '@starter-template/types';
 import './index.scss';
 
 const PAGE_SIZE = 10;
+const MAX_TITLE_LENGTH = 16;
+
+interface TapEvent {
+  stopPropagation: () => void;
+}
 
 export default function FavoriteOutfitsPage() {
   const [outfits, setOutfits] = useState<Outfit[]>([]);
@@ -15,6 +20,10 @@ export default function FavoriteOutfitsPage() {
   const [hasMore, setHasMore] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [activeMenuId, setActiveMenuId] = useState('');
+  const [renamingOutfit, setRenamingOutfit] = useState<Outfit | null>(null);
+  const [draftName, setDraftName] = useState('');
+  const [renameSaving, setRenameSaving] = useState(false);
 
   useLoad(() => {
     fetchFavorites(1, true);
@@ -51,11 +60,34 @@ export default function FavoriteOutfitsPage() {
     }
   }
 
-  function goToOutfitDetail(outfitId: string) {
+  function handleCardClick(outfitId: string) {
     Taro.navigateTo({ url: `/pages/outfit-detail/index?id=${encodeURIComponent(outfitId)}&source=favorite` });
   }
 
-  async function handleToggleFavorite(outfit: Outfit) {
+  function toggleMenu(outfitId: string, event: TapEvent) {
+    event.stopPropagation();
+    setActiveMenuId((current) => (current === outfitId ? '' : outfitId));
+  }
+
+  function openRename(outfit: Outfit, event?: TapEvent) {
+    event?.stopPropagation();
+    setActiveMenuId('');
+    setRenamingOutfit(outfit);
+    setDraftName(outfit.userTitle || getOutfitDisplayTitle(outfit, '收藏的搭配'));
+  }
+
+  async function handleRemoveFavorite(outfit: Outfit, event?: TapEvent) {
+    event?.stopPropagation();
+    setActiveMenuId('');
+    const modal = await Taro.showModal({
+      title: '移出收藏？',
+      content: '这套搭配会从你的灵感收藏夹里移除。',
+      confirmColor: '#B8860B',
+      cancelText: '先留着',
+      confirmText: '移出收藏',
+    });
+    if (!modal.confirm) return;
+
     try {
       await removeFavoriteOutfit(outfit.id, outfit.outfitKey);
       setOutfits((prev) => prev.filter((item) => item.id !== outfit.id));
@@ -65,28 +97,64 @@ export default function FavoriteOutfitsPage() {
     }
   }
 
-  function handleCardClick(outfitId: string) {
-    goToOutfitDetail(outfitId);
+  function closeRename() {
+    if (renameSaving) return;
+    setRenamingOutfit(null);
+    setDraftName('');
   }
 
-  function handleFavoriteClick(outfit: Outfit, e: { stopPropagation: () => void }) {
-    e.stopPropagation();
-    Taro.showModal({
-      title: '移出收藏？',
-      content: '这套搭配会从你的灵感收藏夹里移除。',
-      confirmColor: '#B8860B',
-      cancelText: '先留着',
-      confirmText: '移出收藏',
-      success: (res) => {
-        if (res.confirm) {
-          handleToggleFavorite(outfit);
-        }
-      },
-    });
+  async function saveRename() {
+    if (!renamingOutfit || renameSaving) return;
+    const trimmed = draftName.trim();
+    const currentTitle = renamingOutfit.userTitle || getOutfitDisplayTitle(renamingOutfit, '收藏的搭配');
+
+    if (!trimmed) {
+      Taro.showToast({ title: '名字不能为空', icon: 'none' });
+      return;
+    }
+    if (Array.from(trimmed).length > MAX_TITLE_LENGTH) {
+      Taro.showToast({ title: `最多 ${MAX_TITLE_LENGTH} 个字`, icon: 'none' });
+      return;
+    }
+    if (trimmed === currentTitle) {
+      closeRename();
+      return;
+    }
+
+    setRenameSaving(true);
+    try {
+      const saved = await renameCloudOutfit({
+        outfitId: renamingOutfit.outfitId || renamingOutfit.id,
+        outfitKey: renamingOutfit.outfitKey,
+        outfit: renamingOutfit,
+        userTitle: trimmed,
+      });
+      setOutfits((prev) =>
+        prev.map((item) =>
+          item.id === renamingOutfit.id
+            ? {
+                ...item,
+                ...saved,
+                id: item.id,
+                userTitle: trimmed,
+                displayTitle: trimmed,
+                updatedAt: saved.updatedAt || item.updatedAt,
+              }
+            : item,
+        ),
+      );
+      Taro.showToast({ title: '已更新名称', icon: 'success' });
+      closeRename();
+    } catch (err) {
+      console.error('Rename favorite outfit error:', err);
+      Taro.showToast({ title: '名称暂时没保存，稍后再试', icon: 'none' });
+    } finally {
+      setRenameSaving(false);
+    }
   }
 
   return (
-    <View className="favorite-outfits-page">
+    <View className="favorite-outfits-page" onClick={() => setActiveMenuId('')}>
       <View className="page-header">
         <Text className="page-title">穿搭灵感收藏</Text>
         <Text className="page-subtitle">喜欢的搭配，都帮你收好了</Text>
@@ -95,7 +163,7 @@ export default function FavoriteOutfitsPage() {
       {error && outfits.length === 0 && (
         <View className="state-card">
           <View className="state-icon-wrap">
-            <Text className="state-icon">🌸</Text>
+            <Text className="state-icon">!</Text>
           </View>
           <Text className="state-title">{error}</Text>
           <View className="state-action" onClick={() => fetchFavorites(1, true)}>
@@ -107,7 +175,7 @@ export default function FavoriteOutfitsPage() {
       {!error && !loading && outfits.length === 0 && (
         <View className="state-card empty">
           <View className="state-icon-wrap">
-            <Text className="state-icon">💝</Text>
+            <Text className="state-icon">♡</Text>
           </View>
           <Text className="state-title">还没有收藏穿搭灵感</Text>
           <Text className="state-desc">看到喜欢的搭配，点一下收藏，小搭会帮你收好。</Text>
@@ -143,12 +211,8 @@ export default function FavoriteOutfitsPage() {
       <ScrollView scrollY className="favorite-list" enhanced showScrollbar={false}>
         {outfits.map((outfit) => (
           <View key={outfit.id} className="outfit-card" onClick={() => handleCardClick(outfit.id)}>
-            <View className="card-favorite-btn" onClick={(e) => handleFavoriteClick(outfit, e)}>
-              <Text className="favorite-icon">♥</Text>
-            </View>
-
             <View className="card-images">
-              {outfit.items?.slice(0, 3).map((item, idx) => (
+              {outfit.items?.slice(0, 3).map((item) => (
                 <View key={item.clothingId} className={`card-img-wrap ${item.isDeleted ? 'deleted' : ''}`}>
                   <SafeImage
                     className="card-img"
@@ -163,7 +227,7 @@ export default function FavoriteOutfitsPage() {
                   {Array.from({ length: 3 - (outfit.items?.length ?? 0) }).map((_, idx) => (
                     <View key={`placeholder-${idx}`} className="card-img-wrap placeholder">
                       <View className="card-img-placeholder">
-                        <Text className="placeholder-icon">👗</Text>
+                        <Text className="placeholder-icon">衣</Text>
                       </View>
                     </View>
                   ))}
@@ -172,9 +236,27 @@ export default function FavoriteOutfitsPage() {
             </View>
 
             <View className="card-content">
-              <Text className="card-title" numberOfLines={2}>
-                {getOutfitDisplayTitle(outfit, '收藏的搭配')}
-              </Text>
+              <View className="card-title-row">
+                <Text className="card-title" numberOfLines={2}>
+                  {getOutfitDisplayTitle(outfit, '收藏的搭配')}
+                </Text>
+                <View className="card-menu-wrap">
+                  <View className="card-menu-btn" onClick={(event) => toggleMenu(outfit.id, event)}>
+                    <Text className="card-menu-text">···</Text>
+                  </View>
+                  {activeMenuId === outfit.id && (
+                    <View className="card-menu" onClick={(event: TapEvent) => event.stopPropagation()}>
+                      <View className="card-menu-item" onClick={(event) => openRename(outfit, event)}>
+                        <Text className="card-menu-item-text">重命名</Text>
+                      </View>
+                      <View className="card-menu-divider" />
+                      <View className="card-menu-item danger" onClick={(event) => handleRemoveFavorite(outfit, event)}>
+                        <Text className="card-menu-item-text">移出收藏</Text>
+                      </View>
+                    </View>
+                  )}
+                </View>
+              </View>
 
               <View className="card-meta">
                 {outfit.scene && (
@@ -214,6 +296,30 @@ export default function FavoriteOutfitsPage() {
       )}
 
       <View className="safe-bottom" />
+
+      {renamingOutfit && (
+        <View className="rename-overlay" onClick={closeRename}>
+          <View className="rename-modal" onClick={(event: TapEvent) => event.stopPropagation()}>
+            <Text className="rename-title">给这套搭配起个名字</Text>
+            <Input
+              className="rename-input"
+              value={draftName}
+              maxlength={MAX_TITLE_LENGTH}
+              placeholder="比如：周一通勤不费脑"
+              placeholderClass="rename-placeholder"
+              onInput={(event) => setDraftName(String(event.detail.value ?? ''))}
+            />
+            <View className="rename-actions">
+              <View className="rename-btn ghost" onClick={closeRename}>
+                <Text className="rename-btn-text">取消</Text>
+              </View>
+              <View className={`rename-btn primary ${renameSaving ? 'disabled' : ''}`} onClick={saveRename}>
+                <Text className="rename-btn-text">{renameSaving ? '保存中...' : '保存'}</Text>
+              </View>
+            </View>
+          </View>
+        </View>
+      )}
     </View>
   );
 }

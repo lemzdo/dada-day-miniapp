@@ -1,7 +1,6 @@
-import { Swiper, SwiperItem, Text, View } from '@tarojs/components';
+import { Image, Swiper, SwiperItem, Text, View } from '@tarojs/components';
 import Taro, { useDidShow, useLoad, usePullDownRefresh, useUnload } from '@tarojs/taro';
-import { useRef, useState } from 'react';
-import { SafeImage } from '@/components/SafeImage';
+import { useEffect, useRef, useState } from 'react';
 import { WeatherCard } from '@/components/WeatherCard';
 import { addOutfitHistory, clearCloudRecommendationCache, generateCloudOutfit, removeFavoriteOutfit, saveFavoriteOutfit } from '@/lib/cloud';
 import { consumeOutfitStateSync, normalizeOutfitSnapshot, storeOutfitDetailDraft } from '@/utils/outfitSnapshot';
@@ -464,8 +463,6 @@ export default function TodayPage() {
             <Swiper
               className="outfit-swiper"
               current={currentIndex}
-              previousMargin="24rpx"
-              nextMargin="24rpx"
               circular={false}
               onChange={handleSwiperChange}
             >
@@ -496,7 +493,7 @@ export default function TodayPage() {
                     <View className="outfit-collage">
                       {outfit.items?.map((item) => (
                         <View key={item.clothingId} className={`collage-item ${item.isDeleted ? 'deleted' : ''}`}>
-                          <SafeImage className="item-image" src={item.thumbnailUrl || item.imageUrl} mode="aspectFit" lazyLoad />
+                          <RecommendationImage src={item.thumbnailUrl || item.imageUrl} />
                         </View>
                       ))}
                     </View>
@@ -553,6 +550,60 @@ export default function TodayPage() {
           </View>
         )}
       </View>
+    </View>
+  );
+}
+
+function RecommendationImage({ src }: { src?: string }) {
+  const [status, setStatus] = useState<'loading' | 'loaded' | 'failed' | 'empty'>(src ? 'loading' : 'empty');
+  const [retryKey, setRetryKey] = useState(0);
+
+  useEffect(() => {
+    setStatus(src ? 'loading' : 'empty');
+    setRetryKey(0);
+  }, [src]);
+
+  if (!src || status === 'empty') {
+    return (
+      <View className="image-fallback empty">
+        <Text className="image-fallback-text">暂无图片</Text>
+      </View>
+    );
+  }
+
+  if (status === 'failed') {
+    return (
+      <View
+        className="image-fallback failed"
+        onClick={(event: TapEvent) => {
+          event.stopPropagation();
+          setStatus('loading');
+          setRetryKey((value) => value + 1);
+        }}
+      >
+        <Text className="image-fallback-text">图片暂时没取到</Text>
+        <Text className="image-retry-text">点一下重试</Text>
+      </View>
+    );
+  }
+
+  return (
+    <View className="image-stage">
+      {status === 'loading' && (
+        <View className="image-skeleton">
+          <View className="image-skeleton-shine" />
+          <Text className="image-skeleton-text">小搭取图中</Text>
+        </View>
+      )}
+      <Image
+        key={`${src}:${retryKey}`}
+        className={`item-image ${status === 'loaded' ? 'loaded' : ''}`}
+        src={src}
+        mode="aspectFit"
+        lazyLoad
+        onLoad={() => setStatus('loaded')}
+        onError={() => setStatus('failed')}
+      />
     </View>
   );
 }

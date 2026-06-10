@@ -21,6 +21,7 @@
   - `cloudfunctions/getWardrobe`
   - `cloudfunctions/updateClothes`
   - `cloudfunctions/deleteClothes`
+  - `cloudfunctions/submitFeedback`
 - `analyzeClothes` 只从云函数环境变量读取 `SILICONFLOW_API_KEY`，小程序前端不包含 API Key。
 - `apps/miniapp/project.config.json` 已配置 `cloudfunctionRoot`。
 - `apps/miniapp` 已移除对自建 BFF API client、`localhost`、`/api/v1`、`Taro.uploadFile` 的使用。
@@ -32,16 +33,20 @@
 - `users`
 - `clothes`
 - `outfits`
+- `outfit_history`
 - `ai_tasks`
-- `feedback`
+- `user_feedback`
+- `feedback`（legacy 历史行为反馈集合，仅保留旧数据，不再用于用户意见反馈）
 
 建议 MVP 阶段集合权限设置为：
 
 - `users`：仅创建者可读写，云函数可管理。
 - `clothes`：仅创建者可读写，云函数可管理。
 - `outfits`：仅创建者可读写，云函数可管理。
+- `outfit_history`：仅创建者可读写，云函数可管理，当前“穿它 / 穿搭历史”主链路写入这里。
 - `ai_tasks`：仅创建者可读，写入只通过云函数。
-- `feedback`：仅创建者可读写，云函数可管理。
+- `user_feedback`：仅创建者可读写，云函数可管理，用于用户意见反馈。
+- `feedback`：legacy 历史行为反馈集合，旧数据可能包含 `type: wear_confirm`、`outfitId`、`clothingIds`、`scene`、`wearDate` 等字段；当前不再作为穿搭历史主链路，也不要写入新的用户意见反馈。
 
 ## 手动配置步骤
 
@@ -52,7 +57,7 @@
 export const CLOUD_ENV_ID = '你的云环境 ID';
 ```
 
-3. 在云开发控制台创建上面的 5 个数据库集合。
+3. 在云开发控制台创建上面的数据库集合；如已有 legacy `feedback`，保留即可，不需要迁移或删除。
 4. 在云函数环境变量中配置：
 
 ```text
@@ -70,6 +75,7 @@ SILICONFLOW_MODEL=Qwen/Qwen2.5-VL-72B-Instruct
    - `getWardrobe`
    - `updateClothes`
    - `deleteClothes`
+   - `submitFeedback`
 6. 确认 `apps/miniapp/project.config.json` 的 `appid` 是你自己的小程序 AppID。
 7. 运行：
 
@@ -84,7 +90,8 @@ cmd /c pnpm --filter @starter-template/miniapp build:weapp
    - `clothes` 集合新增衣物记录。
    - `ai_tasks` 记录识别任务状态。
    - 今日页能基于衣橱生成搭配并写入 `outfits`。
-   - 收藏、确认穿着能更新 `outfits`，确认穿着会写入 `feedback`。
+   - 收藏能更新 `outfits`，确认穿着会写入 `outfit_history`。
+   - 用户意见反馈会写入 `user_feedback`，不会写入 legacy `feedback`。
 
 ## 当前扫描结果
 
@@ -102,4 +109,5 @@ cmd /c pnpm --filter @starter-template/miniapp build:weapp
 
 - 天气通过 `getWeather` 云函数按用户经纬度请求 Open-Meteo 实时天气；定位失败或天气服务失败时使用本地降级数据。
 - 风格偏好页面先保存到前端状态，后续可新增 `updateUserProfile` 云函数持久化到 `users.styleProfile`。
-- 穿搭历史页暂未完整接入，今日确认穿着已写入 `feedback`，后续可基于该集合恢复历史列表与满意度评价。
+- 当前“穿它 / 穿搭历史”主链路使用 `outfit_history`；legacy `feedback` 仅保留早期行为反馈历史数据，不要求迁移或删除。
+- 用户意见反馈使用 `user_feedback`，不要与 legacy `feedback` 混用。

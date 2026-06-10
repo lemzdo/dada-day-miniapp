@@ -265,18 +265,74 @@
 .empty-illustration {
   width: 180rpx;
   height: 180rpx;
-  border-radius: 50%;
+  border-radius: 48rpx;
   background: linear-gradient(160deg, rgba(249, 243, 235, 0.9) 0%, rgba(255, 249, 243, 0.9) 100%);
   display: flex;
   align-items: center;
   justify-content: center;
+  position: relative;
   margin-bottom: 36rpx;
   box-shadow: var(--dada-shadow-card, 0 8rpx 24rpx rgba(164, 126, 84, 0.06));
   border: 1.5rpx solid rgba(234, 219, 200, 0.4);
+  overflow: hidden;
 }
 
-.empty-icon {
-  font-size: 80rpx;
+.empty-rail {
+  position: absolute;
+  top: 48rpx;
+  left: 48rpx;
+  right: 48rpx;
+  height: 6rpx;
+  border-radius: 999rpx;
+  background: rgba(201, 160, 106, 0.38);
+}
+
+.empty-hanger {
+  position: absolute;
+  top: 56rpx;
+  left: 56rpx;
+  width: 68rpx;
+  height: 58rpx;
+  border: 5rpx solid rgba(139, 94, 60, 0.28);
+  border-top: 0;
+  border-radius: 0 0 26rpx 26rpx;
+}
+
+.empty-hanger::before {
+  content: '';
+  position: absolute;
+  top: -26rpx;
+  left: 30rpx;
+  width: 22rpx;
+  height: 28rpx;
+  border: 5rpx solid rgba(139, 94, 60, 0.28);
+  border-left-color: transparent;
+  border-bottom-color: transparent;
+  border-radius: 50%;
+}
+
+.empty-box {
+  position: absolute;
+  right: 42rpx;
+  bottom: 42rpx;
+  width: 62rpx;
+  height: 44rpx;
+  border-radius: 14rpx;
+  background: rgba(244, 231, 215, 0.78);
+  border: 2rpx solid rgba(201, 160, 106, 0.22);
+}
+
+.empty-illustration.pending .empty-box {
+  background: rgba(238, 247, 233, 0.72);
+}
+
+.empty-illustration.shoebox .empty-box {
+  width: 78rpx;
+  right: 50rpx;
+}
+
+.empty-illustration.category .empty-hanger {
+  opacity: 0.72;
 }
 
 .empty-title {
@@ -312,6 +368,22 @@
   font-size: 28rpx;
   font-weight: 600;
   color: var(--dada-milk-tea-dark, #8B5E3C);
+}
+
+.empty-secondary-action {
+  margin-top: 22rpx;
+  padding: 12rpx 28rpx;
+  border-radius: 999rpx;
+
+  &:active {
+    background: rgba(244, 231, 215, 0.38);
+  }
+}
+
+.empty-secondary-text {
+  font-size: 25rpx;
+  font-weight: 500;
+  color: var(--dada-text-secondary, #7E6A59);
 }
 
 /* 加载更多 */
