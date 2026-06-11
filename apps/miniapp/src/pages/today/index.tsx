@@ -21,6 +21,44 @@ interface SwiperChangeEvent {
 
 type OutfitOperation = 'favorite' | 'wear' | 'refresh' | null;
 type SceneKey = 'home' | 'work' | 'date' | 'sport';
+type TimeOfDay = 'all_day';
+
+interface TodayRestoreSnapshot {
+  version: 1;
+  outfits: Outfit[];
+  currentIndex: number;
+  selectedSceneKey: SceneKey;
+  scene: SceneTag;
+  weatherSnapshot?: WeatherSnapshot;
+  weatherKey: string;
+  targetDate: string;
+  timeOfDay: TimeOfDay;
+  recommendationBatchId: string;
+  generatedAt: number;
+  seenOutfitKeys: string[];
+  hasRecommendations: boolean;
+  batchLimited: boolean;
+  batchExhausted: boolean;
+  recommendationNotice: string;
+}
+
+interface TodayRestoreSnapshotInput {
+  outfits?: Outfit[];
+  currentIndex?: number;
+  selectedSceneKey?: SceneKey;
+  weatherSnapshot?: WeatherSnapshot;
+  recommendationBatchId?: string;
+  seenOutfitKeys?: string[];
+  hasRecommendations?: boolean;
+  batchLimited?: boolean;
+  batchExhausted?: boolean;
+  recommendationNotice?: string;
+}
+
+const TODAY_RESTORE_SNAPSHOT_KEY = 'today:outfitReturnSnapshot';
+const TODAY_RESTORE_SNAPSHOT_TTL_MS = 10 * 60 * 1000;
+const WARDROBE_REFRESH_STORAGE_KEY = 'wardrobeNeedsRefresh';
+const TODAY_TIME_OF_DAY: TimeOfDay = 'all_day';
 
 const SCENES = [
   { key: 'home', label: '居家' },
@@ -50,12 +88,29 @@ export default function TodayPage() {
   const [batchExhausted, setBatchExhausted] = useState(false);
   const requestSeq = useRef(0);
   const seenOutfitKeysRef = useRef<Set<string>>(new Set());
+  const outfitsRef = useRef<Outfit[]>([]);
+  const currentIndexRef = useRef(0);
+  const selectedSceneKeyRef = useRef<SceneKey>('home');
+  const recommendationBatchIdRef = useRef('');
+  const hasRecommendationsRef = useRef(true);
+  const batchLimitedRef = useRef(false);
+  const batchExhaustedRef = useRef(false);
+  const recommendationNoticeRef = useRef('');
+  const shouldRestoreFromDetailRef = useRef(false);
   const currentWeatherRef = useRef<WeatherSnapshot | undefined>(undefined);
   const lastRecommendationWeatherKeyRef = useRef('');
   const initialRecommendationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [currentWeather, setCurrentWeather] = useState<WeatherSnapshot | undefined>(undefined);
   const selectedScene = SCENE_TAGS[selectedSceneKey];
   const selectedSceneRef = useRef<SceneTag>(selectedScene);
+  outfitsRef.current = outfits;
+  currentIndexRef.current = currentIndex;
+  selectedSceneKeyRef.current = selectedSceneKey;
+  recommendationBatchIdRef.current = recommendationBatchId;
+  hasRecommendationsRef.current = hasRecommendations;
+  batchLimitedRef.current = batchLimited;
+  batchExhaustedRef.current = batchExhausted;
+  recommendationNoticeRef.current = recommendationNotice;
   selectedSceneRef.current = selectedScene;
 
   useLoad(() => {
@@ -73,6 +128,7 @@ export default function TodayPage() {
   });
 
   useDidShow(() => {
+    restoreTodaySnapshotFromDetail();
     const syncedOutfit = consumeOutfitStateSync();
     if (syncedOutfit) {
       updateOutfitsByKey(syncedOutfit, syncedOutfit);
@@ -113,7 +169,7 @@ export default function TodayPage() {
       const data = await generateCloudOutfit({
         date: getToday(),
         scene,
-        timeOfDay: 'all_day',
+        timeOfDay: TODAY_TIME_OF_DAY,
         maxResults: 8,
         ...(weather ? { weather } : {}),
         ...(excludedOutfitKeys.length > 0 ? { excludedOutfitKeys } : {}),
@@ -138,6 +194,17 @@ export default function TodayPage() {
       setBatchExhausted(Boolean(data.exhausted));
       setRecommendationNotice(getBatchNotice(data.recommendationNotice, Boolean(data.limited), Boolean(data.exhausted)));
       markOutfitShown(nextOutfits[0]);
+      storeTodayRestoreSnapshot({
+        outfits: nextOutfits,
+        currentIndex: 0,
+        selectedSceneKey: getSceneKeyByTag(scene),
+        weatherSnapshot: weather,
+        recommendationBatchId: data.recommendationBatchId ?? nextOutfits[0]?.recommendationBatchId ?? '',
+        hasRecommendations: data.outfits.length > 0,
+        batchLimited: Boolean(data.limited),
+        batchExhausted: Boolean(data.exhausted),
+        recommendationNotice: getBatchNotice(data.recommendationNotice, Boolean(data.limited), Boolean(data.exhausted)),
+      });
       return true;
     } catch (err) {
       if (!isLatestRequest(seq)) return false;
@@ -156,6 +223,7 @@ export default function TodayPage() {
 
   async function handleRefresh() {
     if (loading || operation) return;
+    shouldRestoreFromDetailRef.current = false;
     const seq = nextRequestSeq();
     setOperation('refresh');
     setError('');
@@ -173,7 +241,7 @@ export default function TodayPage() {
       const data = await generateCloudOutfit({
         date: getToday(),
         scene: selectedScene,
-        timeOfDay: 'all_day',
+        timeOfDay: TODAY_TIME_OF_DAY,
         maxResults: 8,
         ...(weatherForRefresh ? { weather: weatherForRefresh } : {}),
         excludedOutfitKeys: getSeenOutfitKeys(),
@@ -199,6 +267,17 @@ export default function TodayPage() {
         setBatchExhausted(Boolean(data.exhausted));
         setRecommendationNotice(getBatchNotice(data.recommendationNotice, Boolean(data.limited), Boolean(data.exhausted)));
         markOutfitShown(nextOutfits[0]);
+        storeTodayRestoreSnapshot({
+          outfits: nextOutfits,
+          currentIndex: 0,
+          selectedSceneKey,
+          weatherSnapshot: weatherForRefresh,
+          recommendationBatchId: data.recommendationBatchId ?? nextOutfits[0]?.recommendationBatchId ?? '',
+          hasRecommendations: true,
+          batchLimited: Boolean(data.limited),
+          batchExhausted: Boolean(data.exhausted),
+          recommendationNotice: getBatchNotice(data.recommendationNotice, Boolean(data.limited), Boolean(data.exhausted)),
+        });
       } else {
         const notice = getBatchNotice(data.recommendationNotice, Boolean(data.limited), true);
         setBatchLimited(Boolean(data.limited));
@@ -299,17 +378,19 @@ export default function TodayPage() {
   async function handleWeatherChange(weather: WeatherSnapshot, options: { forceRefresh?: boolean } = {}) {
     const weatherKey = getWeatherKey(weather);
     const sameWeather = weatherKey === lastRecommendationWeatherKeyRef.current;
-    if (!options.forceRefresh && sameWeather && outfits.length > 0) {
-      console.log('[TodayPage] weather unchanged, skip recommendation refresh', {
-        weatherKey,
-      });
-      return;
-    }
-
     clearInitialRecommendationTimer();
     currentWeatherRef.current = weather;
     lastRecommendationWeatherKeyRef.current = weatherKey;
     setCurrentWeather(weather);
+
+    if (!options.forceRefresh && outfitsRef.current.length > 0) {
+      console.log('[TodayPage] weather unchanged, skip recommendation refresh', {
+        weatherKey,
+        sameWeather,
+      });
+      return;
+    }
+
     clearCloudRecommendationCache();
     const scene = selectedSceneRef.current;
     await fetchRecommendations({ scene, weather, silent: true, trigger: options.forceRefresh ? 'weather-force' : 'weather' });
@@ -328,6 +409,8 @@ export default function TodayPage() {
   function goToOutfitDetail(outfitId: string) {
     const current = outfits.find((outfit) => outfit.id === outfitId);
     if (!current) return;
+    shouldRestoreFromDetailRef.current = true;
+    storeTodayRestoreSnapshot({ currentIndex });
     storeOutfitDetailDraft(current);
     Taro.navigateTo({ url: `/pages/outfit-detail/index?id=${encodeURIComponent(outfitId)}&source=recommendation` });
   }
@@ -336,12 +419,13 @@ export default function TodayPage() {
     const next = event.detail.current;
     setCurrentIndex(next);
     markOutfitShown(outfits[next]);
+    storeTodayRestoreSnapshot({ currentIndex: next });
   }
 
   function scheduleInitialRecommendation() {
     clearInitialRecommendationTimer();
     initialRecommendationTimerRef.current = setTimeout(() => {
-      if (currentWeatherRef.current || outfits.length > 0) return;
+      if (currentWeatherRef.current || outfitsRef.current.length > 0) return;
       fetchRecommendations({ scene: selectedSceneRef.current, trigger: 'initial-fallback' });
     }, 700);
   }
@@ -354,11 +438,13 @@ export default function TodayPage() {
 
   function updateOutfitsByKey(reference: Outfit, patch: Partial<Outfit>) {
     const outfitKey = reference.outfitKey;
-    setOutfits((prev) =>
-      prev.map((outfit) =>
+    setOutfits((prev) => {
+      const next = prev.map((outfit) =>
         outfit.outfitKey === outfitKey || outfit.id === reference.id ? normalizeOutfitSnapshot({ ...outfit, ...patch }) : outfit,
-      ),
-    );
+      );
+      storeTodayRestoreSnapshot({ outfits: next });
+      return next;
+    });
   }
 
   function markOutfitShown(outfit: Outfit | undefined) {
@@ -369,6 +455,111 @@ export default function TodayPage() {
 
   function getSeenOutfitKeys() {
     return [...seenOutfitKeysRef.current];
+  }
+
+  function storeTodayRestoreSnapshot(input: TodayRestoreSnapshotInput = {}) {
+    const snapshotOutfits = (input.outfits ?? outfitsRef.current).map((outfit) => normalizeOutfitSnapshot(outfit));
+    if (snapshotOutfits.length === 0) return;
+
+    const snapshotSceneKey = input.selectedSceneKey ?? selectedSceneKeyRef.current;
+    const snapshotWeather = input.weatherSnapshot ?? currentWeatherRef.current;
+    const snapshotIndex = clampIndex(input.currentIndex ?? currentIndexRef.current, snapshotOutfits.length);
+    const snapshot: TodayRestoreSnapshot = {
+      version: 1,
+      outfits: snapshotOutfits,
+      currentIndex: snapshotIndex,
+      selectedSceneKey: snapshotSceneKey,
+      scene: SCENE_TAGS[snapshotSceneKey],
+      weatherSnapshot: snapshotWeather,
+      weatherKey: snapshotWeather ? getWeatherKey(snapshotWeather) : '',
+      targetDate: getToday(),
+      timeOfDay: TODAY_TIME_OF_DAY,
+      recommendationBatchId: input.recommendationBatchId ?? recommendationBatchIdRef.current,
+      generatedAt: Date.now(),
+      seenOutfitKeys: input.seenOutfitKeys ?? getSeenOutfitKeys(),
+      hasRecommendations: input.hasRecommendations ?? hasRecommendationsRef.current,
+      batchLimited: input.batchLimited ?? batchLimitedRef.current,
+      batchExhausted: input.batchExhausted ?? batchExhaustedRef.current,
+      recommendationNotice: input.recommendationNotice ?? recommendationNoticeRef.current,
+    };
+
+    try {
+      Taro.setStorageSync(TODAY_RESTORE_SNAPSHOT_KEY, snapshot);
+    } catch (err) {
+      console.warn('[TodayPage] store restore snapshot failed:', err);
+    }
+  }
+
+  function restoreTodaySnapshotFromDetail() {
+    if (!shouldRestoreFromDetailRef.current) return false;
+    shouldRestoreFromDetailRef.current = false;
+
+    const snapshot = readTodayRestoreSnapshot();
+    if (!snapshot || !canRestoreTodaySnapshot(snapshot)) return false;
+
+    const restoredOutfits = snapshot.outfits.map((outfit) => normalizeOutfitSnapshot(outfit));
+    const restoredIndex = clampIndex(snapshot.currentIndex, restoredOutfits.length);
+    clearInitialRecommendationTimer();
+    nextRequestSeq();
+    outfitsRef.current = restoredOutfits;
+    currentIndexRef.current = restoredIndex;
+    selectedSceneKeyRef.current = snapshot.selectedSceneKey;
+    recommendationBatchIdRef.current = snapshot.recommendationBatchId;
+    hasRecommendationsRef.current = snapshot.hasRecommendations;
+    batchLimitedRef.current = snapshot.batchLimited;
+    batchExhaustedRef.current = snapshot.batchExhausted;
+    recommendationNoticeRef.current = snapshot.recommendationNotice;
+    seenOutfitKeysRef.current = new Set(snapshot.seenOutfitKeys);
+    markOutfitShown(restoredOutfits[restoredIndex]);
+    currentWeatherRef.current = snapshot.weatherSnapshot;
+    lastRecommendationWeatherKeyRef.current = snapshot.weatherKey;
+    setSelectedSceneKey(snapshot.selectedSceneKey);
+    setOutfits(restoredOutfits);
+    setCurrentIndex(restoredIndex);
+    setCurrentWeather(snapshot.weatherSnapshot);
+    setHasRecommendations(snapshot.hasRecommendations);
+    setRecommendationBatchId(snapshot.recommendationBatchId);
+    setBatchLimited(snapshot.batchLimited);
+    setBatchExhausted(snapshot.batchExhausted);
+    setRecommendationNotice(snapshot.recommendationNotice);
+    setError('');
+    setLoading(false);
+    return true;
+  }
+
+  function readTodayRestoreSnapshot() {
+    try {
+      const value = Taro.getStorageSync(TODAY_RESTORE_SNAPSHOT_KEY) as TodayRestoreSnapshot | '';
+      if (!value || typeof value !== 'object') return null;
+      if (value.version !== 1 || !Array.isArray(value.outfits)) return null;
+      return value;
+    } catch {
+      return null;
+    }
+  }
+
+  function canRestoreTodaySnapshot(snapshot: TodayRestoreSnapshot) {
+    if (Date.now() - snapshot.generatedAt > TODAY_RESTORE_SNAPSHOT_TTL_MS) return false;
+    if (snapshot.targetDate !== getToday()) return false;
+    if (snapshot.timeOfDay !== TODAY_TIME_OF_DAY) return false;
+    if (snapshot.selectedSceneKey !== selectedSceneKeyRef.current) return false;
+    if (snapshot.scene !== selectedSceneRef.current) return false;
+    if (hasWardrobeRefreshSignal()) return false;
+
+    const weather = currentWeatherRef.current;
+    if (weather && getWeatherKey(weather) !== snapshot.weatherKey) {
+      return false;
+    }
+
+    return snapshot.outfits.length > 0;
+  }
+
+  function hasWardrobeRefreshSignal() {
+    try {
+      return Boolean(Taro.getStorageSync(WARDROBE_REFRESH_STORAGE_KEY));
+    } catch {
+      return false;
+    }
   }
 
   function getBatchNotice(notice: string | undefined, limited: boolean, exhausted: boolean) {
@@ -610,6 +801,15 @@ function RecommendationImage({ src }: { src?: string }) {
 
 function getToday() {
   return new Date().toISOString().split('T')[0]!;
+}
+
+function clampIndex(index: number, length: number) {
+  if (length <= 0) return 0;
+  return Math.max(0, Math.min(index, length - 1));
+}
+
+function getSceneKeyByTag(scene: SceneTag): SceneKey {
+  return SCENES.find((item) => SCENE_TAGS[item.key] === scene)?.key ?? 'home';
 }
 
 function getWeatherKey(weather: WeatherSnapshot) {
