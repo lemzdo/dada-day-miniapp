@@ -27,6 +27,7 @@ import {
   recognizeClothAttributes,
   inspectCloudClothingDelete,
 } from '@/lib/cloud';
+import { invalidateAfterWardrobeMutation } from '@/lib/cacheInvalidation';
 import type { Clothing, UserClothingMaterial } from '@starter-template/types';
 import './index.scss';
 
@@ -113,6 +114,7 @@ export default function ClothingDetailPage() {
       
       if (modalRes.confirm) {
         await deleteCloudClothing(clothing.id);
+        await invalidateAfterWardrobeMutation();
         // 标记需要刷新衣橱
         Taro.setStorageSync(WARDROBE_REFRESH_STORAGE_KEY, true);
         Taro.showToast({ title: '已删除', icon: 'success' });
@@ -142,6 +144,7 @@ export default function ClothingDetailPage() {
       try {
         setProcessing(true);
         await segmentCloudClothing(clothing.id);
+        await invalidateAfterWardrobeMutation();
         Taro.showToast({ title: '开始处理...', icon: 'none' });
         // 立即刷新页面
         await fetchClothing(id);
@@ -173,6 +176,7 @@ export default function ClothingDetailPage() {
       try {
         setProcessing(true);
         await recognizeClothAttributes(clothing.id);
+        await invalidateAfterWardrobeMutation();
         Taro.showToast({ title: '开始识别...', icon: 'none' });
         // 立即刷新页面
         await fetchClothing(id);

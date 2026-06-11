@@ -12,6 +12,10 @@ import {
   processUploadImage,
   segmentClothesDraft,
 } from '@/lib/cloud';
+import {
+  invalidateAfterConfirmDraftsSaved,
+  invalidateAfterUploadTaskMutation,
+} from '@/lib/cacheInvalidation';
 import { displayClothingTags, displayClothingText, getSubcategoryDisplayLabel, getUploadDraftDisplayImage } from '@/utils/clothingLabels';
 import type { ClothesDraft, ClothingCategory, ClothingImageSourceType, UploadBatch, UploadImage } from '@starter-template/types';
 import './index.scss';
@@ -110,6 +114,7 @@ export default function UploadConfirmPage() {
         applyProcessedImageResult(imageId, result);
       }
       Taro.removeStorageSync(`uploadBatchImages:${batchId}`);
+      await invalidateAfterUploadTaskMutation();
     } finally {
       processingLoopRef.current = false;
       if (mountedRef.current && !discardRequestedRef.current) {
@@ -162,6 +167,7 @@ export default function UploadConfirmPage() {
     try {
       Taro.showLoading({ title: '小搭重新整理...' });
       await processUploadImage(image.id);
+      await invalidateAfterUploadTaskMutation();
       await refresh();
     } catch (error) {
       console.error('Retry upload image failed:', error);
@@ -215,6 +221,7 @@ export default function UploadConfirmPage() {
     patchDraft(draft.id, { selected: false, status: 'discarded' });
     try {
       await discardClothesDraft(draft.id);
+      await invalidateAfterUploadTaskMutation();
     } catch (error) {
       console.warn('Discard draft failed:', error);
     }
@@ -230,6 +237,7 @@ export default function UploadConfirmPage() {
     try {
       Taro.showLoading({ title: '重新处理图片...' });
       const updated = await segmentClothesDraft(draft.id);
+      await invalidateAfterUploadTaskMutation();
       patchDraft(updated.id, updated);
       Taro.showToast({ title: updated.segmentStatus === 'success' ? '小搭处理好啦' : '小搭已保留可用图片', icon: 'none' });
       await refresh();
@@ -307,6 +315,7 @@ export default function UploadConfirmPage() {
       });
 
       await confirmClothesDrafts(batchId, draftPayload, selectedIds);
+      await invalidateAfterConfirmDraftsSaved();
       Taro.setStorageSync(WARDROBE_REFRESH_STORAGE_KEY, true);
       Taro.showToast({ title: '已保存到衣柜', icon: 'success' });
       setTimeout(() => Taro.navigateBack(), 700);
@@ -337,6 +346,7 @@ export default function UploadConfirmPage() {
       Taro.showLoading({ title: '正在舍弃...' });
       Taro.removeStorageSync(`uploadBatchImages:${batchId}`);
       await discardUploadBatch(batchId);
+      await invalidateAfterUploadTaskMutation();
       Taro.setStorageSync(WARDROBE_REFRESH_STORAGE_KEY, true);
       Taro.showToast({ title: '已舍弃本次识别', icon: 'success' });
       setTimeout(() => Taro.navigateBack(), 600);

@@ -15,7 +15,7 @@ import {
   recognizeClothAttributes,
   uploadBatchSourceImage,
 } from '@/lib/cloud';
-import { invalidateWardrobeCache } from '@/lib/cacheInvalidation';
+import { invalidateAfterWardrobeMutation } from '@/lib/cacheInvalidation';
 import { buildPageCacheKey, getPageCache, setPageCache } from '@/lib/pageCache';
 import { canRecognizeSingleClothing, getSubcategoryDisplayLabel } from '@/utils/clothingLabels';
 import type { Clothing, ClothingCategory, UserClothingSubcategory } from '@starter-template/types';
@@ -395,7 +395,7 @@ export default function WardrobePage() {
       if (!modalRes.confirm) return;
 
       await deleteCloudClothing(item.id);
-      await invalidateWardrobeCache();
+      await invalidateAfterWardrobeMutation();
       Taro.showToast({ title: '已删除', icon: 'success' });
       setClothes((prev) => prev.filter((clothing) => clothing.id !== item.id));
       setStats((prev) => ({ ...prev, used: Math.max(0, prev.used - 1) }));
@@ -433,7 +433,7 @@ export default function WardrobePage() {
     try {
       const result = await deleteCloudClothingBatch(ids);
       if (result.successIds.length > 0) {
-        await invalidateWardrobeCache();
+        await invalidateAfterWardrobeMutation();
         setClothes((prev) => prev.filter((item) => !result.successIds.includes(item.id)));
         setStats((prev) => ({ ...prev, used: Math.max(0, prev.used - result.successIds.length) }));
       }

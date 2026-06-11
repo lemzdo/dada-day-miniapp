@@ -3,6 +3,7 @@ import Taro, { useLoad, useRouter } from '@tarojs/taro';
 import { useMemo, useState } from 'react';
 import { ClothingEditForm, type ClothingEditFormValue } from '@/components/ClothingEditForm';
 import { getClothingById, updateCloudClothing } from '@/lib/cloud';
+import { invalidateAfterWardrobeMutation } from '@/lib/cacheInvalidation';
 import { getDisplayImage } from '@/utils/clothingLabels';
 import {
   normalizeCategory,
@@ -56,6 +57,7 @@ export default function ClothingFormPage() {
 
     try {
       await updateCloudClothing(clothing.id, toUpdateInput(value));
+      await invalidateAfterWardrobeMutation();
 
       // 设置刷新标记
       Taro.setStorageSync(DETAIL_REFRESH_STORAGE_KEY, true);
