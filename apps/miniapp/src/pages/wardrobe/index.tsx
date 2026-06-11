@@ -15,6 +15,8 @@ import {
   recognizeClothAttributes,
   uploadBatchSourceImage,
 } from '@/lib/cloud';
+import { invalidateWardrobeCache } from '@/lib/cacheInvalidation';
+import { buildPageCacheKey, getPageCache, setPageCache } from '@/lib/pageCache';
 import { canRecognizeSingleClothing, getSubcategoryDisplayLabel } from '@/utils/clothingLabels';
 import type { Clothing, ClothingCategory, UserClothingSubcategory } from '@starter-template/types';
 import type { RecoverableUploadBatch } from '@/lib/cloud';
@@ -27,6 +29,17 @@ import './index.scss';
 const WARDROBE_REFRESH_STORAGE_KEY = 'wardrobeNeedsRefresh';
 const WARDROBE_REFRESH_EVENT = 'wardrobe:refresh';
 const WARDROBE_STALE_MS = 30 * 1000;
+const WARDROBE_PAGE_SIZE = 10;
+const WARDROBE_FIRST_PAGE_CACHE_TTL = 45 * 1000;
+
+type WardrobeResponse = Awaited<ReturnType<typeof getWardrobe>>;
+
+interface WardrobeFirstPageCacheData {
+  list: Clothing[];
+  pagination: WardrobeResponse['pagination'];
+  capacity: WardrobeResponse['capacity'];
+  hasMore: boolean;
+}
 
 function buildDeleteConfirmText(favoriteCount: number, historyCount: number) {
   const impacts = [];
@@ -85,6 +98,18 @@ export default function WardrobePage() {
   const loadingRef = useRef(false);
   const lastFetchAtRef = useRef(0);
 
+  const applyWardrobeFirstPageCache = useCallback(async (cacheKey: string) => {
+    const cached = await getPageCache<WardrobeFirstPageCacheData>(cacheKey);
+    if (!cached.hit || cached.expired || !cached.data) return false;
+
+    setClothes(dedupeClothesById(cached.data.list));
+    setStats({ total: cached.data.capacity.total, used: cached.data.capacity.used });
+    setHasMore(cached.data.hasMore);
+    setPage(1);
+    lastFetchAtRef.current = cached.record?.createdAt ?? Date.now();
+    return true;
+  }, []);
+
   const fetchClothes = useCallback(
     async (
       pageNum: number, 
@@ -96,13 +121,21 @@ export default function WardrobePage() {
     ) => {
       if (loadingRef.current && !force) return;
       loadingRef.current = true;
-      setLoading(true);
+      const cacheKey = buildWardrobeFirstPageCacheKey(
+        WARDROBE_PAGE_SIZE,
+        category,
+        subcategoryParam,
+        subcategoryIdParam,
+      );
+      const canUseFirstPageCache = pageNum === 1 && reset && !force;
+      const cacheApplied = canUseFirstPageCache ? await applyWardrobeFirstPageCache(cacheKey) : false;
+      setLoading(!cacheApplied);
 
       try {
         const params: Parameters<typeof getWardrobe>[0] = {
           category,
           page: pageNum,
-          pageSize: 10,
+          pageSize: WARDROBE_PAGE_SIZE,
           status: 'active',
         };
 
@@ -113,6 +146,7 @@ export default function WardrobePage() {
         }
 
         const res = await getWardrobe(params);
+        const nextHasMore = pageNum < res.pagination.totalPages;
 
         setClothes((prev) => {
           const next = reset ? dedupeClothesById(res.list) : mergeUniqueClothes(prev, res.list);
@@ -126,8 +160,20 @@ export default function WardrobePage() {
           return next;
         });
         setStats({ total: res.capacity.total, used: res.capacity.used });
-        setHasMore(pageNum < res.pagination.totalPages);
+        setHasMore(nextHasMore);
         if (reset || pageNum === 1) lastFetchAtRef.current = Date.now();
+        if (pageNum === 1 && reset) {
+          await setPageCache<WardrobeFirstPageCacheData>(
+            cacheKey,
+            {
+              list: dedupeClothesById(res.list),
+              pagination: res.pagination,
+              capacity: res.capacity,
+              hasMore: nextHasMore,
+            },
+            { ttl: WARDROBE_FIRST_PAGE_CACHE_TTL },
+          );
+        }
       } catch (err) {
         console.error('Fetch wardrobe error:', err);
         Taro.showToast({ title: '加载失败', icon: 'none' });
@@ -137,7 +183,7 @@ export default function WardrobePage() {
         Taro.stopPullDownRefresh();
       }
     },
-    [activeCategory, activeSubcategory, activeSubcategoryId],
+    [activeCategory, activeSubcategory, activeSubcategoryId, applyWardrobeFirstPageCache],
   );
 
   const fetchRecoverableUploadTask = useCallback(async () => {
@@ -349,6 +395,7 @@ export default function WardrobePage() {
       if (!modalRes.confirm) return;
 
       await deleteCloudClothing(item.id);
+      await invalidateWardrobeCache();
       Taro.showToast({ title: '已删除', icon: 'success' });
       setClothes((prev) => prev.filter((clothing) => clothing.id !== item.id));
       setStats((prev) => ({ ...prev, used: Math.max(0, prev.used - 1) }));
@@ -386,6 +433,7 @@ export default function WardrobePage() {
     try {
       const result = await deleteCloudClothingBatch(ids);
       if (result.successIds.length > 0) {
+        await invalidateWardrobeCache();
         setClothes((prev) => prev.filter((item) => !result.successIds.includes(item.id)));
         setStats((prev) => ({ ...prev, used: Math.max(0, prev.used - result.successIds.length) }));
       }
@@ -680,6 +728,23 @@ function mergeUniqueClothes(prev: Clothing[], nextPage: Clothing[]) {
     return true;
   });
   return [...prev, ...uniqueNext];
+}
+
+function buildWardrobeFirstPageCacheKey(
+  pageSize: number,
+  category: ClothingCategory | 'all',
+  subcategory: string,
+  subcategoryId: string,
+) {
+  return buildPageCacheKey([
+    'wardrobe',
+    'first',
+    'v1',
+    pageSize,
+    category || 'all',
+    subcategoryId || subcategory || 'all',
+    'active',
+  ]);
 }
 
 function getWardrobeEmptyState({
