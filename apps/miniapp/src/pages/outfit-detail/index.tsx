@@ -12,6 +12,7 @@ import {
   renameCloudOutfit,
   saveFavoriteOutfit,
 } from '@/lib/cloud';
+import { buildPageCacheKey, getPageCache, setPageCache } from '@/lib/pageCache';
 import { applyOutfitStatus, setOutfitStatus } from '@/stores/outfitStatusStore';
 import { normalizeOutfitSnapshot, readOutfitDetailDraft, storeOutfitDetailDraft, storeOutfitStateSync } from '@/utils/outfitSnapshot';
 import {
@@ -45,6 +46,9 @@ const categoryLabels: Record<string, string> = {
   shoes: '鞋子',
   accessory: '配饰',
 };
+
+const OUTFIT_DETAIL_CACHE_TTL = 5 * 60 * 1000;
+const WARDROBE_REFRESH_STORAGE_KEY = 'wardrobeNeedsRefresh';
 
 function getOutfitStatusPatch(outfit: Outfit, fallbackOutfitKey = '', updatedAtOverride?: number): OutfitStatusPatch {
   const patch: OutfitStatusPatch = {
@@ -100,6 +104,39 @@ function getOutfitStatusUpdatedAt(updatedAt: string | undefined) {
   if (!updatedAt) return undefined;
   const timestamp = Date.parse(updatedAt);
   return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
+function buildOutfitDetailCacheKey(source: DetailSource, detailId: string | undefined, scene?: Outfit['scene']) {
+  if (!detailId) return '';
+  return buildPageCacheKey([
+    'outfitDetail',
+    'v1',
+    source,
+    detailId,
+    scene || 'unknown',
+  ]);
+}
+
+function getCacheableOutfitDetail(outfit: Outfit) {
+  const {
+    aiComment: _aiComment,
+    isFavorite: _isFavorite,
+    favoriteOutfitId: _favoriteOutfitId,
+    isWornToday: _isWornToday,
+    todayHistoryId: _todayHistoryId,
+    wornAt: _wornAt,
+    wornDate: _wornDate,
+    ...cacheable
+  } = outfit;
+  return normalizeOutfitSnapshot(cacheable);
+}
+
+function hasWardrobeRefreshSignal() {
+  try {
+    return Boolean(Taro.getStorageSync(WARDROBE_REFRESH_STORAGE_KEY));
+  } catch {
+    return false;
+  }
 }
 
 // 获取单品数据源（优先级：snapshotItems > itemsSnapshot > items）
@@ -286,15 +323,28 @@ export default function OutfitDetailPage() {
 
   async function fetchOutfit(outfitId: string) {
     setLoading(true);
+    let hasDisplayableOutfit = false;
     try {
       const decodedId = decodeURIComponent(outfitId);
       const source = normalizeSource(sourceParam);
+      const cacheKey = buildOutfitDetailCacheKey(source, decodedId);
       setDetailSource(source);
 
       if (source === 'recommendation') {
         const draft = readOutfitDetailDraft(decodedId);
         if (draft) {
           setOutfit(prepareOutfitForState({ ...draft, outfitKind: draft.outfitKind || 'recommendation' }));
+          setLoading(false);
+          hasDisplayableOutfit = true;
+        }
+      }
+
+      if (!hasDisplayableOutfit && cacheKey && !hasWardrobeRefreshSignal()) {
+        const cached = await getPageCache<Outfit>(cacheKey);
+        if (cached.hit && cached.data) {
+          setOutfit(applyDetailOutfitStatus(normalizeOutfitSnapshot(cached.data)));
+          setLoading(false);
+          hasDisplayableOutfit = true;
         }
       }
 
@@ -304,7 +354,9 @@ export default function OutfitDetailPage() {
           : source === 'history'
             ? await getOutfitHistoryDetail(decodedId)
             : await getCloudOutfit(decodedId);
-      setOutfit(prepareOutfitForState(detail));
+      const prepared = prepareOutfitForState(detail);
+      setOutfit(prepared);
+      await writeOutfitDetailCache(cacheKey, prepared, source);
     } catch (err) {
       console.error('Fetch outfit detail error:', err);
       Taro.showToast({ title: '加载失败', icon: 'none' });
@@ -502,6 +554,24 @@ export default function OutfitDetailPage() {
     if (detailSource === 'recommendation') {
       storeOutfitDetailDraft(nextWithStatus);
     }
+    void writeOutfitDetailCache(getCurrentOutfitDetailCacheKey(), nextWithStatus, detailSource);
+  }
+
+  function getCurrentOutfitDetailCacheKey() {
+    if (!id) return '';
+    return buildOutfitDetailCacheKey(detailSource, decodeURIComponent(id));
+  }
+
+  async function writeOutfitDetailCache(cacheKey: string, nextOutfit: Outfit, source: DetailSource) {
+    if (!cacheKey) return;
+    await setPageCache(cacheKey, getCacheableOutfitDetail(nextOutfit), {
+      ttl: OUTFIT_DETAIL_CACHE_TTL,
+      meta: {
+        source,
+        id: nextOutfit.id,
+        outfitKey: nextOutfit.outfitKey ?? '',
+      },
+    });
   }
 
   if (loading) {
