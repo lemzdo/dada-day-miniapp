@@ -1,7 +1,9 @@
 import { Button, Image, Input, ScrollView, Text, View } from '@tarojs/components';
 import Taro, { useDidShow, useLoad, usePullDownRefresh, useUnload } from '@tarojs/taro';
 import { useRef, useState } from 'react';
+import { invalidateProfileCache } from '@/lib/cacheInvalidation';
 import { getWardrobe, loginWithCloud, updateCloudUserProfile } from '@/lib/cloud';
+import { buildPageCacheKey, getPageCache, setPageCache } from '@/lib/pageCache';
 import { useUserStore } from '@/stores/userStore';
 import avatar01 from '@/assets/avatars/default-avatar-01.png';
 import avatar02 from '@/assets/avatars/default-avatar-02.png';
@@ -41,7 +43,29 @@ interface ProfileState {
 }
 
 const DEFAULT_NICKNAME = '今日搭子';
-const PROFILE_CACHE_KEY = 'profileSummaryCache';
+const PROFILE_BASE_CACHE_KEY = buildPageCacheKey(['profile', 'base', 'v1']);
+const PROFILE_STATS_CACHE_KEY = buildPageCacheKey(['profile', 'stats', 'v1']);
+const PROFILE_BASE_CACHE_TTL = 30 * 60 * 1000;
+const PROFILE_STATS_CACHE_TTL = 2 * 60 * 1000;
+
+type ProfileBaseCache = Pick<
+  ProfileState,
+  | 'nickname'
+  | 'avatarUrl'
+  | 'avatarType'
+  | 'profileCompleted'
+  | 'updatedAt'
+  | 'membershipTier'
+  | 'preferredStyles'
+  | 'genderPreference'
+  | 'fitPreference'
+  | 'temperatureSensitivity'
+>;
+
+type ProfileStatsCache = Pick<
+  ProfileState,
+  'capacityTotal' | 'capacityUsed' | 'capacityRemaining' | 'capacityLoaded'
+>;
 
 const AVATAR_PRESETS: AvatarPreset[] = [
   { id: 'avatar-01', name: '头像 01', image: avatar01 },
@@ -71,7 +95,7 @@ const defaultProfile: ProfileState = {
 };
 
 export default function ProfilePage() {
-  const [profile, setProfile] = useState<ProfileState>(() => readCachedProfile());
+  const [profile, setProfile] = useState<ProfileState>(defaultProfile);
   const [draftNickname, setDraftNickname] = useState(DEFAULT_NICKNAME);
   const [draftAvatarUrl, setDraftAvatarUrl] = useState('');
   const [draftAvatarType, setDraftAvatarType] = useState<AvatarType>('default');
@@ -111,6 +135,10 @@ export default function ProfilePage() {
     setDataNotice('');
 
     try {
+      if (!options.manual) {
+        await hydrateProfileFromCache(requestId);
+      }
+
       const cachedUser = options.manual ? null : readUserFromStore();
       const [userResult, wardrobeResult] = await Promise.allSettled([
         cachedUser ? Promise.resolve(cachedUser) : loginWithCloud(),
@@ -149,7 +177,10 @@ export default function ProfilePage() {
           temperatureSensitivity: recommendationProfile?.['temperatureSensitivity'] as string | undefined,
         };
 
-        writeCachedProfile(nextProfile);
+        void writeProfileCaches(nextProfile, {
+          base: Boolean(user),
+          stats: Boolean(wardrobe),
+        });
         nextProfileForDraft = nextProfile;
         return nextProfile;
       });
@@ -176,6 +207,22 @@ export default function ProfilePage() {
     } finally {
       // Refresh is intentionally silent on this page.
     }
+  }
+
+  async function hydrateProfileFromCache(requestId: number) {
+    const [baseCache, statsCache] = await Promise.all([
+      getPageCache<ProfileBaseCache>(PROFILE_BASE_CACHE_KEY),
+      getPageCache<ProfileStatsCache>(PROFILE_STATS_CACHE_KEY),
+    ]);
+
+    if (!isActiveRequest(requestId)) return;
+    if (!baseCache.hit && !statsCache.hit) return;
+
+    setProfile((prev) => ({
+      ...prev,
+      ...(baseCache.hit && baseCache.data ? normalizeProfileBaseCache(baseCache.data) : {}),
+      ...(statsCache.hit && statsCache.data ? normalizeProfileStatsCache(statsCache.data) : {}),
+    }));
   }
 
   function isActiveRequest(requestId: number) {
@@ -228,21 +275,30 @@ export default function ProfilePage() {
 
     setSaving(true);
     try {
-      await updateCloudUserProfile({
+      const updated = await updateCloudUserProfile({
         nickname,
         avatarUrl,
         avatarType,
         profileCompleted: true,
       });
 
-      setProfile((prev) => ({
-        ...prev,
-        nickname,
-        avatarUrl,
-        avatarType,
-        profileCompleted: true,
-        updatedAt: now,
-      }));
+      await invalidateProfileCache();
+      let nextProfileForCache: ProfileState | null = null;
+      setProfile((prev) => {
+        const nextProfile: ProfileState = {
+          ...prev,
+          nickname: updated.nickname ? normalizeNickname(updated.nickname) : nickname,
+          avatarUrl: updated.avatarUrl ?? avatarUrl,
+          avatarType: readAvatarType(updated.avatarType ?? avatarType),
+          profileCompleted: Boolean(updated.profileCompleted ?? true),
+          updatedAt: updated.updatedAt ?? now,
+        };
+        nextProfileForCache = nextProfile;
+        return nextProfile;
+      });
+      if (nextProfileForCache) {
+        void writeProfileCaches(nextProfileForCache, { base: true, stats: false });
+      }
       closeEditModal();
       Taro.showToast({ title: '搭配档案已更新', icon: 'success' });
     } catch (error) {
@@ -522,28 +578,66 @@ function formatTempPreference(temp?: string) {
   return map[temp ?? ''] || '暂未选择';
 }
 
-function readCachedProfile(): ProfileState {
-  try {
-    const cached = Taro.getStorageSync(PROFILE_CACHE_KEY) as Partial<ProfileState> | '';
-    if (!cached || typeof cached !== 'object') return defaultProfile;
-    return {
-      ...defaultProfile,
-      ...cached,
-      nickname: normalizeNickname(cached.nickname),
-      avatarType: readAvatarType(cached.avatarType),
-      preferredStyles: Array.isArray(cached.preferredStyles) ? cached.preferredStyles.filter(isString) : [],
-    };
-  } catch {
-    return defaultProfile;
-  }
+function normalizeProfileBaseCache(cache: ProfileBaseCache): ProfileBaseCache {
+  return {
+    nickname: normalizeNickname(cache.nickname),
+    avatarUrl: cache.avatarUrl ?? '',
+    avatarType: readAvatarType(cache.avatarType),
+    profileCompleted: Boolean(cache.profileCompleted),
+    updatedAt: cache.updatedAt ?? '',
+    membershipTier: cache.membershipTier ?? 'free',
+    preferredStyles: Array.isArray(cache.preferredStyles) ? cache.preferredStyles.filter(isString) : [],
+    genderPreference: cache.genderPreference,
+    fitPreference: cache.fitPreference,
+    temperatureSensitivity: cache.temperatureSensitivity,
+  };
 }
 
-function writeCachedProfile(profile: ProfileState) {
-  try {
-    Taro.setStorageSync(PROFILE_CACHE_KEY, profile);
-  } catch (error) {
-    console.warn('Cache profile summary failed:', error);
-  }
+function normalizeProfileStatsCache(cache: ProfileStatsCache): ProfileStatsCache {
+  return {
+    capacityTotal: typeof cache.capacityTotal === 'number' ? cache.capacityTotal : 0,
+    capacityUsed: typeof cache.capacityUsed === 'number' ? cache.capacityUsed : 0,
+    capacityRemaining: typeof cache.capacityRemaining === 'number' ? cache.capacityRemaining : 50,
+    capacityLoaded: Boolean(cache.capacityLoaded),
+  };
+}
+
+async function writeProfileCaches(
+  profile: ProfileState,
+  options: { base: boolean; stats: boolean },
+) {
+  await Promise.all([
+    options.base
+      ? setPageCache(PROFILE_BASE_CACHE_KEY, toProfileBaseCache(profile), { ttl: PROFILE_BASE_CACHE_TTL })
+      : Promise.resolve(),
+    options.stats
+      ? setPageCache(PROFILE_STATS_CACHE_KEY, toProfileStatsCache(profile), { ttl: PROFILE_STATS_CACHE_TTL })
+      : Promise.resolve(),
+  ]);
+}
+
+function toProfileBaseCache(profile: ProfileState): ProfileBaseCache {
+  return {
+    nickname: profile.nickname,
+    avatarUrl: profile.avatarUrl,
+    avatarType: profile.avatarType,
+    profileCompleted: profile.profileCompleted,
+    updatedAt: profile.updatedAt,
+    membershipTier: profile.membershipTier,
+    preferredStyles: profile.preferredStyles,
+    genderPreference: profile.genderPreference,
+    fitPreference: profile.fitPreference,
+    temperatureSensitivity: profile.temperatureSensitivity,
+  };
+}
+
+function toProfileStatsCache(profile: ProfileState): ProfileStatsCache {
+  return {
+    capacityTotal: profile.capacityTotal,
+    capacityUsed: profile.capacityUsed,
+    capacityRemaining: profile.capacityRemaining,
+    capacityLoaded: profile.capacityLoaded,
+  };
 }
 
 function readUserFromStore() {
