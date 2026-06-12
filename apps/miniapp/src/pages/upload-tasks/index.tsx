@@ -7,6 +7,15 @@ import './index.scss';
 
 type UploadTaskViewStatus = 'processing' | 'ready' | 'partial' | 'failed';
 
+const UPLOAD_TASKS_MEMORY_CACHE_TTL = 5 * 1000;
+
+interface UploadTasksMemoryCache {
+  data: RecoverableUploadBatch[];
+  createdAt: number;
+}
+
+let uploadTasksMemoryCache: UploadTasksMemoryCache | null = null;
+
 export default function UploadTasksPage() {
   const [batches, setBatches] = useState<RecoverableUploadBatch[]>([]);
   const [loading, setLoading] = useState(true);
@@ -14,24 +23,35 @@ export default function UploadTasksPage() {
   const skipFirstDidShowRef = useRef(false);
   const inflightRef = useRef<Promise<void> | null>(null);
 
-  const fetchBatches = useCallback(async () => {
+  const fetchBatches = useCallback(async (options: { force?: boolean } = {}) => {
     if (inflightRef.current) return inflightRef.current;
+
+    const cachedBatches = options.force ? null : readUploadTasksMemoryCache();
+    if (cachedBatches) {
+      setBatches(cachedBatches);
+      setLoading(false);
+      setErrorState(false);
+    }
 
     const request = (async () => {
       const startedAt = Date.now();
       try {
       setErrorState(false);
       const result = await getRecoverableUploadBatches(10);
-      setBatches((result.list || []).filter(isActiveUploadBatch));
+      const nextBatches = (result.list || []).filter(isActiveUploadBatch);
+      setBatches(nextBatches);
+      writeUploadTasksMemoryCache(nextBatches);
       console.log('[UploadTasksPage] fetchBatches', {
         returned: result.list?.length ?? 0,
         durationMs: Date.now() - startedAt,
       });
     } catch (error) {
       console.warn('Fetch upload tasks failed:', error);
-      setErrorState(true);
+      setErrorState(!cachedBatches);
       Taro.showToast({ title: '加载失败', icon: 'none' });
-      setBatches([]);
+      if (!cachedBatches) {
+        setBatches([]);
+      }
     } finally {
       setLoading(false);
       Taro.stopPullDownRefresh();
@@ -54,11 +74,12 @@ export default function UploadTasksPage() {
       skipFirstDidShowRef.current = false;
       return;
     }
-    void fetchBatches();
+    void fetchBatches({ force: true });
   });
 
   usePullDownRefresh(() => {
-    void fetchBatches();
+    clearUploadTasksMemoryCache();
+    void fetchBatches({ force: true });
   });
 
   function handleBackToWardrobe() {
@@ -90,7 +111,7 @@ export default function UploadTasksPage() {
         <View className="error-panel">
           <Text className="error-title">小搭暂时没拿到整理进度</Text>
           <Text className="error-desc">可能是网络不太稳，下拉刷新或点下面再试一次</Text>
-          <View className="error-btn" onClick={fetchBatches}>
+          <View className="error-btn" onClick={() => fetchBatches({ force: true })}>
             <Text className="error-btn-text">重新看看</Text>
           </View>
         </View>
@@ -157,6 +178,26 @@ export default function UploadTasksPage() {
       )}
     </View>
   );
+}
+
+function readUploadTasksMemoryCache() {
+  if (!uploadTasksMemoryCache) return null;
+  if (Date.now() - uploadTasksMemoryCache.createdAt > UPLOAD_TASKS_MEMORY_CACHE_TTL) {
+    clearUploadTasksMemoryCache();
+    return null;
+  }
+  return uploadTasksMemoryCache.data;
+}
+
+function writeUploadTasksMemoryCache(data: RecoverableUploadBatch[]) {
+  uploadTasksMemoryCache = {
+    data,
+    createdAt: Date.now(),
+  };
+}
+
+function clearUploadTasksMemoryCache() {
+  uploadTasksMemoryCache = null;
 }
 
 function isActiveUploadBatch(batch: RecoverableUploadBatch) {
