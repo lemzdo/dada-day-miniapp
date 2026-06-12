@@ -3,9 +3,11 @@ import Taro, { useDidShow, useLoad, usePullDownRefresh, useUnload } from '@taroj
 import { useEffect, useRef, useState } from 'react';
 import { WeatherCard } from '@/components/WeatherCard';
 import { addOutfitHistory, clearCloudRecommendationCache, generateCloudOutfit, removeFavoriteOutfit, saveFavoriteOutfit } from '@/lib/cloud';
+import { applyOutfitStatuses, setOutfitStatus, setOutfitStatuses } from '@/stores/outfitStatusStore';
 import { consumeOutfitStateSync, normalizeOutfitSnapshot, storeOutfitDetailDraft } from '@/utils/outfitSnapshot';
 import { getOutfitStyleTags } from '@/utils/outfitContextText';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
+import type { OutfitStatusPatch } from '@/stores/outfitStatusStore';
 import type { Outfit, SceneTag, WeatherSnapshot } from '@starter-template/types';
 import './index.scss';
 
@@ -73,6 +75,57 @@ const SCENE_TAGS: Record<SceneKey, SceneTag> = {
   date: '约会' as SceneTag,
   sport: '运动' as SceneTag,
 };
+
+function getOutfitStatusPatches(outfits: Outfit[]) {
+  return outfits.map((outfit) => getOutfitStatusPatch(outfit)).filter((patch) => Boolean(patch.outfitKey));
+}
+
+function getOutfitStatusPatch(outfit: Outfit, fallbackOutfitKey = ''): OutfitStatusPatch {
+  const patch: OutfitStatusPatch = {
+    outfitKey: outfit.outfitKey ?? fallbackOutfitKey,
+  };
+  const updatedAt = getOutfitStatusUpdatedAt(outfit.updatedAt);
+
+  if (updatedAt !== undefined) patch.updatedAt = updatedAt;
+  if (outfit.isFavorite !== undefined) patch.isFavorite = outfit.isFavorite;
+  if (outfit.favoriteOutfitId !== undefined) {
+    patch.favoriteOutfitId = outfit.favoriteOutfitId;
+  } else if (outfit.isFavorite === false) {
+    patch.favoriteOutfitId = '';
+  }
+  if (outfit.isWornToday !== undefined) patch.isWornToday = outfit.isWornToday;
+  if (outfit.todayHistoryId !== undefined) {
+    patch.todayHistoryId = outfit.todayHistoryId;
+  } else if (outfit.isWornToday === false) {
+    patch.todayHistoryId = '';
+  }
+  if (outfit.wornAt !== undefined) patch.wornAt = outfit.wornAt;
+  if (outfit.wornDate !== undefined) patch.wornDate = outfit.wornDate;
+  if (outfit.userTitle !== undefined) patch.userTitle = outfit.userTitle;
+  if (outfit.displayTitle !== undefined) patch.displayTitle = outfit.displayTitle;
+  if (outfit.title !== undefined) patch.title = outfit.title;
+
+  return patch;
+}
+
+function applyTodayOutfitStatuses(outfits: Outfit[]) {
+  return applyOutfitStatuses(outfits).map((outfit) => normalizeOutfitSnapshot(outfit));
+}
+
+function withDefinedOutfitFields(patch: Partial<Outfit>, source: Outfit): Partial<Outfit> {
+  const next = { ...patch };
+  if (source.userTitle !== undefined) next.userTitle = source.userTitle;
+  if (source.displayTitle !== undefined) next.displayTitle = source.displayTitle;
+  if (source.title !== undefined) next.title = source.title;
+  if (source.updatedAt !== undefined) next.updatedAt = source.updatedAt;
+  return next;
+}
+
+function getOutfitStatusUpdatedAt(updatedAt: string | undefined) {
+  if (!updatedAt) return undefined;
+  const timestamp = Date.parse(updatedAt);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
+}
 
 export default function TodayPage() {
   const [selectedSceneKey, setSelectedSceneKey] = useState<SceneKey>('home');
@@ -176,7 +229,9 @@ export default function TodayPage() {
       });
 
       if (!isLatestRequest(seq)) return false;
-      const nextOutfits = data.outfits.map((outfit) => normalizeOutfitSnapshot(outfit));
+      const normalizedOutfits = data.outfits.map((outfit) => normalizeOutfitSnapshot(outfit));
+      setOutfitStatuses(getOutfitStatusPatches(normalizedOutfits));
+      const nextOutfits = applyTodayOutfitStatuses(normalizedOutfits);
       console.log('[TodayPage] fetchRecommendations success', {
         requestSeq: seq,
         trigger,
@@ -249,7 +304,9 @@ export default function TodayPage() {
 
       if (!isLatestRequest(seq)) return;
       if (data.outfits.length > 0) {
-        const nextOutfits = data.outfits.map((outfit) => normalizeOutfitSnapshot(outfit));
+        const normalizedOutfits = data.outfits.map((outfit) => normalizeOutfitSnapshot(outfit));
+        setOutfitStatuses(getOutfitStatusPatches(normalizedOutfits));
+        const nextOutfits = applyTodayOutfitStatuses(normalizedOutfits);
         console.log('[TodayPage] refresh success', {
           requestSeq: seq,
           trigger: 'refresh',
@@ -305,18 +362,39 @@ export default function TodayPage() {
     try {
       if (nextFavorite) {
         const saved = await saveFavoriteOutfit(normalizeOutfitSnapshot(current), current.aiComment);
-        updateOutfitsByKey(current, {
-          isFavorite: true,
-          favoriteOutfitId: saved.favoriteOutfitId || saved.id,
-          favoritedAt: saved.favoritedAt || saved.createdAt,
-        });
+        const nextFavoriteOutfitId = saved.favoriteOutfitId || saved.id;
+        updateOutfitStatusByKey(
+          current,
+          {
+            ...getOutfitStatusPatch(saved, current.outfitKey),
+            outfitKey: saved.outfitKey ?? current.outfitKey ?? '',
+            isFavorite: true,
+            favoriteOutfitId: nextFavoriteOutfitId,
+          },
+          withDefinedOutfitFields(
+            {
+              isFavorite: true,
+              favoriteOutfitId: nextFavoriteOutfitId,
+              favoritedAt: saved.favoritedAt || saved.createdAt,
+            },
+            saved,
+          ),
+        );
       } else {
-        await removeFavoriteOutfit(current.favoriteOutfitId || current.id, current.outfitKey);
-        updateOutfitsByKey(current, {
-          isFavorite: false,
-          favoriteOutfitId: undefined,
-          favoritedAt: undefined,
-        });
+        const removed = await removeFavoriteOutfit(current.favoriteOutfitId || current.id, current.outfitKey);
+        updateOutfitStatusByKey(
+          current,
+          {
+            outfitKey: removed.outfitKey ?? current.outfitKey ?? '',
+            isFavorite: false,
+            favoriteOutfitId: '',
+          },
+          {
+            isFavorite: false,
+            favoriteOutfitId: undefined,
+            favoritedAt: undefined,
+          },
+        );
       }
       Taro.showToast({ title: nextFavorite ? '已收藏' : '已取消收藏', icon: 'success' });
     } catch (err) {
@@ -344,14 +422,26 @@ export default function TodayPage() {
           current.outfitKind === 'favorite' || current.isFavorite ? current.favoriteOutfitId || current.id : undefined,
         aiComment: current.aiComment,
       }).then((saved) => {
-        updateOutfitsByKey(current, {
-          isWornToday: true,
-          todayHistoryId: saved.todayHistoryId || saved.historyId || saved.id,
-          historyId: saved.historyId || saved.id,
-          lastWornAt: saved.lastWornAt || saved.wornAt || new Date().toISOString(),
-          wornAt: saved.wornAt,
-          wornDate: saved.wornDate || getToday(),
-        });
+        const nextTodayHistoryId = saved.todayHistoryId || saved.historyId || saved.id;
+        updateOutfitStatusByKey(
+          current,
+          {
+            ...getOutfitStatusPatch(saved, current.outfitKey),
+            outfitKey: saved.outfitKey ?? current.outfitKey ?? '',
+            isWornToday: true,
+            todayHistoryId: nextTodayHistoryId,
+            wornAt: saved.wornAt,
+            wornDate: saved.wornDate || getToday(),
+          },
+          {
+            isWornToday: true,
+            todayHistoryId: nextTodayHistoryId,
+            historyId: saved.historyId || saved.id,
+            lastWornAt: saved.lastWornAt || saved.wornAt || new Date().toISOString(),
+            wornAt: saved.wornAt,
+            wornDate: saved.wornDate || getToday(),
+          },
+        );
       });
       Taro.showToast({ title: '已记录到穿搭历史', icon: 'success' });
     } catch (err) {
@@ -447,6 +537,25 @@ export default function TodayPage() {
     });
   }
 
+  function updateOutfitStatusByKey(reference: Outfit, statusPatch: OutfitStatusPatch, listPatch: Partial<Outfit>) {
+    if (!statusPatch.outfitKey) {
+      updateOutfitsByKey(reference, listPatch);
+      return;
+    }
+
+    setOutfitStatus(statusPatch);
+    setOutfits((prev) => {
+      const next = prev.map((outfit) =>
+        outfit.outfitKey === statusPatch.outfitKey || outfit.outfitKey === reference.outfitKey || outfit.id === reference.id
+          ? normalizeOutfitSnapshot({ ...outfit, ...listPatch })
+          : outfit,
+      );
+      const nextWithStatus = applyTodayOutfitStatuses(next);
+      storeTodayRestoreSnapshot({ outfits: nextWithStatus });
+      return nextWithStatus;
+    });
+  }
+
   function markOutfitShown(outfit: Outfit | undefined) {
     if (outfit?.outfitKey) {
       seenOutfitKeysRef.current.add(outfit.outfitKey);
@@ -458,7 +567,7 @@ export default function TodayPage() {
   }
 
   function storeTodayRestoreSnapshot(input: TodayRestoreSnapshotInput = {}) {
-    const snapshotOutfits = (input.outfits ?? outfitsRef.current).map((outfit) => normalizeOutfitSnapshot(outfit));
+    const snapshotOutfits = applyTodayOutfitStatuses((input.outfits ?? outfitsRef.current).map((outfit) => normalizeOutfitSnapshot(outfit)));
     if (snapshotOutfits.length === 0) return;
 
     const snapshotSceneKey = input.selectedSceneKey ?? selectedSceneKeyRef.current;
@@ -497,7 +606,7 @@ export default function TodayPage() {
     const snapshot = readTodayRestoreSnapshot();
     if (!snapshot || !canRestoreTodaySnapshot(snapshot)) return false;
 
-    const restoredOutfits = snapshot.outfits.map((outfit) => normalizeOutfitSnapshot(outfit));
+    const restoredOutfits = applyTodayOutfitStatuses(snapshot.outfits.map((outfit) => normalizeOutfitSnapshot(outfit)));
     const restoredIndex = clampIndex(snapshot.currentIndex, restoredOutfits.length);
     clearInitialRecommendationTimer();
     nextRequestSeq();
