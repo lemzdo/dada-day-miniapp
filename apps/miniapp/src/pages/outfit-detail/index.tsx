@@ -1,5 +1,5 @@
 import { Input, Text, View } from '@tarojs/components';
-import Taro, { useLoad, useRouter } from '@tarojs/taro';
+import Taro, { useDidShow, useLoad, useRouter } from '@tarojs/taro';
 import { useState } from 'react';
 import { SafeImage } from '@/components/SafeImage';
 import {
@@ -12,6 +12,7 @@ import {
   renameCloudOutfit,
   saveFavoriteOutfit,
 } from '@/lib/cloud';
+import { applyOutfitStatus, setOutfitStatus } from '@/stores/outfitStatusStore';
 import { normalizeOutfitSnapshot, readOutfitDetailDraft, storeOutfitDetailDraft, storeOutfitStateSync } from '@/utils/outfitSnapshot';
 import {
   getDateLabel,
@@ -23,6 +24,7 @@ import {
   getTimeLabel,
 } from '@/utils/outfitContextText';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
+import type { OutfitStatusPatch } from '@/stores/outfitStatusStore';
 import type { Outfit, OutfitItemSummary, OutfitSnapshotItem } from '@starter-template/types';
 import './index.scss';
 
@@ -43,6 +45,62 @@ const categoryLabels: Record<string, string> = {
   shoes: '鞋子',
   accessory: '配饰',
 };
+
+function getOutfitStatusPatch(outfit: Outfit, fallbackOutfitKey = '', updatedAtOverride?: number): OutfitStatusPatch {
+  const patch: OutfitStatusPatch = {
+    outfitKey: outfit.outfitKey ?? fallbackOutfitKey,
+  };
+  const updatedAt = updatedAtOverride ?? getOutfitStatusUpdatedAt(outfit.updatedAt);
+
+  if (updatedAt !== undefined) patch.updatedAt = updatedAt;
+  if (outfit.isFavorite !== undefined) patch.isFavorite = outfit.isFavorite;
+  if (outfit.favoriteOutfitId !== undefined) {
+    patch.favoriteOutfitId = outfit.favoriteOutfitId;
+  } else if (outfit.isFavorite === false) {
+    patch.favoriteOutfitId = '';
+  }
+  if (outfit.isWornToday !== undefined) patch.isWornToday = outfit.isWornToday;
+  if (outfit.todayHistoryId !== undefined) {
+    patch.todayHistoryId = outfit.todayHistoryId;
+  } else if (outfit.isWornToday === false) {
+    patch.todayHistoryId = '';
+  }
+  if (outfit.wornAt !== undefined) patch.wornAt = outfit.wornAt;
+  if (outfit.wornDate !== undefined) patch.wornDate = outfit.wornDate;
+  if (outfit.userTitle !== undefined) patch.userTitle = outfit.userTitle;
+  if (outfit.displayTitle !== undefined) patch.displayTitle = outfit.displayTitle;
+  if (outfit.title !== undefined) patch.title = outfit.title;
+
+  return patch;
+}
+
+function prepareOutfitForState(outfit: Outfit) {
+  const normalized = normalizeOutfitSnapshot(outfit);
+  const patch = getOutfitStatusPatch(normalized);
+  if (patch.outfitKey) setOutfitStatus(patch);
+  return applyDetailOutfitStatus(normalized);
+}
+
+function applyDetailOutfitStatus(outfit: Outfit) {
+  return normalizeOutfitSnapshot(applyOutfitStatus(outfit));
+}
+
+function withDefinedOutfitFields(patch: Partial<Outfit>, source: Outfit): Partial<Outfit> {
+  const next = { ...patch };
+  if (source.userTitle !== undefined) next.userTitle = source.userTitle;
+  if (source.displayTitle !== undefined) next.displayTitle = source.displayTitle;
+  if (source.title !== undefined) next.title = source.title;
+  if (source.updatedAt !== undefined) next.updatedAt = source.updatedAt;
+  if (source.outfitKey !== undefined) next.outfitKey = source.outfitKey;
+  if (source.outfitId !== undefined) next.outfitId = source.outfitId;
+  return next;
+}
+
+function getOutfitStatusUpdatedAt(updatedAt: string | undefined) {
+  if (!updatedAt) return undefined;
+  const timestamp = Date.parse(updatedAt);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
+}
 
 // 获取单品数据源（优先级：snapshotItems > itemsSnapshot > items）
 function getOutfitItems(outfit: Outfit): (OutfitSnapshotItem | OutfitItemSummary)[] {
@@ -222,6 +280,10 @@ export default function OutfitDetailPage() {
     else setLoading(false);
   });
 
+  useDidShow(() => {
+    setOutfit((current) => (current ? applyDetailOutfitStatus(current) : current));
+  });
+
   async function fetchOutfit(outfitId: string) {
     setLoading(true);
     try {
@@ -232,7 +294,7 @@ export default function OutfitDetailPage() {
       if (source === 'recommendation') {
         const draft = readOutfitDetailDraft(decodedId);
         if (draft) {
-          setOutfit(normalizeOutfitSnapshot({ ...draft, outfitKind: draft.outfitKind || 'recommendation' }));
+          setOutfit(prepareOutfitForState({ ...draft, outfitKind: draft.outfitKind || 'recommendation' }));
         }
       }
 
@@ -242,7 +304,7 @@ export default function OutfitDetailPage() {
           : source === 'history'
             ? await getOutfitHistoryDetail(decodedId)
             : await getCloudOutfit(decodedId);
-      setOutfit(normalizeOutfitSnapshot(detail));
+      setOutfit(prepareOutfitForState(detail));
     } catch (err) {
       console.error('Fetch outfit detail error:', err);
       Taro.showToast({ title: '加载失败', icon: 'none' });
@@ -257,7 +319,7 @@ export default function OutfitDetailPage() {
     setFavoriteOperating(true);
     try {
       if (outfit.isFavorite) {
-        await removeFavoriteOutfit(outfit.favoriteOutfitId || outfit.id, outfit.outfitKey);
+        const removed = await removeFavoriteOutfit(outfit.favoriteOutfitId || outfit.id, outfit.outfitKey);
         persistOutfitUpdate(
           normalizeOutfitSnapshot({
             ...outfit,
@@ -266,6 +328,12 @@ export default function OutfitDetailPage() {
             favoritedAt: undefined,
             outfitKind: 'recommendation',
           }),
+          {
+            outfitKey: removed.outfitKey ?? outfit.outfitKey ?? '',
+            isFavorite: false,
+            favoriteOutfitId: '',
+            updatedAt: Date.now(),
+          },
         );
         setDetailSource('recommendation');
         Taro.showToast({ title: '已取消收藏', icon: 'success' });
@@ -274,13 +342,25 @@ export default function OutfitDetailPage() {
 
       const sourceForFavorite: Outfit = detailSource === 'history' ? { ...outfit, source: 'history' } : outfit;
       const saved = await saveFavoriteOutfit(normalizeOutfitSnapshot(sourceForFavorite), outfit.aiComment);
+      const nextFavoriteOutfitId = saved.favoriteOutfitId || saved.id;
       persistOutfitUpdate(
         normalizeOutfitSnapshot({
           ...outfit,
-          isFavorite: true,
-          favoriteOutfitId: saved.favoriteOutfitId || saved.id,
-          favoritedAt: saved.favoritedAt || saved.createdAt,
+          ...withDefinedOutfitFields(
+            {
+              isFavorite: true,
+              favoriteOutfitId: nextFavoriteOutfitId,
+              favoritedAt: saved.favoritedAt || saved.createdAt,
+            },
+            saved,
+          ),
         }),
+        {
+          ...getOutfitStatusPatch(saved, outfit.outfitKey, getOutfitStatusUpdatedAt(saved.updatedAt) ?? Date.now()),
+          outfitKey: saved.outfitKey ?? outfit.outfitKey ?? '',
+          isFavorite: true,
+          favoriteOutfitId: nextFavoriteOutfitId,
+        },
       );
       Taro.showToast({ title: '已收藏', icon: 'success' });
     } catch (err) {
@@ -309,16 +389,25 @@ export default function OutfitDetailPage() {
             : outfit.sourceFavoriteOutfitId,
         aiComment: outfit.aiComment,
       });
+      const nextTodayHistoryId = saved.todayHistoryId || saved.historyId || saved.id;
       persistOutfitUpdate(
         normalizeOutfitSnapshot({
           ...outfit,
           isWornToday: true,
-          todayHistoryId: saved.todayHistoryId || saved.historyId || saved.id,
+          todayHistoryId: nextTodayHistoryId,
           historyId: saved.historyId || saved.id,
           lastWornAt: saved.lastWornAt || saved.wornAt || new Date().toISOString(),
           wornAt: saved.wornAt,
           wornDate: saved.wornDate || outfit.wornDate,
         }),
+        {
+          ...getOutfitStatusPatch(saved, outfit.outfitKey, getOutfitStatusUpdatedAt(saved.updatedAt) ?? Date.now()),
+          outfitKey: saved.outfitKey ?? outfit.outfitKey ?? '',
+          isWornToday: true,
+          todayHistoryId: nextTodayHistoryId,
+          wornAt: saved.wornAt,
+          wornDate: saved.wornDate || outfit.wornDate,
+        },
       );
       Taro.showToast({ title: '已记录到穿搭历史', icon: 'success' });
     } catch (err) {
@@ -358,7 +447,16 @@ export default function OutfitDetailPage() {
         updatedAt: saved.updatedAt || outfit.updatedAt,
       });
 
-      persistOutfitUpdate(nextOutfit);
+      persistOutfitUpdate(
+        nextOutfit,
+        {
+          ...getOutfitStatusPatch(saved, outfit.outfitKey, getOutfitStatusUpdatedAt(saved.updatedAt) ?? Date.now()),
+          outfitKey: saved.outfitKey || outfit.outfitKey || '',
+          userTitle: saved.userTitle,
+          displayTitle: saved.displayTitle,
+          title: saved.title,
+        },
+      );
       setShowNameModal(false);
       Taro.showToast({ title: userTitle.trim() ? '已保存名称' : '已清空名称', icon: 'success' });
     } catch (err) {
@@ -393,11 +491,16 @@ export default function OutfitDetailPage() {
     }
   }
 
-  function persistOutfitUpdate(nextOutfit: Outfit) {
-    setOutfit(nextOutfit);
-    storeOutfitStateSync(nextOutfit);
+  function persistOutfitUpdate(nextOutfit: Outfit, statusPatch?: OutfitStatusPatch) {
+    const normalized = normalizeOutfitSnapshot(nextOutfit);
+    const patch = statusPatch ?? getOutfitStatusPatch(normalized);
+    if (patch.outfitKey) setOutfitStatus(patch);
+
+    const nextWithStatus = applyDetailOutfitStatus(normalized);
+    setOutfit(nextWithStatus);
+    storeOutfitStateSync(nextWithStatus);
     if (detailSource === 'recommendation') {
-      storeOutfitDetailDraft(nextOutfit);
+      storeOutfitDetailDraft(nextWithStatus);
     }
   }
 
