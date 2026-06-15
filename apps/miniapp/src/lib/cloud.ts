@@ -18,6 +18,12 @@ import type {
   UserClothingMaterial,
 } from '@starter-template/types';
 import { CLOUD_ENV_ID } from '@/config/cloud';
+import { buildAuthRuntimeKey } from '@/lib/userRuntimeScope';
+import {
+  captureAuthContext,
+  isAuthContextCurrent,
+  type ActiveAuthContext,
+} from '@/stores/userStore';
 
 type CloudResult<T> = {
   code: number;
@@ -46,10 +52,19 @@ type CloudApi = {
 };
 
 type CloudTaro = typeof Taro & { cloud?: CloudApi };
+type CloudCacheScope =
+  | { type: 'user'; authContext?: ActiveAuthContext | null }
+  | { type: 'device'; key?: string }
+  | { type: 'none' };
+type ResolvedCloudCacheScope =
+  | { type: 'user'; prefix: string; authContext: ActiveAuthContext }
+  | { type: 'device'; prefix: string }
+  | { type: 'none' };
 
 const taroCloud = (Taro as CloudTaro).cloud;
 const cloudResponseCache = new Map<string, { expiresAt: number; data: unknown }>();
 const cloudInflightRequests = new Map<string, Promise<unknown>>();
+let currentUserCloudRuntimeKey: string | null = null;
 
 const CACHE_TTL = {
   wardrobe: 15 * 1000,
@@ -88,8 +103,14 @@ async function callCachedCloudFunction<T>(
   name: string,
   data: Record<string, unknown> = {},
   ttlMs = 0,
+  scope: CloudCacheScope = { type: 'user' },
 ): Promise<T> {
-  const key = getCloudCacheKey(name, data);
+  const resolvedScope = resolveCloudCacheScope(scope);
+  if (resolvedScope.type === 'none') {
+    return callCloudFunction<T>(name, data);
+  }
+
+  const key = getCloudCacheKey(name, data, resolvedScope);
   const now = Date.now();
   const cached = cloudResponseCache.get(key);
   if (cached && cached.expiresAt > now) return cached.data as T;
@@ -99,7 +120,7 @@ async function callCachedCloudFunction<T>(
 
   const request = callCloudFunction<T>(name, data)
     .then((result) => {
-      if (ttlMs > 0) {
+      if (ttlMs > 0 && canWriteCloudCache(resolvedScope)) {
         cloudResponseCache.set(key, {
           expiresAt: Date.now() + ttlMs,
           data: result,
@@ -108,23 +129,45 @@ async function callCachedCloudFunction<T>(
       return result;
     })
     .finally(() => {
-      cloudInflightRequests.delete(key);
+      if (cloudInflightRequests.get(key) === request) {
+        cloudInflightRequests.delete(key);
+      }
     });
 
   cloudInflightRequests.set(key, request);
   return request;
 }
 
-function clearCloudCache(prefixes: string[]) {
+function clearCloudCache(prefixes: string[], scopeTypes: Array<'user' | 'device'> = ['user']) {
+  syncUserCloudRuntimeSession(captureAuthContext());
+  const functionNames = prefixes.map((prefix) => prefix.replace(/:$/, ''));
   for (const key of cloudResponseCache.keys()) {
-    if (prefixes.some((prefix) => key.startsWith(prefix))) {
+    if (matchesCloudRuntimeCacheKey(key, functionNames, scopeTypes)) {
       cloudResponseCache.delete(key);
+    }
+  }
+
+  for (const key of cloudInflightRequests.keys()) {
+    if (matchesCloudRuntimeCacheKey(key, functionNames, scopeTypes)) {
+      cloudInflightRequests.delete(key);
     }
   }
 }
 
 export function clearCloudRecommendationCache() {
   clearCloudCache(['generateOutfit:']);
+}
+
+export function clearCurrentUserCloudRuntimeCache() {
+  const authContext = captureAuthContext();
+  if (!authContext) return;
+  const runtimeKey = buildAuthRuntimeKey(authContext);
+  clearCloudRuntimeEntries((key) => key.startsWith(`user:${runtimeKey}:`));
+}
+
+export function resetUserCloudRuntimeSession() {
+  currentUserCloudRuntimeKey = null;
+  clearCloudRuntimeEntries((key) => key.startsWith('user:'));
 }
 
 export function writeLocalWeatherCache(value: ResolvedWeatherResponse) {
@@ -146,8 +189,69 @@ export function clearLocalWeatherCache() {
   Taro.removeStorageSync(WEATHER_CACHE_KEY);
 }
 
-function getCloudCacheKey(name: string, data: Record<string, unknown>) {
-  return `${name}:${stableStringify(data)}`;
+function getCloudCacheKey(name: string, data: Record<string, unknown>, scope: Exclude<ResolvedCloudCacheScope, { type: 'none' }>) {
+  return `${scope.prefix}${name}:${stableStringify(data)}`;
+}
+
+function resolveCloudCacheScope(scope: CloudCacheScope): ResolvedCloudCacheScope {
+  if (scope.type === 'none') return { type: 'none' };
+
+  if (scope.type === 'device') {
+    return {
+      type: 'device',
+      prefix: `device:${encodeCloudCacheScopePart(scope.key || 'default')}:`,
+    };
+  }
+
+  const authContext = scope.authContext === undefined ? captureAuthContext() : scope.authContext;
+  if (!authContext || !isAuthContextCurrent(authContext)) return { type: 'none' };
+
+  const runtimeKey = buildAuthRuntimeKey(authContext);
+  syncUserCloudRuntimeSession(authContext);
+
+  return {
+    type: 'user',
+    prefix: `user:${runtimeKey}:`,
+    authContext,
+  };
+}
+
+function canWriteCloudCache(scope: ResolvedCloudCacheScope) {
+  if (scope.type === 'device') return true;
+  if (scope.type === 'user') return isAuthContextCurrent(scope.authContext);
+  return false;
+}
+
+function syncUserCloudRuntimeSession(authContext: ActiveAuthContext | null) {
+  const nextRuntimeKey = authContext && isAuthContextCurrent(authContext)
+    ? buildAuthRuntimeKey(authContext)
+    : null;
+
+  if (nextRuntimeKey === currentUserCloudRuntimeKey) return;
+  currentUserCloudRuntimeKey = nextRuntimeKey;
+  clearCloudRuntimeEntries((key) => key.startsWith('user:') && !key.startsWith(`user:${nextRuntimeKey}:`));
+}
+
+function clearCloudRuntimeEntries(predicate: (key: string) => boolean) {
+  for (const key of cloudResponseCache.keys()) {
+    if (predicate(key)) cloudResponseCache.delete(key);
+  }
+  for (const key of cloudInflightRequests.keys()) {
+    if (predicate(key)) cloudInflightRequests.delete(key);
+  }
+}
+
+function matchesCloudRuntimeCacheKey(
+  key: string,
+  functionNames: string[],
+  scopeTypes: Array<'user' | 'device'>,
+) {
+  if (!scopeTypes.some((scopeType) => key.startsWith(`${scopeType}:`))) return false;
+  return functionNames.some((name) => key.includes(`:${name}:`));
+}
+
+function encodeCloudCacheScopePart(value: string) {
+  return encodeURIComponent(value);
 }
 
 function stableStringify(value: unknown): string {
@@ -543,16 +647,19 @@ export async function getCloudWeather(
 ) {
   const payload = options.forceRefresh ? { ...location, forceRefresh: true } : location;
   if (options.forceRefresh) {
-    clearCloudCache(['getWeather:']);
+    clearCloudCache(['getWeather:'], ['device']);
     clearLocalWeatherCache();
   }
   const data = options.forceRefresh
     ? await callCloudFunction<ResolvedWeatherResponse>('getWeather', payload)
-    : await callCachedCloudFunction<ResolvedWeatherResponse>('getWeather', payload, CACHE_TTL.weather);
+    : await callCachedCloudFunction<ResolvedWeatherResponse>('getWeather', payload, CACHE_TTL.weather, {
+        type: 'device',
+        key: 'weather',
+      });
 
   writeLocalWeatherCache(data);
   if (options.forceRefresh) {
-    clearCloudCache(['getWeather:']);
+    clearCloudCache(['getWeather:'], ['device']);
     clearCloudRecommendationCache();
   }
   return data;

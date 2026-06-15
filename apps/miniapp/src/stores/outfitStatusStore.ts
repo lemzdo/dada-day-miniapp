@@ -1,3 +1,10 @@
+import { buildAuthRuntimeKey } from '@/lib/userRuntimeScope';
+import {
+  getActiveAuthContext,
+  isAuthContextCurrent,
+  type ActiveAuthContext,
+} from '@/stores/userStore';
+
 export interface OutfitStatusPatch {
   outfitKey: string;
   isFavorite?: boolean;
@@ -27,8 +34,11 @@ const OUTFIT_STATUS_VALUE_KEYS: OutfitStatusValueKey[] = [
 ];
 
 const outfitStatusMap = new Map<string, OutfitStatusPatch>();
+let currentOutfitStatusRuntimeKey: string | null = null;
 
-export function setOutfitStatus(patch: OutfitStatusPatch): void {
+export function setOutfitStatus(patch: OutfitStatusPatch, authContext?: ActiveAuthContext | null): void {
+  if (!resolveOutfitStatusRuntimeKey(authContext)) return;
+
   const nextUpdatedAt = patch.updatedAt ?? Date.now();
   const current = outfitStatusMap.get(patch.outfitKey);
 
@@ -49,16 +59,23 @@ export function setOutfitStatus(patch: OutfitStatusPatch): void {
   outfitStatusMap.set(patch.outfitKey, next);
 }
 
-export function setOutfitStatuses(patches: OutfitStatusPatch[]): void {
-  patches.forEach(setOutfitStatus);
+export function setOutfitStatuses(patches: OutfitStatusPatch[], authContext?: ActiveAuthContext | null): void {
+  if (!resolveOutfitStatusRuntimeKey(authContext)) return;
+  patches.forEach((patch) => setOutfitStatus(patch, authContext));
 }
 
-export function getOutfitStatus(outfitKey: string): OutfitStatusPatch | undefined {
+export function getOutfitStatus(outfitKey: string, authContext?: ActiveAuthContext | null): OutfitStatusPatch | undefined {
+  if (!resolveOutfitStatusRuntimeKey(authContext)) return undefined;
+
   const patch = outfitStatusMap.get(outfitKey);
   return patch ? { ...patch } : undefined;
 }
 
-export function applyOutfitStatus<T extends { outfitKey?: string }>(outfit: T): T {
+export function applyOutfitStatus<T extends { outfitKey?: string }>(
+  outfit: T,
+  authContext?: ActiveAuthContext | null,
+): T {
+  if (!resolveOutfitStatusRuntimeKey(authContext)) return outfit;
   if (!outfit.outfitKey) return outfit;
 
   const patch = outfitStatusMap.get(outfit.outfitKey);
@@ -72,11 +89,16 @@ export function applyOutfitStatus<T extends { outfitKey?: string }>(outfit: T): 
   return next;
 }
 
-export function applyOutfitStatuses<T extends { outfitKey?: string }>(outfits: T[]): T[] {
-  return outfits.map(applyOutfitStatus);
+export function applyOutfitStatuses<T extends { outfitKey?: string }>(
+  outfits: T[],
+  authContext?: ActiveAuthContext | null,
+): T[] {
+  if (!resolveOutfitStatusRuntimeKey(authContext)) return outfits;
+  return outfits.map((outfit) => applyOutfitStatus(outfit, authContext));
 }
 
-export function clearOutfitStatus(outfitKey: string): void {
+export function clearOutfitStatus(outfitKey: string, authContext?: ActiveAuthContext | null): void {
+  if (!resolveOutfitStatusRuntimeKey(authContext)) return;
   outfitStatusMap.delete(outfitKey);
 }
 
@@ -118,4 +140,24 @@ function assignDefinedField(
       if (source.title !== undefined) target.title = source.title;
       break;
   }
+}
+
+function resolveOutfitStatusRuntimeKey(authContext?: ActiveAuthContext | null): string | null {
+  if (authContext !== undefined) {
+    if (!authContext || !isAuthContextCurrent(authContext)) return null;
+    return syncOutfitStatusRuntimeKey(buildAuthRuntimeKey(authContext));
+  }
+
+  const activeAuthContext = getActiveAuthContext();
+  if (!activeAuthContext) return null;
+  return syncOutfitStatusRuntimeKey(buildAuthRuntimeKey(activeAuthContext));
+}
+
+function syncOutfitStatusRuntimeKey(runtimeKey: string) {
+  if (currentOutfitStatusRuntimeKey !== runtimeKey) {
+    outfitStatusMap.clear();
+    currentOutfitStatusRuntimeKey = runtimeKey;
+  }
+
+  return runtimeKey;
 }

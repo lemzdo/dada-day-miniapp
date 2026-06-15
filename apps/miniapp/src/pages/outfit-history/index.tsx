@@ -125,9 +125,9 @@ export default function OutfitHistoryPage() {
       const data = await listOutfitHistory({ page: pageNum, pageSize: PAGE_SIZE });
       const rawList = data.list || [];
       if (!isCurrentAuthContext(authContext)) return;
-      setOutfitStatuses(getOutfitStatusPatches(rawList));
-      const nextList = applyHistoryOutfitStatuses(rawList);
-      setAllRecords((prev) => (reset ? nextList : applyHistoryOutfitStatuses([...prev, ...nextList])));
+      setOutfitStatuses(getOutfitStatusPatches(rawList), authContext);
+      const nextList = applyHistoryOutfitStatuses(rawList, authContext);
+      setAllRecords((prev) => (reset ? nextList : applyHistoryOutfitStatuses([...prev, ...nextList], authContext)));
       setHasMore(data.hasMore);
       if (reset) setPage(data.page || 1);
       else setPage(pageNum);
@@ -152,7 +152,7 @@ export default function OutfitHistoryPage() {
     if (!cached.hit || !cached.data) return false;
     if (!isCurrentAuthContext(authContext)) return false;
 
-    setAllRecords(applyHistoryOutfitStatuses(cached.data.list));
+    setAllRecords(applyHistoryOutfitStatuses(cached.data.list, authContext));
     setHasMore(cached.data.hasMore);
     setPage(cached.data.page);
     return true;
@@ -163,7 +163,7 @@ export default function OutfitHistoryPage() {
     if (!isCurrentAuthContext(authContext)) return;
 
     setAllRecords((prev) => {
-      const next = applyHistoryOutfitStatuses(prev);
+      const next = applyHistoryOutfitStatuses(prev, authContext);
       if (!isSameHistoryRecordList(prev, next)) {
         void invalidateHistoryCache({ authContext });
       }
@@ -453,8 +453,8 @@ async function writeHistoryFirstPageCache(
   });
 }
 
-function applyHistoryOutfitStatuses(outfits: Outfit[]) {
-  return applyOutfitStatuses(outfits);
+function applyHistoryOutfitStatuses(outfits: Outfit[], authContext?: ActiveAuthContext | null) {
+  return applyOutfitStatuses(outfits, authContext);
 }
 
 function getOutfitStatusPatches(outfits: Outfit[]) {

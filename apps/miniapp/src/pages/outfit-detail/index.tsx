@@ -87,15 +87,15 @@ function getOutfitStatusPatch(outfit: Outfit, fallbackOutfitKey = '', updatedAtO
   return patch;
 }
 
-function prepareOutfitForState(outfit: Outfit) {
+function prepareOutfitForState(outfit: Outfit, authContext?: ActiveAuthContext | null) {
   const normalized = normalizeOutfitSnapshot(outfit);
   const patch = getOutfitStatusPatch(normalized);
-  if (patch.outfitKey) setOutfitStatus(patch);
-  return applyDetailOutfitStatus(normalized);
+  if (patch.outfitKey) setOutfitStatus(patch, authContext);
+  return applyDetailOutfitStatus(normalized, authContext);
 }
 
-function applyDetailOutfitStatus(outfit: Outfit) {
-  return normalizeOutfitSnapshot(applyOutfitStatus(outfit));
+function applyDetailOutfitStatus(outfit: Outfit, authContext?: ActiveAuthContext | null) {
+  return normalizeOutfitSnapshot(applyOutfitStatus(outfit, authContext));
 }
 
 function withDefinedOutfitFields(patch: Partial<Outfit>, source: Outfit): Partial<Outfit> {
@@ -333,7 +333,7 @@ export default function OutfitDetailPage() {
   useDidShow(() => {
     const authContext = captureAuthContext();
     if (!isCurrentAuthContext(authContext)) return;
-    setOutfit((current) => (current ? applyDetailOutfitStatus(current) : current));
+    setOutfit((current) => (current ? applyDetailOutfitStatus(current, authContext) : current));
   });
 
   async function fetchOutfit(outfitId: string) {
@@ -353,7 +353,7 @@ export default function OutfitDetailPage() {
         const draft = readOutfitDetailDraft(decodedId, { authContext });
         if (draft) {
           if (!isCurrentAuthContext(authContext)) return;
-          setOutfit(prepareOutfitForState({ ...draft, outfitKind: draft.outfitKind || 'recommendation' }));
+          setOutfit(prepareOutfitForState({ ...draft, outfitKind: draft.outfitKind || 'recommendation' }, authContext));
           setLoading(false);
           hasDisplayableOutfit = true;
         }
@@ -363,7 +363,7 @@ export default function OutfitDetailPage() {
         const cached = await getUserPageCache<Outfit>(cacheKey, { authContext });
         if (cached.hit && cached.data) {
           if (!isCurrentAuthContext(authContext)) return;
-          setOutfit(applyDetailOutfitStatus(normalizeOutfitSnapshot(cached.data)));
+          setOutfit(applyDetailOutfitStatus(normalizeOutfitSnapshot(cached.data), authContext));
           setLoading(false);
           hasDisplayableOutfit = true;
         }
@@ -376,7 +376,7 @@ export default function OutfitDetailPage() {
             ? await getOutfitHistoryDetail(decodedId)
             : await getCloudOutfit(decodedId);
       if (!isCurrentAuthContext(authContext)) return;
-      const prepared = prepareOutfitForState(detail);
+      const prepared = prepareOutfitForState(detail, authContext);
       setOutfit(prepared);
       await writeOutfitDetailCache(cacheKey, prepared, source, authContext);
     } catch (err) {
@@ -611,9 +611,9 @@ export default function OutfitDetailPage() {
 
     const normalized = normalizeOutfitSnapshot(nextOutfit);
     const patch = statusPatch ?? getOutfitStatusPatch(normalized);
-    if (patch.outfitKey) setOutfitStatus(patch);
+    if (patch.outfitKey) setOutfitStatus(patch, authContext);
 
-    const nextWithStatus = applyDetailOutfitStatus(normalized);
+    const nextWithStatus = applyDetailOutfitStatus(normalized, authContext);
     setOutfit(nextWithStatus);
     storeOutfitStateSync(nextWithStatus, { authContext });
     if (detailSource === 'recommendation') {

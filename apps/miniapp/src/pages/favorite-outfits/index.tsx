@@ -91,9 +91,9 @@ export default function FavoriteOutfitsPage() {
       const data = await listFavoriteOutfits({ page: pageNum, pageSize: PAGE_SIZE });
       const rawList = data.list || [];
       if (!isCurrentAuthContext(authContext)) return;
-      setOutfitStatuses(getOutfitStatusPatches(rawList));
-      const nextList = applyFavoriteOutfitStatuses(rawList);
-      setOutfits((prev) => (reset ? nextList : applyFavoriteOutfitStatuses([...prev, ...nextList])));
+      setOutfitStatuses(getOutfitStatusPatches(rawList), authContext);
+      const nextList = applyFavoriteOutfitStatuses(rawList, authContext);
+      setOutfits((prev) => (reset ? nextList : applyFavoriteOutfitStatuses([...prev, ...nextList], authContext)));
       setHasMore(data.hasMore);
       if (reset) setPage(1);
       if (isFirstPage) {
@@ -120,7 +120,7 @@ export default function FavoriteOutfitsPage() {
     if (!cached.hit || !cached.data) return false;
     if (!isCurrentAuthContext(authContext)) return false;
 
-    setOutfits(applyFavoriteOutfitStatuses(cached.data.list));
+    setOutfits(applyFavoriteOutfitStatuses(cached.data.list, authContext));
     setHasMore(cached.data.hasMore);
     setPage(cached.data.page);
     setError('');
@@ -132,7 +132,7 @@ export default function FavoriteOutfitsPage() {
     if (!isCurrentAuthContext(authContext)) return;
 
     setOutfits((prev) => {
-      const next = applyFavoriteOutfitStatuses(prev).filter((outfit) => outfit.isFavorite !== false);
+      const next = applyFavoriteOutfitStatuses(prev, authContext).filter((outfit) => outfit.isFavorite !== false);
       if (!isSameFavoriteOutfitList(prev, next)) {
         void invalidateFavoritesCache({ authContext });
       }
@@ -179,7 +179,7 @@ export default function FavoriteOutfitsPage() {
           isFavorite: false,
           favoriteOutfitId: '',
           updatedAt: Date.now(),
-        });
+        }, authContext);
       }
       setOutfits((prev) => prev.filter((item) => item.id !== outfit.id));
       void invalidateFavoritesCache({ authContext });
@@ -232,7 +232,7 @@ export default function FavoriteOutfitsPage() {
           userTitle: trimmed,
           displayTitle: trimmed,
           title: saved.title,
-        });
+        }, authContext);
       }
       setOutfits((prev) =>
         applyFavoriteOutfitStatuses(
@@ -248,6 +248,7 @@ export default function FavoriteOutfitsPage() {
                 }
               : item,
           ),
+          authContext,
         ),
       );
       void invalidateFavoritesCache({ authContext });
@@ -473,8 +474,8 @@ async function writeFavoritesFirstPageCache(
   });
 }
 
-function applyFavoriteOutfitStatuses(outfits: Outfit[]) {
-  return applyOutfitStatuses(outfits);
+function applyFavoriteOutfitStatuses(outfits: Outfit[], authContext?: ActiveAuthContext | null) {
+  return applyOutfitStatuses(outfits, authContext);
 }
 
 function getOutfitStatusPatches(outfits: Outfit[]) {

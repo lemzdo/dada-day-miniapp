@@ -117,8 +117,8 @@ function getOutfitStatusPatch(outfit: Outfit, fallbackOutfitKey = ''): OutfitSta
   return patch;
 }
 
-function applyTodayOutfitStatuses(outfits: Outfit[]) {
-  return applyOutfitStatuses(outfits).map((outfit) => normalizeOutfitSnapshot(outfit));
+function applyTodayOutfitStatuses(outfits: Outfit[], authContext?: ActiveAuthContext | null) {
+  return applyOutfitStatuses(outfits, authContext).map((outfit) => normalizeOutfitSnapshot(outfit));
 }
 
 function withDefinedOutfitFields(patch: Partial<Outfit>, source: Outfit): Partial<Outfit> {
@@ -241,8 +241,8 @@ export default function TodayPage() {
 
       if (!isLatestRequest(seq)) return false;
       const normalizedOutfits = data.outfits.map((outfit) => normalizeOutfitSnapshot(outfit));
-      setOutfitStatuses(getOutfitStatusPatches(normalizedOutfits));
-      const nextOutfits = applyTodayOutfitStatuses(normalizedOutfits);
+      setOutfitStatuses(getOutfitStatusPatches(normalizedOutfits), authContext);
+      const nextOutfits = applyTodayOutfitStatuses(normalizedOutfits, authContext);
       console.log('[TodayPage] fetchRecommendations success', {
         requestSeq: seq,
         trigger,
@@ -317,8 +317,8 @@ export default function TodayPage() {
       if (!isLatestRequest(seq)) return;
       if (data.outfits.length > 0) {
         const normalizedOutfits = data.outfits.map((outfit) => normalizeOutfitSnapshot(outfit));
-        setOutfitStatuses(getOutfitStatusPatches(normalizedOutfits));
-        const nextOutfits = applyTodayOutfitStatuses(normalizedOutfits);
+        setOutfitStatuses(getOutfitStatusPatches(normalizedOutfits), authContext);
+        const nextOutfits = applyTodayOutfitStatuses(normalizedOutfits, authContext);
         console.log('[TodayPage] refresh success', {
           requestSeq: seq,
           trigger: 'refresh',
@@ -571,14 +571,14 @@ export default function TodayPage() {
       return;
     }
 
-    setOutfitStatus(statusPatch);
+    setOutfitStatus(statusPatch, authContext);
     setOutfits((prev) => {
       const next = prev.map((outfit) =>
         outfit.outfitKey === statusPatch.outfitKey || outfit.outfitKey === reference.outfitKey || outfit.id === reference.id
           ? normalizeOutfitSnapshot({ ...outfit, ...listPatch })
           : outfit,
       );
-      const nextWithStatus = applyTodayOutfitStatuses(next);
+      const nextWithStatus = applyTodayOutfitStatuses(next, authContext);
       storeTodayRestoreSnapshot({ outfits: nextWithStatus }, authContext);
       return nextWithStatus;
     });
@@ -598,7 +598,10 @@ export default function TodayPage() {
     input: TodayRestoreSnapshotInput = {},
     authContext?: ActiveAuthContext | null,
   ) {
-    const snapshotOutfits = applyTodayOutfitStatuses((input.outfits ?? outfitsRef.current).map((outfit) => normalizeOutfitSnapshot(outfit)));
+    const snapshotOutfits = applyTodayOutfitStatuses(
+      (input.outfits ?? outfitsRef.current).map((outfit) => normalizeOutfitSnapshot(outfit)),
+      authContext,
+    );
     if (snapshotOutfits.length === 0) return;
 
     const snapshotSceneKey = input.selectedSceneKey ?? selectedSceneKeyRef.current;
@@ -633,7 +636,10 @@ export default function TodayPage() {
     const snapshot = readTodayRestoreSnapshot(authContext);
     if (!snapshot || !canRestoreTodaySnapshot(snapshot)) return false;
 
-    const restoredOutfits = applyTodayOutfitStatuses(snapshot.outfits.map((outfit) => normalizeOutfitSnapshot(outfit)));
+    const restoredOutfits = applyTodayOutfitStatuses(
+      snapshot.outfits.map((outfit) => normalizeOutfitSnapshot(outfit)),
+      authContext,
+    );
     const restoredIndex = clampIndex(snapshot.currentIndex, restoredOutfits.length);
     clearInitialRecommendationTimer();
     nextRequestSeq();

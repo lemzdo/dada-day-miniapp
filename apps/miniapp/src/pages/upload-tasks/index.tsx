@@ -2,6 +2,12 @@ import { Text, View } from '@tarojs/components';
 import Taro, { useDidShow, useLoad, usePullDownRefresh } from '@tarojs/taro';
 import { useCallback, useRef, useState } from 'react';
 import { getRecoverableUploadBatches } from '@/lib/cloud';
+import { buildAuthRuntimeKey } from '@/lib/userRuntimeScope';
+import {
+  captureAuthContext,
+  isAuthContextCurrent,
+  type ActiveAuthContext,
+} from '@/lib/userPageCache';
 import type { RecoverableUploadBatch } from '@/lib/cloud';
 import './index.scss';
 
@@ -10,23 +16,37 @@ type UploadTaskViewStatus = 'processing' | 'ready' | 'partial' | 'failed';
 const UPLOAD_TASKS_MEMORY_CACHE_TTL = 5 * 1000;
 
 interface UploadTasksMemoryCache {
+  authRuntimeKey: string;
   data: RecoverableUploadBatch[];
   createdAt: number;
 }
 
 let uploadTasksMemoryCache: UploadTasksMemoryCache | null = null;
 
+function isCurrentAuthContext(authContext: ActiveAuthContext | null | undefined) {
+  return Boolean(authContext && isAuthContextCurrent(authContext));
+}
+
 export default function UploadTasksPage() {
   const [batches, setBatches] = useState<RecoverableUploadBatch[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorState, setErrorState] = useState(false);
   const skipFirstDidShowRef = useRef(false);
-  const inflightRef = useRef<Promise<void> | null>(null);
+  const inflightRef = useRef<{ authRuntimeKey: string; promise: Promise<void> } | null>(null);
 
   const fetchBatches = useCallback(async (options: { force?: boolean } = {}) => {
-    if (inflightRef.current) return inflightRef.current;
+    const authContext = captureAuthContext();
+    if (!authContext) return;
+    const authRuntimeKey = buildAuthRuntimeKey(authContext);
 
-    const cachedBatches = options.force ? null : readUploadTasksMemoryCache();
+    if (inflightRef.current?.authRuntimeKey === authRuntimeKey) {
+      return inflightRef.current.promise;
+    }
+    if (inflightRef.current && inflightRef.current.authRuntimeKey !== authRuntimeKey) {
+      inflightRef.current = null;
+    }
+
+    const cachedBatches = options.force ? null : readUploadTasksMemoryCache(authRuntimeKey);
     if (cachedBatches) {
       setBatches(cachedBatches);
       setLoading(false);
@@ -38,29 +58,34 @@ export default function UploadTasksPage() {
       try {
       setErrorState(false);
       const result = await getRecoverableUploadBatches(10);
+      if (!isCurrentAuthContext(authContext)) return;
       const nextBatches = (result.list || []).filter(isActiveUploadBatch);
       setBatches(nextBatches);
-      writeUploadTasksMemoryCache(nextBatches);
+      writeUploadTasksMemoryCache(nextBatches, authRuntimeKey);
       console.log('[UploadTasksPage] fetchBatches', {
         returned: result.list?.length ?? 0,
         durationMs: Date.now() - startedAt,
       });
     } catch (error) {
       console.warn('Fetch upload tasks failed:', error);
+      if (!isCurrentAuthContext(authContext)) return;
       setErrorState(!cachedBatches);
       Taro.showToast({ title: '加载失败', icon: 'none' });
       if (!cachedBatches) {
         setBatches([]);
       }
     } finally {
+      if (!isCurrentAuthContext(authContext)) return;
       setLoading(false);
       Taro.stopPullDownRefresh();
     }
     })().finally(() => {
-      inflightRef.current = null;
+      if (inflightRef.current?.promise === request) {
+        inflightRef.current = null;
+      }
     });
 
-    inflightRef.current = request;
+    inflightRef.current = { authRuntimeKey, promise: request };
     return request;
   }, []);
 
@@ -180,8 +205,9 @@ export default function UploadTasksPage() {
   );
 }
 
-function readUploadTasksMemoryCache() {
+function readUploadTasksMemoryCache(authRuntimeKey: string) {
   if (!uploadTasksMemoryCache) return null;
+  if (uploadTasksMemoryCache.authRuntimeKey !== authRuntimeKey) return null;
   if (Date.now() - uploadTasksMemoryCache.createdAt > UPLOAD_TASKS_MEMORY_CACHE_TTL) {
     clearUploadTasksMemoryCache();
     return null;
@@ -189,8 +215,9 @@ function readUploadTasksMemoryCache() {
   return uploadTasksMemoryCache.data;
 }
 
-function writeUploadTasksMemoryCache(data: RecoverableUploadBatch[]) {
+function writeUploadTasksMemoryCache(data: RecoverableUploadBatch[], authRuntimeKey: string) {
   uploadTasksMemoryCache = {
+    authRuntimeKey,
     data,
     createdAt: Date.now(),
   };
