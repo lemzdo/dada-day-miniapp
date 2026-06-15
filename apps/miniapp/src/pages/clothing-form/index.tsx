@@ -4,6 +4,12 @@ import { useMemo, useState } from 'react';
 import { ClothingEditForm, type ClothingEditFormValue } from '@/components/ClothingEditForm';
 import { getClothingById, updateCloudClothing } from '@/lib/cloud';
 import { invalidateAfterWardrobeMutation } from '@/lib/cacheInvalidation';
+import {
+  captureAuthContext,
+  isAuthContextCurrent,
+  type ActiveAuthContext,
+} from '@/lib/userPageCache';
+import { setUserStorageSync } from '@/lib/userStorage';
 import { getDisplayImage } from '@/utils/clothingLabels';
 import {
   normalizeCategory,
@@ -21,6 +27,10 @@ import './index.scss';
 
 const DETAIL_REFRESH_STORAGE_KEY = 'detailNeedsRefresh';
 const WARDROBE_REFRESH_STORAGE_KEY = 'wardrobeNeedsRefresh';
+
+function isCurrentAuthContext(authContext: ActiveAuthContext | null | undefined) {
+  return Boolean(authContext && isAuthContextCurrent(authContext));
+}
 
 export default function ClothingFormPage() {
   const router = useRouter();
@@ -52,16 +62,20 @@ export default function ClothingFormPage() {
   async function handleSave(value: ClothingEditFormValue) {
     if (!clothing || submitting) return;
 
+    const authContext = captureAuthContext();
+    if (!authContext) return;
     setSubmitting(true);
     Taro.showLoading({ title: '保存中...' });
 
     try {
       await updateCloudClothing(clothing.id, toUpdateInput(value));
-      await invalidateAfterWardrobeMutation();
+      if (!isCurrentAuthContext(authContext)) return;
+      await invalidateAfterWardrobeMutation({ authContext });
+      if (!isCurrentAuthContext(authContext)) return;
 
       // 设置刷新标记
-      Taro.setStorageSync(DETAIL_REFRESH_STORAGE_KEY, true);
-      Taro.setStorageSync(WARDROBE_REFRESH_STORAGE_KEY, true);
+      setUserStorageSync(DETAIL_REFRESH_STORAGE_KEY, true, { authContext });
+      setUserStorageSync(WARDROBE_REFRESH_STORAGE_KEY, true, { authContext });
 
       Taro.showToast({ title: '保存成功', icon: 'success' });
       setTimeout(() => Taro.navigateBack(), 800);

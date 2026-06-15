@@ -24,6 +24,12 @@ import {
   setUserPageCache,
   type ActiveAuthContext,
 } from '@/lib/userPageCache';
+import {
+  buildUserStorageBusinessKey,
+  getUserStorageSync,
+  removeUserStorageSync,
+  setUserStorageSync,
+} from '@/lib/userStorage';
 import { canRecognizeSingleClothing, getSubcategoryDisplayLabel } from '@/utils/clothingLabels';
 import type { Clothing, ClothingCategory, UserClothingSubcategory } from '@starter-template/types';
 import type { RecoverableUploadBatch } from '@/lib/cloud';
@@ -238,9 +244,10 @@ export default function WardrobePage() {
       return;
     }
 
-    const needsRefresh = Boolean(Taro.getStorageSync(WARDROBE_REFRESH_STORAGE_KEY));
+    const authContext = captureAuthContext();
+    const needsRefresh = Boolean(getUserStorageSync(WARDROBE_REFRESH_STORAGE_KEY, { authContext }));
     if (needsRefresh) {
-      Taro.removeStorageSync(WARDROBE_REFRESH_STORAGE_KEY);
+      removeUserStorageSync(WARDROBE_REFRESH_STORAGE_KEY, { authContext });
     }
     if (needsRefresh || Date.now() - lastFetchAtRef.current > WARDROBE_STALE_MS) {
       refreshWardrobe();
@@ -312,6 +319,9 @@ export default function WardrobePage() {
   }
 
   async function handleAdd() {
+    const authContext = captureAuthContext();
+    if (!authContext) return;
+
     let loadingVisible = false;
 
     try {
@@ -344,7 +354,8 @@ export default function WardrobePage() {
 
       Taro.hideLoading();
       loadingVisible = false;
-      Taro.setStorageSync(`uploadBatchImages:${batch.id}`, imageIds);
+      if (!isCurrentAuthContext(authContext)) return;
+      setUserStorageSync(buildUserStorageBusinessKey('uploadBatchImages', batch.id), imageIds, { authContext });
       Taro.navigateTo({ url: `/pages/upload-confirm/index?batchId=${batch.id}` });
     } catch (err) {
       console.error('Upload clothing error:', err);

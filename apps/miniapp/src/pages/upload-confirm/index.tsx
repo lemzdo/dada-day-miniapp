@@ -16,11 +16,26 @@ import {
   invalidateAfterConfirmDraftsSaved,
   invalidateAfterUploadTaskMutation,
 } from '@/lib/cacheInvalidation';
+import {
+  captureAuthContext,
+  isAuthContextCurrent,
+  type ActiveAuthContext,
+} from '@/lib/userPageCache';
+import {
+  buildUserStorageBusinessKey,
+  getUserStorageSync,
+  removeUserStorageSync,
+  setUserStorageSync,
+} from '@/lib/userStorage';
 import { displayClothingTags, displayClothingText, getSubcategoryDisplayLabel, getUploadDraftDisplayImage } from '@/utils/clothingLabels';
 import type { ClothesDraft, ClothingCategory, ClothingImageSourceType, UploadBatch, UploadImage } from '@starter-template/types';
 import './index.scss';
 
 const WARDROBE_REFRESH_STORAGE_KEY = 'wardrobeNeedsRefresh';
+
+function isCurrentAuthContext(authContext: ActiveAuthContext | null | undefined) {
+  return Boolean(authContext && isAuthContextCurrent(authContext));
+}
 
 export default function UploadConfirmPage() {
   const router = useRouter();
@@ -82,12 +97,15 @@ export default function UploadConfirmPage() {
 
   async function processPendingImages(imagesOverride?: UploadImage[]) {
     if (!batchId || processingLoopRef.current || !mountedRef.current || discardRequestedRef.current) return;
+    const authContext = captureAuthContext();
+    if (!authContext) return;
     processingLoopRef.current = true;
     setProcessing(true);
     batchRefreshCountRef.current = 0;
     const startedAt = Date.now();
 
-    const stored = Taro.getStorageSync(`uploadBatchImages:${batchId}`) as string[] | undefined;
+    const uploadImagesKey = buildUserStorageBusinessKey('uploadBatchImages', batchId);
+    const stored = getUserStorageSync<string[]>(uploadImagesKey, { authContext }) ?? undefined;
     const sourceImages = imagesOverride ?? images;
     const imageById = new Map(sourceImages.map((item) => [item.id, item]));
     const candidateIds = Array.isArray(stored) && stored.length > 0
@@ -100,7 +118,7 @@ export default function UploadConfirmPage() {
 
     try {
       if (targetIds.length === 0) {
-        Taro.removeStorageSync(`uploadBatchImages:${batchId}`);
+        removeUserStorageSync(uploadImagesKey, { authContext });
         if (mountedRef.current) await refresh();
         return;
       }
@@ -113,8 +131,9 @@ export default function UploadConfirmPage() {
         if (!mountedRef.current || discardRequestedRef.current) return;
         applyProcessedImageResult(imageId, result);
       }
-      Taro.removeStorageSync(`uploadBatchImages:${batchId}`);
-      await invalidateAfterUploadTaskMutation();
+      if (!isCurrentAuthContext(authContext)) return;
+      removeUserStorageSync(uploadImagesKey, { authContext });
+      await invalidateAfterUploadTaskMutation({ authContext });
     } finally {
       processingLoopRef.current = false;
       if (mountedRef.current && !discardRequestedRef.current) {
@@ -267,6 +286,8 @@ export default function UploadConfirmPage() {
       return;
     }
 
+    const authContext = captureAuthContext();
+    if (!authContext) return;
     savingRef.current = true;
     setSaving(true);
     Taro.showLoading({ title: '保存中...' });
@@ -315,8 +336,10 @@ export default function UploadConfirmPage() {
       });
 
       await confirmClothesDrafts(batchId, draftPayload, selectedIds);
-      await invalidateAfterConfirmDraftsSaved();
-      Taro.setStorageSync(WARDROBE_REFRESH_STORAGE_KEY, true);
+      if (!isCurrentAuthContext(authContext)) return;
+      await invalidateAfterConfirmDraftsSaved({ authContext });
+      if (!isCurrentAuthContext(authContext)) return;
+      setUserStorageSync(WARDROBE_REFRESH_STORAGE_KEY, true, { authContext });
       Taro.showToast({ title: '已保存到衣柜', icon: 'success' });
       setTimeout(() => Taro.navigateBack(), 700);
     } catch (error) {
@@ -331,6 +354,8 @@ export default function UploadConfirmPage() {
 
   async function handleDiscardBatch() {
     if (!batchId || discardingBatch) return;
+    const authContext = captureAuthContext();
+    if (!authContext) return;
     const modalRes = await Taro.showModal({
       title: '舍弃本次识别？',
       content: '舍弃后，本次上传的识别结果将不会保存到衣柜。',
@@ -339,15 +364,18 @@ export default function UploadConfirmPage() {
       confirmColor: '#D97973',
     });
     if (!modalRes.confirm) return;
+    if (!isCurrentAuthContext(authContext)) return;
 
     discardRequestedRef.current = true;
     setDiscardingBatch(true);
     try {
       Taro.showLoading({ title: '正在舍弃...' });
-      Taro.removeStorageSync(`uploadBatchImages:${batchId}`);
+      removeUserStorageSync(buildUserStorageBusinessKey('uploadBatchImages', batchId), { authContext });
       await discardUploadBatch(batchId);
-      await invalidateAfterUploadTaskMutation();
-      Taro.setStorageSync(WARDROBE_REFRESH_STORAGE_KEY, true);
+      if (!isCurrentAuthContext(authContext)) return;
+      await invalidateAfterUploadTaskMutation({ authContext });
+      if (!isCurrentAuthContext(authContext)) return;
+      setUserStorageSync(WARDROBE_REFRESH_STORAGE_KEY, true, { authContext });
       Taro.showToast({ title: '已舍弃本次识别', icon: 'success' });
       setTimeout(() => Taro.navigateBack(), 600);
     } catch (error) {

@@ -21,6 +21,7 @@ import {
   setUserPageCache,
   type ActiveAuthContext,
 } from '@/lib/userPageCache';
+import { getUserStorageSync } from '@/lib/userStorage';
 import { applyOutfitStatus, setOutfitStatus } from '@/stores/outfitStatusStore';
 import { normalizeOutfitSnapshot, readOutfitDetailDraft, storeOutfitDetailDraft, storeOutfitStateSync } from '@/utils/outfitSnapshot';
 import {
@@ -139,9 +140,9 @@ function getCacheableOutfitDetail(outfit: Outfit) {
   return normalizeOutfitSnapshot(cacheable);
 }
 
-function hasWardrobeRefreshSignal() {
+function hasWardrobeRefreshSignal(authContext?: ActiveAuthContext | null) {
   try {
-    return Boolean(Taro.getStorageSync(WARDROBE_REFRESH_STORAGE_KEY));
+    return Boolean(getUserStorageSync(WARDROBE_REFRESH_STORAGE_KEY, { authContext }));
   } catch {
     return false;
   }
@@ -349,7 +350,7 @@ export default function OutfitDetailPage() {
       setDetailSource(source);
 
       if (source === 'recommendation') {
-        const draft = readOutfitDetailDraft(decodedId);
+        const draft = readOutfitDetailDraft(decodedId, { authContext });
         if (draft) {
           if (!isCurrentAuthContext(authContext)) return;
           setOutfit(prepareOutfitForState({ ...draft, outfitKind: draft.outfitKind || 'recommendation' }));
@@ -358,7 +359,7 @@ export default function OutfitDetailPage() {
         }
       }
 
-      if (!hasDisplayableOutfit && cacheKey && !hasWardrobeRefreshSignal()) {
+      if (!hasDisplayableOutfit && cacheKey && !hasWardrobeRefreshSignal(authContext)) {
         const cached = await getUserPageCache<Outfit>(cacheKey, { authContext });
         if (cached.hit && cached.data) {
           if (!isCurrentAuthContext(authContext)) return;
@@ -614,9 +615,9 @@ export default function OutfitDetailPage() {
 
     const nextWithStatus = applyDetailOutfitStatus(normalized);
     setOutfit(nextWithStatus);
-    storeOutfitStateSync(nextWithStatus);
+    storeOutfitStateSync(nextWithStatus, { authContext });
     if (detailSource === 'recommendation') {
-      storeOutfitDetailDraft(nextWithStatus);
+      storeOutfitDetailDraft(nextWithStatus, { authContext });
     }
     void writeOutfitDetailCache(getCurrentOutfitDetailCacheKey(), nextWithStatus, detailSource, authContext);
   }

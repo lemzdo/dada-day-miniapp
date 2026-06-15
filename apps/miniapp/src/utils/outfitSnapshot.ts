@@ -1,9 +1,19 @@
-import Taro from '@tarojs/taro';
 import type { ClothingCategory, Outfit, OutfitSnapshotItem } from '@starter-template/types';
+import {
+  buildUserStorageBusinessKey,
+  getUserStorageSync,
+  removeUserStorageSync,
+  setUserStorageSync,
+  type ActiveAuthContext,
+} from '@/lib/userStorage';
 import { getOutfitDisplayTitle } from './outfitTitle';
 
-const DETAIL_DRAFT_PREFIX = 'outfitDetailDraft:';
+const DETAIL_DRAFT_KEY = 'outfitDetailDraft';
 const OUTFIT_STATE_SYNC_KEY = 'outfitStateSync';
+
+interface OutfitSnapshotStorageOptions {
+  authContext?: ActiveAuthContext | null;
+}
 
 export function normalizeOutfitSnapshot(outfit: Outfit): Outfit {
   const clothingIds = outfit.clothingIds ?? [];
@@ -39,28 +49,28 @@ export function getRecommendationOutfitId(outfit: Outfit) {
   return `recommend:${getOutfitKey(outfit.clothingIds ?? [])}`;
 }
 
-export function storeOutfitDetailDraft(outfit: Outfit) {
+export function storeOutfitDetailDraft(outfit: Outfit, options: OutfitSnapshotStorageOptions = {}) {
   const normalized = normalizeOutfitSnapshot(outfit);
-  Taro.setStorageSync(getOutfitStorageKey(normalized.id), normalized);
+  setUserStorageSync(getOutfitStorageKey(normalized.id), normalized, options);
 }
 
-export function storeOutfitStateSync(outfit: Outfit) {
-  Taro.setStorageSync(OUTFIT_STATE_SYNC_KEY, normalizeOutfitSnapshot(outfit));
+export function storeOutfitStateSync(outfit: Outfit, options: OutfitSnapshotStorageOptions = {}) {
+  setUserStorageSync(OUTFIT_STATE_SYNC_KEY, normalizeOutfitSnapshot(outfit), options);
 }
 
-export function consumeOutfitStateSync() {
+export function consumeOutfitStateSync(options: OutfitSnapshotStorageOptions = {}) {
   try {
-    const value = Taro.getStorageSync(OUTFIT_STATE_SYNC_KEY) as Outfit | '';
-    Taro.removeStorageSync(OUTFIT_STATE_SYNC_KEY);
+    const value = getUserStorageSync<Outfit>(OUTFIT_STATE_SYNC_KEY, options);
+    removeUserStorageSync(OUTFIT_STATE_SYNC_KEY, options);
     return value && typeof value === 'object' ? normalizeOutfitSnapshot(value) : null;
   } catch {
     return null;
   }
 }
 
-export function readOutfitDetailDraft(id: string) {
+export function readOutfitDetailDraft(id: string, options: OutfitSnapshotStorageOptions = {}) {
   try {
-    const value = Taro.getStorageSync(getOutfitStorageKey(id)) as Outfit | '';
+    const value = getUserStorageSync<Outfit>(getOutfitStorageKey(id), options);
     return value && typeof value === 'object' ? normalizeOutfitSnapshot(value) : null;
   } catch {
     return null;
@@ -68,7 +78,7 @@ export function readOutfitDetailDraft(id: string) {
 }
 
 function getOutfitStorageKey(id: string) {
-  return `${DETAIL_DRAFT_PREFIX}${id}`;
+  return buildUserStorageBusinessKey(DETAIL_DRAFT_KEY, id);
 }
 
 function buildSnapshots(outfit: Outfit): OutfitSnapshotItem[] {

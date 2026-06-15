@@ -28,11 +28,25 @@ import {
   inspectCloudClothingDelete,
 } from '@/lib/cloud';
 import { invalidateAfterWardrobeMutation } from '@/lib/cacheInvalidation';
+import {
+  captureAuthContext,
+  isAuthContextCurrent,
+  type ActiveAuthContext,
+} from '@/lib/userPageCache';
+import {
+  getUserStorageSync,
+  removeUserStorageSync,
+  setUserStorageSync,
+} from '@/lib/userStorage';
 import type { Clothing, UserClothingMaterial } from '@starter-template/types';
 import './index.scss';
 
 const WARDROBE_REFRESH_STORAGE_KEY = 'wardrobeNeedsRefresh';
 const DETAIL_REFRESH_STORAGE_KEY = 'detailNeedsRefresh';
+
+function isCurrentAuthContext(authContext: ActiveAuthContext | null | undefined) {
+  return Boolean(authContext && isAuthContextCurrent(authContext));
+}
 
 export default function ClothingDetailPage() {
   const router = useRouter();
@@ -73,10 +87,11 @@ export default function ClothingDetailPage() {
   useDidShow(() => {
     // 检查是否需要强制刷新（从编辑页返回）
     try {
-      const needsRefresh = Taro.getStorageSync(DETAIL_REFRESH_STORAGE_KEY);
+      const authContext = captureAuthContext();
+      const needsRefresh = getUserStorageSync(DETAIL_REFRESH_STORAGE_KEY, { authContext });
       if (needsRefresh) {
         // 清除标记并强制刷新
-        Taro.removeStorageSync(DETAIL_REFRESH_STORAGE_KEY);
+        removeUserStorageSync(DETAIL_REFRESH_STORAGE_KEY, { authContext });
         fetchClothing(id);
       }
     } catch (err) {
@@ -91,8 +106,11 @@ export default function ClothingDetailPage() {
 
   const handleDelete = useCallback(async () => {
     if (!clothing) return;
+    const authContext = captureAuthContext();
+    if (!authContext) return;
     try {
       const impact = await inspectCloudClothingDelete(clothing.id);
+      if (!isCurrentAuthContext(authContext)) return;
       
       let content = '删除后这件衣服会从衣柜和推荐中移除，7天后清理图片。';
       const impacts: string[] = [];
@@ -113,10 +131,13 @@ export default function ClothingDetailPage() {
       });
       
       if (modalRes.confirm) {
+        if (!isCurrentAuthContext(authContext)) return;
         await deleteCloudClothing(clothing.id);
-        await invalidateAfterWardrobeMutation();
+        if (!isCurrentAuthContext(authContext)) return;
+        await invalidateAfterWardrobeMutation({ authContext });
+        if (!isCurrentAuthContext(authContext)) return;
         // 标记需要刷新衣橱
-        Taro.setStorageSync(WARDROBE_REFRESH_STORAGE_KEY, true);
+        setUserStorageSync(WARDROBE_REFRESH_STORAGE_KEY, true, { authContext });
         Taro.showToast({ title: '已删除', icon: 'success' });
         setTimeout(() => Taro.navigateBack(), 600);
       }

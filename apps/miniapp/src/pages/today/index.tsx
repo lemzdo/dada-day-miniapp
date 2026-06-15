@@ -4,6 +4,14 @@ import { useEffect, useRef, useState } from 'react';
 import { WeatherCard } from '@/components/WeatherCard';
 import { invalidateAfterOutfitWornMutation } from '@/lib/cacheInvalidation';
 import { addOutfitHistory, clearCloudRecommendationCache, generateCloudOutfit, removeFavoriteOutfit, saveFavoriteOutfit } from '@/lib/cloud';
+import {
+  captureAuthContext,
+  type ActiveAuthContext,
+} from '@/lib/userPageCache';
+import {
+  getUserStorageSync,
+  setUserStorageSync,
+} from '@/lib/userStorage';
 import { applyOutfitStatuses, setOutfitStatus, setOutfitStatuses } from '@/stores/outfitStatusStore';
 import { consumeOutfitStateSync, normalizeOutfitSnapshot, storeOutfitDetailDraft } from '@/utils/outfitSnapshot';
 import { getOutfitStyleTags } from '@/utils/outfitContextText';
@@ -182,10 +190,11 @@ export default function TodayPage() {
   });
 
   useDidShow(() => {
-    restoreTodaySnapshotFromDetail();
-    const syncedOutfit = consumeOutfitStateSync();
+    const authContext = captureAuthContext();
+    restoreTodaySnapshotFromDetail(authContext);
+    const syncedOutfit = consumeOutfitStateSync({ authContext });
     if (syncedOutfit) {
-      updateOutfitsByKey(syncedOutfit, syncedOutfit);
+      updateOutfitsByKey(syncedOutfit, syncedOutfit, authContext);
     }
   });
 
@@ -203,6 +212,7 @@ export default function TodayPage() {
     trigger?: string;
   }): Promise<boolean> {
     const seq = nextRequestSeq();
+    const authContext = captureAuthContext();
     console.log('[TodayPage] fetchRecommendations start', {
       requestSeq: seq,
       trigger,
@@ -260,7 +270,7 @@ export default function TodayPage() {
         batchLimited: Boolean(data.limited),
         batchExhausted: Boolean(data.exhausted),
         recommendationNotice: getBatchNotice(data.recommendationNotice, Boolean(data.limited), Boolean(data.exhausted)),
-      });
+      }, authContext);
       return true;
     } catch (err) {
       if (!isLatestRequest(seq)) return false;
@@ -281,6 +291,7 @@ export default function TodayPage() {
     if (loading || operation) return;
     shouldRestoreFromDetailRef.current = false;
     const seq = nextRequestSeq();
+    const authContext = captureAuthContext();
     setOperation('refresh');
     setError('');
     setRecommendationNotice('');
@@ -335,7 +346,7 @@ export default function TodayPage() {
           batchLimited: Boolean(data.limited),
           batchExhausted: Boolean(data.exhausted),
           recommendationNotice: getBatchNotice(data.recommendationNotice, Boolean(data.limited), Boolean(data.exhausted)),
-        });
+        }, authContext);
       } else {
         const notice = getBatchNotice(data.recommendationNotice, Boolean(data.limited), true);
         setBatchLimited(Boolean(data.limited));
@@ -357,6 +368,7 @@ export default function TodayPage() {
     const current = outfits[currentIndex];
     if (!current || operation) return;
 
+    const authContext = captureAuthContext();
     const nextFavorite = !current.isFavorite;
     setOperation('favorite');
 
@@ -380,6 +392,7 @@ export default function TodayPage() {
             },
             saved,
           ),
+          authContext,
         );
       } else {
         const removed = await removeFavoriteOutfit(current.favoriteOutfitId || current.id, current.outfitKey);
@@ -395,6 +408,7 @@ export default function TodayPage() {
             favoriteOutfitId: undefined,
             favoritedAt: undefined,
           },
+          authContext,
         );
       }
       Taro.showToast({ title: nextFavorite ? '已收藏' : '已取消收藏', icon: 'success' });
@@ -415,6 +429,7 @@ export default function TodayPage() {
       return;
     }
 
+    const authContext = captureAuthContext();
     setOperation('wear');
     try {
       await addOutfitHistory(normalizeOutfitSnapshot(current), {
@@ -442,6 +457,7 @@ export default function TodayPage() {
             wornAt: saved.wornAt,
             wornDate: saved.wornDate || getToday(),
           },
+          authContext,
         );
       });
       void invalidateAfterOutfitWornMutation();
@@ -501,9 +517,10 @@ export default function TodayPage() {
   function goToOutfitDetail(outfitId: string) {
     const current = outfits.find((outfit) => outfit.id === outfitId);
     if (!current) return;
+    const authContext = captureAuthContext();
     shouldRestoreFromDetailRef.current = true;
-    storeTodayRestoreSnapshot({ currentIndex });
-    storeOutfitDetailDraft(current);
+    storeTodayRestoreSnapshot({ currentIndex }, authContext);
+    storeOutfitDetailDraft(current, { authContext });
     Taro.navigateTo({ url: `/pages/outfit-detail/index?id=${encodeURIComponent(outfitId)}&source=recommendation` });
   }
 
@@ -528,20 +545,29 @@ export default function TodayPage() {
     initialRecommendationTimerRef.current = null;
   }
 
-  function updateOutfitsByKey(reference: Outfit, patch: Partial<Outfit>) {
+  function updateOutfitsByKey(
+    reference: Outfit,
+    patch: Partial<Outfit>,
+    authContext?: ActiveAuthContext | null,
+  ) {
     const outfitKey = reference.outfitKey;
     setOutfits((prev) => {
       const next = prev.map((outfit) =>
         outfit.outfitKey === outfitKey || outfit.id === reference.id ? normalizeOutfitSnapshot({ ...outfit, ...patch }) : outfit,
       );
-      storeTodayRestoreSnapshot({ outfits: next });
+      storeTodayRestoreSnapshot({ outfits: next }, authContext);
       return next;
     });
   }
 
-  function updateOutfitStatusByKey(reference: Outfit, statusPatch: OutfitStatusPatch, listPatch: Partial<Outfit>) {
+  function updateOutfitStatusByKey(
+    reference: Outfit,
+    statusPatch: OutfitStatusPatch,
+    listPatch: Partial<Outfit>,
+    authContext?: ActiveAuthContext | null,
+  ) {
     if (!statusPatch.outfitKey) {
-      updateOutfitsByKey(reference, listPatch);
+      updateOutfitsByKey(reference, listPatch, authContext);
       return;
     }
 
@@ -553,7 +579,7 @@ export default function TodayPage() {
           : outfit,
       );
       const nextWithStatus = applyTodayOutfitStatuses(next);
-      storeTodayRestoreSnapshot({ outfits: nextWithStatus });
+      storeTodayRestoreSnapshot({ outfits: nextWithStatus }, authContext);
       return nextWithStatus;
     });
   }
@@ -568,7 +594,10 @@ export default function TodayPage() {
     return [...seenOutfitKeysRef.current];
   }
 
-  function storeTodayRestoreSnapshot(input: TodayRestoreSnapshotInput = {}) {
+  function storeTodayRestoreSnapshot(
+    input: TodayRestoreSnapshotInput = {},
+    authContext?: ActiveAuthContext | null,
+  ) {
     const snapshotOutfits = applyTodayOutfitStatuses((input.outfits ?? outfitsRef.current).map((outfit) => normalizeOutfitSnapshot(outfit)));
     if (snapshotOutfits.length === 0) return;
 
@@ -594,18 +623,14 @@ export default function TodayPage() {
       recommendationNotice: input.recommendationNotice ?? recommendationNoticeRef.current,
     };
 
-    try {
-      Taro.setStorageSync(TODAY_RESTORE_SNAPSHOT_KEY, snapshot);
-    } catch (err) {
-      console.warn('[TodayPage] store restore snapshot failed:', err);
-    }
+    setUserStorageSync(TODAY_RESTORE_SNAPSHOT_KEY, snapshot, { authContext });
   }
 
-  function restoreTodaySnapshotFromDetail() {
+  function restoreTodaySnapshotFromDetail(authContext?: ActiveAuthContext | null) {
     if (!shouldRestoreFromDetailRef.current) return false;
     shouldRestoreFromDetailRef.current = false;
 
-    const snapshot = readTodayRestoreSnapshot();
+    const snapshot = readTodayRestoreSnapshot(authContext);
     if (!snapshot || !canRestoreTodaySnapshot(snapshot)) return false;
 
     const restoredOutfits = applyTodayOutfitStatuses(snapshot.outfits.map((outfit) => normalizeOutfitSnapshot(outfit)));
@@ -638,9 +663,9 @@ export default function TodayPage() {
     return true;
   }
 
-  function readTodayRestoreSnapshot() {
+  function readTodayRestoreSnapshot(authContext?: ActiveAuthContext | null) {
     try {
-      const value = Taro.getStorageSync(TODAY_RESTORE_SNAPSHOT_KEY) as TodayRestoreSnapshot | '';
+      const value = getUserStorageSync<TodayRestoreSnapshot>(TODAY_RESTORE_SNAPSHOT_KEY, { authContext });
       if (!value || typeof value !== 'object') return null;
       if (value.version !== 1 || !Array.isArray(value.outfits)) return null;
       return value;
@@ -667,7 +692,7 @@ export default function TodayPage() {
 
   function hasWardrobeRefreshSignal() {
     try {
-      return Boolean(Taro.getStorageSync(WARDROBE_REFRESH_STORAGE_KEY));
+      return Boolean(getUserStorageSync(WARDROBE_REFRESH_STORAGE_KEY));
     } catch {
       return false;
     }
