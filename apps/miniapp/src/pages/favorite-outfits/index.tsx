@@ -1,14 +1,27 @@
 import { Input, ScrollView, Text, View } from '@tarojs/components';
-import Taro, { useLoad, usePullDownRefresh, useReachBottom } from '@tarojs/taro';
-import { useState } from 'react';
+import Taro, { useDidShow, useLoad, usePullDownRefresh, useReachBottom } from '@tarojs/taro';
+import { useRef, useState } from 'react';
 import { SafeImage } from '@/components/SafeImage';
+import { invalidateFavoritesCache } from '@/lib/cacheInvalidation';
 import { listFavoriteOutfits, removeFavoriteOutfit, renameCloudOutfit } from '@/lib/cloud';
+import { buildPageCacheKey, getPageCache, setPageCache } from '@/lib/pageCache';
+import { applyOutfitStatuses, setOutfitStatus, setOutfitStatuses } from '@/stores/outfitStatusStore';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
+import type { OutfitStatusPatch } from '@/stores/outfitStatusStore';
 import type { Outfit } from '@starter-template/types';
 import './index.scss';
 
 const PAGE_SIZE = 10;
 const MAX_TITLE_LENGTH = 16;
+const FAVORITES_FIRST_PAGE_CACHE_TTL = 2 * 60 * 1000;
+const FAVORITES_FIRST_PAGE_CACHE_KEY = buildPageCacheKey(['favorites', 'first', 'v1', PAGE_SIZE]);
+
+interface FavoritesFirstPageCache {
+  list: Outfit[];
+  hasMore: boolean;
+  page: number;
+  pageSize: number;
+}
 
 interface TapEvent {
   stopPropagation: () => void;
@@ -24,13 +37,24 @@ export default function FavoriteOutfitsPage() {
   const [renamingOutfit, setRenamingOutfit] = useState<Outfit | null>(null);
   const [draftName, setDraftName] = useState('');
   const [renameSaving, setRenameSaving] = useState(false);
+  const skipFirstDidShowRef = useRef(false);
 
   useLoad(() => {
+    skipFirstDidShowRef.current = true;
     fetchFavorites(1, true);
   });
 
+  useDidShow(() => {
+    if (skipFirstDidShowRef.current) {
+      skipFirstDidShowRef.current = false;
+      return;
+    }
+    syncFavoritesFromStatusStore();
+    void fetchFavorites(1, true, { force: true });
+  });
+
   usePullDownRefresh(() => {
-    fetchFavorites(1, true).finally(() => {
+    fetchFavorites(1, true, { force: true }).finally(() => {
       Taro.stopPullDownRefresh();
     });
   });
@@ -42,22 +66,56 @@ export default function FavoriteOutfitsPage() {
     fetchFavorites(nextPage);
   });
 
-  async function fetchFavorites(pageNum: number, reset = false) {
+  async function fetchFavorites(pageNum: number, reset = false, options: { force?: boolean } = {}) {
     if (loading) return;
 
+    const isFirstPage = reset && pageNum === 1;
+    const cached = isFirstPage && !options.force ? await hydrateFavoritesFirstPageCache() : false;
     setLoading(true);
     setError('');
     try {
       const data = await listFavoriteOutfits({ page: pageNum, pageSize: PAGE_SIZE });
-      setOutfits((prev) => (reset ? data.list : [...prev, ...data.list]));
+      const rawList = data.list || [];
+      setOutfitStatuses(getOutfitStatusPatches(rawList));
+      const nextList = applyFavoriteOutfitStatuses(rawList);
+      setOutfits((prev) => (reset ? nextList : applyFavoriteOutfitStatuses([...prev, ...nextList])));
       setHasMore(data.hasMore);
       if (reset) setPage(1);
+      if (isFirstPage) {
+        void writeFavoritesFirstPageCache({
+          list: nextList,
+          hasMore: data.hasMore,
+          page: 1,
+          pageSize: PAGE_SIZE,
+        });
+      }
     } catch (err) {
       console.error('Fetch favorite outfits error:', err);
       setError('收藏灵感暂时没加载出来');
     } finally {
       setLoading(false);
     }
+  }
+
+  async function hydrateFavoritesFirstPageCache() {
+    const cached = await getPageCache<FavoritesFirstPageCache>(FAVORITES_FIRST_PAGE_CACHE_KEY);
+    if (!cached.hit || !cached.data) return false;
+
+    setOutfits(applyFavoriteOutfitStatuses(cached.data.list));
+    setHasMore(cached.data.hasMore);
+    setPage(cached.data.page);
+    setError('');
+    return true;
+  }
+
+  function syncFavoritesFromStatusStore() {
+    setOutfits((prev) => {
+      const next = applyFavoriteOutfitStatuses(prev).filter((outfit) => outfit.isFavorite !== false);
+      if (!isSameFavoriteOutfitList(prev, next)) {
+        void invalidateFavoritesCache();
+      }
+      return next;
+    });
   }
 
   function handleCardClick(outfitId: string) {
@@ -90,7 +148,16 @@ export default function FavoriteOutfitsPage() {
 
     try {
       await removeFavoriteOutfit(outfit.id, outfit.outfitKey);
+      if (outfit.outfitKey) {
+        setOutfitStatus({
+          outfitKey: outfit.outfitKey,
+          isFavorite: false,
+          favoriteOutfitId: '',
+          updatedAt: Date.now(),
+        });
+      }
       setOutfits((prev) => prev.filter((item) => item.id !== outfit.id));
+      void invalidateFavoritesCache();
     } catch (err) {
       console.error('Unfavorite outfit error:', err);
       Taro.showToast({ title: '移出失败，稍后再试', icon: 'none' });
@@ -129,20 +196,32 @@ export default function FavoriteOutfitsPage() {
         outfit: renamingOutfit,
         userTitle: trimmed,
       });
+      if (renamingOutfit.outfitKey) {
+        setOutfitStatus({
+          ...getOutfitStatusPatch(saved, renamingOutfit.outfitKey, Date.now()),
+          outfitKey: saved.outfitKey || renamingOutfit.outfitKey,
+          userTitle: trimmed,
+          displayTitle: trimmed,
+          title: saved.title,
+        });
+      }
       setOutfits((prev) =>
-        prev.map((item) =>
-          item.id === renamingOutfit.id
-            ? {
-                ...item,
-                ...saved,
-                id: item.id,
-                userTitle: trimmed,
-                displayTitle: trimmed,
-                updatedAt: saved.updatedAt || item.updatedAt,
-              }
-            : item,
+        applyFavoriteOutfitStatuses(
+          prev.map((item) =>
+            item.id === renamingOutfit.id
+              ? {
+                  ...item,
+                  ...saved,
+                  id: item.id,
+                  userTitle: trimmed,
+                  displayTitle: trimmed,
+                  updatedAt: saved.updatedAt || item.updatedAt,
+                }
+              : item,
+          ),
         ),
       );
+      void invalidateFavoritesCache();
       Taro.showToast({ title: '已更新名称', icon: 'success' });
       closeRename();
     } catch (err) {
@@ -347,6 +426,73 @@ export default function FavoriteOutfitsPage() {
       )}
     </View>
   );
+}
+
+async function writeFavoritesFirstPageCache(data: FavoritesFirstPageCache) {
+  await setPageCache(FAVORITES_FIRST_PAGE_CACHE_KEY, data, {
+    ttl: FAVORITES_FIRST_PAGE_CACHE_TTL,
+    meta: {
+      pageSize: data.pageSize,
+    },
+  });
+}
+
+function applyFavoriteOutfitStatuses(outfits: Outfit[]) {
+  return applyOutfitStatuses(outfits);
+}
+
+function getOutfitStatusPatches(outfits: Outfit[]) {
+  return outfits.map((outfit) => getOutfitStatusPatch(outfit)).filter((patch) => Boolean(patch.outfitKey));
+}
+
+function getOutfitStatusPatch(outfit: Outfit, fallbackOutfitKey = '', updatedAtOverride?: number): OutfitStatusPatch {
+  const patch: OutfitStatusPatch = {
+    outfitKey: outfit.outfitKey ?? fallbackOutfitKey,
+  };
+  const updatedAt = updatedAtOverride ?? getOutfitStatusUpdatedAt(outfit.updatedAt);
+
+  if (updatedAt !== undefined) patch.updatedAt = updatedAt;
+  if (outfit.isFavorite !== undefined) patch.isFavorite = outfit.isFavorite;
+  if (outfit.favoriteOutfitId !== undefined) {
+    patch.favoriteOutfitId = outfit.favoriteOutfitId;
+  } else if (outfit.isFavorite === false) {
+    patch.favoriteOutfitId = '';
+  }
+  if (outfit.isWornToday !== undefined) patch.isWornToday = outfit.isWornToday;
+  if (outfit.todayHistoryId !== undefined) patch.todayHistoryId = outfit.todayHistoryId;
+  if (outfit.wornAt !== undefined) patch.wornAt = outfit.wornAt;
+  if (outfit.wornDate !== undefined) patch.wornDate = outfit.wornDate;
+  if (outfit.userTitle !== undefined) patch.userTitle = outfit.userTitle;
+  if (outfit.displayTitle !== undefined) patch.displayTitle = outfit.displayTitle;
+  if (outfit.title !== undefined) patch.title = outfit.title;
+
+  return patch;
+}
+
+function getOutfitStatusUpdatedAt(updatedAt: string | undefined) {
+  if (!updatedAt) return undefined;
+  const timestamp = Date.parse(updatedAt);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
+function isSameFavoriteOutfitList(prev: Outfit[], next: Outfit[]) {
+  if (prev.length !== next.length) return false;
+  return prev.every((item, index) => {
+    const nextItem = next[index];
+    if (!nextItem) return false;
+    return (
+      item.id === nextItem.id
+      && item.isFavorite === nextItem.isFavorite
+      && item.favoriteOutfitId === nextItem.favoriteOutfitId
+      && item.isWornToday === nextItem.isWornToday
+      && item.todayHistoryId === nextItem.todayHistoryId
+      && item.wornAt === nextItem.wornAt
+      && item.wornDate === nextItem.wornDate
+      && item.userTitle === nextItem.userTitle
+      && item.displayTitle === nextItem.displayTitle
+      && item.title === nextItem.title
+    );
+  });
 }
 
 function formatDate(value?: string) {
