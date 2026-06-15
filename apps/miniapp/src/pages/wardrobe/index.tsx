@@ -2,6 +2,7 @@ import { View, Text } from '@tarojs/components';
 import Taro, { useDidShow, useLoad, usePullDownRefresh, useReachBottom } from '@tarojs/taro';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ClothingGrid } from '@/components/ClothingGrid';
+import { useAuthRuntime } from '@/hooks/useAuthRuntime';
 import {
   CloudFunctionError,
   createUploadBatch,
@@ -98,6 +99,7 @@ function isCurrentAuthContext(authContext: ActiveAuthContext | null) {
 }
 
 export default function WardrobePage() {
+  const { authStatus, runtimeKey, isAuthenticated } = useAuthRuntime();
   const [clothes, setClothes] = useState<Clothing[]>([]);
   const [loading, setLoading] = useState(false);
   const [hasMore, setHasMore] = useState(true);
@@ -114,6 +116,25 @@ export default function WardrobePage() {
   const skipNextShowRefreshRef = useRef(false);
   const loadingRef = useRef(false);
   const lastFetchAtRef = useRef(0);
+  const lastHandledRuntimeKeyRef = useRef<string | null>(null);
+
+  const resetUserState = useCallback(() => {
+    loadingRef.current = false;
+    lastFetchAtRef.current = 0;
+    setClothes([]);
+    setLoading(false);
+    setHasMore(true);
+    setPage(1);
+    setActiveCategory('all');
+    setActiveSubcategory('all');
+    setActiveSubcategoryId('');
+    setUserSubcategories([]);
+    setStats({ total: 50, used: 0 });
+    setRecoverableBatches([]);
+    setSelectionMode(false);
+    setSelectedIds([]);
+    setBatchDeleting(false);
+  }, []);
 
   const applyWardrobeFirstPageCache = useCallback(async (cacheKey: string, authContext: ActiveAuthContext | null) => {
     const cached = await getUserPageCache<WardrobeFirstPageCacheData>(cacheKey, { authContext });
@@ -231,11 +252,26 @@ export default function WardrobePage() {
     }
   }, []);
 
-  useLoad(() => {
+  useEffect(() => {
+    if (!isAuthenticated || !runtimeKey) {
+      lastHandledRuntimeKeyRef.current = null;
+      skipNextShowRefreshRef.current = true;
+      resetUserState();
+      return;
+    }
+
+    if (lastHandledRuntimeKeyRef.current === runtimeKey) return;
+    loadingRef.current = false;
+    resetUserState();
+    lastHandledRuntimeKeyRef.current = runtimeKey;
     skipNextShowRefreshRef.current = true;
-    fetchClothes(1, true);
+    fetchClothes(1, true, 'all', 'all', '', true);
     void fetchRecoverableUploadTask();
     void loadUserSubcategories();
+  }, [authStatus, fetchClothes, fetchRecoverableUploadTask, isAuthenticated, resetUserState, runtimeKey]);
+
+  useLoad(() => {
+    skipNextShowRefreshRef.current = true;
   });
 
   useDidShow(() => {

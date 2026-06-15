@@ -1,8 +1,9 @@
 import { Button, Image, Input, ScrollView, Text, View } from '@tarojs/components';
 import Taro, { useDidShow, useLoad, usePullDownRefresh, useUnload } from '@tarojs/taro';
-import { useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useAuthRuntime } from '@/hooks/useAuthRuntime';
 import { invalidateProfileCache } from '@/lib/cacheInvalidation';
-import { getWardrobe, loginWithCloud, updateCloudUserProfile } from '@/lib/cloud';
+import { getWardrobe, updateCloudUserProfile } from '@/lib/cloud';
 import { buildPageCacheKey } from '@/lib/pageCache';
 import {
   captureAuthContext,
@@ -102,6 +103,7 @@ const defaultProfile: ProfileState = {
 };
 
 export default function ProfilePage() {
+  const { authStatus, runtimeKey, isAuthenticated } = useAuthRuntime();
   const [profile, setProfile] = useState<ProfileState>(defaultProfile);
   const [draftNickname, setDraftNickname] = useState(DEFAULT_NICKNAME);
   const [draftAvatarUrl, setDraftAvatarUrl] = useState('');
@@ -113,9 +115,22 @@ export default function ProfilePage() {
   const didShowOnceRef = useRef(false);
   const mountedRef = useRef(true);
   const requestIdRef = useRef(0);
+  const lastHandledRuntimeKeyRef = useRef<string | null>(null);
+
+  const resetUserState = useCallback(() => {
+    requestIdRef.current += 1;
+    setProfile(defaultProfile);
+    setDraftNickname(DEFAULT_NICKNAME);
+    setDraftAvatarUrl('');
+    setDraftAvatarType('default');
+    setDraftPresetId(AVATAR_PRESETS[0]!.id);
+    setShowEditModal(false);
+    setSaving(false);
+    setDataNotice('');
+  }, []);
 
   useLoad(() => {
-    fetchProfileSummary();
+    // Initial data loading is driven by the auth runtime effect.
   });
 
   useUnload(() => {
@@ -127,8 +142,22 @@ export default function ProfilePage() {
       didShowOnceRef.current = true;
       return;
     }
+    if (!isAuthenticated || !runtimeKey) return;
     fetchProfileSummary();
   });
+
+  useEffect(() => {
+    if (!isAuthenticated || !runtimeKey) {
+      lastHandledRuntimeKeyRef.current = null;
+      resetUserState();
+      return;
+    }
+
+    if (lastHandledRuntimeKeyRef.current === runtimeKey) return;
+    resetUserState();
+    lastHandledRuntimeKeyRef.current = runtimeKey;
+    void fetchProfileSummary();
+  }, [authStatus, isAuthenticated, resetUserState, runtimeKey]);
 
   usePullDownRefresh(() => {
     fetchProfileSummary({ manual: true }).finally(() => {
@@ -140,6 +169,7 @@ export default function ProfilePage() {
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
     const authContext = captureAuthContext();
+    if (!authContext) return;
     setDataNotice('');
 
     try {
@@ -147,9 +177,9 @@ export default function ProfilePage() {
         await hydrateProfileFromCache(requestId, authContext);
       }
 
-      const cachedUser = options.manual ? null : readUserFromStore();
+      const cachedUser = readUserFromStore();
       const [userResult, wardrobeResult] = await Promise.allSettled([
-        cachedUser ? Promise.resolve(cachedUser) : loginWithCloud(),
+        Promise.resolve(cachedUser),
         getWardrobe({ page: 1, pageSize: 1, status: 'active' }),
       ]);
 
@@ -161,7 +191,7 @@ export default function ProfilePage() {
 
       let nextProfileForDraft: ProfileState | null = null;
       setProfile((prev) => {
-        const styleProfile = user?.styleProfile ?? {};
+        const styleProfile: Record<string, unknown> = user?.styleProfile ?? {};
         const preferredStyles = user ? readPreferredStyles(styleProfile) : prev.preferredStyles;
         const avatarType = user ? readAvatarType(user.avatarType ?? styleProfile['avatarType']) : prev.avatarType;
         

@@ -1,6 +1,7 @@
 import { Text, View } from '@tarojs/components';
 import Taro, { useDidShow, useLoad, usePullDownRefresh } from '@tarojs/taro';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useAuthRuntime } from '@/hooks/useAuthRuntime';
 import { getRecoverableUploadBatches } from '@/lib/cloud';
 import { buildAuthRuntimeKey } from '@/lib/userRuntimeScope';
 import {
@@ -28,15 +29,27 @@ function isCurrentAuthContext(authContext: ActiveAuthContext | null | undefined)
 }
 
 export default function UploadTasksPage() {
+  const { authStatus, runtimeKey, isAuthenticated } = useAuthRuntime();
   const [batches, setBatches] = useState<RecoverableUploadBatch[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorState, setErrorState] = useState(false);
   const skipFirstDidShowRef = useRef(false);
   const inflightRef = useRef<{ authRuntimeKey: string; promise: Promise<void> } | null>(null);
+  const lastHandledRuntimeKeyRef = useRef<string | null>(null);
+
+  const resetUserState = useCallback(() => {
+    inflightRef.current = null;
+    setBatches([]);
+    setLoading(false);
+    setErrorState(false);
+  }, []);
 
   const fetchBatches = useCallback(async (options: { force?: boolean } = {}) => {
     const authContext = captureAuthContext();
-    if (!authContext) return;
+    if (!authContext) {
+      setLoading(false);
+      return;
+    }
     const authRuntimeKey = buildAuthRuntimeKey(authContext);
 
     if (inflightRef.current?.authRuntimeKey === authRuntimeKey) {
@@ -89,9 +102,23 @@ export default function UploadTasksPage() {
     return request;
   }, []);
 
+  useEffect(() => {
+    if (!isAuthenticated || !runtimeKey) {
+      lastHandledRuntimeKeyRef.current = null;
+      skipFirstDidShowRef.current = true;
+      resetUserState();
+      return;
+    }
+
+    if (lastHandledRuntimeKeyRef.current === runtimeKey) return;
+    resetUserState();
+    lastHandledRuntimeKeyRef.current = runtimeKey;
+    skipFirstDidShowRef.current = true;
+    void fetchBatches({ force: true });
+  }, [authStatus, fetchBatches, isAuthenticated, resetUserState, runtimeKey]);
+
   useLoad(() => {
     skipFirstDidShowRef.current = true;
-    void fetchBatches();
   });
 
   useDidShow(() => {

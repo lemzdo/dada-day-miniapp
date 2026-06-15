@@ -1,7 +1,8 @@
 import { Image, Swiper, SwiperItem, Text, View } from '@tarojs/components';
 import Taro, { useDidShow, useLoad, usePullDownRefresh, useUnload } from '@tarojs/taro';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { WeatherCard } from '@/components/WeatherCard';
+import { useAuthRuntime } from '@/hooks/useAuthRuntime';
 import { invalidateAfterOutfitWornMutation } from '@/lib/cacheInvalidation';
 import { addOutfitHistory, clearCloudRecommendationCache, generateCloudOutfit, removeFavoriteOutfit, saveFavoriteOutfit } from '@/lib/cloud';
 import {
@@ -137,6 +138,7 @@ function getOutfitStatusUpdatedAt(updatedAt: string | undefined) {
 }
 
 export default function TodayPage() {
+  const { authStatus, runtimeKey, isAuthenticated } = useAuthRuntime();
   const [selectedSceneKey, setSelectedSceneKey] = useState<SceneKey>('home');
   const [outfits, setOutfits] = useState<Outfit[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -162,6 +164,7 @@ export default function TodayPage() {
   const currentWeatherRef = useRef<WeatherSnapshot | undefined>(undefined);
   const lastRecommendationWeatherKeyRef = useRef('');
   const initialRecommendationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastHandledRuntimeKeyRef = useRef<string | null>(null);
   const [currentWeather, setCurrentWeather] = useState<WeatherSnapshot | undefined>(undefined);
   const selectedScene = SCENE_TAGS[selectedSceneKey];
   const selectedSceneRef = useRef<SceneTag>(selectedScene);
@@ -175,8 +178,32 @@ export default function TodayPage() {
   recommendationNoticeRef.current = recommendationNotice;
   selectedSceneRef.current = selectedScene;
 
+  const resetUserState = useCallback(() => {
+    clearInitialRecommendationTimer();
+    requestSeq.current += 1;
+    seenOutfitKeysRef.current = new Set();
+    outfitsRef.current = [];
+    currentIndexRef.current = 0;
+    recommendationBatchIdRef.current = '';
+    hasRecommendationsRef.current = true;
+    batchLimitedRef.current = false;
+    batchExhaustedRef.current = false;
+    recommendationNoticeRef.current = '';
+    shouldRestoreFromDetailRef.current = false;
+    setOutfits([]);
+    setCurrentIndex(0);
+    setLoading(false);
+    setOperation(null);
+    setHasRecommendations(true);
+    setError('');
+    setRecommendationNotice('');
+    setRecommendationBatchId('');
+    setBatchLimited(false);
+    setBatchExhausted(false);
+  }, []);
+
   useLoad(() => {
-    scheduleInitialRecommendation();
+    clearInitialRecommendationTimer();
   });
 
   useUnload(() => {
@@ -190,6 +217,7 @@ export default function TodayPage() {
   });
 
   useDidShow(() => {
+    if (!isAuthenticated || !runtimeKey) return;
     const authContext = captureAuthContext();
     restoreTodaySnapshotFromDetail(authContext);
     const syncedOutfit = consumeOutfitStateSync({ authContext });
@@ -197,6 +225,27 @@ export default function TodayPage() {
       updateOutfitsByKey(syncedOutfit, syncedOutfit, authContext);
     }
   });
+
+  useEffect(() => {
+    if (!isAuthenticated || !runtimeKey) {
+      lastHandledRuntimeKeyRef.current = null;
+      resetUserState();
+      return;
+    }
+
+    if (lastHandledRuntimeKeyRef.current === runtimeKey) return;
+    resetUserState();
+    lastHandledRuntimeKeyRef.current = runtimeKey;
+    if (currentWeatherRef.current) {
+      void fetchRecommendations({
+        scene: selectedSceneRef.current,
+        weather: currentWeatherRef.current,
+        trigger: 'auth-runtime',
+      });
+      return;
+    }
+    scheduleInitialRecommendation();
+  }, [authStatus, isAuthenticated, resetUserState, runtimeKey]);
 
   async function fetchRecommendations({
     scene,
@@ -220,6 +269,8 @@ export default function TodayPage() {
       scene,
       hasWeather: Boolean(weather),
     });
+    if (!authContext) return false;
+
     if (!silent) {
       setLoading(true);
       setError('');
@@ -292,6 +343,7 @@ export default function TodayPage() {
     shouldRestoreFromDetailRef.current = false;
     const seq = nextRequestSeq();
     const authContext = captureAuthContext();
+    if (!authContext) return;
     setOperation('refresh');
     setError('');
     setRecommendationNotice('');

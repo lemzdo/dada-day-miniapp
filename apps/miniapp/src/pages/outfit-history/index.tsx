@@ -1,7 +1,8 @@
 import { ScrollView, Text, View } from '@tarojs/components';
 import Taro, { useDidShow, useLoad, usePullDownRefresh } from '@tarojs/taro';
-import { useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { SafeImage } from '@/components/SafeImage';
+import { useAuthRuntime } from '@/hooks/useAuthRuntime';
 import { invalidateHistoryCache } from '@/lib/cacheInvalidation';
 import { listOutfitHistory } from '@/lib/cloud';
 import { buildPageCacheKey } from '@/lib/pageCache';
@@ -56,6 +57,7 @@ function formatMonthDay(dateStr: string) {
 }
 
 export default function OutfitHistoryPage() {
+  const { authStatus, runtimeKey, isAuthenticated } = useAuthRuntime();
   const [allRecords, setAllRecords] = useState<Outfit[]>([]);
   const [loading, setLoading] = useState(false);
   const [hasMore, setHasMore] = useState(true);
@@ -66,25 +68,41 @@ export default function OutfitHistoryPage() {
   const [currentMonth, setCurrentMonth] = useState(today.getMonth() + 1);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const selectedDateRef = useRef<string | null>(null);
-  const initializedRef = useRef(false);
   const skipFirstDidShowRef = useRef(false);
   const fetchingRef = useRef(false);
+  const lastHandledRuntimeKeyRef = useRef<string | null>(null);
 
-  function initSelectedDate() {
-    if (!initializedRef.current && selectedDate === null) {
-      setSelectedDate(getTodayStr());
-      selectedDateRef.current = getTodayStr();
-      initializedRef.current = true;
+  const resetUserState = useCallback(() => {
+    const now = new Date();
+    const todayStr = getTodayStr();
+    fetchingRef.current = false;
+    selectedDateRef.current = todayStr;
+    setAllRecords([]);
+    setLoading(false);
+    setHasMore(true);
+    setPage(1);
+    setCurrentYear(now.getFullYear());
+    setCurrentMonth(now.getMonth() + 1);
+    setSelectedDate(todayStr);
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated || !runtimeKey) {
+      lastHandledRuntimeKeyRef.current = null;
+      skipFirstDidShowRef.current = true;
+      resetUserState();
+      return;
     }
-  }
+
+    if (lastHandledRuntimeKeyRef.current === runtimeKey) return;
+    resetUserState();
+    lastHandledRuntimeKeyRef.current = runtimeKey;
+    skipFirstDidShowRef.current = true;
+    void fetchHistory(1, true, { force: true });
+  }, [authStatus, isAuthenticated, resetUserState, runtimeKey]);
 
   useLoad(() => {
     skipFirstDidShowRef.current = true;
-    initializedRef.current = false;
-    setSelectedDate(null);
-    selectedDateRef.current = null;
-    fetchHistory(1, true);
-    setTimeout(initSelectedDate, 0);
   });
 
   useDidShow(() => {
@@ -92,6 +110,7 @@ export default function OutfitHistoryPage() {
       skipFirstDidShowRef.current = false;
       return;
     }
+    if (!isAuthenticated || !runtimeKey) return;
     syncHistoryFromStatusStore();
     void fetchHistory(1, true, { force: true, silent: true });
   });

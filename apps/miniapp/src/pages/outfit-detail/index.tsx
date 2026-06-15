@@ -1,7 +1,8 @@
 import { Input, Text, View } from '@tarojs/components';
 import Taro, { useDidShow, useLoad, useRouter } from '@tarojs/taro';
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { SafeImage } from '@/components/SafeImage';
+import { useAuthRuntime } from '@/hooks/useAuthRuntime';
 import { invalidateAfterOutfitWornMutation } from '@/lib/cacheInvalidation';
 import {
   addOutfitHistory,
@@ -314,6 +315,7 @@ export default function OutfitDetailPage() {
   const router = useRouter();
   const id = router.params.id;
   const sourceParam = router.params.source;
+  const { authStatus, runtimeKey, isAuthenticated } = useAuthRuntime();
   const [outfit, setOutfit] = useState<Outfit | null>(null);
   const [detailSource, setDetailSource] = useState<DetailSource>('recommendation');
   const [loading, setLoading] = useState(true);
@@ -324,21 +326,55 @@ export default function OutfitDetailPage() {
   const [draftName, setDraftName] = useState('');
   const [favoriteOperating, setFavoriteOperating] = useState(false);
   const [wearOperating, setWearOperating] = useState(false);
+  const requestSeqRef = useRef(0);
+  const lastHandledRuntimeKeyRef = useRef<string | null>(null);
+
+  const resetUserState = useCallback(() => {
+    requestSeqRef.current += 1;
+    setOutfit(null);
+    setDetailSource(normalizeSource(sourceParam));
+    setLoading(false);
+    setOperating(false);
+    setCommentLoading(false);
+    setItemsExpanded(false);
+    setShowNameModal(false);
+    setDraftName('');
+    setFavoriteOperating(false);
+    setWearOperating(false);
+  }, [sourceParam]);
 
   useLoad(() => {
-    if (id) fetchOutfit(id);
-    else setLoading(false);
+    setLoading(false);
   });
 
   useDidShow(() => {
+    if (!isAuthenticated || !runtimeKey) return;
     const authContext = captureAuthContext();
     if (!isCurrentAuthContext(authContext)) return;
     setOutfit((current) => (current ? applyDetailOutfitStatus(current, authContext) : current));
   });
 
+  useEffect(() => {
+    if (!isAuthenticated || !runtimeKey) {
+      lastHandledRuntimeKeyRef.current = null;
+      resetUserState();
+      return;
+    }
+
+    if (lastHandledRuntimeKeyRef.current === runtimeKey) return;
+    resetUserState();
+    lastHandledRuntimeKeyRef.current = runtimeKey;
+    if (id) void fetchOutfit(id);
+  }, [authStatus, id, isAuthenticated, resetUserState, runtimeKey]);
+
   async function fetchOutfit(outfitId: string) {
+    const requestSeq = requestSeqRef.current + 1;
+    requestSeqRef.current = requestSeq;
     const authContext = captureAuthContext();
-    if (!authContext) return;
+    if (!authContext) {
+      setLoading(false);
+      return;
+    }
 
     setLoading(true);
     let hasDisplayableOutfit = false;
@@ -346,13 +382,13 @@ export default function OutfitDetailPage() {
       const decodedId = decodeURIComponent(outfitId);
       const source = normalizeSource(sourceParam);
       const cacheKey = buildOutfitDetailCacheKey(source, decodedId);
-      if (!isCurrentAuthContext(authContext)) return;
+      if (requestSeqRef.current !== requestSeq || !isCurrentAuthContext(authContext)) return;
       setDetailSource(source);
 
       if (source === 'recommendation') {
         const draft = readOutfitDetailDraft(decodedId, { authContext });
         if (draft) {
-          if (!isCurrentAuthContext(authContext)) return;
+          if (requestSeqRef.current !== requestSeq || !isCurrentAuthContext(authContext)) return;
           setOutfit(prepareOutfitForState({ ...draft, outfitKind: draft.outfitKind || 'recommendation' }, authContext));
           setLoading(false);
           hasDisplayableOutfit = true;
@@ -362,7 +398,7 @@ export default function OutfitDetailPage() {
       if (!hasDisplayableOutfit && cacheKey && !hasWardrobeRefreshSignal(authContext)) {
         const cached = await getUserPageCache<Outfit>(cacheKey, { authContext });
         if (cached.hit && cached.data) {
-          if (!isCurrentAuthContext(authContext)) return;
+          if (requestSeqRef.current !== requestSeq || !isCurrentAuthContext(authContext)) return;
           setOutfit(applyDetailOutfitStatus(normalizeOutfitSnapshot(cached.data), authContext));
           setLoading(false);
           hasDisplayableOutfit = true;
@@ -375,16 +411,16 @@ export default function OutfitDetailPage() {
           : source === 'history'
             ? await getOutfitHistoryDetail(decodedId)
             : await getCloudOutfit(decodedId);
-      if (!isCurrentAuthContext(authContext)) return;
+      if (requestSeqRef.current !== requestSeq || !isCurrentAuthContext(authContext)) return;
       const prepared = prepareOutfitForState(detail, authContext);
       setOutfit(prepared);
       await writeOutfitDetailCache(cacheKey, prepared, source, authContext);
     } catch (err) {
       console.error('Fetch outfit detail error:', err);
-      if (!isCurrentAuthContext(authContext)) return;
+      if (requestSeqRef.current !== requestSeq || !isCurrentAuthContext(authContext)) return;
       Taro.showToast({ title: '加载失败', icon: 'none' });
     } finally {
-      if (isCurrentAuthContext(authContext)) {
+      if (requestSeqRef.current === requestSeq && isCurrentAuthContext(authContext)) {
         setLoading(false);
       }
     }

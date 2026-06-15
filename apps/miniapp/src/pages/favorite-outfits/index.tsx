@@ -1,7 +1,8 @@
 import { Input, ScrollView, Text, View } from '@tarojs/components';
 import Taro, { useDidShow, useLoad, usePullDownRefresh, useReachBottom } from '@tarojs/taro';
-import { useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { SafeImage } from '@/components/SafeImage';
+import { useAuthRuntime } from '@/hooks/useAuthRuntime';
 import { invalidateFavoritesCache } from '@/lib/cacheInvalidation';
 import { listFavoriteOutfits, removeFavoriteOutfit, renameCloudOutfit } from '@/lib/cloud';
 import { buildPageCacheKey } from '@/lib/pageCache';
@@ -39,6 +40,7 @@ function isCurrentAuthContext(authContext: ActiveAuthContext | null | undefined)
 }
 
 export default function FavoriteOutfitsPage() {
+  const { authStatus, runtimeKey, isAuthenticated } = useAuthRuntime();
   const [outfits, setOutfits] = useState<Outfit[]>([]);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
@@ -49,10 +51,39 @@ export default function FavoriteOutfitsPage() {
   const [draftName, setDraftName] = useState('');
   const [renameSaving, setRenameSaving] = useState(false);
   const skipFirstDidShowRef = useRef(false);
+  const fetchingRef = useRef(false);
+  const lastHandledRuntimeKeyRef = useRef<string | null>(null);
+
+  const resetUserState = useCallback(() => {
+    fetchingRef.current = false;
+    setOutfits([]);
+    setPage(1);
+    setHasMore(true);
+    setLoading(false);
+    setError('');
+    setActiveMenuId('');
+    setRenamingOutfit(null);
+    setDraftName('');
+    setRenameSaving(false);
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated || !runtimeKey) {
+      lastHandledRuntimeKeyRef.current = null;
+      skipFirstDidShowRef.current = true;
+      resetUserState();
+      return;
+    }
+
+    if (lastHandledRuntimeKeyRef.current === runtimeKey) return;
+    resetUserState();
+    lastHandledRuntimeKeyRef.current = runtimeKey;
+    skipFirstDidShowRef.current = true;
+    void fetchFavorites(1, true, { force: true });
+  }, [authStatus, isAuthenticated, resetUserState, runtimeKey]);
 
   useLoad(() => {
     skipFirstDidShowRef.current = true;
-    fetchFavorites(1, true);
   });
 
   useDidShow(() => {
@@ -78,13 +109,20 @@ export default function FavoriteOutfitsPage() {
   });
 
   async function fetchFavorites(pageNum: number, reset = false, options: { force?: boolean } = {}) {
-    if (loading) return;
+    if (fetchingRef.current) return;
+    fetchingRef.current = true;
 
     const authContext = captureAuthContext();
-    if (!authContext) return;
+    if (!authContext) {
+      fetchingRef.current = false;
+      return;
+    }
     const isFirstPage = reset && pageNum === 1;
     const cached = isFirstPage && !options.force ? await hydrateFavoritesFirstPageCache(authContext) : false;
-    if (!isCurrentAuthContext(authContext)) return;
+    if (!isCurrentAuthContext(authContext)) {
+      fetchingRef.current = false;
+      return;
+    }
     setLoading(true);
     setError('');
     try {
@@ -109,6 +147,7 @@ export default function FavoriteOutfitsPage() {
       if (!isCurrentAuthContext(authContext)) return;
       setError('收藏灵感暂时没加载出来');
     } finally {
+      fetchingRef.current = false;
       if (isCurrentAuthContext(authContext)) {
         setLoading(false);
       }
