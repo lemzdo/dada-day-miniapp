@@ -2,6 +2,7 @@ import { Image, Swiper, SwiperItem, Text, View } from '@tarojs/components';
 import Taro, { useDidShow, useLoad, usePullDownRefresh, useUnload } from '@tarojs/taro';
 import { useEffect, useRef, useState } from 'react';
 import { WeatherCard } from '@/components/WeatherCard';
+import { invalidateAfterOutfitWornMutation } from '@/lib/cacheInvalidation';
 import { addOutfitHistory, clearCloudRecommendationCache, generateCloudOutfit, removeFavoriteOutfit, saveFavoriteOutfit } from '@/lib/cloud';
 import { applyOutfitStatuses, setOutfitStatus, setOutfitStatuses } from '@/stores/outfitStatusStore';
 import { consumeOutfitStateSync, normalizeOutfitSnapshot, storeOutfitDetailDraft } from '@/utils/outfitSnapshot';
@@ -443,6 +444,7 @@ export default function TodayPage() {
           },
         );
       });
+      void invalidateAfterOutfitWornMutation();
       Taro.showToast({ title: '已记录到穿搭历史', icon: 'success' });
     } catch (err) {
       console.error('Confirm wear error:', err);

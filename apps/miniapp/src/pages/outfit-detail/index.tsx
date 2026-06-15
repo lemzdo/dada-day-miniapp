@@ -2,6 +2,7 @@ import { Input, Text, View } from '@tarojs/components';
 import Taro, { useDidShow, useLoad, useRouter } from '@tarojs/taro';
 import { useState } from 'react';
 import { SafeImage } from '@/components/SafeImage';
+import { invalidateAfterOutfitWornMutation } from '@/lib/cacheInvalidation';
 import {
   addOutfitHistory,
   generateCloudOutfitComment,
@@ -461,6 +462,7 @@ export default function OutfitDetailPage() {
           wornDate: saved.wornDate || outfit.wornDate,
         },
       );
+      void invalidateAfterOutfitWornMutation();
       Taro.showToast({ title: '已记录到穿搭历史', icon: 'success' });
     } catch (err) {
       console.error('Confirm outfit wear error:', err);
