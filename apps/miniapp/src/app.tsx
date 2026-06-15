@@ -7,9 +7,7 @@ import './app.scss';
 class App extends Component<PropsWithChildren> {
   componentDidMount() {
     initCloud();
-    const { fetchProfile, login, userId } = useUserStore.getState();
-    const boot = userId ? fetchProfile().catch(() => login()) : login();
-    boot.catch(console.error);
+    useUserStore.getState().initializeAuth().catch(console.error);
   }
 
   render() {

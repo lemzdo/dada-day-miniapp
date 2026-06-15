@@ -52,7 +52,6 @@ const cloudResponseCache = new Map<string, { expiresAt: number; data: unknown }>
 const cloudInflightRequests = new Map<string, Promise<unknown>>();
 
 const CACHE_TTL = {
-  login: 60 * 1000,
   wardrobe: 15 * 1000,
   outfit: 30 * 1000,
   weather: 10 * 60 * 1000,
@@ -178,7 +177,7 @@ export interface CloudUserProfile {
 }
 
 export async function loginWithCloud() {
-  return callCachedCloudFunction<CloudUserProfile>('login', {}, CACHE_TTL.login);
+  return callCloudFunction<CloudUserProfile>('login');
 }
 
 export async function getWardrobe(params: GetWardrobeParams = {}) {
