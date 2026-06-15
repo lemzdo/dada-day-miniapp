@@ -1,13 +1,27 @@
 import { ScrollView, Text, View } from '@tarojs/components';
-import Taro, { useLoad, usePullDownRefresh } from '@tarojs/taro';
+import Taro, { useDidShow, useLoad, usePullDownRefresh } from '@tarojs/taro';
 import { useMemo, useRef, useState } from 'react';
 import { SafeImage } from '@/components/SafeImage';
+import { invalidateHistoryCache } from '@/lib/cacheInvalidation';
 import { listOutfitHistory } from '@/lib/cloud';
+import { buildPageCacheKey, getPageCache, setPageCache } from '@/lib/pageCache';
+import { applyOutfitStatuses, setOutfitStatuses } from '@/stores/outfitStatusStore';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
+import type { OutfitStatusPatch } from '@/stores/outfitStatusStore';
 import type { Outfit } from '@starter-template/types';
 import './index.scss';
 
+const PAGE_SIZE = 100;
+const HISTORY_FIRST_PAGE_CACHE_TTL = 2 * 60 * 1000;
+const HISTORY_FIRST_PAGE_CACHE_KEY = buildPageCacheKey(['history', 'first', 'v1', PAGE_SIZE]);
 const WEEKDAY_LABELS = ['一', '二', '三', '四', '五', '六', '日'];
+
+interface HistoryFirstPageCache {
+  list: Outfit[];
+  hasMore: boolean;
+  page: number;
+  pageSize: number;
+}
 
 function getTodayStr() {
   return new Date().toISOString().slice(0, 10);
@@ -42,6 +56,8 @@ export default function OutfitHistoryPage() {
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const selectedDateRef = useRef<string | null>(null);
   const initializedRef = useRef(false);
+  const skipFirstDidShowRef = useRef(false);
+  const fetchingRef = useRef(false);
 
   function initSelectedDate() {
     if (!initializedRef.current && selectedDate === null) {
@@ -52,6 +68,7 @@ export default function OutfitHistoryPage() {
   }
 
   useLoad(() => {
+    skipFirstDidShowRef.current = true;
     initializedRef.current = false;
     setSelectedDate(null);
     selectedDateRef.current = null;
@@ -59,31 +76,78 @@ export default function OutfitHistoryPage() {
     setTimeout(initSelectedDate, 0);
   });
 
+  useDidShow(() => {
+    if (skipFirstDidShowRef.current) {
+      skipFirstDidShowRef.current = false;
+      return;
+    }
+    syncHistoryFromStatusStore();
+    void fetchHistory(1, true, { force: true, silent: true });
+  });
+
   usePullDownRefresh(() => {
-    fetchHistory(1, true).finally(() => {
+    fetchHistory(1, true, { force: true }).finally(() => {
       Taro.stopPullDownRefresh();
     });
   });
 
-  async function fetchHistory(pageNum: number, reset = false) {
-    if (loading) return;
+  async function fetchHistory(pageNum: number, reset = false, options: { force?: boolean; silent?: boolean } = {}) {
+    if (fetchingRef.current) return;
+    fetchingRef.current = true;
 
-    setLoading(true);
+    const isFirstPage = reset && pageNum === 1;
+    if (isFirstPage && !options.force) {
+      await hydrateHistoryFirstPageCache();
+    }
+
+    if (!options.silent) setLoading(true);
     try {
-      const data = await listOutfitHistory({ page: pageNum, pageSize: 100 });
-      setAllRecords((prev) => (reset ? data.list : [...prev, ...data.list]));
+      const data = await listOutfitHistory({ page: pageNum, pageSize: PAGE_SIZE });
+      const rawList = data.list || [];
+      setOutfitStatuses(getOutfitStatusPatches(rawList));
+      const nextList = applyHistoryOutfitStatuses(rawList);
+      setAllRecords((prev) => (reset ? nextList : applyHistoryOutfitStatuses([...prev, ...nextList])));
       setHasMore(data.hasMore);
-      if (reset) setPage(1);
+      if (reset) setPage(data.page || 1);
       else setPage(pageNum);
+      if (isFirstPage) {
+        void writeHistoryFirstPageCache({
+          list: nextList,
+          hasMore: data.hasMore,
+          page: data.page || 1,
+          pageSize: PAGE_SIZE,
+        });
+      }
     } catch (err) {
       console.error('Fetch outfit history error:', err);
     } finally {
-      setLoading(false);
+      fetchingRef.current = false;
+      if (!options.silent) setLoading(false);
     }
   }
 
+  async function hydrateHistoryFirstPageCache() {
+    const cached = await getPageCache<HistoryFirstPageCache>(HISTORY_FIRST_PAGE_CACHE_KEY);
+    if (!cached.hit || !cached.data) return false;
+
+    setAllRecords(applyHistoryOutfitStatuses(cached.data.list));
+    setHasMore(cached.data.hasMore);
+    setPage(cached.data.page);
+    return true;
+  }
+
+  function syncHistoryFromStatusStore() {
+    setAllRecords((prev) => {
+      const next = applyHistoryOutfitStatuses(prev);
+      if (!isSameHistoryRecordList(prev, next)) {
+        void invalidateHistoryCache();
+      }
+      return next;
+    });
+  }
+
   async function loadMore() {
-    if (loading || !hasMore) return;
+    if (loading || fetchingRef.current || !hasMore) return;
     const nextPage = page + 1;
     setPage(nextPage);
     await fetchHistory(nextPage);
@@ -349,6 +413,74 @@ export default function OutfitHistoryPage() {
       </View>
     </View>
   );
+}
+
+async function writeHistoryFirstPageCache(data: HistoryFirstPageCache) {
+  await setPageCache(HISTORY_FIRST_PAGE_CACHE_KEY, data, {
+    ttl: HISTORY_FIRST_PAGE_CACHE_TTL,
+    meta: {
+      pageSize: data.pageSize,
+    },
+  });
+}
+
+function applyHistoryOutfitStatuses(outfits: Outfit[]) {
+  return applyOutfitStatuses(outfits);
+}
+
+function getOutfitStatusPatches(outfits: Outfit[]) {
+  return outfits.map((outfit) => getOutfitStatusPatch(outfit)).filter((patch) => Boolean(patch.outfitKey));
+}
+
+function getOutfitStatusPatch(outfit: Outfit, fallbackOutfitKey = '', updatedAtOverride?: number): OutfitStatusPatch {
+  const patch: OutfitStatusPatch = {
+    outfitKey: outfit.outfitKey ?? fallbackOutfitKey,
+  };
+  const updatedAt = updatedAtOverride ?? getOutfitStatusUpdatedAt(outfit.updatedAt);
+
+  if (updatedAt !== undefined) patch.updatedAt = updatedAt;
+  if (outfit.isFavorite !== undefined) patch.isFavorite = outfit.isFavorite;
+  if (outfit.favoriteOutfitId !== undefined) {
+    patch.favoriteOutfitId = outfit.favoriteOutfitId;
+  } else if (outfit.isFavorite === false) {
+    patch.favoriteOutfitId = '';
+  }
+  if (outfit.isWornToday !== undefined) patch.isWornToday = outfit.isWornToday;
+  if (outfit.todayHistoryId !== undefined) patch.todayHistoryId = outfit.todayHistoryId;
+  if (outfit.wornAt !== undefined) patch.wornAt = outfit.wornAt;
+  if (outfit.wornDate !== undefined) patch.wornDate = outfit.wornDate;
+  if (outfit.userTitle !== undefined) patch.userTitle = outfit.userTitle;
+  if (outfit.displayTitle !== undefined) patch.displayTitle = outfit.displayTitle;
+  if (outfit.title !== undefined) patch.title = outfit.title;
+
+  return patch;
+}
+
+function getOutfitStatusUpdatedAt(updatedAt: string | undefined) {
+  if (!updatedAt) return undefined;
+  const timestamp = Date.parse(updatedAt);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
+function isSameHistoryRecordList(prev: Outfit[], next: Outfit[]) {
+  if (prev.length !== next.length) return false;
+  return prev.every((item, index) => {
+    const nextItem = next[index];
+    if (!nextItem) return false;
+    return (
+      item.id === nextItem.id
+      && item.outfitKey === nextItem.outfitKey
+      && item.isFavorite === nextItem.isFavorite
+      && item.favoriteOutfitId === nextItem.favoriteOutfitId
+      && item.isWornToday === nextItem.isWornToday
+      && item.todayHistoryId === nextItem.todayHistoryId
+      && item.wornAt === nextItem.wornAt
+      && item.wornDate === nextItem.wornDate
+      && item.userTitle === nextItem.userTitle
+      && item.displayTitle === nextItem.displayTitle
+      && item.title === nextItem.title
+    );
+  });
 }
 
 function getRecordDate(record: Outfit): string {
