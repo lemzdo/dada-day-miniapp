@@ -20,6 +20,7 @@ import { buildPageCacheKey } from '@/lib/pageCache';
 import {
   captureAuthContext,
   getUserPageCache,
+  isAuthContextCurrent,
   setUserPageCache,
   type ActiveAuthContext,
 } from '@/lib/userPageCache';
@@ -86,6 +87,10 @@ type CompressableTaro = typeof Taro & {
   }) => Promise<{ tempFilePath: string }>;
 };
 
+function isCurrentAuthContext(authContext: ActiveAuthContext | null) {
+  return Boolean(authContext && isAuthContextCurrent(authContext));
+}
+
 export default function WardrobePage() {
   const [clothes, setClothes] = useState<Clothing[]>([]);
   const [loading, setLoading] = useState(false);
@@ -107,6 +112,7 @@ export default function WardrobePage() {
   const applyWardrobeFirstPageCache = useCallback(async (cacheKey: string, authContext: ActiveAuthContext | null) => {
     const cached = await getUserPageCache<WardrobeFirstPageCacheData>(cacheKey, { authContext });
     if (!cached.hit || cached.expired || !cached.data) return false;
+    if (!isCurrentAuthContext(authContext)) return false;
 
     setClothes(dedupeClothesById(cached.data.list));
     setStats({ total: cached.data.capacity.total, used: cached.data.capacity.used });
@@ -126,6 +132,9 @@ export default function WardrobePage() {
       force = false
     ) => {
       if (loadingRef.current && !force) return;
+      const authContext = captureAuthContext();
+      if (!authContext) return;
+
       loadingRef.current = true;
       const cacheKey = buildWardrobeFirstPageCacheKey(
         WARDROBE_PAGE_SIZE,
@@ -133,9 +142,12 @@ export default function WardrobePage() {
         subcategoryParam,
         subcategoryIdParam,
       );
-      const authContext = captureAuthContext();
       const canUseFirstPageCache = pageNum === 1 && reset && !force;
       const cacheApplied = canUseFirstPageCache ? await applyWardrobeFirstPageCache(cacheKey, authContext) : false;
+      if (!isCurrentAuthContext(authContext)) {
+        loadingRef.current = false;
+        return;
+      }
       setLoading(!cacheApplied);
 
       try {
@@ -154,6 +166,7 @@ export default function WardrobePage() {
 
         const res = await getWardrobe(params);
         const nextHasMore = pageNum < res.pagination.totalPages;
+        if (!isCurrentAuthContext(authContext)) return;
 
         setClothes((prev) => {
           const next = reset ? dedupeClothesById(res.list) : mergeUniqueClothes(prev, res.list);
@@ -183,23 +196,32 @@ export default function WardrobePage() {
         }
       } catch (err) {
         console.error('Fetch wardrobe error:', err);
+        if (!isCurrentAuthContext(authContext)) return;
         Taro.showToast({ title: '加载失败', icon: 'none' });
       } finally {
         loadingRef.current = false;
-        setLoading(false);
-        Taro.stopPullDownRefresh();
+        if (isCurrentAuthContext(authContext)) {
+          setLoading(false);
+          Taro.stopPullDownRefresh();
+        }
       }
     },
     [activeCategory, activeSubcategory, activeSubcategoryId, applyWardrobeFirstPageCache],
   );
 
   const fetchRecoverableUploadTask = useCallback(async () => {
+    const authContext = captureAuthContext();
+    if (!authContext) return;
+
     try {
       const result = await getRecoverableUploadBatches(10);
+      if (!isCurrentAuthContext(authContext)) return;
       setRecoverableBatches((result.list || []).filter(isActiveRecoverableBatch));
     } catch (err) {
       console.warn('Fetch recoverable upload task failed:', err);
-      setRecoverableBatches([]);
+      if (isCurrentAuthContext(authContext)) {
+        setRecoverableBatches([]);
+      }
     }
   }, []);
 
@@ -242,8 +264,12 @@ export default function WardrobePage() {
   }, [clothes]);
 
   async function loadUserSubcategories() {
+    const authContext = captureAuthContext();
+    if (!authContext) return;
+
     try {
       const categories = await getUserClothingSubcategories();
+      if (!isCurrentAuthContext(authContext)) return;
       setUserSubcategories(categories);
     } catch (err) {
       console.error('Load user subcategories failed:', err);
@@ -392,23 +418,31 @@ export default function WardrobePage() {
   }
 
   async function handleDelete(item: Clothing) {
+    const authContext = captureAuthContext();
+    if (!authContext) return;
+
     try {
       const impact = await inspectCloudClothingDelete(item.id);
+      if (!isCurrentAuthContext(authContext)) return;
       const modalRes = await Taro.showModal({
         title: '确认删除',
         content: buildDeleteConfirmText(impact.affectedFavoriteCount, impact.affectedHistoryCount),
         confirmColor: '#FF6B6B',
       });
       if (!modalRes.confirm) return;
+      if (!isCurrentAuthContext(authContext)) return;
 
       await deleteCloudClothing(item.id);
-      await invalidateAfterWardrobeMutation();
+      if (!isCurrentAuthContext(authContext)) return;
+      await invalidateAfterWardrobeMutation({ authContext });
+      if (!isCurrentAuthContext(authContext)) return;
       Taro.showToast({ title: '已删除', icon: 'success' });
       setClothes((prev) => prev.filter((clothing) => clothing.id !== item.id));
       setStats((prev) => ({ ...prev, used: Math.max(0, prev.used - 1) }));
       refreshWardrobe();
     } catch (err) {
       console.error('Delete clothing error:', err);
+      if (!isCurrentAuthContext(authContext)) return;
       Taro.showToast({ title: '删除失败', icon: 'none' });
     }
   }
@@ -425,6 +459,8 @@ export default function WardrobePage() {
 
   async function handleBatchDelete() {
     if (batchDeleting || selectedIds.length === 0) return;
+    const authContext = captureAuthContext();
+    if (!authContext) return;
 
     const ids = selectedIds;
     const modalRes = await Taro.showModal({
@@ -435,12 +471,15 @@ export default function WardrobePage() {
       confirmColor: '#FF6B6B',
     });
     if (!modalRes.confirm) return;
+    if (!isCurrentAuthContext(authContext)) return;
 
     setBatchDeleting(true);
     try {
       const result = await deleteCloudClothingBatch(ids);
+      if (!isCurrentAuthContext(authContext)) return;
       if (result.successIds.length > 0) {
-        await invalidateAfterWardrobeMutation();
+        await invalidateAfterWardrobeMutation({ authContext });
+        if (!isCurrentAuthContext(authContext)) return;
         setClothes((prev) => prev.filter((item) => !result.successIds.includes(item.id)));
         setStats((prev) => ({ ...prev, used: Math.max(0, prev.used - result.successIds.length) }));
       }
@@ -457,13 +496,19 @@ export default function WardrobePage() {
       refreshWardrobe();
     } catch (err) {
       console.error('Batch delete clothing error:', err);
+      if (!isCurrentAuthContext(authContext)) return;
       Taro.showToast({ title: '清理失败，小搭刚刚手滑了', icon: 'none' });
     } finally {
-      setBatchDeleting(false);
+      if (isCurrentAuthContext(authContext)) {
+        setBatchDeleting(false);
+      }
     }
   }
 
   async function handleRecognize(item: Clothing) {
+    const authContext = captureAuthContext();
+    if (!authContext) return;
+
     if (!canSafelyRecognize(item)) {
       Taro.showModal({
         title: '暂不支持重新识别',
@@ -477,10 +522,12 @@ export default function WardrobePage() {
 
     try {
       const updated = await recognizeClothAttributes(item.id);
+      if (!isCurrentAuthContext(authContext)) return;
       updateClothingInList(updated);
       Taro.showToast({ title: '识别完成', icon: 'success' });
     } catch (err) {
       console.error('Recognize clothing error:', err);
+      if (!isCurrentAuthContext(authContext)) return;
       updateClothingInList({ ...item, aiStatus: 'failed', aiRecognizeStatus: 'failed' });
       Taro.showToast({ title: '小搭暂时没整理好，可手动编辑或重新整理', icon: 'none' });
     }

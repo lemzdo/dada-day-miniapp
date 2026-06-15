@@ -17,6 +17,7 @@ import { buildPageCacheKey } from '@/lib/pageCache';
 import {
   captureAuthContext,
   getUserPageCache,
+  isAuthContextCurrent,
   setUserPageCache,
   type ActiveAuthContext,
 } from '@/lib/userPageCache';
@@ -147,6 +148,10 @@ function hasWardrobeRefreshSignal() {
 }
 
 // 获取单品数据源（优先级：snapshotItems > itemsSnapshot > items）
+function isCurrentAuthContext(authContext: ActiveAuthContext | null | undefined) {
+  return Boolean(authContext && isAuthContextCurrent(authContext));
+}
+
 function getOutfitItems(outfit: Outfit): (OutfitSnapshotItem | OutfitItemSummary)[] {
   if (outfit.snapshotItems && outfit.snapshotItems.length > 0) {
     return outfit.snapshotItems;
@@ -325,22 +330,28 @@ export default function OutfitDetailPage() {
   });
 
   useDidShow(() => {
+    const authContext = captureAuthContext();
+    if (!isCurrentAuthContext(authContext)) return;
     setOutfit((current) => (current ? applyDetailOutfitStatus(current) : current));
   });
 
   async function fetchOutfit(outfitId: string) {
+    const authContext = captureAuthContext();
+    if (!authContext) return;
+
     setLoading(true);
     let hasDisplayableOutfit = false;
-    const authContext = captureAuthContext();
     try {
       const decodedId = decodeURIComponent(outfitId);
       const source = normalizeSource(sourceParam);
       const cacheKey = buildOutfitDetailCacheKey(source, decodedId);
+      if (!isCurrentAuthContext(authContext)) return;
       setDetailSource(source);
 
       if (source === 'recommendation') {
         const draft = readOutfitDetailDraft(decodedId);
         if (draft) {
+          if (!isCurrentAuthContext(authContext)) return;
           setOutfit(prepareOutfitForState({ ...draft, outfitKind: draft.outfitKind || 'recommendation' }));
           setLoading(false);
           hasDisplayableOutfit = true;
@@ -350,6 +361,7 @@ export default function OutfitDetailPage() {
       if (!hasDisplayableOutfit && cacheKey && !hasWardrobeRefreshSignal()) {
         const cached = await getUserPageCache<Outfit>(cacheKey, { authContext });
         if (cached.hit && cached.data) {
+          if (!isCurrentAuthContext(authContext)) return;
           setOutfit(applyDetailOutfitStatus(normalizeOutfitSnapshot(cached.data)));
           setLoading(false);
           hasDisplayableOutfit = true;
@@ -362,14 +374,18 @@ export default function OutfitDetailPage() {
           : source === 'history'
             ? await getOutfitHistoryDetail(decodedId)
             : await getCloudOutfit(decodedId);
+      if (!isCurrentAuthContext(authContext)) return;
       const prepared = prepareOutfitForState(detail);
       setOutfit(prepared);
       await writeOutfitDetailCache(cacheKey, prepared, source, authContext);
     } catch (err) {
       console.error('Fetch outfit detail error:', err);
+      if (!isCurrentAuthContext(authContext)) return;
       Taro.showToast({ title: '加载失败', icon: 'none' });
     } finally {
-      setLoading(false);
+      if (isCurrentAuthContext(authContext)) {
+        setLoading(false);
+      }
     }
   }
 
@@ -377,10 +393,12 @@ export default function OutfitDetailPage() {
     if (!outfit || favoriteOperating) return;
 
     const authContext = captureAuthContext();
+    if (!authContext) return;
     setFavoriteOperating(true);
     try {
       if (outfit.isFavorite) {
         const removed = await removeFavoriteOutfit(outfit.favoriteOutfitId || outfit.id, outfit.outfitKey);
+        if (!isCurrentAuthContext(authContext)) return;
         persistOutfitUpdate(
           normalizeOutfitSnapshot({
             ...outfit,
@@ -397,6 +415,7 @@ export default function OutfitDetailPage() {
           },
           authContext,
         );
+        if (!isCurrentAuthContext(authContext)) return;
         setDetailSource('recommendation');
         Taro.showToast({ title: '已取消收藏', icon: 'success' });
         return;
@@ -404,6 +423,7 @@ export default function OutfitDetailPage() {
 
       const sourceForFavorite: Outfit = detailSource === 'history' ? { ...outfit, source: 'history' } : outfit;
       const saved = await saveFavoriteOutfit(normalizeOutfitSnapshot(sourceForFavorite), outfit.aiComment);
+      if (!isCurrentAuthContext(authContext)) return;
       const nextFavoriteOutfitId = saved.favoriteOutfitId || saved.id;
       persistOutfitUpdate(
         normalizeOutfitSnapshot({
@@ -425,12 +445,16 @@ export default function OutfitDetailPage() {
         },
         authContext,
       );
+      if (!isCurrentAuthContext(authContext)) return;
       Taro.showToast({ title: '已收藏', icon: 'success' });
     } catch (err) {
       console.error('Toggle outfit favorite error:', err);
+      if (!isCurrentAuthContext(authContext)) return;
       Taro.showToast({ title: '操作失败', icon: 'none' });
     } finally {
-      setFavoriteOperating(false);
+      if (isCurrentAuthContext(authContext)) {
+        setFavoriteOperating(false);
+      }
     }
   }
 
@@ -443,6 +467,7 @@ export default function OutfitDetailPage() {
     }
 
     const authContext = captureAuthContext();
+    if (!authContext) return;
     setWearOperating(true);
     try {
       const saved = await addOutfitHistory(normalizeOutfitSnapshot(outfit), {
@@ -454,6 +479,7 @@ export default function OutfitDetailPage() {
         aiComment: outfit.aiComment,
       });
       const nextTodayHistoryId = saved.todayHistoryId || saved.historyId || saved.id;
+      if (!isCurrentAuthContext(authContext)) return;
       persistOutfitUpdate(
         normalizeOutfitSnapshot({
           ...outfit,
@@ -475,12 +501,16 @@ export default function OutfitDetailPage() {
         authContext,
       );
       void invalidateAfterOutfitWornMutation({ authContext });
+      if (!isCurrentAuthContext(authContext)) return;
       Taro.showToast({ title: '已记录到穿搭历史', icon: 'success' });
     } catch (err) {
       console.error('Confirm outfit wear error:', err);
+      if (!isCurrentAuthContext(authContext)) return;
       Taro.showToast({ title: '操作失败', icon: 'none' });
     } finally {
-      setWearOperating(false);
+      if (isCurrentAuthContext(authContext)) {
+        setWearOperating(false);
+      }
     }
   }
 
@@ -495,6 +525,7 @@ export default function OutfitDetailPage() {
     if (!outfit || operating) return;
 
     const authContext = captureAuthContext();
+    if (!authContext) return;
     setOperating(true);
     try {
       const userTitle = draftName;
@@ -513,6 +544,7 @@ export default function OutfitDetailPage() {
         outfitKey: saved.outfitKey || outfit.outfitKey,
         updatedAt: saved.updatedAt || outfit.updatedAt,
       });
+      if (!isCurrentAuthContext(authContext)) return;
 
       persistOutfitUpdate(
         nextOutfit,
@@ -525,13 +557,17 @@ export default function OutfitDetailPage() {
         },
         authContext,
       );
+      if (!isCurrentAuthContext(authContext)) return;
       setShowNameModal(false);
       Taro.showToast({ title: userTitle.trim() ? '已保存名称' : '已清空名称', icon: 'success' });
     } catch (err) {
       console.error('Rename outfit error:', err);
+      if (!isCurrentAuthContext(authContext)) return;
       Taro.showToast({ title: '名称保存失败', icon: 'none' });
     } finally {
-      setOperating(false);
+      if (isCurrentAuthContext(authContext)) {
+        setOperating(false);
+      }
     }
   }
 
@@ -542,9 +578,12 @@ export default function OutfitDetailPage() {
   async function handleGenerateAiComment() {
     if (!outfit || commentLoading) return;
 
+    const authContext = captureAuthContext();
+    if (!authContext) return;
     setCommentLoading(true);
     try {
       const result = await generateCloudOutfitComment(outfit);
+      if (!isCurrentAuthContext(authContext)) return;
       if (result.success && result.aiComment) {
         setOutfit({ ...outfit, aiComment: result.aiComment });
         Taro.showToast({ title: '小搭点评已生成', icon: 'success' });
@@ -553,9 +592,12 @@ export default function OutfitDetailPage() {
       Taro.showToast({ title: result.message || '小搭点评暂时不可用', icon: 'none' });
     } catch (err) {
       console.error('Generate outfit AI comment error:', err);
+      if (!isCurrentAuthContext(authContext)) return;
       Taro.showToast({ title: '小搭点评暂时不可用', icon: 'none' });
     } finally {
-      setCommentLoading(false);
+      if (isCurrentAuthContext(authContext)) {
+        setCommentLoading(false);
+      }
     }
   }
 
@@ -564,6 +606,8 @@ export default function OutfitDetailPage() {
     statusPatch?: OutfitStatusPatch,
     authContext?: ActiveAuthContext | null,
   ) {
+    if (!isCurrentAuthContext(authContext)) return;
+
     const normalized = normalizeOutfitSnapshot(nextOutfit);
     const patch = statusPatch ?? getOutfitStatusPatch(normalized);
     if (patch.outfitKey) setOutfitStatus(patch);

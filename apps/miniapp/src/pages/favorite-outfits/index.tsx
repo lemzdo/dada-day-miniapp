@@ -8,6 +8,7 @@ import { buildPageCacheKey } from '@/lib/pageCache';
 import {
   captureAuthContext,
   getUserPageCache,
+  isAuthContextCurrent,
   setUserPageCache,
   type ActiveAuthContext,
 } from '@/lib/userPageCache';
@@ -31,6 +32,10 @@ interface FavoritesFirstPageCache {
 
 interface TapEvent {
   stopPropagation: () => void;
+}
+
+function isCurrentAuthContext(authContext: ActiveAuthContext | null | undefined) {
+  return Boolean(authContext && isAuthContextCurrent(authContext));
 }
 
 export default function FavoriteOutfitsPage() {
@@ -76,13 +81,16 @@ export default function FavoriteOutfitsPage() {
     if (loading) return;
 
     const authContext = captureAuthContext();
+    if (!authContext) return;
     const isFirstPage = reset && pageNum === 1;
     const cached = isFirstPage && !options.force ? await hydrateFavoritesFirstPageCache(authContext) : false;
+    if (!isCurrentAuthContext(authContext)) return;
     setLoading(true);
     setError('');
     try {
       const data = await listFavoriteOutfits({ page: pageNum, pageSize: PAGE_SIZE });
       const rawList = data.list || [];
+      if (!isCurrentAuthContext(authContext)) return;
       setOutfitStatuses(getOutfitStatusPatches(rawList));
       const nextList = applyFavoriteOutfitStatuses(rawList);
       setOutfits((prev) => (reset ? nextList : applyFavoriteOutfitStatuses([...prev, ...nextList])));
@@ -98,15 +106,19 @@ export default function FavoriteOutfitsPage() {
       }
     } catch (err) {
       console.error('Fetch favorite outfits error:', err);
+      if (!isCurrentAuthContext(authContext)) return;
       setError('收藏灵感暂时没加载出来');
     } finally {
-      setLoading(false);
+      if (isCurrentAuthContext(authContext)) {
+        setLoading(false);
+      }
     }
   }
 
   async function hydrateFavoritesFirstPageCache(authContext: ActiveAuthContext | null) {
     const cached = await getUserPageCache<FavoritesFirstPageCache>(FAVORITES_FIRST_PAGE_CACHE_KEY, { authContext });
     if (!cached.hit || !cached.data) return false;
+    if (!isCurrentAuthContext(authContext)) return false;
 
     setOutfits(applyFavoriteOutfitStatuses(cached.data.list));
     setHasMore(cached.data.hasMore);
@@ -116,10 +128,13 @@ export default function FavoriteOutfitsPage() {
   }
 
   function syncFavoritesFromStatusStore() {
+    const authContext = captureAuthContext();
+    if (!isCurrentAuthContext(authContext)) return;
+
     setOutfits((prev) => {
       const next = applyFavoriteOutfitStatuses(prev).filter((outfit) => outfit.isFavorite !== false);
       if (!isSameFavoriteOutfitList(prev, next)) {
-        void invalidateFavoritesCache();
+        void invalidateFavoritesCache({ authContext });
       }
       return next;
     });
@@ -153,9 +168,11 @@ export default function FavoriteOutfitsPage() {
     });
     if (!modal.confirm) return;
 
+    const authContext = captureAuthContext();
+    if (!authContext) return;
     try {
-      const authContext = captureAuthContext();
       await removeFavoriteOutfit(outfit.id, outfit.outfitKey);
+      if (!isCurrentAuthContext(authContext)) return;
       if (outfit.outfitKey) {
         setOutfitStatus({
           outfitKey: outfit.outfitKey,
@@ -168,6 +185,7 @@ export default function FavoriteOutfitsPage() {
       void invalidateFavoritesCache({ authContext });
     } catch (err) {
       console.error('Unfavorite outfit error:', err);
+      if (!isCurrentAuthContext(authContext)) return;
       Taro.showToast({ title: '移出失败，稍后再试', icon: 'none' });
     }
   }
@@ -196,15 +214,17 @@ export default function FavoriteOutfitsPage() {
       return;
     }
 
+    const authContext = captureAuthContext();
+    if (!authContext) return;
     setRenameSaving(true);
     try {
-      const authContext = captureAuthContext();
       const saved = await renameCloudOutfit({
         outfitId: renamingOutfit.outfitId || renamingOutfit.id,
         outfitKey: renamingOutfit.outfitKey,
         outfit: renamingOutfit,
         userTitle: trimmed,
       });
+      if (!isCurrentAuthContext(authContext)) return;
       if (renamingOutfit.outfitKey) {
         setOutfitStatus({
           ...getOutfitStatusPatch(saved, renamingOutfit.outfitKey, Date.now()),
@@ -235,9 +255,12 @@ export default function FavoriteOutfitsPage() {
       closeRename();
     } catch (err) {
       console.error('Rename favorite outfit error:', err);
+      if (!isCurrentAuthContext(authContext)) return;
       Taro.showToast({ title: '名称暂时没保存，稍后再试', icon: 'none' });
     } finally {
-      setRenameSaving(false);
+      if (isCurrentAuthContext(authContext)) {
+        setRenameSaving(false);
+      }
     }
   }
 

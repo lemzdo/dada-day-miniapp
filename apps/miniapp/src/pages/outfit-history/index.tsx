@@ -8,6 +8,7 @@ import { buildPageCacheKey } from '@/lib/pageCache';
 import {
   captureAuthContext,
   getUserPageCache,
+  isAuthContextCurrent,
   setUserPageCache,
   type ActiveAuthContext,
 } from '@/lib/userPageCache';
@@ -27,6 +28,10 @@ interface HistoryFirstPageCache {
   hasMore: boolean;
   page: number;
   pageSize: number;
+}
+
+function isCurrentAuthContext(authContext: ActiveAuthContext | null | undefined) {
+  return Boolean(authContext && isAuthContextCurrent(authContext));
 }
 
 function getTodayStr() {
@@ -102,15 +107,24 @@ export default function OutfitHistoryPage() {
     fetchingRef.current = true;
 
     const authContext = captureAuthContext();
+    if (!authContext) {
+      fetchingRef.current = false;
+      return;
+    }
     const isFirstPage = reset && pageNum === 1;
     if (isFirstPage && !options.force) {
       await hydrateHistoryFirstPageCache(authContext);
     }
 
+    if (!isCurrentAuthContext(authContext)) {
+      fetchingRef.current = false;
+      return;
+    }
     if (!options.silent) setLoading(true);
     try {
       const data = await listOutfitHistory({ page: pageNum, pageSize: PAGE_SIZE });
       const rawList = data.list || [];
+      if (!isCurrentAuthContext(authContext)) return;
       setOutfitStatuses(getOutfitStatusPatches(rawList));
       const nextList = applyHistoryOutfitStatuses(rawList);
       setAllRecords((prev) => (reset ? nextList : applyHistoryOutfitStatuses([...prev, ...nextList])));
@@ -129,13 +143,14 @@ export default function OutfitHistoryPage() {
       console.error('Fetch outfit history error:', err);
     } finally {
       fetchingRef.current = false;
-      if (!options.silent) setLoading(false);
+      if (!options.silent && isCurrentAuthContext(authContext)) setLoading(false);
     }
   }
 
   async function hydrateHistoryFirstPageCache(authContext: ActiveAuthContext | null) {
     const cached = await getUserPageCache<HistoryFirstPageCache>(HISTORY_FIRST_PAGE_CACHE_KEY, { authContext });
     if (!cached.hit || !cached.data) return false;
+    if (!isCurrentAuthContext(authContext)) return false;
 
     setAllRecords(applyHistoryOutfitStatuses(cached.data.list));
     setHasMore(cached.data.hasMore);
@@ -144,10 +159,13 @@ export default function OutfitHistoryPage() {
   }
 
   function syncHistoryFromStatusStore() {
+    const authContext = captureAuthContext();
+    if (!isCurrentAuthContext(authContext)) return;
+
     setAllRecords((prev) => {
       const next = applyHistoryOutfitStatuses(prev);
       if (!isSameHistoryRecordList(prev, next)) {
-        void invalidateHistoryCache();
+        void invalidateHistoryCache({ authContext });
       }
       return next;
     });
