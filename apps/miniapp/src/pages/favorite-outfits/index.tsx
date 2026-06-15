@@ -4,7 +4,13 @@ import { useRef, useState } from 'react';
 import { SafeImage } from '@/components/SafeImage';
 import { invalidateFavoritesCache } from '@/lib/cacheInvalidation';
 import { listFavoriteOutfits, removeFavoriteOutfit, renameCloudOutfit } from '@/lib/cloud';
-import { buildPageCacheKey, getPageCache, setPageCache } from '@/lib/pageCache';
+import { buildPageCacheKey } from '@/lib/pageCache';
+import {
+  captureAuthContext,
+  getUserPageCache,
+  setUserPageCache,
+  type ActiveAuthContext,
+} from '@/lib/userPageCache';
 import { applyOutfitStatuses, setOutfitStatus, setOutfitStatuses } from '@/stores/outfitStatusStore';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
 import type { OutfitStatusPatch } from '@/stores/outfitStatusStore';
@@ -69,8 +75,9 @@ export default function FavoriteOutfitsPage() {
   async function fetchFavorites(pageNum: number, reset = false, options: { force?: boolean } = {}) {
     if (loading) return;
 
+    const authContext = captureAuthContext();
     const isFirstPage = reset && pageNum === 1;
-    const cached = isFirstPage && !options.force ? await hydrateFavoritesFirstPageCache() : false;
+    const cached = isFirstPage && !options.force ? await hydrateFavoritesFirstPageCache(authContext) : false;
     setLoading(true);
     setError('');
     try {
@@ -87,7 +94,7 @@ export default function FavoriteOutfitsPage() {
           hasMore: data.hasMore,
           page: 1,
           pageSize: PAGE_SIZE,
-        });
+        }, authContext);
       }
     } catch (err) {
       console.error('Fetch favorite outfits error:', err);
@@ -97,8 +104,8 @@ export default function FavoriteOutfitsPage() {
     }
   }
 
-  async function hydrateFavoritesFirstPageCache() {
-    const cached = await getPageCache<FavoritesFirstPageCache>(FAVORITES_FIRST_PAGE_CACHE_KEY);
+  async function hydrateFavoritesFirstPageCache(authContext: ActiveAuthContext | null) {
+    const cached = await getUserPageCache<FavoritesFirstPageCache>(FAVORITES_FIRST_PAGE_CACHE_KEY, { authContext });
     if (!cached.hit || !cached.data) return false;
 
     setOutfits(applyFavoriteOutfitStatuses(cached.data.list));
@@ -147,6 +154,7 @@ export default function FavoriteOutfitsPage() {
     if (!modal.confirm) return;
 
     try {
+      const authContext = captureAuthContext();
       await removeFavoriteOutfit(outfit.id, outfit.outfitKey);
       if (outfit.outfitKey) {
         setOutfitStatus({
@@ -157,7 +165,7 @@ export default function FavoriteOutfitsPage() {
         });
       }
       setOutfits((prev) => prev.filter((item) => item.id !== outfit.id));
-      void invalidateFavoritesCache();
+      void invalidateFavoritesCache({ authContext });
     } catch (err) {
       console.error('Unfavorite outfit error:', err);
       Taro.showToast({ title: '移出失败，稍后再试', icon: 'none' });
@@ -190,6 +198,7 @@ export default function FavoriteOutfitsPage() {
 
     setRenameSaving(true);
     try {
+      const authContext = captureAuthContext();
       const saved = await renameCloudOutfit({
         outfitId: renamingOutfit.outfitId || renamingOutfit.id,
         outfitKey: renamingOutfit.outfitKey,
@@ -221,7 +230,7 @@ export default function FavoriteOutfitsPage() {
           ),
         ),
       );
-      void invalidateFavoritesCache();
+      void invalidateFavoritesCache({ authContext });
       Taro.showToast({ title: '已更新名称', icon: 'success' });
       closeRename();
     } catch (err) {
@@ -428,9 +437,13 @@ export default function FavoriteOutfitsPage() {
   );
 }
 
-async function writeFavoritesFirstPageCache(data: FavoritesFirstPageCache) {
-  await setPageCache(FAVORITES_FIRST_PAGE_CACHE_KEY, data, {
+async function writeFavoritesFirstPageCache(
+  data: FavoritesFirstPageCache,
+  authContext: ActiveAuthContext | null,
+) {
+  await setUserPageCache(FAVORITES_FIRST_PAGE_CACHE_KEY, data, {
     ttl: FAVORITES_FIRST_PAGE_CACHE_TTL,
+    authContext,
     meta: {
       pageSize: data.pageSize,
     },

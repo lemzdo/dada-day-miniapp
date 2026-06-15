@@ -3,7 +3,14 @@ import Taro, { useDidShow, useLoad, usePullDownRefresh, useUnload } from '@taroj
 import { useRef, useState } from 'react';
 import { invalidateProfileCache } from '@/lib/cacheInvalidation';
 import { getWardrobe, loginWithCloud, updateCloudUserProfile } from '@/lib/cloud';
-import { buildPageCacheKey, getPageCache, setPageCache } from '@/lib/pageCache';
+import { buildPageCacheKey } from '@/lib/pageCache';
+import {
+  captureAuthContext,
+  getUserPageCache,
+  isAuthContextCurrent,
+  setUserPageCache,
+  type ActiveAuthContext,
+} from '@/lib/userPageCache';
 import { useUserStore } from '@/stores/userStore';
 import avatar01 from '@/assets/avatars/default-avatar-01.png';
 import avatar02 from '@/assets/avatars/default-avatar-02.png';
@@ -132,11 +139,12 @@ export default function ProfilePage() {
   async function fetchProfileSummary(options: { manual?: boolean } = {}) {
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
+    const authContext = captureAuthContext();
     setDataNotice('');
 
     try {
       if (!options.manual) {
-        await hydrateProfileFromCache(requestId);
+        await hydrateProfileFromCache(requestId, authContext);
       }
 
       const cachedUser = options.manual ? null : readUserFromStore();
@@ -149,7 +157,7 @@ export default function ProfilePage() {
       const wardrobe = wardrobeResult.status === 'fulfilled' ? wardrobeResult.value : null;
       const hasRejected = [userResult, wardrobeResult].some((result) => result.status === 'rejected');
 
-      if (!isActiveRequest(requestId)) return;
+      if (!isActiveRequest(requestId, authContext)) return;
 
       let nextProfileForDraft: ProfileState | null = null;
       setProfile((prev) => {
@@ -180,6 +188,7 @@ export default function ProfilePage() {
         void writeProfileCaches(nextProfile, {
           base: Boolean(user),
           stats: Boolean(wardrobe),
+          authContext,
         });
         nextProfileForDraft = nextProfile;
         return nextProfile;
@@ -198,7 +207,7 @@ export default function ProfilePage() {
       }
     } catch (err) {
       console.error('Fetch profile summary error:', err);
-      if (isActiveRequest(requestId)) {
+      if (isActiveRequest(requestId, authContext)) {
         setDataNotice('数据稍后更新');
       }
       if (options.manual) {
@@ -209,13 +218,13 @@ export default function ProfilePage() {
     }
   }
 
-  async function hydrateProfileFromCache(requestId: number) {
+  async function hydrateProfileFromCache(requestId: number, authContext: ActiveAuthContext | null) {
     const [baseCache, statsCache] = await Promise.all([
-      getPageCache<ProfileBaseCache>(PROFILE_BASE_CACHE_KEY),
-      getPageCache<ProfileStatsCache>(PROFILE_STATS_CACHE_KEY),
+      getUserPageCache<ProfileBaseCache>(PROFILE_BASE_CACHE_KEY, { authContext }),
+      getUserPageCache<ProfileStatsCache>(PROFILE_STATS_CACHE_KEY, { authContext }),
     ]);
 
-    if (!isActiveRequest(requestId)) return;
+    if (!isActiveRequest(requestId, authContext)) return;
     if (!baseCache.hit && !statsCache.hit) return;
 
     setProfile((prev) => ({
@@ -225,8 +234,10 @@ export default function ProfilePage() {
     }));
   }
 
-  function isActiveRequest(requestId: number) {
-    return mountedRef.current && requestIdRef.current === requestId;
+  function isActiveRequest(requestId: number, authContext?: ActiveAuthContext | null) {
+    return mountedRef.current
+      && requestIdRef.current === requestId
+      && (authContext === undefined || (authContext !== null && isAuthContextCurrent(authContext)));
   }
 
   function syncDraft(nextProfile = profile) {
@@ -297,7 +308,11 @@ export default function ProfilePage() {
         return nextProfile;
       });
       if (nextProfileForCache) {
-        void writeProfileCaches(nextProfileForCache, { base: true, stats: false });
+        void writeProfileCaches(nextProfileForCache, {
+          base: true,
+          stats: false,
+          authContext: captureAuthContext(),
+        });
       }
       closeEditModal();
       Taro.showToast({ title: '搭配档案已更新', icon: 'success' });
@@ -604,14 +619,20 @@ function normalizeProfileStatsCache(cache: ProfileStatsCache): ProfileStatsCache
 
 async function writeProfileCaches(
   profile: ProfileState,
-  options: { base: boolean; stats: boolean },
+  options: { base: boolean; stats: boolean; authContext?: ActiveAuthContext | null },
 ) {
   await Promise.all([
     options.base
-      ? setPageCache(PROFILE_BASE_CACHE_KEY, toProfileBaseCache(profile), { ttl: PROFILE_BASE_CACHE_TTL })
+      ? setUserPageCache(PROFILE_BASE_CACHE_KEY, toProfileBaseCache(profile), {
+          ttl: PROFILE_BASE_CACHE_TTL,
+          authContext: options.authContext,
+        })
       : Promise.resolve(),
     options.stats
-      ? setPageCache(PROFILE_STATS_CACHE_KEY, toProfileStatsCache(profile), { ttl: PROFILE_STATS_CACHE_TTL })
+      ? setUserPageCache(PROFILE_STATS_CACHE_KEY, toProfileStatsCache(profile), {
+          ttl: PROFILE_STATS_CACHE_TTL,
+          authContext: options.authContext,
+        })
       : Promise.resolve(),
   ]);
 }

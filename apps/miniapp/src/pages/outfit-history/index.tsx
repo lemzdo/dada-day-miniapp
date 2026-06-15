@@ -4,7 +4,13 @@ import { useMemo, useRef, useState } from 'react';
 import { SafeImage } from '@/components/SafeImage';
 import { invalidateHistoryCache } from '@/lib/cacheInvalidation';
 import { listOutfitHistory } from '@/lib/cloud';
-import { buildPageCacheKey, getPageCache, setPageCache } from '@/lib/pageCache';
+import { buildPageCacheKey } from '@/lib/pageCache';
+import {
+  captureAuthContext,
+  getUserPageCache,
+  setUserPageCache,
+  type ActiveAuthContext,
+} from '@/lib/userPageCache';
 import { applyOutfitStatuses, setOutfitStatuses } from '@/stores/outfitStatusStore';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
 import type { OutfitStatusPatch } from '@/stores/outfitStatusStore';
@@ -95,9 +101,10 @@ export default function OutfitHistoryPage() {
     if (fetchingRef.current) return;
     fetchingRef.current = true;
 
+    const authContext = captureAuthContext();
     const isFirstPage = reset && pageNum === 1;
     if (isFirstPage && !options.force) {
-      await hydrateHistoryFirstPageCache();
+      await hydrateHistoryFirstPageCache(authContext);
     }
 
     if (!options.silent) setLoading(true);
@@ -116,7 +123,7 @@ export default function OutfitHistoryPage() {
           hasMore: data.hasMore,
           page: data.page || 1,
           pageSize: PAGE_SIZE,
-        });
+        }, authContext);
       }
     } catch (err) {
       console.error('Fetch outfit history error:', err);
@@ -126,8 +133,8 @@ export default function OutfitHistoryPage() {
     }
   }
 
-  async function hydrateHistoryFirstPageCache() {
-    const cached = await getPageCache<HistoryFirstPageCache>(HISTORY_FIRST_PAGE_CACHE_KEY);
+  async function hydrateHistoryFirstPageCache(authContext: ActiveAuthContext | null) {
+    const cached = await getUserPageCache<HistoryFirstPageCache>(HISTORY_FIRST_PAGE_CACHE_KEY, { authContext });
     if (!cached.hit || !cached.data) return false;
 
     setAllRecords(applyHistoryOutfitStatuses(cached.data.list));
@@ -415,9 +422,13 @@ export default function OutfitHistoryPage() {
   );
 }
 
-async function writeHistoryFirstPageCache(data: HistoryFirstPageCache) {
-  await setPageCache(HISTORY_FIRST_PAGE_CACHE_KEY, data, {
+async function writeHistoryFirstPageCache(
+  data: HistoryFirstPageCache,
+  authContext: ActiveAuthContext | null,
+) {
+  await setUserPageCache(HISTORY_FIRST_PAGE_CACHE_KEY, data, {
     ttl: HISTORY_FIRST_PAGE_CACHE_TTL,
+    authContext,
     meta: {
       pageSize: data.pageSize,
     },

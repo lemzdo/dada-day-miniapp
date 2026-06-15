@@ -13,7 +13,13 @@ import {
   renameCloudOutfit,
   saveFavoriteOutfit,
 } from '@/lib/cloud';
-import { buildPageCacheKey, getPageCache, setPageCache } from '@/lib/pageCache';
+import { buildPageCacheKey } from '@/lib/pageCache';
+import {
+  captureAuthContext,
+  getUserPageCache,
+  setUserPageCache,
+  type ActiveAuthContext,
+} from '@/lib/userPageCache';
 import { applyOutfitStatus, setOutfitStatus } from '@/stores/outfitStatusStore';
 import { normalizeOutfitSnapshot, readOutfitDetailDraft, storeOutfitDetailDraft, storeOutfitStateSync } from '@/utils/outfitSnapshot';
 import {
@@ -325,6 +331,7 @@ export default function OutfitDetailPage() {
   async function fetchOutfit(outfitId: string) {
     setLoading(true);
     let hasDisplayableOutfit = false;
+    const authContext = captureAuthContext();
     try {
       const decodedId = decodeURIComponent(outfitId);
       const source = normalizeSource(sourceParam);
@@ -341,7 +348,7 @@ export default function OutfitDetailPage() {
       }
 
       if (!hasDisplayableOutfit && cacheKey && !hasWardrobeRefreshSignal()) {
-        const cached = await getPageCache<Outfit>(cacheKey);
+        const cached = await getUserPageCache<Outfit>(cacheKey, { authContext });
         if (cached.hit && cached.data) {
           setOutfit(applyDetailOutfitStatus(normalizeOutfitSnapshot(cached.data)));
           setLoading(false);
@@ -357,7 +364,7 @@ export default function OutfitDetailPage() {
             : await getCloudOutfit(decodedId);
       const prepared = prepareOutfitForState(detail);
       setOutfit(prepared);
-      await writeOutfitDetailCache(cacheKey, prepared, source);
+      await writeOutfitDetailCache(cacheKey, prepared, source, authContext);
     } catch (err) {
       console.error('Fetch outfit detail error:', err);
       Taro.showToast({ title: '加载失败', icon: 'none' });
@@ -369,6 +376,7 @@ export default function OutfitDetailPage() {
   async function handleToggleFavorite() {
     if (!outfit || favoriteOperating) return;
 
+    const authContext = captureAuthContext();
     setFavoriteOperating(true);
     try {
       if (outfit.isFavorite) {
@@ -387,6 +395,7 @@ export default function OutfitDetailPage() {
             favoriteOutfitId: '',
             updatedAt: Date.now(),
           },
+          authContext,
         );
         setDetailSource('recommendation');
         Taro.showToast({ title: '已取消收藏', icon: 'success' });
@@ -414,6 +423,7 @@ export default function OutfitDetailPage() {
           isFavorite: true,
           favoriteOutfitId: nextFavoriteOutfitId,
         },
+        authContext,
       );
       Taro.showToast({ title: '已收藏', icon: 'success' });
     } catch (err) {
@@ -432,6 +442,7 @@ export default function OutfitDetailPage() {
       return;
     }
 
+    const authContext = captureAuthContext();
     setWearOperating(true);
     try {
       const saved = await addOutfitHistory(normalizeOutfitSnapshot(outfit), {
@@ -461,8 +472,9 @@ export default function OutfitDetailPage() {
           wornAt: saved.wornAt,
           wornDate: saved.wornDate || outfit.wornDate,
         },
+        authContext,
       );
-      void invalidateAfterOutfitWornMutation();
+      void invalidateAfterOutfitWornMutation({ authContext });
       Taro.showToast({ title: '已记录到穿搭历史', icon: 'success' });
     } catch (err) {
       console.error('Confirm outfit wear error:', err);
@@ -482,6 +494,7 @@ export default function OutfitDetailPage() {
   async function handleSaveNameFromModal() {
     if (!outfit || operating) return;
 
+    const authContext = captureAuthContext();
     setOperating(true);
     try {
       const userTitle = draftName;
@@ -510,6 +523,7 @@ export default function OutfitDetailPage() {
           displayTitle: saved.displayTitle,
           title: saved.title,
         },
+        authContext,
       );
       setShowNameModal(false);
       Taro.showToast({ title: userTitle.trim() ? '已保存名称' : '已清空名称', icon: 'success' });
@@ -545,7 +559,11 @@ export default function OutfitDetailPage() {
     }
   }
 
-  function persistOutfitUpdate(nextOutfit: Outfit, statusPatch?: OutfitStatusPatch) {
+  function persistOutfitUpdate(
+    nextOutfit: Outfit,
+    statusPatch?: OutfitStatusPatch,
+    authContext?: ActiveAuthContext | null,
+  ) {
     const normalized = normalizeOutfitSnapshot(nextOutfit);
     const patch = statusPatch ?? getOutfitStatusPatch(normalized);
     if (patch.outfitKey) setOutfitStatus(patch);
@@ -556,7 +574,7 @@ export default function OutfitDetailPage() {
     if (detailSource === 'recommendation') {
       storeOutfitDetailDraft(nextWithStatus);
     }
-    void writeOutfitDetailCache(getCurrentOutfitDetailCacheKey(), nextWithStatus, detailSource);
+    void writeOutfitDetailCache(getCurrentOutfitDetailCacheKey(), nextWithStatus, detailSource, authContext);
   }
 
   function getCurrentOutfitDetailCacheKey() {
@@ -564,10 +582,16 @@ export default function OutfitDetailPage() {
     return buildOutfitDetailCacheKey(detailSource, decodeURIComponent(id));
   }
 
-  async function writeOutfitDetailCache(cacheKey: string, nextOutfit: Outfit, source: DetailSource) {
+  async function writeOutfitDetailCache(
+    cacheKey: string,
+    nextOutfit: Outfit,
+    source: DetailSource,
+    authContext: ActiveAuthContext | null = captureAuthContext(),
+  ) {
     if (!cacheKey) return;
-    await setPageCache(cacheKey, getCacheableOutfitDetail(nextOutfit), {
+    await setUserPageCache(cacheKey, getCacheableOutfitDetail(nextOutfit), {
       ttl: OUTFIT_DETAIL_CACHE_TTL,
+      authContext,
       meta: {
         source,
         id: nextOutfit.id,

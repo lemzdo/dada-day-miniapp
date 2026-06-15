@@ -1,4 +1,5 @@
-import { clearPageCacheByPrefix } from './pageCache';
+import { clearUserPageCacheByPrefix } from './userPageCache';
+import type { ActiveAuthContext } from '@/stores/userStore';
 
 export const PAGE_CACHE_PREFIXES = {
   wardrobe: 'wardrobe',
@@ -12,39 +13,39 @@ export const PAGE_CACHE_PREFIXES = {
 } as const;
 
 interface CacheInvalidationOptions {
-  namespace?: string;
+  authContext?: ActiveAuthContext | null;
 }
 
 export async function invalidateWardrobeCache(options: CacheInvalidationOptions = {}): Promise<void> {
-  await safeClearPrefix(PAGE_CACHE_PREFIXES.wardrobe, options.namespace);
+  await safeClearPrefix(PAGE_CACHE_PREFIXES.wardrobe, options);
 }
 
 export async function invalidateTodayRecommendationCache(options: CacheInvalidationOptions = {}): Promise<void> {
-  await safeClearPrefix(PAGE_CACHE_PREFIXES.today, options.namespace);
+  await safeClearPrefix(PAGE_CACHE_PREFIXES.today, options);
 }
 
 export async function invalidateOutfitDetailCache(options: CacheInvalidationOptions = {}): Promise<void> {
-  await safeClearPrefix(PAGE_CACHE_PREFIXES.outfitDetail, options.namespace);
+  await safeClearPrefix(PAGE_CACHE_PREFIXES.outfitDetail, options);
 }
 
 export async function invalidateOutfitStatusCache(options: CacheInvalidationOptions = {}): Promise<void> {
-  await safeClearPrefix(PAGE_CACHE_PREFIXES.outfitStatus, options.namespace);
+  await safeClearPrefix(PAGE_CACHE_PREFIXES.outfitStatus, options);
 }
 
 export async function invalidateProfileCache(options: CacheInvalidationOptions = {}): Promise<void> {
-  await safeClearPrefix(PAGE_CACHE_PREFIXES.profile, options.namespace);
+  await safeClearPrefix(PAGE_CACHE_PREFIXES.profile, options);
 }
 
 export async function invalidateUploadTasksCache(options: CacheInvalidationOptions = {}): Promise<void> {
-  await safeClearPrefix(PAGE_CACHE_PREFIXES.uploadTasks, options.namespace);
+  await safeClearPrefix(PAGE_CACHE_PREFIXES.uploadTasks, options);
 }
 
 export async function invalidateFavoritesCache(options: CacheInvalidationOptions = {}): Promise<void> {
-  await safeClearPrefix(PAGE_CACHE_PREFIXES.favorites, options.namespace);
+  await safeClearPrefix(PAGE_CACHE_PREFIXES.favorites, options);
 }
 
 export async function invalidateHistoryCache(options: CacheInvalidationOptions = {}): Promise<void> {
-  await safeClearPrefix(PAGE_CACHE_PREFIXES.history, options.namespace);
+  await safeClearPrefix(PAGE_CACHE_PREFIXES.history, options);
 }
 
 export async function invalidateAfterWardrobeMutation(options: CacheInvalidationOptions = {}): Promise<void> {
@@ -57,7 +58,7 @@ export async function invalidateAfterWardrobeMutation(options: CacheInvalidation
       PAGE_CACHE_PREFIXES.favorites,
       PAGE_CACHE_PREFIXES.history,
     ],
-    options.namespace,
+    options,
   );
 }
 
@@ -68,7 +69,7 @@ export async function invalidateAfterOutfitFavoriteMutation(options: CacheInvali
       PAGE_CACHE_PREFIXES.favorites,
       PAGE_CACHE_PREFIXES.profile,
     ],
-    options.namespace,
+    options,
   );
 }
 
@@ -79,7 +80,7 @@ export async function invalidateAfterOutfitWornMutation(options: CacheInvalidati
       PAGE_CACHE_PREFIXES.history,
       PAGE_CACHE_PREFIXES.profile,
     ],
-    options.namespace,
+    options,
   );
 }
 
@@ -95,7 +96,7 @@ export async function invalidateAfterConfirmDraftsSaved(options: CacheInvalidati
       PAGE_CACHE_PREFIXES.today,
       PAGE_CACHE_PREFIXES.profile,
     ],
-    options.namespace,
+    options,
   );
 }
 
@@ -105,18 +106,18 @@ export async function invalidateAfterProfileMutation(options: CacheInvalidationO
       PAGE_CACHE_PREFIXES.profile,
       PAGE_CACHE_PREFIXES.today,
     ],
-    options.namespace,
+    options,
   );
 }
 
-async function safeClearPrefixes(prefixes: string[], namespace?: string): Promise<void> {
-  await Promise.all(prefixes.map((prefix) => safeClearPrefix(prefix, namespace)));
+async function safeClearPrefixes(prefixes: string[], options: CacheInvalidationOptions): Promise<void> {
+  await Promise.all(prefixes.map((prefix) => safeClearPrefix(prefix, options)));
 }
 
-async function safeClearPrefix(prefix: string, namespace?: string): Promise<void> {
+async function safeClearPrefix(prefix: string, options: CacheInvalidationOptions): Promise<void> {
   try {
-    await clearPageCacheByPrefix(prefix, { namespace });
+    await clearUserPageCacheByPrefix(prefix, { authContext: options.authContext });
   } catch (error) {
-    console.warn('[cacheInvalidation] clear cache failed', { prefix, namespace, error });
+    console.warn('[cacheInvalidation] clear cache failed', { prefix, error });
   }
 }

@@ -16,7 +16,13 @@ import {
   uploadBatchSourceImage,
 } from '@/lib/cloud';
 import { invalidateAfterWardrobeMutation } from '@/lib/cacheInvalidation';
-import { buildPageCacheKey, getPageCache, setPageCache } from '@/lib/pageCache';
+import { buildPageCacheKey } from '@/lib/pageCache';
+import {
+  captureAuthContext,
+  getUserPageCache,
+  setUserPageCache,
+  type ActiveAuthContext,
+} from '@/lib/userPageCache';
 import { canRecognizeSingleClothing, getSubcategoryDisplayLabel } from '@/utils/clothingLabels';
 import type { Clothing, ClothingCategory, UserClothingSubcategory } from '@starter-template/types';
 import type { RecoverableUploadBatch } from '@/lib/cloud';
@@ -98,8 +104,8 @@ export default function WardrobePage() {
   const loadingRef = useRef(false);
   const lastFetchAtRef = useRef(0);
 
-  const applyWardrobeFirstPageCache = useCallback(async (cacheKey: string) => {
-    const cached = await getPageCache<WardrobeFirstPageCacheData>(cacheKey);
+  const applyWardrobeFirstPageCache = useCallback(async (cacheKey: string, authContext: ActiveAuthContext | null) => {
+    const cached = await getUserPageCache<WardrobeFirstPageCacheData>(cacheKey, { authContext });
     if (!cached.hit || cached.expired || !cached.data) return false;
 
     setClothes(dedupeClothesById(cached.data.list));
@@ -127,8 +133,9 @@ export default function WardrobePage() {
         subcategoryParam,
         subcategoryIdParam,
       );
+      const authContext = captureAuthContext();
       const canUseFirstPageCache = pageNum === 1 && reset && !force;
-      const cacheApplied = canUseFirstPageCache ? await applyWardrobeFirstPageCache(cacheKey) : false;
+      const cacheApplied = canUseFirstPageCache ? await applyWardrobeFirstPageCache(cacheKey, authContext) : false;
       setLoading(!cacheApplied);
 
       try {
@@ -163,7 +170,7 @@ export default function WardrobePage() {
         setHasMore(nextHasMore);
         if (reset || pageNum === 1) lastFetchAtRef.current = Date.now();
         if (pageNum === 1 && reset) {
-          await setPageCache<WardrobeFirstPageCacheData>(
+          await setUserPageCache<WardrobeFirstPageCacheData>(
             cacheKey,
             {
               list: dedupeClothesById(res.list),
@@ -171,7 +178,7 @@ export default function WardrobePage() {
               capacity: res.capacity,
               hasMore: nextHasMore,
             },
-            { ttl: WARDROBE_FIRST_PAGE_CACHE_TTL },
+            { ttl: WARDROBE_FIRST_PAGE_CACHE_TTL, authContext },
           );
         }
       } catch (err) {
