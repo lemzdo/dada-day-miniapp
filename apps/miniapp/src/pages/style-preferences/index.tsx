@@ -2,6 +2,7 @@ import { View, Text, ScrollView } from '@tarojs/components';
 import Taro, { useLoad, useUnload } from '@tarojs/taro';
 import { useCallback, useRef, useState, type ReactNode } from 'react';
 import { useBoundUserFlow } from '@/hooks/useBoundUserFlow';
+import { invalidateAfterProfileMutation } from '@/lib/cacheInvalidation';
 import { updateCloudUserProfile } from '@/lib/cloud';
 import {
   captureAuthContext,
@@ -231,6 +232,8 @@ export default function StylePreferencesPage() {
       recommendationProfile: nextProfile,
       preferredStyles: nextProfile.styleTags,
     });
+    await invalidateAfterProfileMutation({ authContext });
+    if (!isFlowCurrent(authContext, flowRuntimeKey)) return false;
     return true;
   }
 

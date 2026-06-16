@@ -571,6 +571,8 @@ export default function WardrobePage() {
       const updated = await recognizeClothAttributes(item.id);
       if (!isCurrentAuthContext(authContext)) return;
       updateClothingInList(updated);
+      await invalidateAfterWardrobeMutation({ authContext });
+      if (!isCurrentAuthContext(authContext)) return;
       Taro.showToast({ title: '识别完成', icon: 'success' });
     } catch (err) {
       console.error('Recognize clothing error:', err);

@@ -3,7 +3,7 @@ import Taro, { useDidShow, useLoad, usePullDownRefresh, useUnload } from '@taroj
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { WeatherCard } from '@/components/WeatherCard';
 import { useAuthRuntime } from '@/hooks/useAuthRuntime';
-import { invalidateAfterOutfitWornMutation } from '@/lib/cacheInvalidation';
+import { invalidateAfterOutfitFavoriteMutation, invalidateAfterOutfitWornMutation } from '@/lib/cacheInvalidation';
 import { addOutfitHistory, clearCloudRecommendationCache, generateCloudOutfit, removeFavoriteOutfit, saveFavoriteOutfit } from '@/lib/cloud';
 import {
   captureAuthContext,
@@ -471,6 +471,8 @@ export default function TodayPage() {
           authContext,
         );
       }
+      if (!isCurrentMutation(authContext, 'favorite', operationOutfitKey)) return;
+      await invalidateAfterOutfitFavoriteMutation({ authContext });
       if (!isCurrentMutation(authContext, 'favorite', operationOutfitKey)) return;
       Taro.showToast({ title: nextFavorite ? '已收藏' : '已取消收藏', icon: 'success' });
     } catch (err) {

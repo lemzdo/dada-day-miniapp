@@ -3,7 +3,12 @@ import Taro, { useDidShow, useLoad, useRouter } from '@tarojs/taro';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { SafeImage } from '@/components/SafeImage';
 import { useAuthRuntime } from '@/hooks/useAuthRuntime';
-import { invalidateAfterOutfitWornMutation } from '@/lib/cacheInvalidation';
+import {
+  invalidateAfterOutfitFavoriteMutation,
+  invalidateAfterOutfitWornMutation,
+  invalidateFavoritesCache,
+  invalidateHistoryCache,
+} from '@/lib/cacheInvalidation';
 import {
   addOutfitHistory,
   generateCloudOutfitComment,
@@ -453,6 +458,8 @@ export default function OutfitDetailPage() {
           authContext,
         );
         if (!isCurrentAuthContext(authContext)) return;
+        await invalidateAfterOutfitFavoriteMutation({ authContext });
+        if (!isCurrentAuthContext(authContext)) return;
         setDetailSource('recommendation');
         Taro.showToast({ title: '已取消收藏', icon: 'success' });
         return;
@@ -482,6 +489,8 @@ export default function OutfitDetailPage() {
         },
         authContext,
       );
+      if (!isCurrentAuthContext(authContext)) return;
+      await invalidateAfterOutfitFavoriteMutation({ authContext });
       if (!isCurrentAuthContext(authContext)) return;
       Taro.showToast({ title: '已收藏', icon: 'success' });
     } catch (err) {
@@ -594,6 +603,11 @@ export default function OutfitDetailPage() {
         },
         authContext,
       );
+      if (!isCurrentAuthContext(authContext)) return;
+      await Promise.all([
+        invalidateFavoritesCache({ authContext }),
+        invalidateHistoryCache({ authContext }),
+      ]);
       if (!isCurrentAuthContext(authContext)) return;
       setShowNameModal(false);
       Taro.showToast({ title: userTitle.trim() ? '已保存名称' : '已清空名称', icon: 'success' });
