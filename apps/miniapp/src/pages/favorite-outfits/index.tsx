@@ -35,6 +35,12 @@ interface TapEvent {
   stopPropagation: () => void;
 }
 
+interface FavoriteMutationTarget {
+  authContext: ActiveAuthContext;
+  outfitId: string;
+  outfitKey: string;
+}
+
 function isCurrentAuthContext(authContext: ActiveAuthContext | null | undefined) {
   return Boolean(authContext && isAuthContextCurrent(authContext));
 }
@@ -53,9 +59,13 @@ export default function FavoriteOutfitsPage() {
   const skipFirstDidShowRef = useRef(false);
   const fetchingRef = useRef(false);
   const lastHandledRuntimeKeyRef = useRef<string | null>(null);
+  const outfitsRef = useRef<Outfit[]>([]);
+  const renameTargetRef = useRef<FavoriteMutationTarget | null>(null);
+  outfitsRef.current = outfits;
 
   const resetUserState = useCallback(() => {
     fetchingRef.current = false;
+    renameTargetRef.current = null;
     setOutfits([]);
     setPage(1);
     setHasMore(true);
@@ -190,7 +200,10 @@ export default function FavoriteOutfitsPage() {
 
   function openRename(outfit: Outfit, event?: TapEvent) {
     event?.stopPropagation();
+    const target = captureFavoriteMutationTarget(outfit);
+    if (!target) return;
     setActiveMenuId('');
+    renameTargetRef.current = target;
     setRenamingOutfit(outfit);
     setDraftName(outfit.userTitle || getOutfitDisplayTitle(outfit, '收藏的搭配'));
   }
@@ -198,6 +211,10 @@ export default function FavoriteOutfitsPage() {
   async function handleRemoveFavorite(outfit: Outfit, event?: TapEvent) {
     event?.stopPropagation();
     setActiveMenuId('');
+    const target = captureFavoriteMutationTarget(outfit);
+    if (!target) return;
+    const targetOutfitId = outfit.id;
+    const targetOutfitKey = outfit.outfitKey;
     const modal = await Taro.showModal({
       title: '移出收藏？',
       content: '这套搭配会从你的灵感收藏夹里移除。',
@@ -207,36 +224,38 @@ export default function FavoriteOutfitsPage() {
     });
     if (!modal.confirm) return;
 
-    const authContext = captureAuthContext();
-    if (!authContext) return;
+    if (!isFavoriteMutationTargetCurrent(target)) return;
     try {
-      await removeFavoriteOutfit(outfit.id, outfit.outfitKey);
-      if (!isCurrentAuthContext(authContext)) return;
-      if (outfit.outfitKey) {
+      await removeFavoriteOutfit(targetOutfitId, targetOutfitKey);
+      if (!isFavoriteMutationTargetCurrent(target)) return;
+      if (targetOutfitKey) {
         setOutfitStatus({
-          outfitKey: outfit.outfitKey,
+          outfitKey: targetOutfitKey,
           isFavorite: false,
           favoriteOutfitId: '',
           updatedAt: Date.now(),
-        }, authContext);
+        }, target.authContext);
       }
-      setOutfits((prev) => prev.filter((item) => item.id !== outfit.id));
-      void invalidateFavoritesCache({ authContext });
+      setOutfits((prev) => prev.filter((item) => item.id !== targetOutfitId));
+      void invalidateFavoritesCache({ authContext: target.authContext });
     } catch (err) {
       console.error('Unfavorite outfit error:', err);
-      if (!isCurrentAuthContext(authContext)) return;
+      if (!isFavoriteMutationTargetCurrent(target)) return;
       Taro.showToast({ title: '移出失败，稍后再试', icon: 'none' });
     }
   }
 
   function closeRename() {
     if (renameSaving) return;
+    renameTargetRef.current = null;
     setRenamingOutfit(null);
     setDraftName('');
   }
 
   async function saveRename() {
     if (!renamingOutfit || renameSaving) return;
+    const target = renameTargetRef.current;
+    if (!target || !isRenameMutationTargetCurrent(target)) return;
     const trimmed = draftName.trim();
     const currentTitle = renamingOutfit.userTitle || getOutfitDisplayTitle(renamingOutfit, '收藏的搭配');
 
@@ -253,8 +272,6 @@ export default function FavoriteOutfitsPage() {
       return;
     }
 
-    const authContext = captureAuthContext();
-    if (!authContext) return;
     setRenameSaving(true);
     try {
       const saved = await renameCloudOutfit({
@@ -263,7 +280,7 @@ export default function FavoriteOutfitsPage() {
         outfit: renamingOutfit,
         userTitle: trimmed,
       });
-      if (!isCurrentAuthContext(authContext)) return;
+      if (!isRenameMutationTargetCurrent(target)) return;
       if (renamingOutfit.outfitKey) {
         setOutfitStatus({
           ...getOutfitStatusPatch(saved, renamingOutfit.outfitKey, Date.now()),
@@ -271,7 +288,7 @@ export default function FavoriteOutfitsPage() {
           userTitle: trimmed,
           displayTitle: trimmed,
           title: saved.title,
-        }, authContext);
+        }, target.authContext);
       }
       setOutfits((prev) =>
         applyFavoriteOutfitStatuses(
@@ -287,21 +304,45 @@ export default function FavoriteOutfitsPage() {
                 }
               : item,
           ),
-          authContext,
+          target.authContext,
         ),
       );
-      void invalidateFavoritesCache({ authContext });
+      void invalidateFavoritesCache({ authContext: target.authContext });
       Taro.showToast({ title: '已更新名称', icon: 'success' });
+      setRenameSaving(false);
       closeRename();
     } catch (err) {
       console.error('Rename favorite outfit error:', err);
-      if (!isCurrentAuthContext(authContext)) return;
+      if (!isRenameMutationTargetCurrent(target)) return;
       Taro.showToast({ title: '名称暂时没保存，稍后再试', icon: 'none' });
     } finally {
-      if (isCurrentAuthContext(authContext)) {
+      if (isRenameMutationTargetCurrent(target)) {
         setRenameSaving(false);
       }
     }
+  }
+
+  function captureFavoriteMutationTarget(outfit: Outfit): FavoriteMutationTarget | null {
+    const authContext = captureAuthContext();
+    if (!authContext) return null;
+
+    return {
+      authContext,
+      outfitId: outfit.id,
+      outfitKey: outfit.outfitKey ?? '',
+    };
+  }
+
+  function isFavoriteMutationTargetCurrent(target: FavoriteMutationTarget) {
+    return isCurrentAuthContext(target.authContext)
+      && outfitsRef.current.some((item) => (
+        item.id === target.outfitId
+        && (item.outfitKey ?? '') === target.outfitKey
+      ));
+  }
+
+  function isRenameMutationTargetCurrent(target: FavoriteMutationTarget) {
+    return renameTargetRef.current === target && isFavoriteMutationTargetCurrent(target);
   }
 
   return (

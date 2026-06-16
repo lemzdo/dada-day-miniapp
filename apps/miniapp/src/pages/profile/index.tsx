@@ -308,6 +308,10 @@ export default function ProfilePage() {
 
   async function saveProfile() {
     if (saving) return;
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
+    const authContext = captureAuthContext();
+    if (!authContext) return;
 
     const nickname = normalizeNickname(draftNickname);
     const avatarUrl = draftAvatarType === 'wechat' ? draftAvatarUrl : toPresetAvatarUrl(draftPresetId);
@@ -323,7 +327,9 @@ export default function ProfilePage() {
         profileCompleted: true,
       });
 
-      await invalidateProfileCache();
+      if (!isActiveRequest(requestId, authContext)) return;
+      await invalidateProfileCache({ authContext });
+      if (!isActiveRequest(requestId, authContext)) return;
       let nextProfileForCache: ProfileState | null = null;
       setProfile((prev) => {
         const nextProfile: ProfileState = {
@@ -341,16 +347,21 @@ export default function ProfilePage() {
         void writeProfileCaches(nextProfileForCache, {
           base: true,
           stats: false,
-          authContext: captureAuthContext(),
+          authContext,
         });
       }
+      if (!isActiveRequest(requestId, authContext)) return;
       closeEditModal();
       Taro.showToast({ title: '搭配档案已更新', icon: 'success' });
     } catch (error) {
       console.error('Save profile failed:', error);
-      Taro.showToast({ title: '保存失败，请稍后再试', icon: 'none' });
+      if (isActiveRequest(requestId, authContext)) {
+        Taro.showToast({ title: '保存失败，请稍后再试', icon: 'none' });
+      }
     } finally {
-      setSaving(false);
+      if (isActiveRequest(requestId, authContext)) {
+        setSaving(false);
+      }
     }
   }
 

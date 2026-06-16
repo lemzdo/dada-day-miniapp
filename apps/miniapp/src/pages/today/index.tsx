@@ -7,6 +7,7 @@ import { invalidateAfterOutfitWornMutation } from '@/lib/cacheInvalidation';
 import { addOutfitHistory, clearCloudRecommendationCache, generateCloudOutfit, removeFavoriteOutfit, saveFavoriteOutfit } from '@/lib/cloud';
 import {
   captureAuthContext,
+  isAuthContextCurrent,
   type ActiveAuthContext,
 } from '@/lib/userPageCache';
 import {
@@ -165,6 +166,7 @@ export default function TodayPage() {
   const lastRecommendationWeatherKeyRef = useRef('');
   const initialRecommendationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastHandledRuntimeKeyRef = useRef<string | null>(null);
+  const operationTargetRef = useRef<{ operation: OutfitOperation; outfitKey: string } | null>(null);
   const [currentWeather, setCurrentWeather] = useState<WeatherSnapshot | undefined>(undefined);
   const selectedScene = SCENE_TAGS[selectedSceneKey];
   const selectedSceneRef = useRef<SceneTag>(selectedScene);
@@ -190,6 +192,7 @@ export default function TodayPage() {
     batchExhaustedRef.current = false;
     recommendationNoticeRef.current = '';
     shouldRestoreFromDetailRef.current = false;
+    operationTargetRef.current = null;
     setOutfits([]);
     setCurrentIndex(0);
     setLoading(false);
@@ -421,12 +424,16 @@ export default function TodayPage() {
     if (!current || operation) return;
 
     const authContext = captureAuthContext();
+    if (!authContext) return;
+    const operationOutfitKey = getMutationTargetKey(current);
     const nextFavorite = !current.isFavorite;
+    operationTargetRef.current = { operation: 'favorite', outfitKey: operationOutfitKey };
     setOperation('favorite');
 
     try {
       if (nextFavorite) {
         const saved = await saveFavoriteOutfit(normalizeOutfitSnapshot(current), current.aiComment);
+        if (!isCurrentMutation(authContext, 'favorite', operationOutfitKey)) return;
         const nextFavoriteOutfitId = saved.favoriteOutfitId || saved.id;
         updateOutfitStatusByKey(
           current,
@@ -448,6 +455,7 @@ export default function TodayPage() {
         );
       } else {
         const removed = await removeFavoriteOutfit(current.favoriteOutfitId || current.id, current.outfitKey);
+        if (!isCurrentMutation(authContext, 'favorite', operationOutfitKey)) return;
         updateOutfitStatusByKey(
           current,
           {
@@ -463,12 +471,18 @@ export default function TodayPage() {
           authContext,
         );
       }
+      if (!isCurrentMutation(authContext, 'favorite', operationOutfitKey)) return;
       Taro.showToast({ title: nextFavorite ? '已收藏' : '已取消收藏', icon: 'success' });
     } catch (err) {
       console.error('Toggle favorite error:', err);
-      Taro.showToast({ title: '操作失败', icon: 'none' });
+      if (isCurrentMutation(authContext, 'favorite', operationOutfitKey)) {
+        Taro.showToast({ title: '操作失败', icon: 'none' });
+      }
     } finally {
-      setOperation(null);
+      if (isCurrentMutation(authContext, 'favorite', operationOutfitKey)) {
+        operationTargetRef.current = null;
+        setOperation(null);
+      }
     }
   }
 
@@ -482,43 +496,53 @@ export default function TodayPage() {
     }
 
     const authContext = captureAuthContext();
+    if (!authContext) return;
+    const operationOutfitKey = getMutationTargetKey(current);
+    operationTargetRef.current = { operation: 'wear', outfitKey: operationOutfitKey };
     setOperation('wear');
     try {
-      await addOutfitHistory(normalizeOutfitSnapshot(current), {
+      const saved = await addOutfitHistory(normalizeOutfitSnapshot(current), {
         source: current.outfitKind === 'favorite' || current.isFavorite ? 'favorite' : 'recommendation',
         sourceFavoriteOutfitId:
           current.outfitKind === 'favorite' || current.isFavorite ? current.favoriteOutfitId || current.id : undefined,
         aiComment: current.aiComment,
-      }).then((saved) => {
-        const nextTodayHistoryId = saved.todayHistoryId || saved.historyId || saved.id;
-        updateOutfitStatusByKey(
-          current,
-          {
-            ...getOutfitStatusPatch(saved, current.outfitKey),
-            outfitKey: saved.outfitKey ?? current.outfitKey ?? '',
-            isWornToday: true,
-            todayHistoryId: nextTodayHistoryId,
-            wornAt: saved.wornAt,
-            wornDate: saved.wornDate || getToday(),
-          },
-          {
-            isWornToday: true,
-            todayHistoryId: nextTodayHistoryId,
-            historyId: saved.historyId || saved.id,
-            lastWornAt: saved.lastWornAt || saved.wornAt || new Date().toISOString(),
-            wornAt: saved.wornAt,
-            wornDate: saved.wornDate || getToday(),
-          },
-          authContext,
-        );
       });
-      void invalidateAfterOutfitWornMutation();
+      if (!isCurrentMutation(authContext, 'wear', operationOutfitKey)) return;
+      const nextTodayHistoryId = saved.todayHistoryId || saved.historyId || saved.id;
+      updateOutfitStatusByKey(
+        current,
+        {
+          ...getOutfitStatusPatch(saved, current.outfitKey),
+          outfitKey: saved.outfitKey ?? current.outfitKey ?? '',
+          isWornToday: true,
+          todayHistoryId: nextTodayHistoryId,
+          wornAt: saved.wornAt,
+          wornDate: saved.wornDate || getToday(),
+        },
+        {
+          isWornToday: true,
+          todayHistoryId: nextTodayHistoryId,
+          historyId: saved.historyId || saved.id,
+          lastWornAt: saved.lastWornAt || saved.wornAt || new Date().toISOString(),
+          wornAt: saved.wornAt,
+          wornDate: saved.wornDate || getToday(),
+        },
+        authContext,
+      );
+      if (!isCurrentMutation(authContext, 'wear', operationOutfitKey)) return;
+      await invalidateAfterOutfitWornMutation({ authContext });
+      if (!isCurrentMutation(authContext, 'wear', operationOutfitKey)) return;
       Taro.showToast({ title: '已记录到穿搭历史', icon: 'success' });
     } catch (err) {
       console.error('Confirm wear error:', err);
-      Taro.showToast({ title: '操作失败', icon: 'none' });
+      if (isCurrentMutation(authContext, 'wear', operationOutfitKey)) {
+        Taro.showToast({ title: '操作失败', icon: 'none' });
+      }
     } finally {
-      setOperation(null);
+      if (isCurrentMutation(authContext, 'wear', operationOutfitKey)) {
+        operationTargetRef.current = null;
+        setOperation(null);
+      }
     }
   }
 
@@ -777,6 +801,21 @@ export default function TodayPage() {
     return seq === requestSeq.current;
   }
 
+  function isCurrentMutation(
+    authContext: ActiveAuthContext,
+    expectedOperation: OutfitOperation,
+    expectedOutfitKey: string,
+  ) {
+    const target = operationTargetRef.current;
+    return Boolean(
+      authContext
+        && isAuthContextCurrent(authContext)
+        && target
+        && target.operation === expectedOperation
+        && target.outfitKey === expectedOutfitKey,
+    );
+  }
+
   const currentOutfit = outfits[currentIndex];
   const isRefreshing = operation === 'refresh';
   const isFavoriteBusy = operation === 'favorite';
@@ -1021,6 +1060,10 @@ function getDeletedItemCount(outfit: Outfit) {
   const snapshotCount = outfit.snapshotItems?.filter((item) => item.isDeleted || item.deletedAt).length ?? 0;
   const itemCount = outfit.items?.filter((item) => item.isDeleted).length ?? 0;
   return Math.max(snapshotCount, itemCount);
+}
+
+function getMutationTargetKey(outfit: Outfit) {
+  return outfit.outfitKey || outfit.id;
 }
 
 function getFallbackReason(scene: SceneTag, hasWeather: boolean) {
