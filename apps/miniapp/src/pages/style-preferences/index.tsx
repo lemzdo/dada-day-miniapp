@@ -1,6 +1,13 @@
 import { View, Text, ScrollView } from '@tarojs/components';
 import Taro, { useLoad, useUnload } from '@tarojs/taro';
-import { useState, useRef, type ReactNode } from 'react';
+import { useCallback, useRef, useState, type ReactNode } from 'react';
+import { useBoundUserFlow } from '@/hooks/useBoundUserFlow';
+import { updateCloudUserProfile } from '@/lib/cloud';
+import {
+  captureAuthContext,
+  isAuthContextCurrent,
+  type ActiveAuthContext,
+} from '@/lib/userPageCache';
 import { useUserStore } from '@/stores/userStore';
 import type {
   FitPreference,
@@ -77,29 +84,93 @@ export default function StylePreferencesPage() {
   const [profile, setProfile] = useState<RecommendationProfile>(DEFAULT_RECOMMENDATION_PROFILE);
   const [saving, setSaving] = useState(false);
   const initialSnapshot = useRef<RecommendationProfile>(DEFAULT_RECOMMENDATION_PROFILE);
-  const saveRecommendationProfile = useUserStore((state) => state.saveRecommendationProfile);
+  const mountedRef = useRef(true);
+  const savingRef = useRef(false);
+  const redirectingRef = useRef(false);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const profileRef = useRef(profile);
+  const isDirtyRef = useRef(false);
+
+  const resetFlowState = useCallback(() => {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    savingRef.current = false;
+    initialSnapshot.current = DEFAULT_RECOMMENDATION_PROFILE;
+    setProfile(DEFAULT_RECOMMENDATION_PROFILE);
+    setSaving(false);
+  }, []);
+
+  const navigateToProfile = useCallback(() => {
+    if (redirectingRef.current) return;
+    redirectingRef.current = true;
+    Taro.switchTab({ url: '/pages/profile/index' }).catch((error) => {
+      console.warn('Navigate to profile failed:', error);
+      redirectingRef.current = false;
+    });
+  }, []);
+
+  const {
+    boundRuntimeKeyRef,
+    isFlowActive,
+  } = useBoundUserFlow({
+    onBind: () => {
+      initializeFlow();
+    },
+    onInvalidate: () => {
+      resetFlowState();
+      navigateToProfile();
+    },
+  });
 
   useLoad(() => {
-    const savedProfile = useUserStore.getState().recommendationProfile;
-    setProfile(savedProfile);
-    initialSnapshot.current = savedProfile;
+    mountedRef.current = true;
   });
 
   const isDirty = !areProfilesEqual(profile, initialSnapshot.current);
+  profileRef.current = profile;
+  isDirtyRef.current = isDirty;
+  savingRef.current = saving;
+
+  function initializeFlow() {
+    const savedProfile = useUserStore.getState().recommendationProfile;
+    setProfile(savedProfile);
+    initialSnapshot.current = savedProfile;
+  }
+
+  function isFlowCurrent(
+    authContext: ActiveAuthContext | null | undefined,
+    flowRuntimeKey: string | null,
+  ) {
+    return Boolean(
+      authContext
+        && isAuthContextCurrent(authContext)
+        && isFlowActive(flowRuntimeKey),
+    );
+  }
+
+  function canWriteState(authContext: ActiveAuthContext | null | undefined, flowRuntimeKey: string | null) {
+    return mountedRef.current && isFlowCurrent(authContext, flowRuntimeKey);
+  }
 
   function setGenderPreference(genderPreference: RecommendationGenderPreference) {
+    if (!isFlowActive(boundRuntimeKeyRef.current)) return;
     setProfile((prev) => ({ ...prev, genderPreference }));
   }
 
   function setFitPreference(fitPreference: FitPreference) {
+    if (!isFlowActive(boundRuntimeKeyRef.current)) return;
     setProfile((prev) => ({ ...prev, fitPreference }));
   }
 
   function setTemperatureSensitivity(temperatureSensitivity: TemperatureSensitivity) {
+    if (!isFlowActive(boundRuntimeKeyRef.current)) return;
     setProfile((prev) => ({ ...prev, temperatureSensitivity }));
   }
 
   function toggleStyle(style: string) {
+    if (!isFlowActive(boundRuntimeKeyRef.current)) return;
     setProfile((prev) => {
       if (prev.styleTags.includes(style)) {
         return { ...prev, styleTags: prev.styleTags.filter((item) => item !== style) };
@@ -116,6 +187,9 @@ export default function StylePreferencesPage() {
 
   async function handleSave() {
     if (saving) return;
+    const authContext = captureAuthContext();
+    const flowRuntimeKey = boundRuntimeKeyRef.current;
+    if (!authContext || !isFlowActive(flowRuntimeKey)) return;
 
     if (!isDirty) {
       goNext();
@@ -124,29 +198,50 @@ export default function StylePreferencesPage() {
 
     setSaving(true);
     try {
-      await saveRecommendationProfile(profile);
+      const saved = await saveRecommendationProfileForFlow(profile, authContext, flowRuntimeKey);
+      if (!saved) return;
       Taro.showToast({ title: '已保存风格画像', icon: 'success' });
       initialSnapshot.current = profile;
-      setTimeout(goNext, 500);
+      saveTimerRef.current = setTimeout(() => {
+        if (isFlowCurrent(authContext, flowRuntimeKey)) goNext();
+      }, 500);
     } catch (error) {
       console.error('Save recommendation profile failed:', error);
-      Taro.showToast({ title: '保存失败，请稍后再试', icon: 'none' });
+      if (isFlowCurrent(authContext, flowRuntimeKey)) {
+        Taro.showToast({ title: '保存失败，请稍后再试', icon: 'none' });
+      }
     } finally {
-      setSaving(false);
+      if (canWriteState(authContext, flowRuntimeKey)) setSaving(false);
     }
   }
 
   function goNext() {
-    const pages = Taro.getCurrentPages();
-    if (pages.length > 1) {
-      Taro.navigateBack();
-      return;
-    }
-    Taro.switchTab({ url: '/pages/today/index' });
+    navigateToProfile();
+  }
+
+  async function saveRecommendationProfileForFlow(
+    nextProfile: RecommendationProfile,
+    authContext: ActiveAuthContext,
+    flowRuntimeKey: string | null,
+  ) {
+    if (!isFlowCurrent(authContext, flowRuntimeKey)) return false;
+    await updateCloudUserProfile(nextProfile);
+    if (!isFlowCurrent(authContext, flowRuntimeKey)) return false;
+    useUserStore.setState({
+      recommendationProfile: nextProfile,
+      preferredStyles: nextProfile.styleTags,
+    });
+    return true;
   }
 
   useUnload(() => {
-    if (isDirty && !saving) {
+    mountedRef.current = false;
+    const authContext = captureAuthContext();
+    const flowRuntimeKey = boundRuntimeKeyRef.current;
+    if (!authContext || !isFlowCurrent(authContext, flowRuntimeKey) || !isDirtyRef.current || savingRef.current) return;
+    const activeAuthContext = authContext;
+
+    if (isDirtyRef.current && !savingRef.current) {
       Taro.showModal({
         title: '提示',
         content: '还没保存这次调整，离开后不会同步到你的风格画像。',
@@ -154,15 +249,14 @@ export default function StylePreferencesPage() {
         cancelText: '离开',
         success: async (res) => {
           if (res.confirm) {
-            setSaving(true);
             try {
-              await saveRecommendationProfile(profile);
-              initialSnapshot.current = profile;
-              Taro.showToast({ title: '已保存风格画像', icon: 'success' });
+              const saved = await saveRecommendationProfileForFlow(profileRef.current, activeAuthContext, flowRuntimeKey);
+              if (saved && isFlowCurrent(activeAuthContext, flowRuntimeKey)) {
+                initialSnapshot.current = profileRef.current;
+                Taro.showToast({ title: '已保存风格画像', icon: 'success' });
+              }
             } catch (error) {
               console.error('Save recommendation profile failed:', error);
-            } finally {
-              setSaving(false);
             }
           }
         },

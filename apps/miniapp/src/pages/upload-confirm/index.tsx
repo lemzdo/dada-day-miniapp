@@ -4,6 +4,7 @@ import { useCallback, useRef, useState } from 'react';
 import { SafeImage } from '@/components/SafeImage';
 import { ClothingEditForm, type ClothingEditFormValue } from '@/components/ClothingEditForm';
 import { CATEGORY_OPTIONS } from '@/components/ClothingEditForm/constants';
+import { useBoundUserFlow } from '@/hooks/useBoundUserFlow';
 import {
   confirmClothesDrafts,
   discardClothesDraft,
@@ -54,37 +55,83 @@ export default function UploadConfirmPage() {
   const segmentingDraftIdsRef = useRef(new Set<string>());
   const savingRef = useRef(false);
   const batchRefreshCountRef = useRef(0);
+  const requestSeqRef = useRef(0);
+  const redirectingRef = useRef(false);
+
+  const resetFlowState = useCallback(() => {
+    requestSeqRef.current += 1;
+    processingLoopRef.current = false;
+    discardRequestedRef.current = false;
+    segmentingDraftIdsRef.current.clear();
+    savingRef.current = false;
+    batchRefreshCountRef.current = 0;
+    setBatch(null);
+    setImages([]);
+    setDrafts([]);
+    setLoading(false);
+    setProcessing(false);
+    setSaving(false);
+    setDiscardingBatch(false);
+    setEditingDraft(null);
+    Taro.hideLoading();
+    Taro.stopPullDownRefresh();
+  }, []);
+
+  const navigateToWardrobe = useCallback(() => {
+    if (redirectingRef.current) return;
+    redirectingRef.current = true;
+    Taro.switchTab({ url: '/pages/wardrobe/index' }).catch((error) => {
+      console.warn('Navigate to wardrobe failed:', error);
+      redirectingRef.current = false;
+    });
+  }, []);
+
+  const {
+    boundRuntimeKeyRef,
+    isFlowActive,
+  } = useBoundUserFlow({
+    onBind: () => {
+      if (!batchId) {
+        setLoading(false);
+        return;
+      }
+      void initializeFlow();
+    },
+    onInvalidate: () => {
+      resetFlowState();
+      navigateToWardrobe();
+    },
+  });
 
   const refresh = useCallback(async () => {
-    if (!batchId) return;
+    const flowRuntimeKey = boundRuntimeKeyRef.current;
+    const authContext = captureAuthContext();
+    if (!batchId || !authContext || !isFlowActive(flowRuntimeKey)) return;
+    const requestSeq = requestSeqRef.current + 1;
+    requestSeqRef.current = requestSeq;
     try {
       batchRefreshCountRef.current += 1;
       const detail = await getUploadBatchDetail(batchId);
-      if (!mountedRef.current) return detail;
+      if (!isFlowCurrent(authContext, flowRuntimeKey, requestSeq)) return detail;
       setBatch(detail.batch);
       setImages(detail.images);
       setDrafts(detail.drafts);
       return detail;
     } catch (error) {
       console.error('Fetch upload batch detail failed:', error);
-      if (mountedRef.current) {
+      if (isFlowCurrent(authContext, flowRuntimeKey, requestSeq)) {
         Taro.showToast({ title: '加载失败', icon: 'none' });
       }
     } finally {
-      if (mountedRef.current) {
+      if (isFlowCurrent(authContext, flowRuntimeKey, requestSeq)) {
         setLoading(false);
         Taro.stopPullDownRefresh();
       }
     }
-  }, [batchId]);
+  }, [batchId, boundRuntimeKeyRef, isFlowActive]);
 
   useLoad(() => {
     mountedRef.current = true;
-    refresh().then((detail) => {
-      if (normalizeUploadBatchStatus(detail?.batch.status) === 'processing') {
-        void processPendingImages(detail?.images);
-      }
-    });
   });
 
   useUnload(() => {
@@ -92,13 +139,37 @@ export default function UploadConfirmPage() {
   });
 
   usePullDownRefresh(() => {
-    refresh();
+    void refresh();
   });
+
+  function initializeFlow() {
+    setLoading(true);
+    return refresh().then((detail) => {
+      if (normalizeUploadBatchStatus(detail?.batch.status) === 'processing') {
+        void processPendingImages(detail?.images);
+      }
+    });
+  }
+
+  function isFlowCurrent(
+    authContext: ActiveAuthContext | null | undefined,
+    flowRuntimeKey: string | null,
+    requestSeq?: number,
+  ) {
+    return Boolean(
+      mountedRef.current
+        && authContext
+        && isCurrentAuthContext(authContext)
+        && isFlowActive(flowRuntimeKey)
+        && (requestSeq === undefined || requestSeqRef.current === requestSeq),
+    );
+  }
 
   async function processPendingImages(imagesOverride?: UploadImage[]) {
     if (!batchId || processingLoopRef.current || !mountedRef.current || discardRequestedRef.current) return;
     const authContext = captureAuthContext();
-    if (!authContext) return;
+    const flowRuntimeKey = boundRuntimeKeyRef.current;
+    if (!authContext || !isFlowActive(flowRuntimeKey)) return;
     processingLoopRef.current = true;
     setProcessing(true);
     batchRefreshCountRef.current = 0;
@@ -119,24 +190,24 @@ export default function UploadConfirmPage() {
     try {
       if (targetIds.length === 0) {
         removeUserStorageSync(uploadImagesKey, { authContext });
-        if (mountedRef.current) await refresh();
+        if (isFlowCurrent(authContext, flowRuntimeKey)) await refresh();
         return;
       }
 
       for (let index = 0; index < targetIds.length; index += 1) {
-        if (!mountedRef.current || discardRequestedRef.current) return;
+        if (!isFlowCurrent(authContext, flowRuntimeKey) || discardRequestedRef.current) return;
         const imageId = targetIds[index];
         if (!imageId) continue;
         const result = await processUploadImage(imageId);
-        if (!mountedRef.current || discardRequestedRef.current) return;
+        if (!isFlowCurrent(authContext, flowRuntimeKey) || discardRequestedRef.current) return;
         applyProcessedImageResult(imageId, result);
       }
-      if (!isCurrentAuthContext(authContext)) return;
+      if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
       removeUserStorageSync(uploadImagesKey, { authContext });
       await invalidateAfterUploadTaskMutation({ authContext });
     } finally {
       processingLoopRef.current = false;
-      if (mountedRef.current && !discardRequestedRef.current) {
+      if (isFlowCurrent(authContext, flowRuntimeKey) && !discardRequestedRef.current) {
         setProcessing(false);
         await refresh();
         console.log('[upload-confirm] processPendingImages completed', {
@@ -182,18 +253,25 @@ export default function UploadConfirmPage() {
   }
 
   async function handleRetry(image: UploadImage) {
+    const authContext = captureAuthContext();
+    const flowRuntimeKey = boundRuntimeKeyRef.current;
+    if (!authContext || !isFlowActive(flowRuntimeKey)) return;
     setProcessing(true);
     try {
       Taro.showLoading({ title: '小搭重新整理...' });
       await processUploadImage(image.id);
-      await invalidateAfterUploadTaskMutation();
+      if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
+      await invalidateAfterUploadTaskMutation({ authContext });
+      if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
       await refresh();
     } catch (error) {
       console.error('Retry upload image failed:', error);
-      Taro.showToast({ title: '重试失败', icon: 'none' });
+      if (isFlowCurrent(authContext, flowRuntimeKey)) {
+        Taro.showToast({ title: '重试失败', icon: 'none' });
+      }
     } finally {
       Taro.hideLoading();
-      setProcessing(false);
+      if (isFlowCurrent(authContext, flowRuntimeKey)) setProcessing(false);
     }
   }
 
@@ -218,7 +296,7 @@ export default function UploadConfirmPage() {
   }
 
   async function handleDraftFormSave(value: ClothingEditFormValue) {
-    if (!editingDraft) return;
+    if (!editingDraft || !isFlowActive(boundRuntimeKeyRef.current)) return;
 
     const colors = value.colors.filter(Boolean);
     const styleTags = value.styleTags.filter(Boolean);
@@ -237,16 +315,23 @@ export default function UploadConfirmPage() {
   }
 
   async function handleDiscard(draft: ClothesDraft) {
+    const authContext = captureAuthContext();
+    const flowRuntimeKey = boundRuntimeKeyRef.current;
+    if (!authContext || !isFlowActive(flowRuntimeKey)) return;
     patchDraft(draft.id, { selected: false, status: 'discarded' });
     try {
       await discardClothesDraft(draft.id);
-      await invalidateAfterUploadTaskMutation();
+      if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
+      await invalidateAfterUploadTaskMutation({ authContext });
     } catch (error) {
       console.warn('Discard draft failed:', error);
     }
   }
 
   async function handleReprocessDraft(draft: ClothesDraft) {
+    const authContext = captureAuthContext();
+    const flowRuntimeKey = boundRuntimeKeyRef.current;
+    if (!authContext || !isFlowActive(flowRuntimeKey)) return;
     if (segmentingDraftIdsRef.current.has(draft.id)) return;
     segmentingDraftIdsRef.current.add(draft.id);
     patchDraft(draft.id, {
@@ -256,12 +341,15 @@ export default function UploadConfirmPage() {
     try {
       Taro.showLoading({ title: '重新处理图片...' });
       const updated = await segmentClothesDraft(draft.id);
-      await invalidateAfterUploadTaskMutation();
+      if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
+      await invalidateAfterUploadTaskMutation({ authContext });
+      if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
       patchDraft(updated.id, updated);
       Taro.showToast({ title: updated.segmentStatus === 'success' ? '小搭处理好啦' : '小搭已保留可用图片', icon: 'none' });
       await refresh();
     } catch (error) {
       console.warn('Reprocess draft image failed:', error);
+      if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
       patchDraft(draft.id, {
         segmentStatus: 'failed',
         displayImageUrl: draft.cropImageUrl || draft.displayImageUrl || draft.originalImageUrl,
@@ -277,6 +365,10 @@ export default function UploadConfirmPage() {
 
   async function handleSave() {
     if (!batchId || saving || savingRef.current) return;
+    const authContext = captureAuthContext();
+    const flowRuntimeKey = boundRuntimeKeyRef.current;
+    if (!authContext || !isFlowActive(flowRuntimeKey)) return;
+
     if (!isBatchComplete) {
       Taro.showToast({ title: '小搭还在识别，全部完成后就可以保存啦', icon: 'none' });
       return;
@@ -286,8 +378,6 @@ export default function UploadConfirmPage() {
       return;
     }
 
-    const authContext = captureAuthContext();
-    if (!authContext) return;
     savingRef.current = true;
     setSaving(true);
     Taro.showLoading({ title: '保存中...' });
@@ -336,26 +426,30 @@ export default function UploadConfirmPage() {
       });
 
       await confirmClothesDrafts(batchId, draftPayload, selectedIds);
-      if (!isCurrentAuthContext(authContext)) return;
+      if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
       await invalidateAfterConfirmDraftsSaved({ authContext });
-      if (!isCurrentAuthContext(authContext)) return;
+      if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
       setUserStorageSync(WARDROBE_REFRESH_STORAGE_KEY, true, { authContext });
       Taro.showToast({ title: '已保存到衣柜', icon: 'success' });
-      setTimeout(() => Taro.navigateBack(), 700);
+      setTimeout(() => {
+        if (isFlowCurrent(authContext, flowRuntimeKey)) navigateToWardrobe();
+      }, 700);
     } catch (error) {
       console.error('Confirm clothes drafts failed:', error);
+      if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
       Taro.showToast({ title: '保存失败', icon: 'none' });
     } finally {
       Taro.hideLoading();
       savingRef.current = false;
-      setSaving(false);
+      if (isFlowCurrent(authContext, flowRuntimeKey)) setSaving(false);
     }
   }
 
   async function handleDiscardBatch() {
     if (!batchId || discardingBatch) return;
     const authContext = captureAuthContext();
-    if (!authContext) return;
+    const flowRuntimeKey = boundRuntimeKeyRef.current;
+    if (!authContext || !isFlowActive(flowRuntimeKey)) return;
     const modalRes = await Taro.showModal({
       title: '舍弃本次识别？',
       content: '舍弃后，本次上传的识别结果将不会保存到衣柜。',
@@ -364,7 +458,7 @@ export default function UploadConfirmPage() {
       confirmColor: '#D97973',
     });
     if (!modalRes.confirm) return;
-    if (!isCurrentAuthContext(authContext)) return;
+    if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
 
     discardRequestedRef.current = true;
     setDiscardingBatch(true);
@@ -372,19 +466,22 @@ export default function UploadConfirmPage() {
       Taro.showLoading({ title: '正在舍弃...' });
       removeUserStorageSync(buildUserStorageBusinessKey('uploadBatchImages', batchId), { authContext });
       await discardUploadBatch(batchId);
-      if (!isCurrentAuthContext(authContext)) return;
+      if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
       await invalidateAfterUploadTaskMutation({ authContext });
-      if (!isCurrentAuthContext(authContext)) return;
+      if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
       setUserStorageSync(WARDROBE_REFRESH_STORAGE_KEY, true, { authContext });
       Taro.showToast({ title: '已舍弃本次识别', icon: 'success' });
-      setTimeout(() => Taro.navigateBack(), 600);
+      setTimeout(() => {
+        if (isFlowCurrent(authContext, flowRuntimeKey)) navigateToWardrobe();
+      }, 600);
     } catch (error) {
       console.error('Discard upload batch failed:', error);
       discardRequestedRef.current = false;
+      if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
       Taro.showToast({ title: '舍弃失败，请稍后再试', icon: 'none' });
     } finally {
       Taro.hideLoading();
-      if (mountedRef.current) setDiscardingBatch(false);
+      if (isFlowCurrent(authContext, flowRuntimeKey)) setDiscardingBatch(false);
     }
   }
 
@@ -441,7 +538,7 @@ export default function UploadConfirmPage() {
           <Text className="progress-subhint">暂未识别到衣服，请稍等</Text>
         )}
         {(taskStatus === 'saved' || taskStatus === 'discarded') && (
-          <View className="return-btn" onClick={() => Taro.navigateBack()}>
+          <View className="return-btn" onClick={navigateToWardrobe}>
             <Text className="return-text">返回衣橱</Text>
           </View>
         )}

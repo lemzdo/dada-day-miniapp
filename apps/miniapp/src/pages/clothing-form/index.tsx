@@ -1,7 +1,8 @@
 import { Text, View } from '@tarojs/components';
-import Taro, { useLoad, useRouter } from '@tarojs/taro';
-import { useMemo, useState } from 'react';
+import Taro, { useLoad, useRouter, useUnload } from '@tarojs/taro';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { ClothingEditForm, type ClothingEditFormValue } from '@/components/ClothingEditForm';
+import { useBoundUserFlow } from '@/hooks/useBoundUserFlow';
 import { getClothingById, updateCloudClothing } from '@/lib/cloud';
 import { invalidateAfterWardrobeMutation } from '@/lib/cacheInvalidation';
 import {
@@ -41,21 +42,85 @@ export default function ClothingFormPage() {
   const [submitting, setSubmitting] = useState(false);
   const [clothing, setClothing] = useState<Clothing | null>(null);
   const formInitialValue = useMemo(() => (clothing ? toFormValue(clothing) : null), [clothing]);
+  const mountedRef = useRef(true);
+  const requestSeqRef = useRef(0);
+  const redirectingRef = useRef(false);
 
-  useLoad(() => {
-    if (isEditMode) fetchClothing(editId);
+  const resetFlowState = useCallback(() => {
+    requestSeqRef.current += 1;
+    setLoading(false);
+    setSubmitting(false);
+    setClothing(null);
+    Taro.hideLoading();
+  }, []);
+
+  const navigateToWardrobe = useCallback(() => {
+    if (redirectingRef.current) return;
+    redirectingRef.current = true;
+    Taro.switchTab({ url: '/pages/wardrobe/index' }).catch((error) => {
+      console.warn('Navigate to wardrobe failed:', error);
+      redirectingRef.current = false;
+    });
+  }, []);
+
+  const {
+    boundRuntimeKeyRef,
+    isFlowActive,
+  } = useBoundUserFlow({
+    onBind: () => {
+      if (isEditMode) {
+        void fetchClothing(editId);
+        return;
+      }
+      setLoading(false);
+    },
+    onInvalidate: () => {
+      resetFlowState();
+      navigateToWardrobe();
+    },
   });
 
+  useLoad(() => {
+    mountedRef.current = true;
+  });
+
+  useUnload(() => {
+    mountedRef.current = false;
+  });
+
+  function isFlowCurrent(
+    authContext: ActiveAuthContext | null | undefined,
+    flowRuntimeKey: string | null,
+    requestSeq?: number,
+  ) {
+    return Boolean(
+      mountedRef.current
+        && authContext
+        && isCurrentAuthContext(authContext)
+        && isFlowActive(flowRuntimeKey)
+        && boundRuntimeKeyRef.current === flowRuntimeKey
+        && (requestSeq === undefined || requestSeqRef.current === requestSeq),
+    );
+  }
+
   async function fetchClothing(id: string) {
+    const authContext = captureAuthContext();
+    const flowRuntimeKey = boundRuntimeKeyRef.current;
+    if (!id || !authContext || !isFlowActive(flowRuntimeKey)) return;
+    const requestSeq = requestSeqRef.current + 1;
+    requestSeqRef.current = requestSeq;
     setLoading(true);
     try {
       const item = await getClothingById(id);
+      if (!isFlowCurrent(authContext, flowRuntimeKey, requestSeq)) return;
       setClothing(item);
     } catch (err) {
       console.error('Fetch clothing error:', err);
-      Taro.showToast({ title: '加载失败', icon: 'none' });
+      if (isFlowCurrent(authContext, flowRuntimeKey, requestSeq)) {
+        Taro.showToast({ title: '加载失败', icon: 'none' });
+      }
     } finally {
-      setLoading(false);
+      if (isFlowCurrent(authContext, flowRuntimeKey, requestSeq)) setLoading(false);
     }
   }
 
@@ -63,28 +128,33 @@ export default function ClothingFormPage() {
     if (!clothing || submitting) return;
 
     const authContext = captureAuthContext();
-    if (!authContext) return;
+    const flowRuntimeKey = boundRuntimeKeyRef.current;
+    if (!authContext || !isFlowActive(flowRuntimeKey)) return;
     setSubmitting(true);
     Taro.showLoading({ title: '保存中...' });
 
     try {
       await updateCloudClothing(clothing.id, toUpdateInput(value));
-      if (!isCurrentAuthContext(authContext)) return;
+      if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
       await invalidateAfterWardrobeMutation({ authContext });
-      if (!isCurrentAuthContext(authContext)) return;
+      if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
 
       // 设置刷新标记
       setUserStorageSync(DETAIL_REFRESH_STORAGE_KEY, true, { authContext });
       setUserStorageSync(WARDROBE_REFRESH_STORAGE_KEY, true, { authContext });
 
       Taro.showToast({ title: '保存成功', icon: 'success' });
-      setTimeout(() => Taro.navigateBack(), 800);
+      setTimeout(() => {
+        if (isFlowCurrent(authContext, flowRuntimeKey)) Taro.navigateBack();
+      }, 800);
     } catch (err) {
       console.error('Save clothing error:', err);
-      Taro.showToast({ title: '保存失败', icon: 'none' });
+      if (isFlowCurrent(authContext, flowRuntimeKey)) {
+        Taro.showToast({ title: '保存失败', icon: 'none' });
+      }
     } finally {
-      setSubmitting(false);
       Taro.hideLoading();
+      if (isFlowCurrent(authContext, flowRuntimeKey)) setSubmitting(false);
     }
   }
 
