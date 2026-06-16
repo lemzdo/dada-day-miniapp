@@ -4,14 +4,30 @@ export interface BuildUserScopeInput {
   confirmedOpenid: string;
 }
 
+export interface BuildCacheEnvironmentScopeInput {
+  envVersion: string;
+  cloudEnvId: string;
+}
+
 export function buildUserScope(input: BuildUserScopeInput): string | null {
-  const envVersion = normalizeScopeSegment(input.envVersion);
-  const cloudEnvId = normalizeScopeSegment(input.cloudEnvId);
+  const environmentScope = buildCacheEnvironmentScope({
+    envVersion: input.envVersion,
+    cloudEnvId: input.cloudEnvId,
+  });
   const openid = normalizeOpenidForScope(input.confirmedOpenid);
 
-  if (!envVersion || !cloudEnvId || !openid) return null;
+  if (!environmentScope || !openid) return null;
 
-  return `${envVersion}:cloud:${cloudEnvId}:user:${openid}`;
+  return `${environmentScope}:user:${openid}`;
+}
+
+export function buildCacheEnvironmentScope(input: BuildCacheEnvironmentScopeInput): string | null {
+  const envVersion = normalizeScopeSegment(input.envVersion);
+  const cloudEnvId = normalizeScopeSegment(input.cloudEnvId);
+
+  if (!envVersion || !cloudEnvId) return null;
+
+  return `${envVersion}:cloud:${cloudEnvId}`;
 }
 
 export function normalizeOpenidForScope(openid: string): string {
