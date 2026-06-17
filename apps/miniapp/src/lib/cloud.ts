@@ -63,7 +63,12 @@ type ResolvedCloudCacheScope =
 
 const taroCloud = (Taro as CloudTaro).cloud;
 const cloudResponseCache = new Map<string, { expiresAt: number; data: unknown }>();
-const cloudInflightRequests = new Map<string, Promise<unknown>>();
+interface CloudInflightRequest<T = unknown> {
+  promise: Promise<T>;
+  invalidated: boolean;
+}
+
+const cloudInflightRequests = new Map<string, CloudInflightRequest>();
 let currentUserCloudRuntimeKey: string | null = null;
 
 const CACHE_TTL = {
@@ -115,12 +120,16 @@ async function callCachedCloudFunction<T>(
   const cached = cloudResponseCache.get(key);
   if (cached && cached.expiresAt > now) return cached.data as T;
 
-  const inflight = cloudInflightRequests.get(key);
-  if (inflight) return inflight as Promise<T>;
+  const inflight = cloudInflightRequests.get(key) as CloudInflightRequest<T> | undefined;
+  if (inflight) return inflight.promise;
 
+  const requestRecord: CloudInflightRequest<T> = {
+    invalidated: false,
+    promise: Promise.resolve(undefined as T),
+  };
   const request = callCloudFunction<T>(name, data)
     .then((result) => {
-      if (ttlMs > 0 && canWriteCloudCache(resolvedScope)) {
+      if (!requestRecord.invalidated && ttlMs > 0 && canWriteCloudCache(resolvedScope)) {
         cloudResponseCache.set(key, {
           expiresAt: Date.now() + ttlMs,
           data: result,
@@ -129,12 +138,13 @@ async function callCachedCloudFunction<T>(
       return result;
     })
     .finally(() => {
-      if (cloudInflightRequests.get(key) === request) {
+      if (cloudInflightRequests.get(key) === requestRecord) {
         cloudInflightRequests.delete(key);
       }
     });
 
-  cloudInflightRequests.set(key, request);
+  requestRecord.promise = request;
+  cloudInflightRequests.set(key, requestRecord);
   return request;
 }
 
@@ -149,6 +159,8 @@ function clearCloudCache(prefixes: string[], scopeTypes: Array<'user' | 'device'
 
   for (const key of cloudInflightRequests.keys()) {
     if (matchesCloudRuntimeCacheKey(key, functionNames, scopeTypes)) {
+      const inflight = cloudInflightRequests.get(key);
+      if (inflight) inflight.invalidated = true;
       cloudInflightRequests.delete(key);
     }
   }
@@ -237,7 +249,11 @@ function clearCloudRuntimeEntries(predicate: (key: string) => boolean) {
     if (predicate(key)) cloudResponseCache.delete(key);
   }
   for (const key of cloudInflightRequests.keys()) {
-    if (predicate(key)) cloudInflightRequests.delete(key);
+    if (predicate(key)) {
+      const inflight = cloudInflightRequests.get(key);
+      if (inflight) inflight.invalidated = true;
+      cloudInflightRequests.delete(key);
+    }
   }
 }
 
@@ -456,12 +472,21 @@ export async function updateCloudUserProfile(input: RecommendationProfile | Upda
     profileCompleted?: boolean;
     updatedAt?: string;
   }>('updateUserProfile', data as Record<string, unknown>);
-  clearCloudCache(['login:', 'generateOutfit:']);
+  clearCloudCache(hasRecommendationProfileMutation(data) ? ['login:', 'generateOutfit:'] : ['login:']);
   return result;
 }
 
 function isRecommendationProfile(input: RecommendationProfile | UpdateCloudUserProfileInput): input is RecommendationProfile {
-  return 'genderPreference' in input || 'styleTags' in input || 'fitPreference' in input;
+  return 'genderPreference' in input
+    || 'styleTags' in input
+    || 'fitPreference' in input
+    || 'colorPreference' in input
+    || 'avoidTags' in input
+    || 'temperatureSensitivity' in input;
+}
+
+function hasRecommendationProfileMutation(input: UpdateCloudUserProfileInput) {
+  return Object.prototype.hasOwnProperty.call(input, 'recommendationProfile');
 }
 
 export async function generateCloudOutfit(params: RecommendRequest = {}) {

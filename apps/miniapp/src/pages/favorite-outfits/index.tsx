@@ -3,7 +3,12 @@ import Taro, { useDidShow, useLoad, usePullDownRefresh, useReachBottom } from '@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { SafeImage } from '@/components/SafeImage';
 import { useAuthRuntime } from '@/hooks/useAuthRuntime';
-import { invalidateFavoritesCache } from '@/lib/cacheInvalidation';
+import {
+  invalidateAfterOutfitFavoriteMutation,
+  invalidateFavoritesCache,
+  invalidateHistoryCache,
+  invalidateOutfitDetailCache,
+} from '@/lib/cacheInvalidation';
 import { listFavoriteOutfits, removeFavoriteOutfit, renameCloudOutfit } from '@/lib/cloud';
 import { buildPageCacheKey } from '@/lib/pageCache';
 import {
@@ -14,6 +19,7 @@ import {
   type ActiveAuthContext,
 } from '@/lib/userPageCache';
 import { applyOutfitStatuses, setOutfitStatus, setOutfitStatuses } from '@/stores/outfitStatusStore';
+import { normalizeOutfitSnapshot, storeOutfitDetailDraft, storeOutfitStateSync, updateTodayRestoreSnapshotOutfit } from '@/utils/outfitSnapshot';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
 import type { OutfitStatusPatch } from '@/stores/outfitStatusStore';
 import type { Outfit } from '@starter-template/types';
@@ -228,16 +234,28 @@ export default function FavoriteOutfitsPage() {
     try {
       await removeFavoriteOutfit(targetOutfitId, targetOutfitKey);
       if (!isFavoriteMutationTargetCurrent(target)) return;
-      if (targetOutfitKey) {
-        setOutfitStatus({
-          outfitKey: targetOutfitKey,
+      const nextOutfit = normalizeOutfitSnapshot({
+        ...outfit,
+        isFavorite: false,
+        favoriteOutfitId: undefined,
+        favoritedAt: undefined,
+        outfitKind: 'recommendation',
+      });
+      syncFavoriteOutfitState(
+        nextOutfit,
+        {
+          outfitKey: targetOutfitKey || nextOutfit.outfitKey || '',
           isFavorite: false,
           favoriteOutfitId: '',
           updatedAt: Date.now(),
-        }, target.authContext);
-      }
+        },
+        target.authContext,
+      );
       setOutfits((prev) => prev.filter((item) => item.id !== targetOutfitId));
-      void invalidateFavoritesCache({ authContext: target.authContext });
+      void Promise.all([
+        invalidateAfterOutfitFavoriteMutation({ authContext: target.authContext }),
+        invalidateOutfitDetailCache({ authContext: target.authContext }),
+      ]);
     } catch (err) {
       console.error('Unfavorite outfit error:', err);
       if (!isFavoriteMutationTargetCurrent(target)) return;
@@ -281,33 +299,46 @@ export default function FavoriteOutfitsPage() {
         userTitle: trimmed,
       });
       if (!isRenameMutationTargetCurrent(target)) return;
-      if (renamingOutfit.outfitKey) {
-        setOutfitStatus({
+      const nextOutfit = normalizeOutfitSnapshot({
+        ...renamingOutfit,
+        ...saved,
+        id: renamingOutfit.id,
+        userTitle: saved.userTitle ?? trimmed,
+        displayTitle: saved.displayTitle ?? trimmed,
+        title: saved.title || renamingOutfit.title,
+        updatedAt: saved.updatedAt || renamingOutfit.updatedAt,
+      });
+      syncFavoriteOutfitState(
+        nextOutfit,
+        {
           ...getOutfitStatusPatch(saved, renamingOutfit.outfitKey, Date.now()),
-          outfitKey: saved.outfitKey || renamingOutfit.outfitKey,
-          userTitle: trimmed,
-          displayTitle: trimmed,
+          outfitKey: saved.outfitKey || renamingOutfit.outfitKey || nextOutfit.outfitKey || '',
+          userTitle: saved.userTitle ?? trimmed,
+          displayTitle: saved.displayTitle ?? trimmed,
           title: saved.title,
-        }, target.authContext);
-      }
+        },
+        target.authContext,
+      );
       setOutfits((prev) =>
         applyFavoriteOutfitStatuses(
           prev.map((item) =>
             item.id === renamingOutfit.id
               ? {
                   ...item,
-                  ...saved,
+                  ...nextOutfit,
                   id: item.id,
-                  userTitle: trimmed,
-                  displayTitle: trimmed,
-                  updatedAt: saved.updatedAt || item.updatedAt,
                 }
               : item,
           ),
           target.authContext,
         ),
       );
-      void invalidateFavoritesCache({ authContext: target.authContext });
+      updateTodayRestoreSnapshotOutfit(nextOutfit, { authContext: target.authContext });
+      void Promise.all([
+        invalidateFavoritesCache({ authContext: target.authContext }),
+        invalidateHistoryCache({ authContext: target.authContext }),
+        invalidateOutfitDetailCache({ authContext: target.authContext }),
+      ]);
       Taro.showToast({ title: '已更新名称', icon: 'success' });
       setRenameSaving(false);
       closeRename();
@@ -343,6 +374,20 @@ export default function FavoriteOutfitsPage() {
 
   function isRenameMutationTargetCurrent(target: FavoriteMutationTarget) {
     return renameTargetRef.current === target && isFavoriteMutationTargetCurrent(target);
+  }
+
+  function syncFavoriteOutfitState(
+    outfit: Outfit,
+    statusPatch: OutfitStatusPatch,
+    authContext: ActiveAuthContext,
+  ) {
+    const normalized = normalizeOutfitSnapshot(outfit);
+    if (statusPatch.outfitKey) {
+      setOutfitStatus(statusPatch, authContext);
+    }
+    const synced = applyFavoriteOutfitStatuses([normalized], authContext)[0] ?? normalized;
+    storeOutfitDetailDraft(synced, { authContext });
+    storeOutfitStateSync(synced, { authContext });
   }
 
   return (

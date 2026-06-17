@@ -469,7 +469,6 @@ export default function UploadConfirmPage() {
       if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
       await invalidateAfterUploadTaskMutation({ authContext });
       if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
-      setUserStorageSync(WARDROBE_REFRESH_STORAGE_KEY, true, { authContext });
       Taro.showToast({ title: '已舍弃本次识别', icon: 'success' });
       setTimeout(() => {
         if (isFlowCurrent(authContext, flowRuntimeKey)) navigateToWardrobe();

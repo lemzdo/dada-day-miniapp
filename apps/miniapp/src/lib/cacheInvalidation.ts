@@ -67,7 +67,6 @@ export async function invalidateAfterOutfitFavoriteMutation(options: CacheInvali
     [
       PAGE_CACHE_PREFIXES.outfitStatus,
       PAGE_CACHE_PREFIXES.favorites,
-      PAGE_CACHE_PREFIXES.profile,
     ],
     options,
   );
