@@ -1,7 +1,7 @@
 import { Image, Swiper, SwiperItem, Text, View } from '@tarojs/components';
 import Taro, { useDidShow, useLoad, usePullDownRefresh, useUnload } from '@tarojs/taro';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { WeatherCard } from '@/components/WeatherCard';
+import { WeatherCard, type WeatherRecommendationRefreshResult } from '@/components/WeatherCard';
 import { useAuthRuntime } from '@/hooks/useAuthRuntime';
 import { invalidateAfterOutfitFavoriteMutation, invalidateAfterOutfitWornMutation } from '@/lib/cacheInvalidation';
 import { addOutfitHistory, clearCloudRecommendationCache, generateCloudOutfit, removeFavoriteOutfit, saveFavoriteOutfit } from '@/lib/cloud';
@@ -18,6 +18,7 @@ import { applyOutfitStatuses, setOutfitStatus, setOutfitStatuses } from '@/store
 import { consumeOutfitStateSync, normalizeOutfitSnapshot, storeOutfitDetailDraft } from '@/utils/outfitSnapshot';
 import { getOutfitStyleTags } from '@/utils/outfitContextText';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
+import { getRecommendationWeatherFingerprint, type RecommendationWeatherFingerprint } from '@/utils/weather';
 import type { OutfitStatusPatch } from '@/stores/outfitStatusStore';
 import type { Outfit, SceneTag, WeatherSnapshot } from '@starter-template/types';
 import './index.scss';
@@ -43,6 +44,7 @@ interface TodayRestoreSnapshot {
   selectedSceneKey: SceneKey;
   scene: SceneTag;
   weatherSnapshot?: WeatherSnapshot;
+  weatherFingerprint?: RecommendationWeatherFingerprint;
   weatherKey: string;
   targetDate: string;
   timeOfDay: TimeOfDay;
@@ -60,6 +62,7 @@ interface TodayRestoreSnapshotInput {
   currentIndex?: number;
   selectedSceneKey?: SceneKey;
   weatherSnapshot?: WeatherSnapshot;
+  weatherFingerprint?: RecommendationWeatherFingerprint;
   recommendationBatchId?: string;
   seenOutfitKeys?: string[];
   hasRecommendations?: boolean;
@@ -163,7 +166,11 @@ export default function TodayPage() {
   const recommendationNoticeRef = useRef('');
   const shouldRestoreFromDetailRef = useRef(false);
   const currentWeatherRef = useRef<WeatherSnapshot | undefined>(undefined);
-  const lastRecommendationWeatherKeyRef = useRef('');
+  const currentWeatherFingerprintRef = useRef<RecommendationWeatherFingerprint>(getRecommendationWeatherFingerprint(undefined));
+  const recommendationWeatherSnapshotRef = useRef<WeatherSnapshot | undefined>(undefined);
+  const recommendationWeatherFingerprintRef = useRef<RecommendationWeatherFingerprint>(getRecommendationWeatherFingerprint(undefined));
+  const loadingOwnerSeqRef = useRef<number | null>(null);
+  const operationOwnerSeqRef = useRef<number | null>(null);
   const initialRecommendationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastHandledRuntimeKeyRef = useRef<string | null>(null);
   const operationTargetRef = useRef<{ operation: OutfitOperation; outfitKey: string } | null>(null);
@@ -193,6 +200,10 @@ export default function TodayPage() {
     recommendationNoticeRef.current = '';
     shouldRestoreFromDetailRef.current = false;
     operationTargetRef.current = null;
+    recommendationWeatherSnapshotRef.current = undefined;
+    recommendationWeatherFingerprintRef.current = getRecommendationWeatherFingerprint(undefined);
+    loadingOwnerSeqRef.current = null;
+    operationOwnerSeqRef.current = null;
     setOutfits([]);
     setCurrentIndex(0);
     setLoading(false);
@@ -211,6 +222,9 @@ export default function TodayPage() {
 
   useUnload(() => {
     clearInitialRecommendationTimer();
+    requestSeq.current += 1;
+    loadingOwnerSeqRef.current = null;
+    operationOwnerSeqRef.current = null;
   });
 
   usePullDownRefresh(() => {
@@ -275,7 +289,7 @@ export default function TodayPage() {
     if (!authContext) return false;
 
     if (!silent) {
-      setLoading(true);
+      setLoadingForRequest(seq);
       setError('');
       setRecommendationNotice('');
       setBatchLimited(false);
@@ -294,6 +308,12 @@ export default function TodayPage() {
       });
 
       if (!isLatestRequest(seq)) return false;
+      if (silent && data.outfits.length === 0 && outfitsRef.current.length > 0) {
+        setRecommendationNotice(getBatchNotice(data.recommendationNotice, Boolean(data.limited), true));
+        return false;
+      }
+
+      const requestWeatherFingerprint = getRecommendationWeatherFingerprint(weather);
       const normalizedOutfits = data.outfits.map((outfit) => normalizeOutfitSnapshot(outfit));
       setOutfitStatuses(getOutfitStatusPatches(normalizedOutfits), authContext);
       const nextOutfits = applyTodayOutfitStatuses(normalizedOutfits, authContext);
@@ -306,9 +326,12 @@ export default function TodayPage() {
         firstOutfitId: nextOutfits[0]?.id,
         firstItemIds: nextOutfits[0]?.clothingIds,
       });
+      recommendationWeatherSnapshotRef.current = weather;
+      recommendationWeatherFingerprintRef.current = requestWeatherFingerprint;
       setOutfits(nextOutfits);
       setCurrentIndex(0);
       setHasRecommendations(data.outfits.length > 0);
+      setError('');
       setRecommendationBatchId(data.recommendationBatchId ?? nextOutfits[0]?.recommendationBatchId ?? '');
       setBatchLimited(Boolean(data.limited));
       setBatchExhausted(Boolean(data.exhausted));
@@ -319,6 +342,7 @@ export default function TodayPage() {
         currentIndex: 0,
         selectedSceneKey: getSceneKeyByTag(scene),
         weatherSnapshot: weather,
+        weatherFingerprint: requestWeatherFingerprint,
         recommendationBatchId: data.recommendationBatchId ?? nextOutfits[0]?.recommendationBatchId ?? '',
         hasRecommendations: data.outfits.length > 0,
         batchLimited: Boolean(data.limited),
@@ -337,7 +361,7 @@ export default function TodayPage() {
       }
       return false;
     } finally {
-      if (!silent && isLatestRequest(seq)) setLoading(false);
+      if (!silent) clearLoadingForRequest(seq);
     }
   }
 
@@ -347,7 +371,7 @@ export default function TodayPage() {
     const seq = nextRequestSeq();
     const authContext = captureAuthContext();
     if (!authContext) return;
-    setOperation('refresh');
+    setOperationForRequest(seq, 'refresh');
     setError('');
     setRecommendationNotice('');
 
@@ -360,6 +384,7 @@ export default function TodayPage() {
         hasWeather: Boolean(currentWeather ?? currentWeatherRef.current),
       });
       const weatherForRefresh = currentWeather ?? currentWeatherRef.current;
+      const weatherFingerprintForRefresh = getRecommendationWeatherFingerprint(weatherForRefresh);
       const data = await generateCloudOutfit({
         date: getToday(),
         scene: selectedScene,
@@ -383,6 +408,8 @@ export default function TodayPage() {
           firstOutfitId: nextOutfits[0]?.id,
           firstItemIds: nextOutfits[0]?.clothingIds,
         });
+        recommendationWeatherSnapshotRef.current = weatherForRefresh;
+        recommendationWeatherFingerprintRef.current = weatherFingerprintForRefresh;
         setOutfits(nextOutfits);
         setCurrentIndex(0);
         setHasRecommendations(true);
@@ -396,6 +423,7 @@ export default function TodayPage() {
           currentIndex: 0,
           selectedSceneKey,
           weatherSnapshot: weatherForRefresh,
+          weatherFingerprint: weatherFingerprintForRefresh,
           recommendationBatchId: data.recommendationBatchId ?? nextOutfits[0]?.recommendationBatchId ?? '',
           hasRecommendations: true,
           batchLimited: Boolean(data.limited),
@@ -415,7 +443,7 @@ export default function TodayPage() {
       setError('换一套失败，请稍后再试');
       Taro.showToast({ title: '刷新失败', icon: 'none' });
     } finally {
-      if (isLatestRequest(seq)) setOperation(null);
+      clearOperationForRequest(seq);
     }
   }
 
@@ -561,30 +589,44 @@ export default function TodayPage() {
     fetchRecommendations({ scene: SCENE_TAGS[key], weather: currentWeather ?? currentWeatherRef.current, trigger: 'scene' });
   }
 
-  async function handleWeatherChange(weather: WeatherSnapshot, options: { forceRefresh?: boolean } = {}) {
-    const weatherKey = getWeatherKey(weather);
-    const sameWeather = weatherKey === lastRecommendationWeatherKeyRef.current;
+  async function handleWeatherChange(
+    weather: WeatherSnapshot,
+    options: { forceRefresh?: boolean } = {},
+  ): Promise<WeatherRecommendationRefreshResult> {
+    const weatherFingerprint = getRecommendationWeatherFingerprint(weather);
+    const sameRecommendationWeather = weatherFingerprint === recommendationWeatherFingerprintRef.current;
     clearInitialRecommendationTimer();
     currentWeatherRef.current = weather;
-    lastRecommendationWeatherKeyRef.current = weatherKey;
+    currentWeatherFingerprintRef.current = weatherFingerprint;
     setCurrentWeather(weather);
 
-    if (!options.forceRefresh && outfitsRef.current.length > 0) {
+    if (outfitsRef.current.length > 0 && sameRecommendationWeather) {
       console.log('[TodayPage] weather unchanged, skip recommendation refresh', {
-        weatherKey,
-        sameWeather,
+        weatherFingerprint,
+        recommendationWeatherFingerprint: recommendationWeatherFingerprintRef.current,
       });
-      return;
+      return 'unchanged';
     }
 
-    clearCloudRecommendationCache();
-    const scene = selectedSceneRef.current;
-    await fetchRecommendations({ scene, weather, silent: true, trigger: options.forceRefresh ? 'weather-force' : 'weather' });
-    if (options.forceRefresh) {
-      console.log('[TodayPage] weather refreshed, recommendations reloaded', {
+    try {
+      clearCloudRecommendationCache();
+      const scene = selectedSceneRef.current;
+      const refreshed = await fetchRecommendations({
         scene,
         weather,
+        silent: true,
+        trigger: options.forceRefresh ? 'weather-force' : 'weather',
       });
+      if (refreshed && options.forceRefresh) {
+        console.log('[TodayPage] weather refreshed, recommendations reloaded', {
+          scene,
+          weather,
+        });
+      }
+      return refreshed ? 'refreshed' : 'failed';
+    } catch (error) {
+      console.error('[TodayPage] weather recommendation refresh failed', error);
+      return 'failed';
     }
   }
 
@@ -683,7 +725,8 @@ export default function TodayPage() {
     if (snapshotOutfits.length === 0) return;
 
     const snapshotSceneKey = input.selectedSceneKey ?? selectedSceneKeyRef.current;
-    const snapshotWeather = input.weatherSnapshot ?? currentWeatherRef.current;
+    const snapshotWeather = input.weatherSnapshot ?? recommendationWeatherSnapshotRef.current;
+    const snapshotWeatherFingerprint = input.weatherFingerprint ?? recommendationWeatherFingerprintRef.current;
     const snapshotIndex = clampIndex(input.currentIndex ?? currentIndexRef.current, snapshotOutfits.length);
     const snapshot: TodayRestoreSnapshot = {
       version: 1,
@@ -692,6 +735,7 @@ export default function TodayPage() {
       selectedSceneKey: snapshotSceneKey,
       scene: SCENE_TAGS[snapshotSceneKey],
       weatherSnapshot: snapshotWeather,
+      weatherFingerprint: snapshotWeatherFingerprint,
       weatherKey: snapshotWeather ? getWeatherKey(snapshotWeather) : '',
       targetDate: getToday(),
       timeOfDay: TODAY_TIME_OF_DAY,
@@ -719,11 +763,14 @@ export default function TodayPage() {
       authContext,
     );
     const restoredIndex = clampIndex(snapshot.currentIndex, restoredOutfits.length);
+    const restoredRecommendationWeatherFingerprint = getSnapshotWeatherFingerprint(snapshot);
+    const restoredCurrentWeather = currentWeatherRef.current ?? snapshot.weatherSnapshot;
     clearInitialRecommendationTimer();
     nextRequestSeq();
     outfitsRef.current = restoredOutfits;
     currentIndexRef.current = restoredIndex;
     selectedSceneKeyRef.current = snapshot.selectedSceneKey;
+    selectedSceneRef.current = SCENE_TAGS[snapshot.selectedSceneKey];
     recommendationBatchIdRef.current = snapshot.recommendationBatchId;
     hasRecommendationsRef.current = snapshot.hasRecommendations;
     batchLimitedRef.current = snapshot.batchLimited;
@@ -731,19 +778,28 @@ export default function TodayPage() {
     recommendationNoticeRef.current = snapshot.recommendationNotice;
     seenOutfitKeysRef.current = new Set(snapshot.seenOutfitKeys);
     markOutfitShown(restoredOutfits[restoredIndex]);
-    currentWeatherRef.current = snapshot.weatherSnapshot;
-    lastRecommendationWeatherKeyRef.current = snapshot.weatherKey;
+    recommendationWeatherSnapshotRef.current = snapshot.weatherSnapshot;
+    recommendationWeatherFingerprintRef.current = restoredRecommendationWeatherFingerprint;
+    currentWeatherRef.current = restoredCurrentWeather;
+    currentWeatherFingerprintRef.current = getRecommendationWeatherFingerprint(restoredCurrentWeather);
     setSelectedSceneKey(snapshot.selectedSceneKey);
     setOutfits(restoredOutfits);
     setCurrentIndex(restoredIndex);
-    setCurrentWeather(snapshot.weatherSnapshot);
+    setCurrentWeather(restoredCurrentWeather);
     setHasRecommendations(snapshot.hasRecommendations);
     setRecommendationBatchId(snapshot.recommendationBatchId);
     setBatchLimited(snapshot.batchLimited);
     setBatchExhausted(snapshot.batchExhausted);
     setRecommendationNotice(snapshot.recommendationNotice);
     setError('');
+    loadingOwnerSeqRef.current = null;
     setLoading(false);
+    if (
+      restoredCurrentWeather
+      && currentWeatherFingerprintRef.current !== restoredRecommendationWeatherFingerprint
+    ) {
+      void handleWeatherChange(restoredCurrentWeather);
+    }
     return true;
   }
 
@@ -765,11 +821,6 @@ export default function TodayPage() {
     if (snapshot.selectedSceneKey !== selectedSceneKeyRef.current) return false;
     if (snapshot.scene !== selectedSceneRef.current) return false;
     if (hasWardrobeRefreshSignal()) return false;
-
-    const weather = currentWeatherRef.current;
-    if (weather && getWeatherKey(weather) !== snapshot.weatherKey) {
-      return false;
-    }
 
     return snapshot.outfits.length > 0;
   }
@@ -797,6 +848,28 @@ export default function TodayPage() {
   function nextRequestSeq() {
     requestSeq.current += 1;
     return requestSeq.current;
+  }
+
+  function setLoadingForRequest(seq: number) {
+    loadingOwnerSeqRef.current = seq;
+    setLoading(true);
+  }
+
+  function clearLoadingForRequest(seq: number) {
+    if (loadingOwnerSeqRef.current !== seq) return;
+    loadingOwnerSeqRef.current = null;
+    setLoading(false);
+  }
+
+  function setOperationForRequest(seq: number, nextOperation: Exclude<OutfitOperation, null>) {
+    operationOwnerSeqRef.current = seq;
+    setOperation(nextOperation);
+  }
+
+  function clearOperationForRequest(seq: number) {
+    if (operationOwnerSeqRef.current !== seq) return;
+    operationOwnerSeqRef.current = null;
+    setOperation(null);
   }
 
   function isLatestRequest(seq: number) {
@@ -1055,6 +1128,10 @@ function getWeatherKey(weather: WeatherSnapshot) {
     weather.wind,
     weather.uv,
   ].join(':');
+}
+
+function getSnapshotWeatherFingerprint(snapshot: TodayRestoreSnapshot) {
+  return snapshot.weatherFingerprint ?? getRecommendationWeatherFingerprint(snapshot.weatherSnapshot);
 }
 
 function getDeletedItemCount(outfit: Outfit) {

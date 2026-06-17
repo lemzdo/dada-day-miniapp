@@ -6,9 +6,14 @@ import { toWeatherSnapshot } from '@/utils/weather';
 import type { ResolvedWeatherResponse, WeatherSnapshot } from '@starter-template/types';
 import './index.scss';
 
+export type WeatherRecommendationRefreshResult = 'unchanged' | 'refreshed' | 'failed';
+
 interface WeatherCardProps {
   city?: string;
-  onWeatherChange?: (weather: WeatherSnapshot, options?: { forceRefresh?: boolean }) => void | Promise<void>;
+  onWeatherChange?: (
+    weather: WeatherSnapshot,
+    options?: { forceRefresh?: boolean },
+  ) => WeatherRecommendationRefreshResult | void | Promise<WeatherRecommendationRefreshResult | void>;
 }
 
 type WeatherStatus =
@@ -38,14 +43,22 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
   const [permission, setPermission] = useState<LocationPermission>('unknown');
   const [refreshing, setRefreshing] = useState(false);
   const busyRef = useRef(false);
+  const mountedRef = useRef(true);
   const lastNotifiedKeyRef = useRef('');
 
   const hasUsableWeather = Boolean(toWeatherSnapshot(weather));
+
+  useEffect(() => () => {
+    mountedRef.current = false;
+  }, []);
 
   useEffect(() => {
     const cached = readCachedWeather();
     const nextWeather = cached ?? getFallbackResolvedWeather(city);
     setWeather(nextWeather);
+    if (cached) {
+      void notifyWeatherChange(cached, { forceRefresh: false });
+    }
 
     checkAuthAndMaybeFetch(nextWeather);
   }, [city]);
@@ -57,6 +70,7 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
 
     try {
       const nextPermission = await getLocationPermission();
+      if (!mountedRef.current) return;
       setPermission(nextPermission);
 
       if (nextPermission === 'authorized') {
@@ -71,6 +85,7 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
 
       setStatus(currentHasUsableWeather ? 'ready' : 'needPermission');
     } catch (error) {
+      if (!mountedRef.current) return;
       console.warn('[WeatherCard] getSetting failed', error);
       setStatus(currentHasUsableWeather ? 'ready' : 'needPermission');
     }
@@ -93,6 +108,7 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
       busyRef.current = true;
       setRefreshing(true);
       const setting = await Taro.openSetting();
+      if (!mountedRef.current) return;
       const nextPermission = readLocationPermission(setting.authSetting as LocationAuthSetting | undefined);
       setPermission(nextPermission);
 
@@ -104,12 +120,15 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
       setStatus('denied');
       Taro.showToast({ title: '没关系，先按当前推荐搭～', icon: 'none' });
     } catch (error) {
+      if (!mountedRef.current) return;
       console.warn('[WeatherCard] openSetting failed', error);
       setStatus('denied');
       Taro.showToast({ title: '没关系，先按当前推荐搭～', icon: 'none' });
     } finally {
       busyRef.current = false;
-      setRefreshing(false);
+      if (mountedRef.current) {
+        setRefreshing(false);
+      }
     }
   }
 
@@ -140,6 +159,7 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
         8000,
         '定位超时，请确认手机定位服务已开启',
       );
+      if (!mountedRef.current) return;
 
       setPermission('authorized');
       setStatus('loadingWeather');
@@ -155,15 +175,18 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
         9000,
         '天气服务响应超时，请稍后重试',
       );
+      if (!mountedRef.current) return;
 
       setWeather(data);
       setStatus('ready');
-      const notified = await notifyWeatherChange(data, { forceRefresh });
+      const notifyResult = await notifyWeatherChange(data, { forceRefresh });
 
-      if (source === 'manual' && notified) {
-        Taro.showToast({ title: '天气同步好啦，已为你重新搭配～', icon: 'none' });
+      if (source === 'manual') {
+        showManualWeatherSuccessToast(notifyResult);
+        return;
       }
     } catch (error) {
+      if (!mountedRef.current) return;
       const message = getErrorMessage(error);
       console.warn('[WeatherCard] real weather failed', error);
 
@@ -180,7 +203,7 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
       if (cached) {
         setWeather(cached);
         setStatus('ready');
-        notifyWeatherChange(cached, { forceRefresh: false });
+        void notifyWeatherChange(cached, { forceRefresh: false });
         if (source === 'manual') {
           Taro.showToast({ title: '天气没刷新成功，先按刚才的推荐搭～', icon: 'none' });
         }
@@ -203,7 +226,9 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
       }
     } finally {
       busyRef.current = false;
-      setRefreshing(false);
+      if (mountedRef.current) {
+        setRefreshing(false);
+      }
     }
   }
 
@@ -211,12 +236,39 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
     const snapshot = toWeatherSnapshot(value);
     if (!snapshot) return false;
 
-    const notifyKey = `${snapshot.temp}:${snapshot.humidity}:${snapshot.weather}:${snapshot.wind}:${snapshot.uv}`;
+    const notifyKey = getWeatherSnapshotNotifyKey(snapshot);
     if (!options?.forceRefresh && notifyKey === lastNotifiedKeyRef.current) return false;
 
-    lastNotifiedKeyRef.current = notifyKey;
-    await onWeatherChange?.(snapshot, options);
-    return true;
+    const result = await callWeatherChange(snapshot, options);
+    if (result !== 'failed') {
+      lastNotifiedKeyRef.current = notifyKey;
+    }
+    return result;
+  }
+
+  async function callWeatherChange(snapshot: WeatherSnapshot, options?: { forceRefresh?: boolean }) {
+    try {
+      return (await onWeatherChange?.(snapshot, options)) ?? 'unchanged';
+    } catch (error) {
+      console.warn('[WeatherCard] onWeatherChange failed', error);
+      return 'failed';
+    }
+  }
+
+  function showManualWeatherSuccessToast(result: WeatherRecommendationRefreshResult | false) {
+    if (!mountedRef.current) return;
+
+    if (result === 'refreshed') {
+      Taro.showToast({ title: '天气更新啦，小搭也重新搭好了', icon: 'none' });
+      return;
+    }
+
+    if (result === 'failed') {
+      Taro.showToast({ title: '天气已更新，先按刚才这套推荐', icon: 'none' });
+      return;
+    }
+
+    Taro.showToast({ title: '天气已更新', icon: 'none' });
   }
 
   const text = getWeatherCapsuleText({ status, permission, refreshing, weather });
@@ -238,6 +290,16 @@ function readCachedWeather(): ResolvedWeatherResponse | null {
   } catch {
     return null;
   }
+}
+
+function getWeatherSnapshotNotifyKey(snapshot: WeatherSnapshot) {
+  return [
+    snapshot.temp,
+    snapshot.weather,
+    snapshot.humidity,
+    snapshot.wind,
+    snapshot.uv,
+  ].join('|');
 }
 
 async function getLocationPermission(): Promise<LocationPermission> {
