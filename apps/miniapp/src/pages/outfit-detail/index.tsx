@@ -1,5 +1,5 @@
 import { Input, Text, View } from '@tarojs/components';
-import Taro, { useDidShow, useLoad, useRouter } from '@tarojs/taro';
+import Taro, { useDidShow, useLoad, useRouter, useUnload } from '@tarojs/taro';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { SafeImage } from '@/components/SafeImage';
 import { useAuthRuntime } from '@/hooks/useAuthRuntime';
@@ -13,6 +13,7 @@ import {
   addOutfitHistory,
   generateCloudOutfitComment,
   getCloudOutfit,
+  getCloudOutfitAiComment,
   getFavoriteOutfitDetail,
   getOutfitHistoryDetail,
   removeFavoriteOutfit,
@@ -41,7 +42,7 @@ import {
 } from '@/utils/outfitContextText';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
 import type { OutfitStatusPatch } from '@/stores/outfitStatusStore';
-import type { Outfit, OutfitItemSummary, OutfitSnapshotItem } from '@starter-template/types';
+import type { Outfit, OutfitAiReviewResponse, OutfitItemSummary, OutfitSnapshotItem } from '@starter-template/types';
 import './index.scss';
 
 type DetailSource = 'recommendation' | 'favorite' | 'history';
@@ -52,6 +53,19 @@ type EditableModalOptions = Parameters<typeof Taro.showModal>[0] & {
 type EditableModalResult = Awaited<ReturnType<typeof Taro.showModal>> & {
   content?: string;
 };
+interface AiReviewMeta {
+  hasCanonical: boolean;
+  reviewId?: string;
+  generatedAt?: string;
+  cacheHit?: boolean;
+  saved?: boolean;
+  stale?: boolean;
+  inProgress?: boolean;
+  cooldown?: boolean;
+  retryAfterMs?: number;
+  promptVersion?: string;
+  model?: string;
+}
 
 // 品类映射
 const categoryLabels: Record<string, string> = {
@@ -331,11 +345,14 @@ export default function OutfitDetailPage() {
   const [draftName, setDraftName] = useState('');
   const [favoriteOperating, setFavoriteOperating] = useState(false);
   const [wearOperating, setWearOperating] = useState(false);
+  const [aiReviewMeta, setAiReviewMeta] = useState<AiReviewMeta | null>(null);
   const requestSeqRef = useRef(0);
+  const aiCommentRequestSeqRef = useRef(0);
   const lastHandledRuntimeKeyRef = useRef<string | null>(null);
 
   const resetUserState = useCallback(() => {
     requestSeqRef.current += 1;
+    aiCommentRequestSeqRef.current += 1;
     setOutfit(null);
     setDetailSource(normalizeSource(sourceParam));
     setLoading(false);
@@ -346,6 +363,7 @@ export default function OutfitDetailPage() {
     setDraftName('');
     setFavoriteOperating(false);
     setWearOperating(false);
+    setAiReviewMeta(null);
   }, [sourceParam]);
 
   useLoad(() => {
@@ -357,6 +375,11 @@ export default function OutfitDetailPage() {
     const authContext = captureAuthContext();
     if (!isCurrentAuthContext(authContext)) return;
     setOutfit((current) => (current ? applyDetailOutfitStatus(current, authContext) : current));
+  });
+
+  useUnload(() => {
+    requestSeqRef.current += 1;
+    aiCommentRequestSeqRef.current += 1;
   });
 
   useEffect(() => {
@@ -394,9 +417,11 @@ export default function OutfitDetailPage() {
         const draft = readOutfitDetailDraft(decodedId, { authContext });
         if (draft) {
           if (requestSeqRef.current !== requestSeq || !isCurrentAuthContext(authContext)) return;
-          setOutfit(prepareOutfitForState({ ...draft, outfitKind: draft.outfitKind || 'recommendation' }, authContext));
+          const preparedDraft = prepareOutfitForState({ ...draft, outfitKind: draft.outfitKind || 'recommendation' }, authContext);
+          setOutfit(preparedDraft);
           setLoading(false);
           hasDisplayableOutfit = true;
+          void loadCanonicalAiComment(preparedDraft, requestSeq, authContext);
         }
       }
 
@@ -404,9 +429,11 @@ export default function OutfitDetailPage() {
         const cached = await getUserPageCache<Outfit>(cacheKey, { authContext });
         if (cached.hit && cached.data) {
           if (requestSeqRef.current !== requestSeq || !isCurrentAuthContext(authContext)) return;
-          setOutfit(applyDetailOutfitStatus(normalizeOutfitSnapshot(cached.data), authContext));
+          const preparedCached = applyDetailOutfitStatus(normalizeOutfitSnapshot(cached.data), authContext);
+          setOutfit(preparedCached);
           setLoading(false);
           hasDisplayableOutfit = true;
+          void loadCanonicalAiComment(preparedCached, requestSeq, authContext);
         }
       }
 
@@ -419,6 +446,7 @@ export default function OutfitDetailPage() {
       if (requestSeqRef.current !== requestSeq || !isCurrentAuthContext(authContext)) return;
       const prepared = prepareOutfitForState(detail, authContext);
       setOutfit(prepared);
+      void loadCanonicalAiComment(prepared, requestSeq, authContext);
       await writeOutfitDetailCache(cacheKey, prepared, source, authContext);
     } catch (err) {
       console.error('Fetch outfit detail error:', err);
@@ -626,29 +654,105 @@ export default function OutfitDetailPage() {
     setShowNameModal(false);
   }
 
+  async function loadCanonicalAiComment(
+    targetOutfit: Outfit,
+    detailRequestSeq: number,
+    authContext: ActiveAuthContext,
+  ) {
+    const commentRequestSeq = aiCommentRequestSeqRef.current + 1;
+    aiCommentRequestSeqRef.current = commentRequestSeq;
+    try {
+      const result = await getCloudOutfitAiComment(targetOutfit);
+      if (
+        requestSeqRef.current !== detailRequestSeq ||
+        aiCommentRequestSeqRef.current !== commentRequestSeq ||
+        !isCurrentAuthContext(authContext)
+      ) {
+        return;
+      }
+      applyAiReviewResult(result, { clearStaleComment: true });
+    } catch (err) {
+      console.error('Fetch outfit AI comment failed:', err);
+    }
+  }
+
   async function handleGenerateAiComment() {
     if (!outfit || commentLoading) return;
 
     const authContext = captureAuthContext();
     if (!authContext) return;
+    const commentRequestSeq = aiCommentRequestSeqRef.current + 1;
+    aiCommentRequestSeqRef.current = commentRequestSeq;
+    const forceRegenerate = Boolean(aiReviewMeta?.hasCanonical && outfit.aiComment);
     setCommentLoading(true);
     try {
-      const result = await generateCloudOutfitComment(outfit);
-      if (!isCurrentAuthContext(authContext)) return;
+      const result = await generateCloudOutfitComment(outfit, { forceRegenerate });
+      if (aiCommentRequestSeqRef.current !== commentRequestSeq || !isCurrentAuthContext(authContext)) return;
+      if (result.cooldown) {
+        applyAiReviewResult(result);
+        const retryAfterSeconds = Math.max(1, Math.ceil((result.retryAfterMs ?? 0) / 1000));
+        Taro.showToast({ title: `刚点评好，${retryAfterSeconds}秒后可再试`, icon: 'none' });
+        return;
+      }
+      if (result.inProgress) {
+        applyAiReviewResult(result);
+        Taro.showToast({ title: '小搭正在点评，稍后再看看', icon: 'none' });
+        return;
+      }
+      if (result.superseded) {
+        applyAiReviewResult(result);
+        Taro.showToast({ title: result.aiComment ? '已显示最新点评' : '小搭正在处理最新点评', icon: 'none' });
+        return;
+      }
       if (result.success && result.aiComment) {
-        setOutfit({ ...outfit, aiComment: result.aiComment });
-        Taro.showToast({ title: '小搭点评已生成', icon: 'success' });
+        applyAiReviewResult(result);
+        Taro.showToast({
+          title: result.cacheHit ? '小搭点评已准备好' : forceRegenerate ? '小搭重新点评好了' : '小搭点评已生成',
+          icon: 'success',
+        });
         return;
       }
       Taro.showToast({ title: result.message || '小搭点评暂时不可用', icon: 'none' });
     } catch (err) {
       console.error('Generate outfit AI comment error:', err);
-      if (!isCurrentAuthContext(authContext)) return;
+      if (aiCommentRequestSeqRef.current !== commentRequestSeq || !isCurrentAuthContext(authContext)) return;
       Taro.showToast({ title: '小搭点评暂时不可用', icon: 'none' });
     } finally {
-      if (isCurrentAuthContext(authContext)) {
+      if (aiCommentRequestSeqRef.current === commentRequestSeq && isCurrentAuthContext(authContext)) {
         setCommentLoading(false);
       }
+    }
+  }
+
+  function applyAiReviewResult(
+    result: OutfitAiReviewResponse,
+    options: { clearStaleComment?: boolean } = {},
+  ) {
+    const hasReadyReview = Boolean(result.aiComment && result.review?.status === 'ready' && !result.stale);
+    const shouldPreserveDisplayedComment = Boolean(
+      result.aiComment && (hasReadyReview || result.inProgress || result.cooldown),
+    );
+    setAiReviewMeta({
+      hasCanonical: shouldPreserveDisplayedComment,
+      reviewId: result.reviewId ?? result.review?.reviewId,
+      generatedAt: result.generatedAt ?? result.review?.generatedAt,
+      cacheHit: result.cacheHit,
+      saved: result.saved,
+      stale: result.stale,
+      inProgress: result.inProgress,
+      cooldown: result.cooldown,
+      retryAfterMs: result.retryAfterMs,
+      promptVersion: result.promptVersion ?? result.review?.promptVersion,
+      model: result.model ?? result.review?.model,
+    });
+
+    if (shouldPreserveDisplayedComment && result.aiComment) {
+      setOutfit((current) => (current ? normalizeOutfitSnapshot({ ...current, aiComment: result.aiComment ?? undefined }) : current));
+      return;
+    }
+
+    if (options.clearStaleComment && (result.stale || !result.aiComment)) {
+      setOutfit((current) => (current ? normalizeOutfitSnapshot({ ...current, aiComment: undefined }) : current));
     }
   }
 
@@ -723,6 +827,8 @@ export default function OutfitDetailPage() {
   const items = getOutfitItems(outfit);
   const showCount = itemsExpanded || items.length <= 4 ? items.length : 4;
   const displayItems = items.slice(0, showCount);
+  const hasCanonicalAiComment = Boolean(aiReviewMeta?.hasCanonical && outfit.aiComment);
+  const aiCommentButtonText = commentLoading ? '点评中...' : hasCanonicalAiComment ? '重新点评' : '让小搭点评这套';
 
   return (
     <View className="outfit-detail-page">
@@ -808,9 +914,7 @@ export default function OutfitDetailPage() {
               className={`ai-comment-btn ${commentLoading ? 'disabled' : ''}`}
               onClick={handleGenerateAiComment}
             >
-              <Text className="ai-comment-btn-text">
-                {commentLoading ? '点评中...' : outfit.aiComment ? '重新点评' : '让小搭点评这套'}
-              </Text>
+              <Text className="ai-comment-btn-text">{aiCommentButtonText}</Text>
             </View>
           </View>
 

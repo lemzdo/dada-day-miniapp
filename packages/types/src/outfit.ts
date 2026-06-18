@@ -55,6 +55,40 @@ export interface OutfitAiComment {
   generatedAt?: string;
 }
 
+export type OutfitAiReviewStatus = 'ready' | 'generating' | 'failed';
+
+export interface OutfitAiReview {
+  reviewId: string;
+  outfitKey: string;
+  scene?: SceneTag | string;
+  inputHash: string;
+  promptVersion: string;
+  model: string;
+  aiComment: OutfitAiComment | null;
+  status: OutfitAiReviewStatus;
+  generatedAt?: string;
+  updatedAt?: string;
+}
+
+export interface OutfitAiReviewResponse {
+  success: boolean;
+  aiComment?: OutfitAiComment | null;
+  review?: OutfitAiReview;
+  reviewId?: string;
+  generatedAt?: string;
+  cacheHit?: boolean;
+  saved?: boolean;
+  stale?: boolean;
+  inProgress?: boolean;
+  superseded?: boolean;
+  cooldown?: boolean;
+  retryAfterMs?: number;
+  promptVersion?: string;
+  model?: string;
+  fallback?: boolean;
+  message?: string;
+}
+
 export interface Outfit {
   id: string;
   userId: string;

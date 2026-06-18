@@ -1,17 +1,22 @@
 const cloud = require('wx-server-sdk');
+const crypto = require('crypto');
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
 const db = cloud.database();
 const DELETED_STATUS = 'deleted';
+const AI_REVIEW_COLLECTION = 'outfit_ai_reviews';
+const AI_COMMENT_PROMPT_VERSION = 'v1';
 const BAILIAN_BASE_URL = process.env.BAILIAN_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1';
 const AI_COMMENT_PROVIDER = process.env.AI_COMMENT_PROVIDER || 'aliyun-bailian';
 const AI_COMMENT_MODEL = process.env.AI_COMMENT_MODEL || 'qwen-flash';
 const AI_COMMENT_TIMEOUT_MS = Number(process.env.AI_COMMENT_TIMEOUT_MS || 5000);
+const AI_COMMENT_LEASE_TIMEOUT_MS = Math.max(AI_COMMENT_TIMEOUT_MS + 5000, 10000);
+const AI_COMMENT_FORCE_COOLDOWN_MS = 30 * 1000;
 
 exports.main = async (event = {}) => {
+  const action = event.action || 'generate';
   try {
-    const action = event.action || 'generate';
     if (action === 'detail') return ok(await getOutfitDetail(event));
     if (action === 'renameOutfit') return ok(await renameOutfit(event));
     if (action === 'favorite') return ok(await updateFavorite(event.id, Boolean(event.isFavorite), event.outfit));
@@ -22,11 +27,19 @@ exports.main = async (event = {}) => {
     if (action === 'listFavoriteOutfits') return ok(await listFavoriteOutfits(event));
     if (action === 'addOutfitHistory') return ok(await addOutfitHistory(event));
     if (action === 'listOutfitHistory') return ok(await listOutfitHistory(event));
+    if (action === 'getAiComment') return ok(await getAiComment(event));
     if (action === 'aiComment') return ok(await generateAiComment(event));
 
     return ok(await generate(event));
   } catch (error) {
-    console.error('[generateOutfit] failed', error);
+    const isAiReviewAction = action === 'getAiComment' || action === 'aiComment';
+    console.error(
+      isAiReviewAction ? '[generateOutfit] aiReview failed' : '[generateOutfit] failed',
+      isAiReviewAction ? { code: getAiReviewInternalErrorCode(error) } : error,
+    );
+    if (isAiReviewAction) {
+      return fail(new Error('AI 点评服务暂时不可用，请稍后再试'));
+    }
     return fail(error);
   }
 };
@@ -234,62 +247,206 @@ async function listOutfits(event) {
   return listFavoriteOutfits(event);
 }
 
+async function getAiComment(event) {
+  const context = await buildAiCommentContext(event);
+  const review = await readAiReview(context.reviewId);
+  return buildAiReviewResponse(context, review, {
+    cacheHit: isReadyAiReview(review, context),
+    saved: false,
+  });
+}
+
 async function generateAiComment(event) {
   const fallbackMessage = 'AI 点评暂时不可用，请稍后再试';
+  let context = null;
+  let lease = null;
+  const startedAt = Date.now();
 
   try {
-    const commentInput = await buildAiCommentInput(event, null);
+    context = await buildAiCommentContext(event);
+    const forceRegenerate = event.forceRegenerate === true;
+    lease = await acquireAiReviewLease(context, { forceRegenerate });
+
+    if (lease.cacheHit || lease.inProgress || lease.cooldown) {
+      return buildAiReviewResponse(context, lease.review, {
+        cacheHit: Boolean(lease.cacheHit),
+        saved: false,
+        inProgress: Boolean(lease.inProgress),
+        cooldown: Boolean(lease.cooldown),
+        retryAfterMs: lease.retryAfterMs,
+      });
+    }
+
     const aiComment = {
-      ...(await callAiCommentModel(commentInput)),
+      ...(await callAiCommentModel(context.modelInput)),
       generatedAt: new Date().toISOString(),
     };
-
-    return { success: true, aiComment, saved: false };
+    const finishResult = await finishAiReviewSuccess(context, lease.generationToken, aiComment);
+    const review = finishResult.review || await readAiReview(context.reviewId);
+    return buildAiReviewResponse(context, review, {
+      cacheHit: false,
+      saved: finishResult.saved,
+      inProgress: finishResult.superseded && review?.status === 'generating',
+      superseded: finishResult.superseded,
+    });
   } catch (error) {
-    console.warn('[generateOutfit] aiComment fallback', error && error.message ? error.message : error);
-    return { success: false, fallback: true, message: fallbackMessage };
+    console.warn('[generateOutfit] aiComment fallback', {
+      action: 'aiComment',
+      durationMs: Date.now() - startedAt,
+      reviewId: context ? shortHash(context.reviewId) : '',
+      code: getAiReviewInternalErrorCode(error),
+    });
+    if (context && lease?.generationToken) {
+      await finishAiReviewFailure(context, lease.generationToken).catch(() => false);
+    }
+    const review = context ? await readAiReview(context.reviewId).catch(() => null) : null;
+    return {
+      ...buildAiReviewResponse(context, review, {
+        cacheHit: false,
+        saved: false,
+        fallback: true,
+      }),
+      success: false,
+      message: fallbackMessage,
+    };
   }
 }
 
-async function buildAiCommentInput(event, existing) {
-  const clothes = existing ? await loadClothesByIds(existing._openid, existing.clothingIds || []) : [];
+async function buildAiCommentContext(event) {
+  const { OPENID } = cloud.getWXContext();
+  const payload = normalizeOutfitPayload(event.outfit);
+  const payloadIds = uniqueStrings([
+    ...readBaseClothingIds(payload),
+    ...readStringArray(event.clothingIds),
+  ]);
+  const requestedScene = normalizeAiCommentScene(event.scene || payload?.scene);
+  const requestedOutfitKey = normalizeOutfitKey(event.outfitKey || payload?.outfitKey);
+  const payloadOutfitKey = payloadIds.length > 0 ? getOutfitKey(payloadIds) : '';
+  if (requestedOutfitKey && payloadOutfitKey && requestedOutfitKey !== payloadOutfitKey) {
+    throw new Error('invalid_outfit_key');
+  }
+
+  const lookupOutfitKey = requestedOutfitKey || payloadOutfitKey;
+  if (!lookupOutfitKey) throw new Error('outfit identity is required');
+
+  const assetSource = await findAuthoritativeAiCommentAsset(OPENID, event, payload, lookupOutfitKey, requestedScene);
+  const source = assetSource
+    ? await buildAiCommentSourceFromOutfitAsset(OPENID, assetSource.asset, requestedScene, {
+        useSnapshotItems: assetSource.kind === 'favorite' || assetSource.kind === 'history',
+      })
+    : await buildAiCommentSourceFromOwnedClothes(OPENID, payload, {
+        outfitKey: lookupOutfitKey,
+        scene: requestedScene,
+        weather: event.weather,
+        scores: event.scores,
+        reason: event.reason,
+      });
+  if (!source.scene) throw new Error('scene is required');
+
+  const modelInput = {
+    scene: source.scene,
+    weather: source.weather,
+    items: source.items,
+    scores: source.scores,
+    reason: source.reason,
+    promptVersion: AI_COMMENT_PROMPT_VERSION,
+  };
+  const inputHash = sha256(stableStringify(modelInput));
+  const reviewId = getAiReviewId(OPENID, source.outfitKey, source.scene);
+
   return {
-    weather: event.weather || existing?.weatherSnapshot || existing?.weather || null,
-    scene: event.scene || existing?.scene || '',
-    items: buildAiCommentItems(event.items, existing, clothes),
-    scores: sanitizeScores(event.scores || existing?.scores || {}),
-    reason: event.reason || existing?.reasoning || existing?.reason || '',
+    openid: OPENID,
+    reviewId,
+    outfitKey: source.outfitKey,
+    scene: source.scene,
+    inputHash,
+    modelInput,
+    promptVersion: AI_COMMENT_PROMPT_VERSION,
+    model: AI_COMMENT_MODEL,
   };
 }
 
-function buildAiCommentItems(payloadItems, existing, clothes) {
-  if (clothes.length > 0) {
-    return clothes.map((item) => ({
-      type: item.subcategory || item.subCategory || item.category || '',
-      color: readColorText(item),
-      style: readArray(item.styleTags).join(' / '),
-      thickness: item.thickness || '',
-      material: item.material || item.materialGuess || '',
-    }));
-  }
+async function buildAiCommentSourceFromOutfitAsset(openid, asset, requestedScene, { useSnapshotItems = false } = {}) {
+  const clothingIds = uniqueStrings(asset.clothingIds || []);
+  const outfitKey = getOutfitKey(clothingIds);
+  if (!outfitKey) throw new Error('outfit asset has no clothing ids');
+  const scene = normalizeAiCommentScene(asset.scene || requestedScene);
+  const clothes = useSnapshotItems ? [] : await loadClothesByIds(openid, clothingIds);
+  const items = buildAiCommentItemsFromAsset(asset, clothes, { useSnapshotItems });
+  if (!items.length) throw new Error('outfit asset has no comment items');
 
-  if (Array.isArray(payloadItems)) {
-    return payloadItems.map((item) => ({
-      type: item.subcategory || item.subCategory || item.category || '',
-      color: readColorText(item),
-      style: readArray(item.styleTags).join(' / '),
-      thickness: item.thickness || '',
-      material: item.material || item.materialGuess || '',
-    }));
-  }
+  return {
+    outfitKey,
+    scene,
+    weather: normalizeWeather(asset.weatherSnapshot || asset.weather) || null,
+    items,
+    scores: sanitizeScores(asset.scores || {}),
+    reason: normalizeAiCommentReason(asset.reasoning || asset.reason),
+  };
+}
 
-  return normalizeSnapshotItems(existing?.snapshotItems).map((item) => ({
-    type: item.name || item.category || '',
-    color: item.color || '',
-    style: '',
-    thickness: '',
-    material: '',
-  }));
+async function buildAiCommentSourceFromOwnedClothes(openid, payload, fallback) {
+  const clothingIds = uniqueStrings(readBaseClothingIds(payload));
+  if (!clothingIds.length) throw new Error('clothing ids are required');
+  const outfitKey = getOutfitKey(clothingIds);
+  if (fallback.outfitKey && fallback.outfitKey !== outfitKey) throw new Error('invalid_outfit_key');
+
+  const clothes = await loadClothesByIds(openid, clothingIds);
+  assertOwnedClothes(clothingIds, clothes);
+  const scene = normalizeAiCommentScene(fallback.scene || payload?.scene);
+
+  return {
+    outfitKey,
+    scene,
+    weather: normalizeWeather(fallback.weather || payload?.weatherSnapshot || payload?.weather) || null,
+    items: buildAiCommentItemsFromClothes(clothes),
+    scores: sanitizeScores(fallback.scores || payload?.scores || {}),
+    reason: normalizeAiCommentReason(fallback.reason || payload?.reasoning || payload?.reason),
+  };
+}
+
+function buildAiCommentItemsFromAsset(asset, clothes, { useSnapshotItems = false } = {}) {
+  const clothesMap = new Map((clothes || []).map((item) => [item._id, item]));
+  const snapshots = buildDetailedSnapshotItems(asset.clothingIds || [], {
+    itemsSnapshot: asset.itemsSnapshot,
+    snapshotItems: asset.snapshotItems,
+    items: asset.items,
+  });
+  return snapshots
+    .map((snapshot) => {
+      const clothing = clothesMap.get(snapshot.clothingId);
+      if (!useSnapshotItems && clothing && clothing.status !== DELETED_STATUS) {
+        return buildAiCommentItemFromClothing(clothing);
+      }
+      return {
+        id: snapshot.clothingId,
+        type: limitText(snapshot.name || snapshot.type || snapshot.category, 24),
+        color: limitText(snapshot.color, 24),
+        style: limitText(snapshot.style, 48),
+        thickness: limitText(snapshot.thickness, 24),
+        material: limitText(snapshot.material, 24),
+      };
+    })
+    .filter((item) => item.id)
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function buildAiCommentItemsFromClothes(clothes) {
+  return (clothes || [])
+    .map(buildAiCommentItemFromClothing)
+    .filter((item) => item.id)
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function buildAiCommentItemFromClothing(item) {
+  return {
+    id: item._id,
+    type: limitText(item.subcategory || item.subCategory || item.category || '', 24),
+    color: limitText(readColorText(item), 24),
+    style: limitText(readArray(item.styleTags).join(' / '), 48),
+    thickness: limitText(item.thickness || '', 24),
+    material: limitText(item.material || item.materialGuess || '', 24),
+  };
 }
 
 async function callAiCommentModel(input) {
@@ -370,6 +527,383 @@ function normalizeAiComment(value) {
 
   if (!title || !reason || !tip) return null;
   return { title, reason, styleTags, tip, generatedAt: value.generatedAt };
+}
+
+async function findAuthoritativeAiCommentAsset(openid, event, payload, outfitKey, scene) {
+  const detailSource = normalizeAiCommentDetailSource(event.detailSource || payload?.outfitKind);
+  const detailId = normalizeOutfitKey(event.detailId || payload?.id);
+  const collectionName = {
+    recommendation: 'outfits',
+    favorite: 'favorite_outfits',
+    history: 'outfit_history',
+  }[detailSource];
+
+  if (collectionName && detailId) {
+    const exact = await readDocumentOrNull(db.collection(collectionName).doc(detailId));
+    if (!exact || exact._openid !== openid) throw new Error('outfit detail asset not found');
+    assertAiCommentAssetIdentity(exact, outfitKey, scene);
+    return { asset: exact, kind: detailSource };
+  }
+
+  const res = await db.collection('outfits')
+    .where({ _openid: openid, outfitKey })
+    .limit(100)
+    .get();
+  const candidates = (res.data || [])
+    .filter((item) => !scene || normalizeAiCommentScene(item.scene) === scene)
+    .sort(compareAiCommentAssets);
+  return candidates[0] ? { asset: candidates[0], kind: 'recommendation' } : null;
+}
+
+function assertAiCommentAssetIdentity(asset, outfitKey, scene) {
+  const assetOutfitKey = getOutfitKey(uniqueStrings(asset.clothingIds || []));
+  if (!assetOutfitKey || assetOutfitKey !== outfitKey) throw new Error('outfit detail identity mismatch');
+  if (scene && normalizeAiCommentScene(asset.scene) !== scene) throw new Error('outfit detail scene mismatch');
+}
+
+function compareAiCommentAssets(left, right) {
+  const leftTime = Date.parse(left.updatedAt || left.createdAt || '') || 0;
+  const rightTime = Date.parse(right.updatedAt || right.createdAt || '') || 0;
+  if (leftTime !== rightTime) return rightTime - leftTime;
+  return String(right._id || '').localeCompare(String(left._id || ''));
+}
+
+function normalizeAiCommentDetailSource(value) {
+  return ['recommendation', 'favorite', 'history'].includes(value) ? value : '';
+}
+
+function assertOwnedClothes(expectedIds, clothes) {
+  const expected = uniqueStrings(expectedIds);
+  const returned = new Map((clothes || []).map((item) => [item._id, item]));
+  if (returned.size !== expected.length) throw new Error('clothing ownership validation failed');
+  for (const id of expected) {
+    const item = returned.get(id);
+    if (!item || item.status === DELETED_STATUS) throw new Error('clothing ownership validation failed');
+  }
+}
+
+function normalizeAiCommentScene(value) {
+  const normalized = limitText(value || '', 32);
+  const alias = {
+    home: '居家',
+    work: '上班',
+    date: '约会',
+    sport: '运动',
+    sports: '运动',
+  }[normalized.toLowerCase()];
+  const scene = alias || normalized;
+  const allowed = ['上班', '开会', '出游', '约会', '逛街', '居家', '运动', '正式', '聚会'];
+  if (scene && !allowed.includes(scene)) throw new Error('invalid scene');
+  return scene;
+}
+
+function normalizeAiCommentReason(value) {
+  return limitText(value || '', 160);
+}
+
+function normalizeOutfitKey(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function getAiReviewId(openid, outfitKey, scene) {
+  return sha256(`${openid}|${outfitKey}|${scene}`);
+}
+
+function sha256(value) {
+  return crypto.createHash('sha256').update(String(value)).digest('hex');
+}
+
+function shortHash(value) {
+  return String(value || '').slice(0, 10);
+}
+
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+async function readAiReview(reviewId) {
+  if (!reviewId) return null;
+  try {
+    return await readDocumentOrNull(db.collection(AI_REVIEW_COLLECTION).doc(reviewId));
+  } catch (error) {
+    throw createAiReviewServiceError('AI_REVIEW_STORAGE_UNAVAILABLE', error);
+  }
+}
+
+async function readDocumentOrNull(ref) {
+  try {
+    const res = await ref.get();
+    return res.data || null;
+  } catch (error) {
+    if (isDocumentNotFoundError(error)) return null;
+    throw error;
+  }
+}
+
+function isDocumentNotFoundError(error) {
+  const message = error && (error.errMsg || error.message || String(error));
+  return /document with _id .* does not exist/i.test(String(message || ''));
+}
+
+function isReadyAiReview(review, context) {
+  return Boolean(
+    review
+      && review._openid === context.openid
+      && review.outfitKey === context.outfitKey
+      && review.scene === context.scene
+      && review.status === 'ready'
+      && review.inputHash === context.inputHash
+      && review.promptVersion === context.promptVersion
+      && normalizeAiComment(review.aiComment),
+  );
+}
+
+function isAiReviewStale(review, context) {
+  if (!review) return false;
+  if (review._openid !== context.openid) return true;
+  if (review.outfitKey !== context.outfitKey || review.scene !== context.scene) return true;
+  if (review.status !== 'ready') return true;
+  if (review.inputHash !== context.inputHash) return true;
+  if (review.promptVersion !== context.promptVersion) return true;
+  return !normalizeAiComment(review.aiComment);
+}
+
+function buildAiReviewResponse(context, review, options = {}) {
+  const aiComment = normalizeAiComment(review?.aiComment) || normalizeAiComment(options.fallbackAiComment) || null;
+  const ready = context && isReadyAiReview(review, context);
+  const stale = context ? isAiReviewStale(review, context) : false;
+  return {
+    success: true,
+    aiComment: ready || options.inProgress ? aiComment : options.fallbackAiComment ? normalizeAiComment(options.fallbackAiComment) : null,
+    review: review
+      ? {
+          reviewId: review._id || context?.reviewId,
+          outfitKey: review.outfitKey,
+          scene: review.scene,
+          inputHash: review.inputHash,
+          promptVersion: review.promptVersion,
+          model: review.model,
+          aiComment,
+          status: review.status,
+          generatedAt: review.generatedAt,
+          updatedAt: review.updatedAt,
+        }
+      : undefined,
+    reviewId: context?.reviewId || review?._id || '',
+    generatedAt: review?.generatedAt || options.fallbackAiComment?.generatedAt,
+    cacheHit: Boolean(options.cacheHit),
+    saved: Boolean(options.saved),
+    stale,
+    inProgress: Boolean(options.inProgress),
+    superseded: Boolean(options.superseded),
+    cooldown: Boolean(options.cooldown),
+    retryAfterMs: options.retryAfterMs,
+    promptVersion: context?.promptVersion || review?.promptVersion || AI_COMMENT_PROMPT_VERSION,
+    model: context?.model || review?.model || AI_COMMENT_MODEL,
+  };
+}
+
+async function acquireAiReviewLease(context, { forceRegenerate }) {
+  const now = new Date().toISOString();
+  const generationToken = crypto.randomBytes(16).toString('hex');
+
+  return runAiReviewTransaction(async (transaction) => {
+      const ref = transaction.collection(AI_REVIEW_COLLECTION).doc(context.reviewId);
+      const current = await readDocumentOrNull(ref);
+
+      if (!forceRegenerate && isReadyAiReview(current, context)) {
+        return { cacheHit: true, review: current };
+      }
+
+      if (current?.status === 'generating' && isActiveGenerationLease(current.generationStartedAt)) {
+        return { inProgress: true, review: current };
+      }
+
+      const retryAfterMs = forceRegenerate && isReadyAiReview(current, context)
+        ? getAiCommentForceCooldownRemaining(current)
+        : 0;
+      if (retryAfterMs > 0) {
+        return { cooldown: true, retryAfterMs, review: current };
+      }
+
+      const previousReview = current?.status === 'ready'
+        ? buildPreviousAiReviewSnapshot(current)
+        : current?.previousReview || null;
+
+      const generatingData = {
+        _openid: context.openid,
+        userId: context.openid,
+        outfitKey: context.outfitKey,
+        scene: context.scene,
+        inputHash: context.inputHash,
+        promptVersion: context.promptVersion,
+        model: context.model,
+        status: 'generating',
+        generationToken,
+        generationStartedAt: now,
+        updatedAt: now,
+        previousReview,
+      };
+
+      if (current) {
+        await ref.update({ data: generatingData });
+      } else {
+        await ref.set({
+          data: {
+            ...generatingData,
+            createdAt: now,
+          },
+        });
+      }
+
+      return {
+        acquired: true,
+        generationToken,
+        review: {
+          ...current,
+          ...generatingData,
+          _id: context.reviewId,
+        },
+      };
+  });
+}
+
+async function finishAiReviewSuccess(context, generationToken, aiComment) {
+  const now = new Date().toISOString();
+  return runAiReviewTransaction(async (transaction) => {
+    const ref = transaction.collection(AI_REVIEW_COLLECTION).doc(context.reviewId);
+    const current = await readDocumentOrNull(ref);
+    if (!isCurrentAiReviewGeneration(current, context, generationToken)) {
+      return { saved: false, superseded: true, review: current };
+    }
+
+    const readyData = {
+      _openid: context.openid,
+      userId: context.openid,
+      outfitKey: context.outfitKey,
+      scene: context.scene,
+      inputHash: context.inputHash,
+      promptVersion: context.promptVersion,
+      model: context.model,
+      aiComment,
+      status: 'ready',
+      generatedAt: aiComment.generatedAt || now,
+      updatedAt: now,
+      generationToken: null,
+      generationStartedAt: null,
+      previousReview: null,
+    };
+    await ref.update({ data: readyData });
+    return { saved: true, superseded: false, review: { ...current, ...readyData } };
+  });
+}
+
+async function finishAiReviewFailure(context, generationToken) {
+  const now = new Date().toISOString();
+  return runAiReviewTransaction(async (transaction) => {
+    const ref = transaction.collection(AI_REVIEW_COLLECTION).doc(context.reviewId);
+    const current = await readDocumentOrNull(ref);
+    if (!isCurrentAiReviewGeneration(current, context, generationToken)) {
+      return { restored: false, superseded: true, review: current };
+    }
+
+    const previous = current.previousReview;
+    const failureData = previous && normalizeAiComment(previous.aiComment)
+      ? {
+          status: 'ready',
+          aiComment: previous.aiComment,
+          inputHash: previous.inputHash,
+          promptVersion: previous.promptVersion,
+          model: previous.model,
+          generatedAt: previous.generatedAt,
+          updatedAt: previous.updatedAt || now,
+        }
+      : {
+          status: 'failed',
+          aiComment: null,
+          generatedAt: null,
+          updatedAt: now,
+        };
+    const settledData = {
+      ...failureData,
+      generationToken: null,
+      generationStartedAt: null,
+      previousReview: null,
+    };
+    await ref.update({ data: settledData });
+    return { restored: Boolean(previous), superseded: false, review: { ...current, ...settledData } };
+  });
+}
+
+function buildPreviousAiReviewSnapshot(review) {
+  return {
+    aiComment: normalizeAiComment(review.aiComment),
+    inputHash: review.inputHash,
+    promptVersion: review.promptVersion,
+    model: review.model,
+    generatedAt: review.generatedAt,
+    updatedAt: review.updatedAt,
+  };
+}
+
+function isCurrentAiReviewGeneration(review, context, generationToken) {
+  return Boolean(
+    review
+      && review.status === 'generating'
+      && review.generationToken === generationToken
+      && review._openid === context.openid
+      && review.outfitKey === context.outfitKey
+      && review.scene === context.scene,
+  );
+}
+
+function getAiCommentForceCooldownRemaining(review) {
+  const generatedAt = Date.parse(review.generatedAt || review.updatedAt || '');
+  if (!Number.isFinite(generatedAt)) return 0;
+  return Math.max(0, AI_COMMENT_FORCE_COOLDOWN_MS - (Date.now() - generatedAt));
+}
+
+function isActiveGenerationLease(generationStartedAt) {
+  const startedAt = Date.parse(generationStartedAt || '');
+  return Number.isFinite(startedAt) && Date.now() - startedAt < AI_COMMENT_LEASE_TIMEOUT_MS;
+}
+
+function assertTransactionSupport() {
+  if (typeof db.runTransaction !== 'function') {
+    throw createAiReviewServiceError('AI_REVIEW_TRANSACTION_UNAVAILABLE');
+  }
+}
+
+async function runAiReviewTransaction(callback) {
+  assertTransactionSupport();
+  try {
+    return await db.runTransaction(callback, 3);
+  } catch (error) {
+    if (isAiReviewServiceError(error)) throw error;
+    throw createAiReviewServiceError('AI_REVIEW_STORAGE_UNAVAILABLE', error);
+  }
+}
+
+function createAiReviewServiceError(code, cause) {
+  const error = new Error('AI 点评服务暂时不可用，请稍后再试');
+  error.aiReviewCode = code;
+  if (cause) error.cause = cause;
+  return error;
+}
+
+function isAiReviewServiceError(error) {
+  return Boolean(error && typeof error.aiReviewCode === 'string');
+}
+
+function getAiReviewInternalErrorCode(error) {
+  return isAiReviewServiceError(error) ? error.aiReviewCode : 'AI_REVIEW_REQUEST_FAILED';
 }
 
 function limitText(value, maxLength) {
@@ -1136,6 +1670,7 @@ function normalizeOutfitPayload(payload) {
     reason: payload.reason,
     outfitKey: payload.outfitKey,
     outfitId: payload.outfitId,
+    outfitKind: payload.outfitKind,
     userTitle: payload.userTitle,
     displayTitle: payload.displayTitle,
     favoriteOutfitId: payload.favoriteOutfitId,

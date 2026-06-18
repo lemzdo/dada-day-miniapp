@@ -7,6 +7,7 @@ import type {
   CurrentWeather,
   Outfit,
   OutfitAiComment,
+  OutfitAiReviewResponse,
   RecommendRequest,
   RecommendResponse,
   RecommendationProfile,
@@ -68,6 +69,11 @@ interface CloudInflightRequest<T = unknown> {
   invalidated: boolean;
 }
 
+interface CachedCloudFunctionOptions {
+  cacheNamespace?: string;
+  cacheKeyData?: Record<string, unknown>;
+}
+
 const cloudInflightRequests = new Map<string, CloudInflightRequest>();
 let currentUserCloudRuntimeKey: string | null = null;
 
@@ -76,6 +82,7 @@ const CACHE_TTL = {
   outfit: 30 * 1000,
   weather: 10 * 60 * 1000,
   clothingSubcategories: 5 * 60 * 1000,
+  outfitAiReview: 15 * 1000,
 };
 
 export const WEATHER_CACHE_KEY = 'd1d:lastWeather';
@@ -109,13 +116,18 @@ async function callCachedCloudFunction<T>(
   data: Record<string, unknown> = {},
   ttlMs = 0,
   scope: CloudCacheScope = { type: 'user' },
+  options: CachedCloudFunctionOptions = {},
 ): Promise<T> {
   const resolvedScope = resolveCloudCacheScope(scope);
   if (resolvedScope.type === 'none') {
     return callCloudFunction<T>(name, data);
   }
 
-  const key = getCloudCacheKey(name, data, resolvedScope);
+  const key = getCloudCacheKey(
+    options.cacheNamespace || name,
+    options.cacheKeyData || data,
+    resolvedScope,
+  );
   const now = Date.now();
   const cached = cloudResponseCache.get(key);
   if (cached && cached.expiresAt > now) return cached.data as T;
@@ -146,6 +158,25 @@ async function callCachedCloudFunction<T>(
   requestRecord.promise = request;
   cloudInflightRequests.set(key, requestRecord);
   return request;
+}
+
+function invalidateCachedCloudFunctionNamespace(
+  cacheNamespace: string,
+  scope: CloudCacheScope = { type: 'user' },
+) {
+  const resolvedScope = resolveCloudCacheScope(scope);
+  if (resolvedScope.type === 'none') return;
+
+  const namespacePrefix = `${resolvedScope.prefix}${cacheNamespace}:`;
+  for (const key of cloudResponseCache.keys()) {
+    if (key.startsWith(namespacePrefix)) cloudResponseCache.delete(key);
+  }
+  for (const key of cloudInflightRequests.keys()) {
+    if (!key.startsWith(namespacePrefix)) continue;
+    const inflight = cloudInflightRequests.get(key);
+    if (inflight) inflight.invalidated = true;
+    cloudInflightRequests.delete(key);
+  }
 }
 
 function clearCloudCache(prefixes: string[], scopeTypes: Array<'user' | 'device'> = ['user']) {
@@ -622,25 +653,67 @@ export async function getOutfitHistoryDetail(id: string) {
   return callCloudFunction<Outfit>('generateOutfit', { action: 'detail', source: 'history', id });
 }
 
-export interface GenerateCloudOutfitCommentResult {
-  success: boolean;
-  aiComment?: OutfitAiComment;
-  saved?: boolean;
-  fallback?: boolean;
-  message?: string;
-}
-
-export async function generateCloudOutfitComment(outfit: Outfit) {
-  const result = await callCloudFunction<GenerateCloudOutfitCommentResult>('generateOutfit', {
-    action: 'aiComment',
-    outfitId: outfit.id,
+function getOutfitAiCommentPayload(outfit: Outfit, forceRegenerate?: boolean) {
+  return {
+    outfitId: outfit.outfitId || outfit.id,
+    detailId: outfit.id,
+    detailSource: outfit.outfitKind,
+    outfitKey: outfit.outfitKey,
     outfit,
     weather: outfit.weatherSnapshot,
     scene: outfit.scene,
     items: outfit.items,
     scores: outfit.scores,
     reason: outfit.reasoning || outfit.reason || '',
+    ...(forceRegenerate !== undefined ? { forceRegenerate } : {}),
+  };
+}
+
+function getOutfitAiCommentCacheNamespace(outfit: Outfit) {
+  const outfitKey = outfit.outfitKey || [...outfit.clothingIds].sort().join('|');
+  const normalizedScene = String(outfit.scene || '').trim();
+  const scene = {
+    home: '居家',
+    work: '上班',
+    date: '约会',
+    sport: '运动',
+    sports: '运动',
+  }[normalizedScene.toLowerCase()] || normalizedScene;
+  return `outfitAiReview:${encodeCloudCacheScopePart(outfitKey)}:${encodeCloudCacheScopePart(scene)}`;
+}
+
+function getOutfitAiCommentCacheVariant(outfit: Outfit) {
+  return {
+    detailId: outfit.id,
+    detailSource: outfit.outfitKind || '',
+    updatedAt: outfit.updatedAt || '',
+  };
+}
+
+export async function getCloudOutfitAiComment(outfit: Outfit) {
+  return callCachedCloudFunction<OutfitAiReviewResponse>(
+    'generateOutfit',
+    {
+      action: 'getAiComment',
+      ...getOutfitAiCommentPayload(outfit),
+    },
+    CACHE_TTL.outfitAiReview,
+    { type: 'user' },
+    {
+      cacheNamespace: getOutfitAiCommentCacheNamespace(outfit),
+      cacheKeyData: getOutfitAiCommentCacheVariant(outfit),
+    },
+  );
+}
+
+export async function generateCloudOutfitComment(outfit: Outfit, options: { forceRegenerate?: boolean } = {}) {
+  const result = await callCloudFunction<OutfitAiReviewResponse>('generateOutfit', {
+    action: 'aiComment',
+    ...getOutfitAiCommentPayload(outfit, Boolean(options.forceRegenerate)),
   });
+  if (result.saved) {
+    invalidateCachedCloudFunctionNamespace(getOutfitAiCommentCacheNamespace(outfit));
+  }
   return result;
 }
 
