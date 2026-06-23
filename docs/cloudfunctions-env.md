@@ -1,10 +1,25 @@
 # 云函数环境变量
 
-> 最后更新：2026-05-26
+> 最后更新：2026-06-23
 
 不要在代码或仓库中写入真实 key。以下示例值只用于说明格式。
 
 ## 最小可跑配置
+
+### 全局必配变量
+
+以下变量需要在多个云函数中配置，建议在云开发控制台为所有云函数统一设置：
+
+| 变量 | 用途 | 必配云函数 |
+|------|------|------------|
+| `AMAP_KEY` | 高德天气 API Key | `getWeather` |
+
+**AMAP_KEY 说明**：
+- 需使用高德「Web 服务」Key，不是小程序/JS API Key
+- 申请地址：https://lbs.amap.com/api/webservice/guide/create-project/get-key
+- 用于逆地理编码（经纬度→adcode）和天气查询
+
+### Pipeline V2 真实联调
 
 Pipeline V2 真实联调时，通常只需要先配置这三个云函数：
 
@@ -119,6 +134,32 @@ AI_TIMEOUT_MS=30000
 BAILIAN_MODEL=
 ```
 
+### getWeather
+
+负责根据用户位置获取实时天气（高德 API）。
+
+必填变量：
+
+```text
+AMAP_KEY=你的高德Web服务Key
+```
+
+建议配置变量：
+
+```text
+WEATHER_CACHE_TTL_MS=600000
+```
+
+说明：
+
+- `AMAP_KEY` 必须是高德「Web 服务」类型的 Key，不是小程序/JS API Key。
+- 申请地址：https://lbs.amap.com/api/webservice/guide/create-project/get-key
+- 云函数会调用两个高德 API：
+  - 逆地理编码：`/v3/geocode/regeo`（经纬度→adcode）
+  - 天气查询：`/v3/weather/weatherInfo`（adcode→实时天气）
+- `WEATHER_CACHE_TTL_MS` 是天气缓存有效期，默认 10 分钟。
+- 如果不配置 `AMAP_KEY`，天气获取会失败，前端使用 fallback 数据。
+
 ## 不需要 AI 变量的云函数
 
 以下云函数不直接调用 AI，也不需要配置百炼、Aliyun VIAPI 或 OSS 中转变量：
@@ -155,6 +196,8 @@ BAILIAN_MODEL=
 | `AI_TIMEOUT_MS` | AI/图片下载超时 | 建议 `30000` |
 | `AI_MAX_RETRY` | AI 阶段重试次数 | 建议 `1` |
 | `ASSET_PIPELINE_VERSION` | 资产管线版本 | 建议 `v2` |
+| `AMAP_KEY` | 高德天气 API Key | `getWeather` 必填 |
+| `WEATHER_CACHE_TTL_MS` | 天气缓存有效期 | 默认 `600000`（10分钟） |
 
 ## 历史兼容变量
 
