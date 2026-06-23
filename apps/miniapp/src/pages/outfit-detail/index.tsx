@@ -267,6 +267,16 @@ function isItemDeleted(item: OutfitSnapshotItem | OutfitItemSummary): boolean {
   return Boolean(summaryItem.isDeleted || snapshotItem.isDeleted || snapshotItem.deletedAt);
 }
 
+function hasDeletedOutfitItems(outfit: Outfit): boolean {
+  if (outfit.incomplete) return true;
+  if (typeof outfit.deletedItemCount === 'number' && outfit.deletedItemCount > 0) return true;
+  return Boolean(
+    outfit.snapshotItems?.some((item) => item.isDeleted || item.deletedAt)
+      || outfit.itemsSnapshot?.some((item) => item.isDeleted || item.deletedAt)
+      || outfit.items?.some((item) => item.isDeleted),
+  );
+}
+
 // 单品卡片组件
 function OutfitItemRow({
   item,
@@ -461,6 +471,10 @@ export default function OutfitDetailPage() {
 
   async function handleToggleFavorite() {
     if (!outfit || favoriteOperating) return;
+    if (!outfit.isFavorite && hasDeletedOutfitItems(outfit)) {
+      Taro.showToast({ title: '这套搭配有衣物已移出衣橱，暂时不能继续使用', icon: 'none' });
+      return;
+    }
 
     const authContext = captureAuthContext();
     if (!authContext) return;
@@ -534,6 +548,11 @@ export default function OutfitDetailPage() {
 
   async function handleConfirmWear() {
     if (!outfit || wearOperating) return;
+
+    if (hasDeletedOutfitItems(outfit)) {
+      Taro.showToast({ title: '这套搭配有衣物已移出衣橱，暂时不能继续使用', icon: 'none' });
+      return;
+    }
 
     if (outfit.isWornToday) {
       Taro.showToast({ title: '今天已经穿过这套啦～', icon: 'none' });
@@ -819,6 +838,7 @@ export default function OutfitDetailPage() {
   }
 
   const deletedItemCount = getDeletedItemCount(outfit);
+  const hasDeletedItems = hasDeletedOutfitItems(outfit);
   const isFavoriteDetail = Boolean(outfit.isFavorite);
   const styleTags = getOutfitStyleTags(outfit);
   const weatherSummary = getOutfitWeatherSummary(outfit);
@@ -996,12 +1016,12 @@ export default function OutfitDetailPage() {
 
       <View className="action-bar">
         <View
-          className={`action-btn favorite ${isFavoriteDetail ? 'active' : ''} ${favoriteOperating ? 'disabled' : ''}`}
+          className={`action-btn favorite ${isFavoriteDetail ? 'active' : ''} ${favoriteOperating || (!isFavoriteDetail && hasDeletedItems) ? 'disabled' : ''}`}
           onClick={handleToggleFavorite}
         >
           <Text className="btn-text">{isFavoriteDetail ? '取消收藏' : '收藏'}</Text>
         </View>
-        <View className={`action-btn wear ${wearOperating ? 'disabled' : ''}`} onClick={handleConfirmWear}>
+        <View className={`action-btn wear ${wearOperating || hasDeletedItems ? 'disabled' : ''}`} onClick={handleConfirmWear}>
           <Text className="btn-text">{wearOperating ? '处理中...' : outfit.isWornToday ? '今天穿过啦' : '穿它'}</Text>
         </View>
       </View>

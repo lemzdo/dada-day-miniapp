@@ -479,11 +479,14 @@ export default function WardrobePage() {
       if (!modalRes.confirm) return;
       if (!isCurrentAuthContext(authContext)) return;
 
-      await deleteCloudClothing(item.id);
+      const result = await deleteCloudClothing(item.id);
       if (!isCurrentAuthContext(authContext)) return;
       await invalidateAfterWardrobeMutation({ authContext });
       if (!isCurrentAuthContext(authContext)) return;
-      Taro.showToast({ title: '已删除', icon: 'success' });
+      Taro.showToast({
+        title: result.referenceRepairPending ? '已从衣橱移除，历史记录正在整理' : '已删除',
+        icon: result.referenceRepairPending ? 'none' : 'success',
+      });
       setClothes((prev) => prev.filter((clothing) => clothing.id !== item.id));
       setStats((prev) => ({ ...prev, used: Math.max(0, prev.used - 1) }));
       refreshWardrobe();
@@ -539,7 +542,10 @@ export default function WardrobePage() {
 
       setSelectedIds([]);
       setSelectionMode(false);
-      Taro.showToast({ title: '小搭已帮你清理好啦', icon: 'success' });
+      Taro.showToast({
+        title: result.referenceRepairPending ? '已从衣橱移除，历史记录正在整理' : '小搭已帮你清理好啦',
+        icon: result.referenceRepairPending ? 'none' : 'success',
+      });
       refreshWardrobe();
     } catch (err) {
       console.error('Batch delete clothing error:', err);

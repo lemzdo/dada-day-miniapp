@@ -923,10 +923,38 @@ async function assertOutfitOwner(id) {
   return res.data;
 }
 
-async function loadClothesByIds(openid, ids) {
+async function loadClothesByIds(openid, ids, database = db) {
   if (!ids.length) return [];
-  const res = await db.collection('clothes').where({ _openid: openid, _id: db.command.in(ids) }).limit(100).get();
+  const res = await database.collection('clothes').where({ _openid: openid, _id: db.command.in(ids) }).limit(100).get();
   return res.data;
+}
+
+async function assertOutfitClothesAvailable(openid, clothingIds, database = db) {
+  const expectedIds = uniqueStrings(clothingIds);
+  const clothes = await loadClothesByIds(openid, expectedIds, database);
+  const availableIds = new Set(
+    clothes
+      .filter((item) => item && item.status !== DELETED_STATUS)
+      .map((item) => item._id),
+  );
+  if (expectedIds.some((id) => !availableIds.has(id))) {
+    throw createBusinessError(
+      'OUTFIT_CONTAINS_DELETED_CLOTHES',
+      '这套搭配有衣物已移出衣橱，暂时不能继续使用',
+    );
+  }
+}
+
+async function runOutfitReferenceTransaction(callback) {
+  if (typeof db.runTransaction !== 'function') {
+    throw createBusinessError('OUTFIT_REFERENCE_TRANSACTION_UNAVAILABLE', '操作暂时不可用，请稍后再试');
+  }
+  try {
+    return await db.runTransaction(callback, 3);
+  } catch (error) {
+    if (error && error.businessCode) throw error;
+    throw createBusinessError('OUTFIT_REFERENCE_WRITE_FAILED', '操作暂时失败，请稍后再试');
+  }
 }
 
 async function saveFavoriteOutfit(id, outfitPayload, aiCommentPayload) {
@@ -937,37 +965,32 @@ async function saveFavoriteOutfit(id, outfitPayload, aiCommentPayload) {
   if (!base || clothingIds.length === 0) throw new Error('outfit payload is required');
 
   const outfitKey = getOutfitKey(clothingIds);
-  const existing = await findFavoriteByKey(OPENID, outfitKey);
   const recordData = buildSnapshotRecordData(base, {
     aiComment: aiCommentPayload || base.aiComment,
     outfitKey,
     now,
     source: base.source === 'history' ? 'history' : 'recommendation',
   });
+  const saved = await runOutfitReferenceTransaction(async (transaction) => {
+    await assertOutfitClothesAvailable(OPENID, clothingIds, transaction);
+    const existing = await findFavoriteByKey(OPENID, outfitKey, transaction);
+    if (existing) {
+      const data = { ...recordData, updatedAt: now, deletedAt: null };
+      await transaction.collection('favorite_outfits').doc(existing._id).update({ data });
+      return { ...existing, ...data };
+    }
 
-  if (existing) {
-    await db.collection('favorite_outfits').doc(existing._id).update({
-      data: {
-        ...recordData,
-        updatedAt: now,
-        deletedAt: null,
-      },
-    });
-    return enrichSingleOutfitState(toSnapshotOutfit({ ...existing, ...recordData, updatedAt: now, deletedAt: null }, 'favorite'), {
-      openid: OPENID,
-      targetDate: base.targetDate,
-    });
-  }
-
-  const addData = {
-    _openid: OPENID,
-    userId: OPENID,
-    ...recordData,
-    createdAt: now,
-    updatedAt: now,
-  };
-  const addRes = await db.collection('favorite_outfits').add({ data: addData });
-  return enrichSingleOutfitState(toSnapshotOutfit({ ...addData, _id: addRes._id }, 'favorite'), {
+    const addData = {
+      _openid: OPENID,
+      userId: OPENID,
+      ...recordData,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const addRes = await transaction.collection('favorite_outfits').add({ data: addData });
+    return { ...addData, _id: addRes._id };
+  });
+  return enrichSingleOutfitState(toSnapshotOutfit(saved, 'favorite'), {
     openid: OPENID,
     targetDate: base.targetDate,
   });
@@ -1053,33 +1076,32 @@ async function addOutfitHistory(event) {
     : null;
   const targetDate = event.date || base.targetDate || now.slice(0, 10);
   const outfitKey = getOutfitKey(clothingIds);
-  const existingTodayHistory = await findTodayHistoryByKey(OPENID, outfitKey, targetDate);
-  if (existingTodayHistory) {
-    return enrichSingleOutfitState(toSnapshotOutfit(existingTodayHistory, 'history'), {
-      openid: OPENID,
-      targetDate,
-    });
-  }
   const recordData = buildSnapshotRecordData(base, {
     aiComment: event.aiComment || base.aiComment,
     outfitKey,
     now,
     source,
   });
-  const addData = {
-    _openid: OPENID,
-    userId: OPENID,
-    ...recordData,
-    source,
-    sourceFavoriteOutfitId,
-    wearDate: targetDate,
-    targetDate,
-    wornAt: now,
-    createdAt: now,
-  };
+  const saved = await runOutfitReferenceTransaction(async (transaction) => {
+    await assertOutfitClothesAvailable(OPENID, clothingIds, transaction);
+    const existing = await findTodayHistoryByKey(OPENID, outfitKey, targetDate, transaction);
+    if (existing) return existing;
 
-  const addRes = await db.collection('outfit_history').add({ data: addData });
-  return enrichSingleOutfitState(toSnapshotOutfit({ ...addData, _id: addRes._id }, 'history'), {
+    const addData = {
+      _openid: OPENID,
+      userId: OPENID,
+      ...recordData,
+      source,
+      sourceFavoriteOutfitId,
+      wearDate: targetDate,
+      targetDate,
+      wornAt: now,
+      createdAt: now,
+    };
+    const addRes = await transaction.collection('outfit_history').add({ data: addData });
+    return { ...addData, _id: addRes._id };
+  });
+  return enrichSingleOutfitState(toSnapshotOutfit(saved, 'history'), {
     openid: OPENID,
     targetDate,
   });
@@ -1220,11 +1242,11 @@ async function findOutfitsByKeys(openid, outfitKeys) {
   return map;
 }
 
-async function findTodayHistoryByKeys(openid, outfitKeys, targetDate) {
+async function findTodayHistoryByKeys(openid, outfitKeys, targetDate, database = db) {
   const map = new Map();
   const keys = uniqueStrings(outfitKeys);
   if (!keys.length) return map;
-  const res = await db.collection('outfit_history')
+  const res = await database.collection('outfit_history')
     .where({ _openid: openid, outfitKey: db.command.in(keys) })
     .limit(500)
     .get();
@@ -1238,8 +1260,8 @@ async function findTodayHistoryByKeys(openid, outfitKeys, targetDate) {
   return map;
 }
 
-async function findTodayHistoryByKey(openid, outfitKey, targetDate) {
-  const map = await findTodayHistoryByKeys(openid, [outfitKey], targetDate);
+async function findTodayHistoryByKey(openid, outfitKey, targetDate, database = db) {
+  const map = await findTodayHistoryByKeys(openid, [outfitKey], targetDate, database);
   return map.get(outfitKey) || null;
 }
 
@@ -1297,8 +1319,8 @@ async function getHistoryById(id) {
   return enrichSingleOutfitState(toSnapshotOutfit(res.data, 'history'), { openid: OPENID });
 }
 
-async function findFavoriteByKey(openid, outfitKey) {
-  const res = await db.collection('favorite_outfits')
+async function findFavoriteByKey(openid, outfitKey, database = db) {
+  const res = await database.collection('favorite_outfits')
     .where({ _openid: openid, outfitKey })
     .limit(1)
     .get();
@@ -1497,27 +1519,31 @@ async function upsertOutfitByKey({ openid, existing, base, patch, now }) {
   const clothingIds = readBaseClothingIds(base);
   if (!base || clothingIds.length === 0) throw new Error('outfit payload is required');
 
-  const outfitKey = getOutfitKey(clothingIds);
-  const current = existing || (await findOutfitByKey(openid, outfitKey));
-  const data = buildOutfitSaveData(base, {
-    outfitKey,
-    now,
-    patch,
-    current,
+  return runOutfitReferenceTransaction(async (transaction) => {
+    await assertOutfitClothesAvailable(openid, clothingIds, transaction);
+
+    const outfitKey = getOutfitKey(clothingIds);
+    const current = existing || (await findOutfitByKey(openid, outfitKey, transaction));
+    const data = buildOutfitSaveData(base, {
+      outfitKey,
+      now,
+      patch,
+      current,
+    });
+
+    if (current) {
+      await transaction.collection('outfits').doc(current._id).update({ data });
+      return { ...current, ...data };
+    }
+
+    const addData = {
+      _openid: openid,
+      ...data,
+      createdAt: now,
+    };
+    const addRes = await transaction.collection('outfits').add({ data: addData });
+    return { ...addData, _id: addRes._id };
   });
-
-  if (current) {
-    await db.collection('outfits').doc(current._id).update({ data });
-    return { ...current, ...data };
-  }
-
-  const addData = {
-    _openid: openid,
-    ...data,
-    createdAt: now,
-  };
-  const addRes = await db.collection('outfits').add({ data: addData });
-  return { ...addData, _id: addRes._id };
 }
 
 function buildOutfitSaveData(base, { outfitKey, now, patch, current }) {
@@ -1563,8 +1589,8 @@ function buildOutfitSaveData(base, { outfitKey, now, patch, current }) {
   };
 }
 
-async function findOutfitByKey(openid, outfitKey) {
-  const res = await db.collection('outfits').where({ _openid: openid, outfitKey }).limit(1).get();
+async function findOutfitByKey(openid, outfitKey, database = db) {
+  const res = await database.collection('outfits').where({ _openid: openid, outfitKey }).limit(1).get();
   return res.data[0] || null;
 }
 
@@ -2539,5 +2565,15 @@ function ok(data) {
 }
 
 function fail(error) {
-  return { code: 1, data: null, message: error && error.message ? error.message : 'unknown error' };
+  return {
+    code: 1,
+    data: error && error.businessCode ? { errorCode: error.businessCode } : null,
+    message: error && error.message ? error.message : 'unknown error',
+  };
+}
+
+function createBusinessError(code, message) {
+  const error = new Error(message);
+  error.businessCode = code;
+  return error;
 }

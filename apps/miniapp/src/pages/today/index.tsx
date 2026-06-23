@@ -506,7 +506,12 @@ export default function TodayPage() {
     } catch (err) {
       console.error('Toggle favorite error:', err);
       if (isCurrentMutation(authContext, 'favorite', operationOutfitKey)) {
-        Taro.showToast({ title: '操作失败', icon: 'none' });
+        const errorData = (err as { data?: { errorCode?: string } })?.data;
+        if (errorData?.errorCode === 'OUTFIT_CONTAINS_DELETED_CLOTHES') {
+          Taro.showToast({ title: '这套搭配有衣物已移出衣橱，暂时不能继续使用', icon: 'none' });
+        } else {
+          Taro.showToast({ title: '操作失败', icon: 'none' });
+        }
       }
     } finally {
       if (isCurrentMutation(authContext, 'favorite', operationOutfitKey)) {
@@ -566,7 +571,12 @@ export default function TodayPage() {
     } catch (err) {
       console.error('Confirm wear error:', err);
       if (isCurrentMutation(authContext, 'wear', operationOutfitKey)) {
-        Taro.showToast({ title: '操作失败', icon: 'none' });
+        const errorData = (err as { data?: { errorCode?: string } })?.data;
+        if (errorData?.errorCode === 'OUTFIT_CONTAINS_DELETED_CLOTHES') {
+          Taro.showToast({ title: '这套搭配有衣物已移出衣橱，暂时不能继续使用', icon: 'none' });
+        } else {
+          Taro.showToast({ title: '操作失败', icon: 'none' });
+        }
       }
     } finally {
       if (isCurrentMutation(authContext, 'wear', operationOutfitKey)) {

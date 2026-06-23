@@ -453,8 +453,16 @@ export async function updateCloudClothing(id: string, data: ClothingUpdateInput)
   return item;
 }
 
+export interface DeleteCloudClothingResult {
+  id: string;
+  deletedAt?: string;
+  referenceRepairStatus: 'pending' | 'processing' | 'complete' | 'failed';
+  referenceRepairPending: boolean;
+  referenceRepairFoundReferences?: boolean;
+}
+
 export async function deleteCloudClothing(id: string) {
-  const result = await callCloudFunction<{ id: string }>('deleteClothes', { id });
+  const result = await callCloudFunction<DeleteCloudClothingResult>('deleteClothes', { id });
   clearCloudCache(['getWardrobe:', 'generateOutfit:']);
   return result;
 }
@@ -462,9 +470,11 @@ export async function deleteCloudClothing(id: string) {
 export interface BatchDeleteCloudClothingResult {
   successIds: string[];
   failedIds: string[];
+  results?: DeleteCloudClothingResult[];
   total: number;
   successCount: number;
   failedCount: number;
+  referenceRepairPending?: boolean;
 }
 
 export async function deleteCloudClothingBatch(ids: string[]) {

@@ -207,13 +207,16 @@ export default function ClothingDetailPage() {
       
       if (modalRes.confirm) {
         if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
-        await deleteCloudClothing(clothing.id);
+        const result = await deleteCloudClothing(clothing.id);
         if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
         await invalidateAfterWardrobeMutation({ authContext });
         if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
         // 标记需要刷新衣橱
         setUserStorageSync(WARDROBE_REFRESH_STORAGE_KEY, true, { authContext });
-        Taro.showToast({ title: '已删除', icon: 'success' });
+        Taro.showToast({
+          title: result.referenceRepairPending ? '已从衣橱移除，历史记录正在整理' : '已删除',
+          icon: result.referenceRepairPending ? 'none' : 'success',
+        });
         setTimeout(() => {
           if (isFlowCurrent(authContext, flowRuntimeKey)) navigateToWardrobe();
         }, 600);
