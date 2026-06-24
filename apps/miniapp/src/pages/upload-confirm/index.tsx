@@ -201,10 +201,18 @@ export default function UploadConfirmPage() {
         const result = await processUploadImage(imageId);
         if (!isFlowCurrent(authContext, flowRuntimeKey) || discardRequestedRef.current) return;
         applyProcessedImageResult(imageId, result);
+        if (result.status === 'superseded' || result.status === 'reused') {
+          await refresh();
+        }
       }
       if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
       removeUserStorageSync(uploadImagesKey, { authContext });
       await invalidateAfterUploadTaskMutation({ authContext });
+    } catch (error) {
+      console.error('Process pending upload images failed:', error);
+      if (isFlowCurrent(authContext, flowRuntimeKey) && !discardRequestedRef.current) {
+        Taro.showToast({ title: '识别暂时中断，可稍后重试', icon: 'none' });
+      }
     } finally {
       processingLoopRef.current = false;
       if (isFlowCurrent(authContext, flowRuntimeKey) && !discardRequestedRef.current) {
@@ -225,7 +233,25 @@ export default function UploadConfirmPage() {
     result: Awaited<ReturnType<typeof processUploadImage>>,
   ) {
     const nextDrafts = result.drafts || [];
-    const nextStatus = nextDrafts.length > 0 ? 'detected' : result.errorMessage ? 'failed' : 'empty';
+    if (result.status === 'inProgress') {
+      setImages((prev) => prev.map((item) => (
+        item.id === imageId
+          ? {
+              ...item,
+              status: 'processing',
+              detectStatus: 'pending',
+              errorMessage: '',
+            }
+          : item
+      )));
+      return;
+    }
+    if (result.status === 'superseded') return;
+
+    const nextStatus = result.status === 'reused'
+      ? (nextDrafts.length > 0 ? 'detected' : 'empty')
+      : result.status;
+    const isTerminalStatus = nextStatus === 'detected' || nextStatus === 'empty' || nextStatus === 'failed';
     setImages((prev) => prev.map((item) => (
       item.id === imageId
         ? {
@@ -238,11 +264,21 @@ export default function UploadConfirmPage() {
         : item
     )));
     setDrafts((prev) => mergeDrafts(prev, nextDrafts));
+    if (!isTerminalStatus) return;
     setBatch((prev) => {
       if (!prev) return prev;
+      const currentImage = images.find((item) => item.id === imageId);
+      const alreadyProcessed = currentImage ? isImageProcessed(currentImage) : false;
       const totalImages = Math.max(0, Number(prev.totalImages || images.length || 0));
-      const processedImages = Math.min(totalImages, Math.max(0, Number(prev.processedImages || 0)) + 1);
-      const totalDetectedClothes = Math.max(0, Number(prev.totalDetectedClothes || 0)) + nextDrafts.length;
+      const processedImages = Math.min(
+        totalImages,
+        Math.max(0, Number(prev.processedImages || 0)) + (alreadyProcessed ? 0 : 1),
+      );
+      const previousDetectedCount = currentImage ? Math.max(0, Number(currentImage.detectedCount || 0)) : 0;
+      const totalDetectedClothes = Math.max(
+        0,
+        Number(prev.totalDetectedClothes || 0) - previousDetectedCount + nextDrafts.length,
+      );
       return {
         ...prev,
         processedImages,

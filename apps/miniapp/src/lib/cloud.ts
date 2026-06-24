@@ -8,6 +8,7 @@ import type {
   Outfit,
   OutfitAiComment,
   OutfitAiReviewResponse,
+  ProcessUploadImageStatus,
   RecommendRequest,
   RecommendResponse,
   RecommendationProfile,
@@ -412,7 +413,17 @@ export async function uploadFeedbackImage(filePath: string) {
 }
 
 export async function processUploadImage(imageId: string) {
-  return callCloudFunction<{ imageId: string; drafts: ClothesDraft[]; errorMessage?: string }>('processUploadImage', {
+  return callCloudFunction<{
+    success?: boolean;
+    status: ProcessUploadImageStatus;
+    imageId: string;
+    drafts?: ClothesDraft[];
+    reused?: boolean;
+    reason?: string;
+    emptyReason?: string;
+    errorMessage?: string;
+    warnings?: string[];
+  }>('processUploadImage', {
     imageId,
   });
 }

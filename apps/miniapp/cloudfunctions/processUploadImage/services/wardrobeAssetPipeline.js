@@ -179,12 +179,13 @@ async function runWardrobeAssetPipeline({ cloud, openid, image }) {
     assets,
     warnings,
   });
+  const keyedAssets = assignStableAssetKeys(shoeMergeResult.assets);
 
   return {
     routerResult,
     detectionRaw: detectionStage.raw,
     warnings,
-    assets: shoeMergeResult.assets,
+    assets: keyedAssets,
     detectedCount: candidates.length,
     rawDetectedCount: detectionStage.rawDetectedCount || 0,
     mergedShoePairCount: shoeMergeResult.mergedCount,
@@ -194,6 +195,42 @@ async function runWardrobeAssetPipeline({ cloud, openid, image }) {
     emptyReason: buildEmptyReason(routerStage, detectionStage, candidates),
     stageStatus,
   };
+}
+
+function assignStableAssetKeys(assets) {
+  return (assets || [])
+    .map((asset, stableInputIndex) => ({ ...asset, stableInputIndex }))
+    .sort(compareAssetsForStableKey)
+    .map((asset, index) => ({
+      ...asset,
+      stableInputIndex: undefined,
+      sourceAssetKey: asset.sourceAssetKey || `asset-${index}`,
+    }));
+}
+
+function compareAssetsForStableKey(left, right) {
+  const leftBox = getSortableAssetBbox(left);
+  const rightBox = getSortableAssetBbox(right);
+  const topDiff = leftBox.y - rightBox.y;
+  if (Math.abs(topDiff) > 0.0001) return topDiff;
+  const leftDiff = leftBox.x - rightBox.x;
+  if (Math.abs(leftDiff) > 0.0001) return leftDiff;
+  const typeDiff = normalizeType(left.type || left.category).localeCompare(normalizeType(right.type || right.category));
+  if (typeDiff !== 0) return typeDiff;
+  const itemIndexDiff = getSortableItemIndex(left) - getSortableItemIndex(right);
+  if (itemIndexDiff !== 0) return itemIndexDiff;
+  return Number(left.stableInputIndex || 0) - Number(right.stableInputIndex || 0);
+}
+
+function getSortableAssetBbox(asset) {
+  const bbox = normalizeAssetBbox(asset);
+  if (bbox) return bbox;
+  return { x: Number.POSITIVE_INFINITY, y: Number.POSITIVE_INFINITY };
+}
+
+function getSortableItemIndex(asset) {
+  const value = Number(asset && asset.itemIndex);
+  return Number.isFinite(value) ? value : Number.POSITIVE_INFINITY;
 }
 
 async function imageRouter(imageUrl) {
@@ -1654,6 +1691,8 @@ function toDraftData(asset, openid) {
     assetVersion: asset.assetVersion,
     batchId: asset.batchId,
     sourceImageId: asset.sourceImageId,
+    sourceAssetKey: asset.sourceAssetKey || '',
+    processingToken: asset.processingToken || '',
     itemIndex: asset.itemIndex,
     originalImageUrl: asset.originalImageUrl,
     normalizedImageUrl: asset.normalizedImageUrl || asset.originalImageUrl,
@@ -1706,6 +1745,8 @@ function toDraftResponse(item) {
     assetVersion: item.assetVersion || 'v1',
     batchId: item.batchId,
     sourceImageId: item.sourceImageId,
+    sourceAssetKey: item.sourceAssetKey || '',
+    processingToken: item.processingToken || '',
     itemIndex: item.itemIndex || 0,
     originalImageUrl: item.originalImageUrl,
     normalizedImageUrl: item.normalizedImageUrl || item.originalImageUrl,

@@ -5,10 +5,17 @@ const {
   toDraftData,
   toDraftResponse,
 } = require('./services/wardrobeAssetPipeline');
+const crypto = require('crypto');
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
 const db = cloud.database();
+const PROCESSING_STALE_MS = 2 * 60 * 1000;
+const ACTIVE_PROCESSING_STATUSES = new Set(['detecting', 'processing']);
+const COMPLETED_IMAGE_STATUSES = new Set(['detected', 'success', 'completed']);
+const PROCESSABLE_IMAGE_STATUSES = new Set(['pending', 'failed', 'empty']);
+const REUSABLE_DRAFT_STATUSES = new Set(['pending', 'confirmed']);
+const PROTECTED_DRAFT_STATUSES = new Set(['confirmed', 'discarded', 'confirming']);
 
 exports.main = async (event = {}) => {
   const { OPENID } = cloud.getWXContext();
@@ -18,69 +25,94 @@ exports.main = async (event = {}) => {
   try {
     if (!imageId) throw new Error('imageId is required');
 
-    const imageRes = await db.collection('upload_images').doc(imageId).get();
-    const image = imageRes.data;
-    if (!image || image._openid !== OPENID) throw new Error('upload image not found');
-
-    const batchRes = await db.collection('upload_batches').doc(image.batchId).get();
-    if (!batchRes.data || batchRes.data._openid !== OPENID) throw new Error('batch not found');
-    const batchStatus = normalizeUploadBatchStatus(batchRes.data.status);
-    if (batchStatus === 'saved') throw new Error('batch already saved');
-    if (batchStatus === 'discarded') throw new Error('batch already discarded');
-
-    const existingDraftsRes = await db.collection('clothes_drafts').where({ sourceImageId: imageId, _openid: OPENID }).get();
-    const existingDrafts = existingDraftsRes.data || [];
-    if (existingDrafts.length > 0) {
-      await safeMarkImage(imageId, {
-        status: 'detected',
-        detectStatus: image.detectStatus === 'partial' ? 'partial' : 'success',
-        segmentStatus: summarizeSegmentStatus(existingDrafts),
-        detectedCount: existingDrafts.length,
-        errorMessage: '',
-        updatedAt: nowIso(),
-      });
-      const usedBatchFallback = await safeUpdateBatchAfterImage({
-        batchId: image.batchId,
-        openid: OPENID,
-        imageBefore: image,
-        status: 'detected',
-        detectedCount: existingDrafts.length,
-      });
+    const lease = await acquireImageProcessingLease(imageId, OPENID);
+    if (lease.status === 'inProgress') {
+      return ok({ success: true, status: 'inProgress', imageId, reused: false });
+    }
+    if (lease.status === 'superseded') {
+      return ok({ success: true, status: 'superseded', imageId, reason: lease.reason });
+    }
+    if (lease.status === 'completed') {
+      const reusableDrafts = await getReusableDrafts(imageId, OPENID);
+      if (reusableDrafts.length === 0) {
+        const reacquired = await acquireImageProcessingLease(imageId, OPENID, { allowCompletedWithoutDrafts: true });
+        if (reacquired.status === 'inProgress') {
+          return ok({ success: true, status: 'inProgress', imageId, reused: false });
+        }
+        if (reacquired.status === 'superseded') {
+          return ok({ success: true, status: 'superseded', imageId, reason: reacquired.reason });
+        }
+        if (reacquired.status === 'completed') {
+          return ok({ success: true, status: 'inProgress', imageId, reused: false, reason: 'completed_without_reusable_drafts' });
+        }
+        lease.status = reacquired.status;
+        lease.image = reacquired.image;
+        lease.batch = reacquired.batch;
+        lease.processingToken = reacquired.processingToken;
+      } else {
+        logImageProcessed({
+          batchId: lease.image && lease.image.batchId,
+          imageId,
+          startedAt,
+          assetCount: reusableDrafts.length,
+          mergedShoePairCount: 0,
+          usedBatchFallback: false,
+          reusedDrafts: true,
+        });
+        return ok({
+          success: true,
+          status: 'reused',
+          imageId,
+          drafts: reusableDrafts.map(toDraftResponse),
+          reused: true,
+        });
+      }
+    }
+    if (lease.status === 'reused') {
+      const reusableDrafts = await getReusableDrafts(imageId, OPENID);
       logImageProcessed({
-        batchId: image.batchId,
+        batchId: lease.image && lease.image.batchId,
         imageId,
         startedAt,
-        assetCount: existingDrafts.length,
+        assetCount: reusableDrafts.length,
         mergedShoePairCount: 0,
-        usedBatchFallback,
+        usedBatchFallback: false,
         reusedDrafts: true,
       });
-      return ok({ imageId, drafts: existingDrafts.map(toDraftResponse) });
+      return ok({
+        success: true,
+        status: 'reused',
+        imageId,
+        drafts: reusableDrafts.map(toDraftResponse),
+        reused: true,
+      });
     }
 
-    await markImage(imageId, {
-      status: 'detecting',
-      detectStatus: 'pending',
-      segmentStatus: 'not_started',
-      detectedCount: 0,
-      errorMessage: '',
-      updatedAt: nowIso(),
-    });
-    await db.collection('upload_batches').doc(image.batchId).update({
-      data: { status: 'processing', updatedAt: nowIso() },
-    });
+    const context = {
+      imageId,
+      openid: OPENID,
+      token: lease.processingToken,
+      batchId: lease.image.batchId,
+    };
+    const image = lease.image;
 
     try {
+      const beforePipeline = await touchProcessingHeartbeat(context);
+      if (!beforePipeline.owned) return ok(buildSupersededResult(imageId, beforePipeline.reason));
+
       const pipelineResult = await runWardrobeAssetPipeline({
         cloud,
         openid: OPENID,
         image: { ...image, _id: imageId },
       });
 
+      const beforeDrafts = await touchProcessingHeartbeat(context);
+      if (!beforeDrafts.owned) return ok(buildSupersededResult(imageId, beforeDrafts.reason));
+
       if (pipelineResult.assets.length === 0) {
         const noAssetError = getNoAssetErrorMessage(pipelineResult);
         const shouldMarkEmpty = !noAssetError;
-        await markImage(imageId, {
+        const markResult = await markImageWithToken(context, {
           status: shouldMarkEmpty ? 'empty' : 'failed',
           detectStatus: shouldMarkEmpty ? 'success' : 'failed',
           segmentStatus: 'skipped',
@@ -90,30 +122,43 @@ exports.main = async (event = {}) => {
           routerResult: pipelineResult.routerResult,
           updatedAt: nowIso(),
         });
-        const usedBatchFallback = await safeUpdateBatchAfterImage({
-          batchId: image.batchId,
-          openid: OPENID,
-          imageBefore: image,
-          status: shouldMarkEmpty ? 'empty' : 'failed',
-          detectedCount: 0,
-        });
+        if (!markResult.owned) return ok(buildSupersededResult(imageId, markResult.reason));
+        await refreshBatch(image.batchId, OPENID);
         logImageProcessed({
           batchId: image.batchId,
           imageId,
           startedAt,
           assetCount: 0,
           mergedShoePairCount: pipelineResult.mergedShoePairCount || 0,
-          usedBatchFallback,
+          usedBatchFallback: true,
         });
-        return ok({ imageId, drafts: [], emptyReason: pipelineResult.emptyReason, errorMessage: noAssetError });
+        return ok({
+          success: true,
+          status: shouldMarkEmpty ? 'empty' : 'failed',
+          imageId,
+          drafts: [],
+          emptyReason: pipelineResult.emptyReason,
+          errorMessage: noAssetError,
+        });
       }
 
       const createdDrafts = [];
       try {
         for (const asset of pipelineResult.assets) {
-          const draft = toDraftData(asset, OPENID);
-          const addRes = await db.collection('clothes_drafts').add({ data: draft });
-          createdDrafts.push(toDraftResponse({ ...draft, _id: addRes._id }));
+          const owner = await assertProcessingOwner(context, { requireWritableBatch: true });
+          if (!owner.owned) return ok(buildSupersededResult(imageId, owner.reason));
+          const draft = await upsertDraftForAsset(asset, OPENID, context);
+          if (draft.locked) {
+            return ok({
+              success: true,
+              status: 'inProgress',
+              imageId,
+              drafts: createdDrafts,
+              reused: false,
+              reason: 'draft_locked',
+            });
+          }
+          createdDrafts.push(draft);
         }
       } catch (error) {
         const message = getErrorMessage(error);
@@ -124,7 +169,7 @@ exports.main = async (event = {}) => {
           message,
         });
 
-        await safeMarkImage(imageId, {
+        const markResult = await markImageWithToken(context, {
           status: createdDrafts.length > 0 ? 'detected' : 'failed',
           detectStatus: createdDrafts.length > 0 ? 'partial' : 'failed',
           segmentStatus: summarizeSegmentStatus(createdDrafts),
@@ -134,13 +179,8 @@ exports.main = async (event = {}) => {
           routerResult: pipelineResult.routerResult,
           updatedAt: nowIso(),
         });
-        const usedBatchFallback = await safeUpdateBatchAfterImage({
-          batchId: image.batchId,
-          openid: OPENID,
-          imageBefore: image,
-          status: createdDrafts.length > 0 ? 'detected' : 'failed',
-          detectedCount: createdDrafts.length,
-        });
+        if (!markResult.owned) return ok(buildSupersededResult(imageId, markResult.reason));
+        await refreshBatch(image.batchId, OPENID);
         logImageProcessed({
           batchId: image.batchId,
           imageId,
@@ -148,10 +188,16 @@ exports.main = async (event = {}) => {
           assetCount: pipelineResult.assets.length,
           createdDraftCount: createdDrafts.length,
           mergedShoePairCount: pipelineResult.mergedShoePairCount || 0,
-          usedBatchFallback,
+          usedBatchFallback: true,
           errorMessage: message,
         });
-        return ok({ imageId, drafts: createdDrafts, errorMessage: message });
+        return ok({
+          success: true,
+          status: createdDrafts.length > 0 ? 'detected' : 'failed',
+          imageId,
+          drafts: createdDrafts,
+          errorMessage: message,
+        });
       }
 
       const hasReviewDraft = createdDrafts.some((draft) => draft.assetStatus !== 'ready');
@@ -160,7 +206,7 @@ exports.main = async (event = {}) => {
         && Object.values(draft.stageStatus).some((status) => status === 'failed')
       ));
 
-      await safeMarkImage(imageId, {
+      const markResult = await markImageWithToken(context, {
         status: 'detected',
         detectStatus: hasReviewDraft || hasFailedStage ? 'partial' : 'success',
         segmentStatus: summarizeSegmentStatus(createdDrafts),
@@ -170,13 +216,8 @@ exports.main = async (event = {}) => {
         routerResult: pipelineResult.routerResult,
         updatedAt: nowIso(),
       });
-      const usedBatchFallback = await safeUpdateBatchAfterImage({
-        batchId: image.batchId,
-        openid: OPENID,
-        imageBefore: image,
-        status: 'detected',
-        detectedCount: createdDrafts.length,
-      });
+      if (!markResult.owned) return ok(buildSupersededResult(imageId, markResult.reason));
+      await refreshBatch(image.batchId, OPENID);
 
       console.log('[processUploadImage] pipeline v2 completed', {
         batchId: image.batchId,
@@ -186,14 +227,14 @@ exports.main = async (event = {}) => {
         durationMs: Date.now() - startedAt,
         assetCount: pipelineResult.assets.length,
         mergedShoePairCount: pipelineResult.mergedShoePairCount || 0,
-        usedBatchFallback,
+        usedBatchFallback: true,
       });
 
-      return ok({ imageId, drafts: createdDrafts, warnings: pipelineResult.warnings });
+      return ok({ success: true, status: 'detected', imageId, drafts: createdDrafts, warnings: pipelineResult.warnings });
     } catch (error) {
       const message = getErrorMessage(error);
       console.error('[processUploadImage] image failed', { imageId, message });
-      await markImage(imageId, {
+      const markResult = await markImageWithToken(context, {
         status: 'failed',
         detectStatus: 'failed',
         segmentStatus: 'skipped',
@@ -201,29 +242,206 @@ exports.main = async (event = {}) => {
         errorMessage: message,
         updatedAt: nowIso(),
       });
-      const usedBatchFallback = await safeUpdateBatchAfterImage({
-        batchId: image.batchId,
-        openid: OPENID,
-        imageBefore: image,
-        status: 'failed',
-        detectedCount: 0,
-      });
+      if (!markResult.owned) return ok(buildSupersededResult(imageId, markResult.reason));
+      await refreshBatch(image.batchId, OPENID);
       logImageProcessed({
         batchId: image.batchId,
         imageId,
         startedAt,
         assetCount: 0,
         mergedShoePairCount: 0,
-        usedBatchFallback,
+        usedBatchFallback: true,
         errorMessage: message,
       });
-      return ok({ imageId, drafts: [], errorMessage: message });
+      return ok({ success: true, status: 'failed', imageId, drafts: [], errorMessage: message });
     }
   } catch (error) {
     console.error('[processUploadImage] failed', error);
     return fail(error);
   }
 };
+
+async function acquireImageProcessingLease(imageId, openid, options = {}) {
+  if (typeof db.runTransaction !== 'function') {
+    throw new Error('process upload transaction unavailable');
+  }
+
+  const token = createProcessingToken();
+  const now = nowIso();
+
+  return db.runTransaction(async (transaction) => {
+    const imageRef = transaction.collection('upload_images').doc(imageId);
+    const imageRes = await imageRef.get();
+    const image = imageRes.data;
+    if (!image || image._openid !== openid) throw new Error('upload image not found');
+
+    const batchRef = transaction.collection('upload_batches').doc(image.batchId);
+    const batchRes = await batchRef.get();
+    const batch = batchRes.data;
+    if (!batch || batch._openid !== openid) throw new Error('batch not found');
+
+    const batchStatus = normalizeUploadBatchStatus(batch.status);
+    if (batchStatus === 'saved' || batchStatus === 'discarded') {
+      return { status: 'superseded', reason: 'batch_finalized', image, batch };
+    }
+
+    const imageStatus = image.status || 'pending';
+    if (COMPLETED_IMAGE_STATUSES.has(imageStatus) && !options.allowCompletedWithoutDrafts) {
+      return { status: 'completed', image, batch };
+    }
+
+    if (ACTIVE_PROCESSING_STATUSES.has(imageStatus) && !isProcessingStale(image)) {
+      return { status: 'inProgress', image, batch };
+    }
+
+    const canReprocessCompleted = options.allowCompletedWithoutDrafts && COMPLETED_IMAGE_STATUSES.has(imageStatus);
+    if (!PROCESSABLE_IMAGE_STATUSES.has(imageStatus) && !ACTIVE_PROCESSING_STATUSES.has(imageStatus) && !canReprocessCompleted) {
+      return { status: 'inProgress', image, batch };
+    }
+
+    const data = {
+      status: 'processing',
+      detectStatus: 'pending',
+      segmentStatus: 'not_started',
+      detectedCount: 0,
+      errorMessage: '',
+      processingToken: token,
+      processingStartedAt: now,
+      processingHeartbeatAt: now,
+      processingAttempt: Math.max(0, Number(image.processingAttempt || 0)) + 1,
+      updatedAt: now,
+    };
+
+    await imageRef.update({ data });
+    await batchRef.update({ data: { status: 'processing', updatedAt: now } });
+    return {
+      status: 'acquired',
+      image: { ...image, ...data, _id: imageId },
+      batch,
+      processingToken: token,
+    };
+  }, 3);
+}
+
+async function getReusableDrafts(imageId, openid) {
+  const res = await db.collection('clothes_drafts').where({ sourceImageId: imageId, _openid: openid }).get();
+  return (res.data || []).filter((draft) => REUSABLE_DRAFT_STATUSES.has(draft.status || 'pending'));
+}
+
+async function touchProcessingHeartbeat(context) {
+  return updateImageWithToken(context, {
+    processingHeartbeatAt: nowIso(),
+    updatedAt: nowIso(),
+  });
+}
+
+async function markImageWithToken(context, data) {
+  return updateImageWithToken(context, data);
+}
+
+async function updateImageWithToken(context, patch) {
+  return db.runTransaction(async (transaction) => {
+    const imageRef = transaction.collection('upload_images').doc(context.imageId);
+    const imageRes = await imageRef.get();
+    const image = imageRes.data;
+    const owner = validateProcessingOwner(image, context);
+    if (!owner.owned) return owner;
+
+    const batchRef = transaction.collection('upload_batches').doc(context.batchId);
+    const batchRes = await batchRef.get();
+    const batch = batchRes.data;
+    if (!batch || batch._openid !== context.openid) return { owned: false, reason: 'batch_not_found' };
+    const batchStatus = normalizeUploadBatchStatus(batch.status);
+    if (batchStatus === 'saved' || batchStatus === 'discarded') {
+      return { owned: false, reason: 'batch_finalized' };
+    }
+
+    await imageRef.update({ data: patch });
+    return { owned: true, image: { ...image, ...patch }, batch };
+  }, 3);
+}
+
+async function assertProcessingOwner(context, options = {}) {
+  const imageRes = await db.collection('upload_images').doc(context.imageId).get();
+  const owner = validateProcessingOwner(imageRes.data, context);
+  if (!owner.owned) return owner;
+
+  if (options.requireWritableBatch) {
+    const batchRes = await db.collection('upload_batches').doc(context.batchId).get();
+    const batch = batchRes.data;
+    if (!batch || batch._openid !== context.openid) return { owned: false, reason: 'batch_not_found' };
+    const batchStatus = normalizeUploadBatchStatus(batch.status);
+    if (batchStatus === 'saved' || batchStatus === 'discarded') {
+      return { owned: false, reason: 'batch_finalized' };
+    }
+  }
+
+  return owner;
+}
+
+function validateProcessingOwner(image, context) {
+  if (!image || image._openid !== context.openid) return { owned: false, reason: 'image_not_found' };
+  if (image.processingToken !== context.token) return { owned: false, reason: 'token_mismatch' };
+  if (!ACTIVE_PROCESSING_STATUSES.has(image.status || '')) return { owned: false, reason: 'status_changed' };
+  return { owned: true, image };
+}
+
+async function upsertDraftForAsset(asset, openid, context) {
+  const sourceAssetKey = normalizeSourceAssetKey(asset.sourceAssetKey);
+  const draftId = `${context.imageId}_${sourceAssetKey}`;
+  const ref = db.collection('clothes_drafts').doc(draftId);
+  const existingRes = await ref.get().catch(() => null);
+  const existing = existingRes && existingRes.data;
+
+  if (existing && existing._openid !== openid) throw new Error('draft ownership mismatch');
+  if (existing && PROTECTED_DRAFT_STATUSES.has(existing.status || 'pending')) {
+    return { ...toDraftResponse(existing), locked: existing.status === 'confirming' };
+  }
+
+  const draft = toDraftData({
+    ...asset,
+    sourceAssetKey,
+    processingToken: context.token,
+  }, openid);
+  const data = {
+    ...draft,
+    _openid: openid,
+    sourceImageId: context.imageId,
+    sourceAssetKey,
+    processingToken: context.token,
+    updatedAt: nowIso(),
+  };
+  if (!existing) data.createdAt = draft.createdAt || nowIso();
+  else data.createdAt = existing.createdAt || draft.createdAt || nowIso();
+
+  await ref.set({ data });
+  return toDraftResponse({ ...data, _id: draftId });
+}
+
+function normalizeSourceAssetKey(value) {
+  const raw = String(value || '').trim();
+  const normalized = raw.replace(/[^a-zA-Z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+  return normalized || 'asset-0';
+}
+
+function createProcessingToken() {
+  return crypto.randomBytes(16).toString('hex');
+}
+
+function isProcessingStale(image) {
+  const heartbeatAt = Date.parse(image.processingHeartbeatAt || image.processingStartedAt || image.updatedAt || '');
+  return !Number.isFinite(heartbeatAt) || Date.now() - heartbeatAt >= PROCESSING_STALE_MS;
+}
+
+function buildSupersededResult(imageId, reason) {
+  return {
+    success: true,
+    status: 'superseded',
+    imageId,
+    reason: reason || 'token_mismatch',
+    drafts: [],
+  };
+}
 
 async function refreshBatch(batchId, openid) {
   const imagesRes = await db.collection('upload_images').where({ batchId, _openid: openid }).get();
@@ -268,79 +486,6 @@ async function refreshBatch(batchId, openid) {
       updatedAt: nowIso(),
     },
   });
-}
-
-async function safeUpdateBatchAfterImage(input) {
-  try {
-    await updateBatchAfterImage(input);
-    return false;
-  } catch (error) {
-    console.warn('[processUploadImage] local batch update failed, fallback to refreshBatch', {
-      batchId: input.batchId,
-      imageId: input.imageBefore && input.imageBefore._id,
-      message: getErrorMessage(error),
-    });
-    await refreshBatch(input.batchId, input.openid);
-    return true;
-  }
-}
-
-async function updateBatchAfterImage({ batchId, openid, imageBefore, status, detectedCount }) {
-  const batchRes = await db.collection('upload_batches').doc(batchId).get();
-  const currentBatch = batchRes.data || {};
-  if (currentBatch._openid !== openid) throw new Error('batch not found');
-  const preservedStatus = normalizeUploadBatchStatus(currentBatch.status);
-  if (preservedStatus === 'saved' || preservedStatus === 'discarded') return;
-
-  const totalImages = Math.max(0, Number(currentBatch.totalImages || 0));
-  const previousDetectedCount = Math.max(0, Number(imageBefore && imageBefore.detectedCount ? imageBefore.detectedCount : 0));
-  const wasProcessed = isImageProcessed(imageBefore || {});
-  const processedImages = Math.min(
-    totalImages,
-    Math.max(0, Number(currentBatch.processedImages || 0)) + (wasProcessed ? 0 : 1),
-  );
-  const totalDetectedClothes = Math.max(
-    0,
-    Number(currentBatch.totalDetectedClothes || 0) - previousDetectedCount + Math.max(0, Number(detectedCount || 0)),
-  );
-  const nextStatus = processedImages < totalImages
-    ? 'processing'
-    : totalDetectedClothes > 0
-      ? 'ready'
-      : 'failed';
-  const summaryMessage = buildBatchSummaryMessage({
-    status: nextStatus,
-    failedImages: status === 'failed' ? 1 : 0,
-    emptyImages: status === 'empty' ? 1 : 0,
-    totalImages,
-    totalDetectedClothes,
-  });
-
-  await db.collection('upload_batches').doc(batchId).update({
-    data: {
-      processedImages,
-      totalDetectedClothes,
-      status: nextStatus,
-      errorMessage: nextStatus === 'failed' ? summaryMessage : '',
-      summaryMessage,
-      updatedAt: nowIso(),
-    },
-  });
-}
-
-async function markImage(imageId, data) {
-  await db.collection('upload_images').doc(imageId).update({ data });
-}
-
-async function safeMarkImage(imageId, data) {
-  try {
-    await markImage(imageId, data);
-  } catch (error) {
-    console.error('[processUploadImage] update upload image failed after drafts were created', {
-      imageId,
-      message: getErrorMessage(error),
-    });
-  }
 }
 
 function summarizeSegmentStatus(drafts) {
