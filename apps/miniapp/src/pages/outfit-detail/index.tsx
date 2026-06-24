@@ -277,6 +277,11 @@ function hasDeletedOutfitItems(outfit: Outfit): boolean {
   );
 }
 
+function isDeletedClothesBusinessError(error: unknown): boolean {
+  const errorData = (error as { data?: { errorCode?: string } })?.data;
+  return errorData?.errorCode === 'OUTFIT_CONTAINS_DELETED_CLOTHES';
+}
+
 // 单品卡片组件
 function OutfitItemRow({
   item,
@@ -538,7 +543,12 @@ export default function OutfitDetailPage() {
     } catch (err) {
       console.error('Toggle outfit favorite error:', err);
       if (!isCurrentAuthContext(authContext)) return;
-      Taro.showToast({ title: '操作失败', icon: 'none' });
+      Taro.showToast({
+        title: isDeletedClothesBusinessError(err)
+          ? '这套搭配有衣物已移出衣橱，暂时不能继续使用'
+          : '操作失败',
+        icon: 'none',
+      });
     } finally {
       if (isCurrentAuthContext(authContext)) {
         setFavoriteOperating(false);
@@ -599,7 +609,12 @@ export default function OutfitDetailPage() {
     } catch (err) {
       console.error('Confirm outfit wear error:', err);
       if (!isCurrentAuthContext(authContext)) return;
-      Taro.showToast({ title: '操作失败', icon: 'none' });
+      Taro.showToast({
+        title: isDeletedClothesBusinessError(err)
+          ? '这套搭配有衣物已移出衣橱，暂时不能继续使用'
+          : '操作失败',
+        icon: 'none',
+      });
     } finally {
       if (isCurrentAuthContext(authContext)) {
         setWearOperating(false);

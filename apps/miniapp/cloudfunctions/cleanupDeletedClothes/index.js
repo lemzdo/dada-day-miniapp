@@ -12,6 +12,7 @@ const MAX_HANDLED_TOMBSTONES = 50;
 const CLEANUP_TIME_BUDGET_MS = 15 * 1000;
 const DEADLINE_BUFFER_MS = 1000;
 const PROCESSING_STALE_MS = 10 * 60 * 1000;
+const SNAPSHOT_FILE_SCAN_PAGE_SIZE = 100;
 const crypto = require('crypto');
 const REPAIR_STAGES = ['outfits', 'favorite_outfits', 'outfit_history'];
 const CLOTHING_IMAGE_FIELDS = [
@@ -90,7 +91,7 @@ exports.main = async (event = {}) => {
 
         handled += 1;
         if (dryRun) continue;
-        const result = await cleanupCompletedTombstone(item);
+        const result = await cleanupCompletedTombstone(item, { deadline });
         if (result.removed) removed += 1;
         preservedFiles += result.preservedFiles;
         deletedFiles += result.deletedFiles;
@@ -159,15 +160,9 @@ async function repairClothingReferences(item, { deadline }) {
     referenceRepairFoundReferences: Boolean(item.referenceRepairFoundReferences),
   };
 
-  const repairToken = state.referenceRepairStatus === 'processing' && !isProcessingStale(state.referenceRepairUpdatedAt, state.referenceRepairHeartbeatAt)
-    ? state.referenceRepairToken
-    : crypto.randomBytes(16).toString('hex');
-
-  state = await saveRepairProgress(state, {
-    referenceRepairStatus: 'processing',
-    referenceRepairErrorCode: null,
-    referenceRepairToken: repairToken,
-  });
+  state = await acquireRepairLease(state);
+  if (!state.referenceRepairLeaseAcquired) return state;
+  const repairToken = state.referenceRepairToken;
 
   try {
     while (state.referenceRepairStage !== 'complete') {
@@ -183,6 +178,7 @@ async function repairClothingReferences(item, { deadline }) {
       const page = await readRepairPage(item._openid, stage, state.referenceRepairCursor);
       if (!page.length) {
         state = await advanceRepairStage(state, repairToken);
+        if (!isRepairOwned(state, repairToken)) return state;
         continue;
       }
 
@@ -200,7 +196,11 @@ async function repairClothingReferences(item, { deadline }) {
         referenceRepairToken: repairToken,
         referenceRepairHeartbeatAt: new Date().toISOString(),
       });
-      if (page.length < REPAIR_PAGE_SIZE) state = await advanceRepairStage(state, repairToken);
+      if (!isRepairOwned(state, repairToken)) return state;
+      if (page.length < REPAIR_PAGE_SIZE) {
+        state = await advanceRepairStage(state, repairToken);
+        if (!isRepairOwned(state, repairToken)) return state;
+      }
     }
 
     return saveRepairProgress(state, {
@@ -219,6 +219,32 @@ async function repairClothingReferences(item, { deadline }) {
       referenceRepairToken: null,
     });
   }
+}
+
+async function acquireRepairLease(state) {
+  const repairToken = crypto.randomBytes(16).toString('hex');
+  const now = new Date().toISOString();
+
+  return db.runTransaction(async (transaction) => {
+    const ref = transaction.collection('clothes').doc(state._id);
+    const currentRes = await ref.get();
+    const current = currentRes.data;
+    if (!current) return { ...state, referenceRepairLeaseAcquired: false };
+    if (current.referenceRepairStatus === 'complete') return { ...state, ...current, referenceRepairLeaseAcquired: false };
+    if (current.referenceRepairStatus === 'processing' && !isProcessingStale(current.referenceRepairUpdatedAt, current.referenceRepairHeartbeatAt)) {
+      return { ...state, ...current, referenceRepairLeaseAcquired: false };
+    }
+
+    const data = {
+      referenceRepairStatus: 'processing',
+      referenceRepairErrorCode: null,
+      referenceRepairToken: repairToken,
+      referenceRepairHeartbeatAt: now,
+      referenceRepairUpdatedAt: now,
+    };
+    await ref.update({ data });
+    return { ...state, ...current, ...data, referenceRepairLeaseAcquired: true };
+  }, 3);
 }
 
 async function readRepairPage(openid, collectionName, cursor) {
@@ -248,40 +274,40 @@ async function saveRepairProgress(state, patch) {
   const now = new Date().toISOString();
   const data = { ...patch, referenceRepairUpdatedAt: now };
 
-  const current = await db.collection('clothes').doc(state._id).get();
-  const currentToken = current.data.referenceRepairToken;
-  const myToken = state.referenceRepairToken;
+  return db.runTransaction(async (transaction) => {
+    const ref = transaction.collection('clothes').doc(state._id);
+    const current = await ref.get();
+    const currentData = current.data;
+    if (!currentData) return state;
+    if (
+      currentData.referenceRepairStatus !== 'processing'
+      || !state.referenceRepairToken
+      || currentData.referenceRepairToken !== state.referenceRepairToken
+    ) {
+      return { ...state, ...currentData };
+    }
 
-  if (currentToken && myToken && currentToken !== myToken) {
-    return { ...state, ...current.data };
-  }
-
-  if (currentToken && !myToken) {
-    return { ...state, ...current.data };
-  }
-
-  const hasCursor = 'referenceRepairCursor' in patch;
-  const hasFoundReferences = 'referenceRepairFoundReferences' in patch;
-  const hasComplete = patch.referenceRepairStatus === 'complete';
-  const hasFailed = patch.referenceRepairStatus === 'failed';
-
-  if (currentToken && myToken === currentToken) {
-    if (hasCursor && current.data.referenceRepairCursor && !isCursorAdvanced(state.referenceRepairCursor, current.data.referenceRepairCursor)) {
+    const hasCursor = 'referenceRepairCursor' in patch;
+    const hasFoundReferences = 'referenceRepairFoundReferences' in patch;
+    if (hasCursor && current.data.referenceRepairCursor && !isCursorAdvanced(patch.referenceRepairCursor, current.data.referenceRepairCursor)) {
       delete data.referenceRepairCursor;
     }
     if (hasFoundReferences && current.data.referenceRepairFoundReferences) {
       data.referenceRepairFoundReferences = true;
     }
-    if (hasComplete && current.data.referenceRepairStatus === 'complete') {
-      return { ...state, ...current.data };
-    }
-    if (hasFailed && current.data.referenceRepairStatus === 'complete') {
-      return { ...state, ...current.data };
-    }
-  }
 
-  await db.collection('clothes').doc(state._id).update({ data });
-  return { ...state, ...data };
+    await ref.update({ data });
+    return { ...state, ...data };
+  }, 3);
+}
+
+function isRepairOwned(state, repairToken = state.referenceRepairToken) {
+  return Boolean(
+    state
+      && state.referenceRepairStatus === 'processing'
+      && state.referenceRepairToken
+      && state.referenceRepairToken === repairToken,
+  );
 }
 
 function isCursorAdvanced(newCursor, oldCursor) {
@@ -369,7 +395,7 @@ function countDeletedSnapshots(items) {
   )).length;
 }
 
-async function cleanupCompletedTombstone(item) {
+async function cleanupCompletedTombstone(item, { deadline }) {
   const fileIDs = collectCloudFileIDs(item);
   const deletable = [];
   let preservedFiles = 0;
@@ -378,7 +404,7 @@ async function cleanupCompletedTombstone(item) {
     preservedFiles += fileIDs.length;
   } else {
     for (const fileID of fileIDs) {
-      const ownership = await inspectFileOwnership(item._id, fileID);
+      const ownership = await inspectFileOwnership(item, fileID, { deadline });
       if (ownership === 'exclusive') deletable.push(fileID);
       else preservedFiles += 1;
     }
@@ -394,25 +420,63 @@ async function cleanupCompletedTombstone(item) {
   return { removed: true, preservedFiles, deletedFiles: deletable.length };
 }
 
-async function inspectFileOwnership(currentClothingId, fileID) {
+async function inspectFileOwnership(item, fileID, { deadline }) {
   try {
     for (const field of CLOTHING_IMAGE_FIELDS) {
       const res = await db.collection('clothes').where({ [field]: fileID }).limit(2).get();
-      if ((res.data || []).some((item) => item._id !== currentClothingId)) return 'shared';
+      if ((res.data || []).some((clothing) => clothing._id !== item._id)) return 'shared';
     }
 
-    for (const collectionName of REPAIR_STAGES) {
-      for (const field of CLOTHING_IMAGE_FIELDS) {
-        const res = await db.collection(collectionName).where({ [field]: fileID }).limit(1).get();
-        if ((res.data || []).length > 0) return 'shared';
-      }
-    }
+    const snapshotOwnership = await inspectSnapshotFileOwnership(item._openid, fileID, { deadline });
+    if (snapshotOwnership !== 'exclusive') return snapshotOwnership;
 
     return 'exclusive';
   } catch {
     logCleanupWarning('CLEANUP_FILE_OWNERSHIP_UNKNOWN');
     return 'unknown';
   }
+}
+
+async function inspectSnapshotFileOwnership(openid, fileID, { deadline }) {
+  if (!openid) return 'unknown';
+  try {
+    for (const collectionName of REPAIR_STAGES) {
+      let cursor = '';
+      let hasMore = true;
+      while (hasMore) {
+        if (isNearDeadline(deadline)) return 'unknown';
+        const filter = { _openid: openid };
+        if (cursor) filter._id = _.gt(cursor);
+        const res = await db.collection(collectionName)
+          .where(filter)
+          .orderBy('_id', 'asc')
+          .limit(SNAPSHOT_FILE_SCAN_PAGE_SIZE)
+          .get();
+        const page = res.data || [];
+        if (page.some((record) => recordSnapshotHasFileID(record, fileID))) return 'shared';
+        hasMore = page.length === SNAPSHOT_FILE_SCAN_PAGE_SIZE;
+        if (hasMore) cursor = page[page.length - 1]._id;
+      }
+    }
+    return 'exclusive';
+  } catch {
+    logCleanupWarning('CLEANUP_SNAPSHOT_FILE_SCAN_FAILED');
+    return 'unknown';
+  }
+}
+
+function recordSnapshotHasFileID(record, fileID) {
+  return [record.snapshotItems, record.itemsSnapshot].some((items) =>
+    Array.isArray(items) && items.some((item) => snapshotItemHasFileID(item, fileID)),
+  );
+}
+
+function snapshotItemHasFileID(item, fileID) {
+  return Boolean(
+    item
+      && typeof item === 'object'
+      && CLOTHING_IMAGE_FIELDS.some((field) => item[field] === fileID),
+  );
 }
 
 function collectCloudFileIDs(item) {

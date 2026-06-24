@@ -122,15 +122,9 @@ async function repairClothingReferences(item, { deadline }) {
     referenceRepairFoundReferences: Boolean(item.referenceRepairFoundReferences),
   };
 
-  const repairToken = state.referenceRepairStatus === 'processing' && !isProcessingStale(state)
-    ? state.referenceRepairToken
-    : crypto.randomBytes(16).toString('hex');
-
-  state = await saveRepairProgress(state, {
-    referenceRepairStatus: 'processing',
-    referenceRepairErrorCode: null,
-    referenceRepairToken: repairToken,
-  });
+  state = await acquireRepairLease(state);
+  if (!state.referenceRepairLeaseAcquired) return state;
+  const repairToken = state.referenceRepairToken;
 
   try {
     while (state.referenceRepairStage !== 'complete') {
@@ -146,6 +140,7 @@ async function repairClothingReferences(item, { deadline }) {
       const page = await readRepairPage(item._openid, stage, state.referenceRepairCursor);
       if (!page.length) {
         state = await advanceRepairStage(state, repairToken);
+        if (!isRepairOwned(state, repairToken)) return state;
         continue;
       }
 
@@ -163,9 +158,11 @@ async function repairClothingReferences(item, { deadline }) {
         referenceRepairToken: repairToken,
         referenceRepairHeartbeatAt: new Date().toISOString(),
       });
+      if (!isRepairOwned(state, repairToken)) return state;
 
       if (page.length < REPAIR_PAGE_SIZE) {
         state = await advanceRepairStage(state, repairToken);
+        if (!isRepairOwned(state, repairToken)) return state;
       }
     }
 
@@ -185,6 +182,32 @@ async function repairClothingReferences(item, { deadline }) {
       referenceRepairToken: null,
     });
   }
+}
+
+async function acquireRepairLease(state) {
+  const repairToken = crypto.randomBytes(16).toString('hex');
+  const now = new Date().toISOString();
+
+  return db.runTransaction(async (transaction) => {
+    const ref = transaction.collection('clothes').doc(state._id);
+    const currentRes = await ref.get();
+    const current = currentRes.data;
+    if (!current) return { ...state, referenceRepairLeaseAcquired: false };
+    if (current.referenceRepairStatus === 'complete') return { ...state, ...current, referenceRepairLeaseAcquired: false };
+    if (current.referenceRepairStatus === 'processing' && !isProcessingStale(current)) {
+      return { ...state, ...current, referenceRepairLeaseAcquired: false };
+    }
+
+    const data = {
+      referenceRepairStatus: 'processing',
+      referenceRepairErrorCode: null,
+      referenceRepairToken: repairToken,
+      referenceRepairHeartbeatAt: now,
+      referenceRepairUpdatedAt: now,
+    };
+    await ref.update({ data });
+    return { ...state, ...current, ...data, referenceRepairLeaseAcquired: true };
+  }, 3);
 }
 
 async function readRepairPage(openid, collectionName, cursor) {
@@ -217,40 +240,40 @@ async function saveRepairProgress(state, patch) {
     referenceRepairUpdatedAt: now,
   };
 
-  const current = await db.collection('clothes').doc(state._id).get();
-  const currentToken = current.data.referenceRepairToken;
-  const myToken = state.referenceRepairToken;
+  return db.runTransaction(async (transaction) => {
+    const ref = transaction.collection('clothes').doc(state._id);
+    const current = await ref.get();
+    const currentData = current.data;
+    if (!currentData) return state;
+    if (
+      currentData.referenceRepairStatus !== 'processing'
+      || !state.referenceRepairToken
+      || currentData.referenceRepairToken !== state.referenceRepairToken
+    ) {
+      return { ...state, ...currentData };
+    }
 
-  if (currentToken && myToken && currentToken !== myToken) {
-    return { ...state, ...current.data };
-  }
-
-  if (currentToken && !myToken) {
-    return { ...state, ...current.data };
-  }
-
-  const hasCursor = 'referenceRepairCursor' in patch;
-  const hasFoundReferences = 'referenceRepairFoundReferences' in patch;
-  const hasComplete = patch.referenceRepairStatus === 'complete';
-  const hasFailed = patch.referenceRepairStatus === 'failed';
-
-  if (currentToken && myToken === currentToken) {
-    if (hasCursor && current.data.referenceRepairCursor && !isCursorAdvanced(state.referenceRepairCursor, current.data.referenceRepairCursor)) {
+    const hasCursor = 'referenceRepairCursor' in patch;
+    const hasFoundReferences = 'referenceRepairFoundReferences' in patch;
+    if (hasCursor && current.data.referenceRepairCursor && !isCursorAdvanced(patch.referenceRepairCursor, current.data.referenceRepairCursor)) {
       delete data.referenceRepairCursor;
     }
     if (hasFoundReferences && current.data.referenceRepairFoundReferences) {
       data.referenceRepairFoundReferences = true;
     }
-    if (hasComplete && current.data.referenceRepairStatus === 'complete') {
-      return { ...state, ...current.data };
-    }
-    if (hasFailed && current.data.referenceRepairStatus === 'complete') {
-      return { ...state, ...current.data };
-    }
-  }
 
-  await db.collection('clothes').doc(state._id).update({ data });
-  return { ...state, ...data };
+    await ref.update({ data });
+    return { ...state, ...data };
+  }, 3);
+}
+
+function isRepairOwned(state, repairToken = state.referenceRepairToken) {
+  return Boolean(
+    state
+      && state.referenceRepairStatus === 'processing'
+      && state.referenceRepairToken
+      && state.referenceRepairToken === repairToken,
+  );
 }
 
 function isCursorAdvanced(newCursor, oldCursor) {
