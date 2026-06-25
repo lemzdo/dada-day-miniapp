@@ -59,6 +59,55 @@ const ALLOWED_FIELDS = [
   'aiError',
 ];
 
+const ATTRIBUTE_ALIAS_GROUPS = {
+  category: ['category', 'type'],
+  subcategory: ['subcategory', 'subCategory', 'categoryName'],
+  colorPalette: ['colorPalette', 'colors', 'color'],
+  material: ['material', 'materialGuess'],
+  styleTags: ['styleTags', 'style'],
+  seasonTags: ['seasonTags'],
+  sceneTags: ['sceneTags'],
+  thickness: ['thickness'],
+};
+
+const SYSTEM_FIELDS = [
+  'status',
+  'displayImageUrl',
+  'imageUrl',
+  'originalImageUrl',
+  'normalizedImageUrl',
+  'cropImageUrl',
+  'croppedImageUrl',
+  'maskImageUrl',
+  'cleanImageUrl',
+  'imageSourceType',
+  'assetVersion',
+  'assetStatus',
+  'qualityScore',
+  'needsUserConfirm',
+  'confirmReasons',
+  'bbox',
+  'stageStatus',
+  'providerTrace',
+  'aiSegmentImageUrl',
+  'manualCropImageUrl',
+  'manualCropStatus',
+  'segmentStatus',
+  'segmentProvider',
+  'segmentModel',
+  'cutoutStatus',
+  'cutoutProvider',
+  'cutoutError',
+  'aiRecognizeStatus',
+  'detectStatus',
+  'detectProvider',
+  'detectModel',
+  'aiError',
+];
+
+const ATTRIBUTE_ALIAS_FIELDS = Object.keys(ATTRIBUTE_ALIAS_GROUPS)
+  .reduce((fields, key) => fields.concat(ATTRIBUTE_ALIAS_GROUPS[key]), []);
+
 exports.main = async (event = {}) => {
   try {
     const { OPENID } = cloud.getWXContext();
@@ -73,51 +122,27 @@ exports.main = async (event = {}) => {
     const manualFields = new Set(Array.isArray(current.data.manualFields) ? current.data.manualFields : []);
     ALLOWED_FIELDS.forEach((field) => {
       if (Object.prototype.hasOwnProperty.call(input, field)) {
+        if (ATTRIBUTE_ALIAS_FIELDS.includes(field)) return;
         data[field] = input[field];
-        if (![
-          'status',
-          'displayImageUrl',
-          'imageUrl',
-          'originalImageUrl',
-          'normalizedImageUrl',
-          'cropImageUrl',
-          'croppedImageUrl',
-          'maskImageUrl',
-          'cleanImageUrl',
-          'imageSourceType',
-          'assetVersion',
-          'assetStatus',
-          'qualityScore',
-          'needsUserConfirm',
-          'confirmReasons',
-          'bbox',
-          'stageStatus',
-          'providerTrace',
-          'aiSegmentImageUrl',
-          'manualCropImageUrl',
-          'manualCropStatus',
-          'segmentStatus',
-          'segmentProvider',
-          'segmentModel',
-          'cutoutStatus',
-          'cutoutProvider',
-          'cutoutError',
-          'aiRecognizeStatus',
-          'detectStatus',
-          'detectProvider',
-          'detectModel',
-          'aiError',
-        ].includes(field)) {
+        if (!SYSTEM_FIELDS.includes(field)) {
           manualFields.add(field);
         }
       }
     });
+
+    const attributePatch = normalizeClothingAttributes(input);
+    Object.keys(attributePatch).forEach((field) => {
+      if (!isEmptyAttributeValue(attributePatch[field])) {
+        data[field] = attributePatch[field];
+      }
+    });
+
     if (Object.prototype.hasOwnProperty.call(data, 'material')) {
       data.material = await resolveMaterialNameForStorage(data.material, OPENID);
     }
-    if (Object.prototype.hasOwnProperty.call(data, 'materialGuess')) {
-      data.materialGuess = await resolveMaterialNameForStorage(data.materialGuess, OPENID) || data.material || '';
-    }
+    Object.assign(data, buildClothingAttributeMirrorPatch(data));
+
+    getCanonicalManualFields(input).forEach((field) => manualFields.add(field));
     if (data.displayImageUrl && !data.imageUrl) {
       data.imageUrl = data.displayImageUrl;
     }
@@ -137,6 +162,8 @@ exports.main = async (event = {}) => {
 function toClothing(item) {
   const originalImageUrl = getOriginalImage(item);
   const displayImageUrl = getDisplayImage(item);
+  const attributes = normalizeClothingAttributes(item);
+  const mirrors = buildClothingAttributeMirrorPatch(attributes);
   return {
     id: item._id,
     userId: item._openid,
@@ -177,21 +204,21 @@ function toClothing(item) {
     detectProvider: item.detectProvider || item.aiProvider,
     detectModel: item.detectModel,
     aiRawResult: item.aiRawResult,
-    category: item.category || 'other',
-    subcategory: item.subcategory,
-    subCategory: item.subCategory || item.subcategory,
+    category: attributes.category || 'other',
+    subcategory: attributes.subcategory,
+    subCategory: mirrors.subCategory || attributes.subcategory,
     subcategoryId: item.subcategoryId,
-    colors: item.colors || [],
-    colorPalette: item.colorPalette || [],
-    styleTags: item.styleTags || [],
-    seasonTags: item.seasonTags || [],
-    material: item.material,
-    materialGuess: item.materialGuess,
-    thickness: item.thickness,
+    colors: mirrors.colors || [],
+    colorPalette: attributes.colorPalette || [],
+    styleTags: attributes.styleTags || [],
+    seasonTags: attributes.seasonTags || [],
+    material: attributes.material,
+    materialGuess: mirrors.materialGuess || attributes.material,
+    thickness: attributes.thickness,
     warmthScore: item.warmthScore || 0,
     coolnessScore: item.coolnessScore || 0,
     fashionScore: item.fashionScore || 0,
-    sceneTags: item.sceneTags || [],
+    sceneTags: attributes.sceneTags || [],
     matchTips: item.matchTips,
     aiStatus: item.aiStatus || 'recognized',
     aiConfidence: item.aiConfidence || 0,
@@ -209,6 +236,131 @@ function toClothing(item) {
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
   };
+}
+
+function normalizeClothingAttributes(input) {
+  const source = input && typeof input === 'object' ? input : {};
+  const colorValue = readAliasValue(source, ATTRIBUTE_ALIAS_GROUPS.colorPalette);
+
+  return {
+    category: readAliasValue(source, ATTRIBUTE_ALIAS_GROUPS.category),
+    subcategory: readAliasValue(source, ATTRIBUTE_ALIAS_GROUPS.subcategory),
+    colorPalette: normalizeColorPalette(colorValue),
+    material: readAliasValue(source, ATTRIBUTE_ALIAS_GROUPS.material),
+    thickness: readAliasValue(source, ATTRIBUTE_ALIAS_GROUPS.thickness),
+    styleTags: normalizeTags(readAliasValue(source, ATTRIBUTE_ALIAS_GROUPS.styleTags)),
+    seasonTags: normalizeTags(readAliasValue(source, ATTRIBUTE_ALIAS_GROUPS.seasonTags)),
+    sceneTags: normalizeTags(readAliasValue(source, ATTRIBUTE_ALIAS_GROUPS.sceneTags)),
+  };
+}
+
+function buildClothingAttributeMirrorPatch(canonicalPatch) {
+  const patch = {};
+  if (hasOwn(canonicalPatch, 'subcategory') && !isEmptyAttributeValue(canonicalPatch.subcategory)) {
+    patch.subCategory = canonicalPatch.subcategory;
+  }
+  if (hasOwn(canonicalPatch, 'colorPalette') && !isEmptyAttributeValue(canonicalPatch.colorPalette)) {
+    patch.colors = colorsFromColorPalette(canonicalPatch.colorPalette);
+  }
+  if (hasOwn(canonicalPatch, 'material') && !isEmptyAttributeValue(canonicalPatch.material)) {
+    patch.materialGuess = canonicalPatch.material;
+  }
+  return patch;
+}
+
+function getCanonicalManualFields(input) {
+  const fields = new Set();
+  const source = input && typeof input === 'object' ? input : {};
+  Object.keys(ATTRIBUTE_ALIAS_GROUPS).forEach((canonical) => {
+    if (ATTRIBUTE_ALIAS_GROUPS[canonical].some((alias) => hasOwn(source, alias) && !isEmptyAttributeValue(source[alias]))) {
+      fields.add(canonical);
+    }
+  });
+
+  Object.keys(source).forEach((field) => {
+    if (
+      ALLOWED_FIELDS.includes(field)
+      && !SYSTEM_FIELDS.includes(field)
+      && !ATTRIBUTE_ALIAS_FIELDS.includes(field)
+    ) {
+      fields.add(field);
+    }
+  });
+  return fields;
+}
+
+function readAliasValue(source, aliases) {
+  for (const alias of aliases) {
+    if (hasOwn(source, alias) && !isEmptyAttributeValue(source[alias])) {
+      return source[alias];
+    }
+  }
+  return undefined;
+}
+
+function normalizeColorPalette(value) {
+  if (isEmptyAttributeValue(value)) return undefined;
+  if (Array.isArray(value)) {
+    const colors = value
+      .map((item, index) => normalizeColorPaletteItem(item, index))
+      .filter(Boolean);
+    return colors.length ? colors : undefined;
+  }
+  if (typeof value === 'string' && value.trim()) {
+    return [{ name: value.trim(), hex: '#8A8A8A', ratio: 1 }];
+  }
+  return undefined;
+}
+
+function normalizeColorPaletteItem(item, index) {
+  if (typeof item === 'string' && item.trim()) {
+    return {
+      name: item.trim(),
+      hex: '#8A8A8A',
+      ratio: index === 0 ? 1 : 0,
+    };
+  }
+  if (item && typeof item === 'object' && !isEmptyAttributeValue(item.name)) {
+    return {
+      ...item,
+      name: String(item.name).trim(),
+    };
+  }
+  return null;
+}
+
+function colorsFromColorPalette(colorPalette) {
+  if (!Array.isArray(colorPalette)) return [];
+  return colorPalette
+    .map((item) => {
+      if (typeof item === 'string') return item.trim();
+      if (item && typeof item.name === 'string') return item.name.trim();
+      return '';
+    })
+    .filter(Boolean);
+}
+
+function normalizeTags(value) {
+  if (isEmptyAttributeValue(value)) return undefined;
+  if (Array.isArray(value)) {
+    const tags = value
+      .filter((item) => typeof item === 'string' && item.trim())
+      .map((item) => item.trim());
+    return tags.length ? tags : undefined;
+  }
+  if (typeof value === 'string' && value.trim()) return [value.trim()];
+  return undefined;
+}
+
+function isEmptyAttributeValue(value) {
+  if (value === undefined || value === null) return true;
+  if (typeof value === 'string') return !value.trim();
+  if (Array.isArray(value)) return value.length === 0;
+  return false;
+}
+
+function hasOwn(object, field) {
+  return Object.prototype.hasOwnProperty.call(object, field);
 }
 
 function getOriginalImage(item) {

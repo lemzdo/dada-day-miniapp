@@ -11,6 +11,17 @@ const DELETED_STATUS = 'deleted';
 const CLOTHING_NOT_ACTIVE = 'CLOTHING_NOT_ACTIVE';
 const RECOGNITION_TRANSACTION_UNAVAILABLE = 'RECOGNITION_TRANSACTION_UNAVAILABLE';
 
+const ATTRIBUTE_ALIAS_GROUPS = {
+  category: ['category', 'type'],
+  subcategory: ['subcategory', 'subCategory', 'categoryName'],
+  colorPalette: ['colorPalette', 'colors', 'color'],
+  material: ['material', 'materialGuess'],
+  styleTags: ['styleTags', 'style'],
+  seasonTags: ['seasonTags'],
+  sceneTags: ['sceneTags'],
+  thickness: ['thickness'],
+};
+
 exports.main = async (event = {}) => {
   try {
     const { OPENID } = cloud.getWXContext();
@@ -193,6 +204,8 @@ function buildPrompt() {
 
 function buildRecognizeUpdate(current, result) {
   const manualFields = new Set(Array.isArray(current.manualFields) ? current.manualFields : []);
+  const attributePatch = normalizeClothingAttributes(result);
+  const writableAttributePatch = {};
   const data = {
     aiRecognizeStatus: 'success',
     detectStatus: 'success',
@@ -210,20 +223,14 @@ function buildRecognizeUpdate(current, result) {
     updatedAt: new Date().toISOString(),
   };
 
-  setIfNotManual(data, manualFields, 'category', result.category);
-  setIfNotManual(data, manualFields, 'subCategory', result.subCategory);
-  setIfNotManual(data, manualFields, 'subcategory', result.subCategory);
-  setIfNotManual(data, manualFields, 'colors', result.colors);
-  setIfNotManual(data, manualFields, 'colorPalette', result.colors.map((name, index) => ({
-    name,
-    hex: '#8A8A8A',
-    ratio: index === 0 ? 1 : 0,
-  })));
-  setIfNotManual(data, manualFields, 'material', result.material);
-  setIfNotManual(data, manualFields, 'materialGuess', result.material);
-  setIfNotManual(data, manualFields, 'styleTags', result.styleTags);
-  setIfNotManual(data, manualFields, 'seasonTags', result.seasonTags);
-  setIfNotManual(data, manualFields, 'thickness', result.thickness);
+  Object.keys(attributePatch).forEach((field) => {
+    if (!isManualFieldProtected(manualFields, field) && !isEmptyAttributeValue(attributePatch[field])) {
+      writableAttributePatch[field] = attributePatch[field];
+    }
+  });
+
+  Object.assign(data, writableAttributePatch, buildClothingAttributeMirrorPatch(writableAttributePatch));
+
   setIfNotManual(data, manualFields, 'warmthScore', result.warmthScore);
   setIfNotManual(data, manualFields, 'coolnessScore', result.coolnessScore);
   setIfNotManual(data, manualFields, 'fashionScore', result.fashionScore);
@@ -277,18 +284,136 @@ function parseStrictJson(content) {
 }
 
 function setIfNotManual(data, manualFields, field, value) {
-  if (isFieldManual(manualFields, field) || value === undefined) return;
+  if (isManualFieldProtected(manualFields, field) || value === undefined) return;
   data[field] = value;
 }
 
-function isFieldManual(manualFields, field) {
-  if (manualFields.has(field)) return true;
-  const aliasGroups = [
-    ['subcategory', 'subCategory'],
-    ['material', 'materialGuess'],
-    ['colors', 'colorPalette'],
-  ];
-  return aliasGroups.some((group) => group.includes(field) && group.some((alias) => manualFields.has(alias)));
+function normalizeClothingAttributes(input) {
+  const source = input && typeof input === 'object' ? input : {};
+  const colorValue = readAliasValue(source, ATTRIBUTE_ALIAS_GROUPS.colorPalette);
+
+  return {
+    category: readAliasValue(source, ATTRIBUTE_ALIAS_GROUPS.category),
+    subcategory: readAliasValue(source, ATTRIBUTE_ALIAS_GROUPS.subcategory),
+    colorPalette: normalizeColorPalette(colorValue),
+    material: readAliasValue(source, ATTRIBUTE_ALIAS_GROUPS.material),
+    thickness: readAliasValue(source, ATTRIBUTE_ALIAS_GROUPS.thickness),
+    styleTags: normalizeTags(readAliasValue(source, ATTRIBUTE_ALIAS_GROUPS.styleTags)),
+    seasonTags: normalizeTags(readAliasValue(source, ATTRIBUTE_ALIAS_GROUPS.seasonTags)),
+    sceneTags: normalizeTags(readAliasValue(source, ATTRIBUTE_ALIAS_GROUPS.sceneTags)),
+  };
+}
+
+function expandManualFields(manualFields) {
+  const expanded = new Set();
+  const fields = Array.isArray(manualFields) ? manualFields : Array.from(manualFields || []);
+  fields.forEach((field) => {
+    const group = getAliasGroupForField(field);
+    if (group) {
+      group.forEach((alias) => expanded.add(alias));
+    } else if (field) {
+      expanded.add(field);
+    }
+  });
+  return expanded;
+}
+
+function isManualFieldProtected(manualFields, field) {
+  return expandManualFields(manualFields).has(field);
+}
+
+function buildClothingAttributeMirrorPatch(canonicalPatch) {
+  const patch = {};
+  if (hasOwn(canonicalPatch, 'subcategory') && !isEmptyAttributeValue(canonicalPatch.subcategory)) {
+    patch.subCategory = canonicalPatch.subcategory;
+  }
+  if (hasOwn(canonicalPatch, 'colorPalette') && !isEmptyAttributeValue(canonicalPatch.colorPalette)) {
+    patch.colors = colorsFromColorPalette(canonicalPatch.colorPalette);
+  }
+  if (hasOwn(canonicalPatch, 'material') && !isEmptyAttributeValue(canonicalPatch.material)) {
+    patch.materialGuess = canonicalPatch.material;
+  }
+  return patch;
+}
+
+function readAliasValue(source, aliases) {
+  for (const alias of aliases) {
+    if (hasOwn(source, alias) && !isEmptyAttributeValue(source[alias])) {
+      return source[alias];
+    }
+  }
+  return undefined;
+}
+
+function normalizeColorPalette(value) {
+  if (isEmptyAttributeValue(value)) return undefined;
+  if (Array.isArray(value)) {
+    const colors = value
+      .map((item, index) => normalizeColorPaletteItem(item, index))
+      .filter(Boolean);
+    return colors.length ? colors : undefined;
+  }
+  if (typeof value === 'string' && value.trim()) {
+    return [{ name: value.trim(), hex: '#8A8A8A', ratio: 1 }];
+  }
+  return undefined;
+}
+
+function normalizeColorPaletteItem(item, index) {
+  if (typeof item === 'string' && item.trim()) {
+    return {
+      name: item.trim(),
+      hex: '#8A8A8A',
+      ratio: index === 0 ? 1 : 0,
+    };
+  }
+  if (item && typeof item === 'object' && !isEmptyAttributeValue(item.name)) {
+    return {
+      ...item,
+      name: String(item.name).trim(),
+    };
+  }
+  return null;
+}
+
+function colorsFromColorPalette(colorPalette) {
+  if (!Array.isArray(colorPalette)) return [];
+  return colorPalette
+    .map((item) => {
+      if (typeof item === 'string') return item.trim();
+      if (item && typeof item.name === 'string') return item.name.trim();
+      return '';
+    })
+    .filter(Boolean);
+}
+
+function normalizeTags(value) {
+  if (isEmptyAttributeValue(value)) return undefined;
+  if (Array.isArray(value)) {
+    const tags = value
+      .filter((item) => typeof item === 'string' && item.trim())
+      .map((item) => item.trim());
+    return tags.length ? tags : undefined;
+  }
+  if (typeof value === 'string' && value.trim()) return [value.trim()];
+  return undefined;
+}
+
+function getAliasGroupForField(field) {
+  return Object.keys(ATTRIBUTE_ALIAS_GROUPS)
+    .map((key) => ATTRIBUTE_ALIAS_GROUPS[key])
+    .find((group) => group.includes(field));
+}
+
+function isEmptyAttributeValue(value) {
+  if (value === undefined || value === null) return true;
+  if (typeof value === 'string') return !value.trim();
+  if (Array.isArray(value)) return value.length === 0;
+  return false;
+}
+
+function hasOwn(object, field) {
+  return Object.prototype.hasOwnProperty.call(object, field);
 }
 
 function readEnum(value, allowed, fallback) {
@@ -311,6 +436,8 @@ function readScore(value) {
 function toClothing(item) {
   const originalImageUrl = getOriginalImage(item);
   const displayImageUrl = getDisplayImage(item);
+  const attributes = normalizeClothingAttributes(item);
+  const mirrors = buildClothingAttributeMirrorPatch(attributes);
   return {
     id: item._id,
     userId: item._openid,
@@ -346,20 +473,20 @@ function toClothing(item) {
     recognitionHeartbeatAt: item.recognitionHeartbeatAt,
     aiProvider: item.aiProvider,
     aiError: item.aiError,
-    category: item.category || '其他',
-    subcategory: item.subcategory || item.subCategory,
-    subCategory: item.subCategory || item.subcategory,
-    colors: item.colors || [],
-    colorPalette: item.colorPalette || [],
-    styleTags: item.styleTags || [],
-    seasonTags: item.seasonTags || [],
-    material: item.material,
-    materialGuess: item.materialGuess,
-    thickness: item.thickness,
+    category: attributes.category || '其他',
+    subcategory: attributes.subcategory,
+    subCategory: mirrors.subCategory || attributes.subcategory,
+    colors: mirrors.colors || [],
+    colorPalette: attributes.colorPalette || [],
+    styleTags: attributes.styleTags || [],
+    seasonTags: attributes.seasonTags || [],
+    material: attributes.material,
+    materialGuess: mirrors.materialGuess || attributes.material,
+    thickness: attributes.thickness,
     warmthScore: item.warmthScore || 0,
     coolnessScore: item.coolnessScore || 0,
     fashionScore: item.fashionScore || 0,
-    sceneTags: item.sceneTags || [],
+    sceneTags: attributes.sceneTags || [],
     matchTips: item.matchTips,
     aiStatus: item.aiStatus || 'pending',
     aiConfidence: item.aiConfidence || 0,
