@@ -1,4 +1,5 @@
 const cloud = require('wx-server-sdk');
+const crypto = require('crypto');
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
@@ -10,6 +11,9 @@ const OSS_URL_EXPIRES_SECONDS = Number(process.env.OSS_URL_EXPIRES_SECONDS || pr
 const OSS_USE_SIGNED_URL = getOssUseSignedUrl();
 const SEGMENT_PROVIDER = 'aliyun_viapi';
 const SEGMENT_MODEL = 'SegmentCloth';
+const DELETED_STATUS = 'deleted';
+const CLOTHING_NOT_ACTIVE = 'CLOTHING_NOT_ACTIVE';
+const SEGMENT_TRANSACTION_UNAVAILABLE = 'SEGMENT_TRANSACTION_UNAVAILABLE';
 
 exports.main = async (event = {}) => {
   try {
@@ -157,38 +161,34 @@ async function segmentDraft(draftId, openid) {
 
 async function segmentClothing(clothingId, openid) {
   const collection = db.collection('clothes');
-  const currentRes = await collection.doc(clothingId).get();
-  const current = currentRes.data;
-  if (!current || current._openid !== openid) throw new Error('clothing not found');
+  const lease = await acquireClothingSegmentAttempt(collection, clothingId, openid);
+  const current = lease.clothing;
 
   const cropResult = await ensureSingleItemCrop({
     collection,
     objectId: clothingId,
     item: current,
     fallbackCloudPath: `wardrobe_uploads/crops/${current.batchId || 'clothes'}/${current.sourceImageId || clothingId}-${current.itemIndex || 0}-retry.jpg`,
+    persistCropResult: false,
   });
   const sourceFileID = cropResult.sourceFileID;
-  await collection.doc(clothingId).update({
-    data: {
-      segmentStatus: 'processing',
-      cutoutStatus: 'pending',
-      cropImageUrl: cropResult.cropImageUrl || current.cropImageUrl || current.croppedImageUrl || '',
-      croppedImageUrl: cropResult.cropImageUrl || current.croppedImageUrl || current.cropImageUrl || '',
-      segmentProvider: SEGMENT_PROVIDER,
-      segmentModel: SEGMENT_MODEL,
-      stageStatus: {
-        ...(current.stageStatus || {}),
-        crop: cropResult.cropStatus,
-        segment: normalizeFinalStageStatus(current.stageStatus && current.stageStatus.segment),
-      },
-      updatedAt: nowIso(),
-    },
+
+  const heartbeat = await touchClothingSegmentHeartbeat(collection, {
+    clothingId,
+    openid,
+    token: lease.token,
+    cropResult,
   });
+  if (heartbeat.status === 'superseded') return ok(heartbeat);
 
   if (!sourceFileID) {
-    await markClothingSegmentFailed(collection, clothingId, getDisplayImage(current), ['single crop image is required'], cropResult.cropStatus, current.stageStatus);
-    const updated = await collection.doc(clothingId).get();
-    return ok(toClothing(updated.data));
+    const failure = await finishClothingSegmentFailure(collection, {
+      clothingId,
+      openid,
+      token: lease.token,
+      errors: ['single crop image is required'],
+    });
+    return ok(toSegmentAttemptResult(failure));
   }
 
   const result = await runSegment({
@@ -199,36 +199,155 @@ async function segmentClothing(clothingId, openid) {
   });
 
   if (!result.success) {
-    await markClothingSegmentFailed(collection, clothingId, sourceFileID, result.errors, cropResult.cropStatus, current.stageStatus);
-    const updated = await collection.doc(clothingId).get();
-    return ok(toClothing(updated.data));
+    const failure = await finishClothingSegmentFailure(collection, {
+      clothingId,
+      openid,
+      token: lease.token,
+      errors: result.errors,
+    });
+    return ok(toSegmentAttemptResult(failure));
   }
 
-  const data = {
-    cleanImageUrl: result.fileID,
-    aiSegmentImageUrl: result.fileID,
-    displayImageUrl: result.fileID,
-    imageUrl: result.fileID,
-    imageSourceType: 'clean',
-    assetStatus: current.assetStatus === 'failed' ? 'needs_review' : current.assetStatus || 'ready',
-    qualityScore: Math.max(current.qualityScore || 0, 80),
-    segmentStatus: 'success',
-    cutoutStatus: 'success',
-    segmentProvider: SEGMENT_PROVIDER,
-    segmentModel: SEGMENT_MODEL,
-    cutoutProvider: SEGMENT_PROVIDER,
-    cutoutError: '',
-    stageStatus: {
-      ...(current.stageStatus || {}),
-      crop: cropResult.cropStatus,
-      segment: 'success',
-    },
-    updatedAt: nowIso(),
-  };
+  const success = await finishClothingSegmentSuccess(collection, {
+    clothingId,
+    openid,
+    token: lease.token,
+    fileID: result.fileID,
+    cropStatus: cropResult.cropStatus,
+  });
+  return ok(toSegmentAttemptResult(success));
+}
 
-  await collection.doc(clothingId).update({ data });
-  const updated = await collection.doc(clothingId).get();
-  return ok(toClothing(updated.data));
+async function acquireClothingSegmentAttempt(collection, clothingId, openid) {
+  if (typeof db.runTransaction !== 'function') throw new Error(SEGMENT_TRANSACTION_UNAVAILABLE);
+  const token = createAttemptToken();
+  const now = nowIso();
+
+  return db.runTransaction(async (transaction) => {
+    const ref = transaction.collection('clothes').doc(clothingId);
+    const currentRes = await ref.get();
+    const current = currentRes.data;
+    if (!current || current._openid !== openid) throw new Error('clothing not found');
+    if (isDeletedClothing(current)) throw new Error(CLOTHING_NOT_ACTIVE);
+
+    const data = {
+      segmentStatus: 'processing',
+      cutoutStatus: 'processing',
+      segmentProvider: SEGMENT_PROVIDER,
+      segmentModel: SEGMENT_MODEL,
+      segmentError: '',
+      cutoutError: '',
+      segmentAttemptToken: token,
+      segmentStartedAt: now,
+      segmentHeartbeatAt: now,
+      stageStatus: {
+        ...(current.stageStatus || {}),
+        segment: 'processing',
+      },
+      updatedAt: now,
+    };
+
+    await ref.update({ data });
+    return { token, clothing: { ...current, ...data, _id: clothingId } };
+  }, 3);
+}
+
+async function touchClothingSegmentHeartbeat(collection, { clothingId, openid, token, cropResult }) {
+  return updateClothingSegmentWithToken(collection, {
+    clothingId,
+    openid,
+    token,
+    patchBuilder: (current) => {
+      const cropImageUrl = cropResult.cropImageUrl || current.cropImageUrl || current.croppedImageUrl || '';
+      const data = {
+        segmentHeartbeatAt: nowIso(),
+        segmentStatus: 'processing',
+        cutoutStatus: 'processing',
+        stageStatus: {
+          ...(current.stageStatus || {}),
+          crop: cropResult.cropStatus,
+          segment: 'processing',
+        },
+        updatedAt: nowIso(),
+      };
+      if (cropImageUrl) {
+        data.cropImageUrl = cropImageUrl;
+        data.croppedImageUrl = cropImageUrl;
+      }
+      return data;
+    },
+  });
+}
+
+async function finishClothingSegmentSuccess(collection, { clothingId, openid, token, fileID, cropStatus }) {
+  return updateClothingSegmentWithToken(collection, {
+    clothingId,
+    openid,
+    token,
+    patchBuilder: (current) => ({
+      cleanImageUrl: fileID,
+      aiSegmentImageUrl: fileID,
+      displayImageUrl: fileID,
+      imageUrl: fileID,
+      imageSourceType: 'clean',
+      assetStatus: current.assetStatus === 'failed' ? 'needs_review' : current.assetStatus || 'ready',
+      qualityScore: Math.max(current.qualityScore || 0, 80),
+      segmentStatus: 'success',
+      cutoutStatus: 'success',
+      segmentProvider: SEGMENT_PROVIDER,
+      segmentModel: SEGMENT_MODEL,
+      cutoutProvider: SEGMENT_PROVIDER,
+      cutoutError: '',
+      segmentError: '',
+      segmentAttemptToken: '',
+      segmentHeartbeatAt: nowIso(),
+      stageStatus: {
+        ...(current.stageStatus || {}),
+        crop: cropStatus,
+        segment: 'success',
+      },
+      updatedAt: nowIso(),
+    }),
+  });
+}
+
+async function finishClothingSegmentFailure(collection, { clothingId, openid, token, errors }) {
+  const errorMessage = (errors || []).join('|') || 'segment failed';
+  return updateClothingSegmentWithToken(collection, {
+    clothingId,
+    openid,
+    token,
+    patchBuilder: () => ({
+      segmentStatus: 'failed',
+      cutoutStatus: 'failed',
+      segmentError: errorMessage,
+      cutoutError: errorMessage,
+      segmentAttemptToken: '',
+      segmentHeartbeatAt: nowIso(),
+      updatedAt: nowIso(),
+    }),
+  });
+}
+
+async function updateClothingSegmentWithToken(collection, { clothingId, openid, token, patchBuilder }) {
+  return db.runTransaction(async (transaction) => {
+    const ref = transaction.collection('clothes').doc(clothingId);
+    const currentRes = await ref.get();
+    const current = currentRes.data;
+    if (!current || current._openid !== openid) throw new Error('clothing not found');
+    if (isDeletedClothing(current) || current.segmentAttemptToken !== token) {
+      return { status: 'superseded' };
+    }
+
+    const data = patchBuilder(current);
+    await ref.update({ data });
+    return { status: 'updated', clothing: { ...current, ...data, _id: clothingId } };
+  }, 3);
+}
+
+function toSegmentAttemptResult(result) {
+  if (result.status === 'superseded') return { status: 'superseded' };
+  return toClothing(result.clothing);
 }
 
 async function runSegment({ openid, sourceFileID, objectId, cloudPath }) {
@@ -284,7 +403,7 @@ async function runSegment({ openid, sourceFileID, objectId, cloudPath }) {
   }
 }
 
-async function ensureSingleItemCrop({ collection, objectId, item, fallbackCloudPath }) {
+async function ensureSingleItemCrop({ collection, objectId, item, fallbackCloudPath, persistCropResult = true }) {
   const existingCrop = item.cropImageUrl || item.croppedImageUrl || '';
   if (existingCrop) {
     return { sourceFileID: existingCrop, cropImageUrl: existingCrop, cropStatus: 'success' };
@@ -304,15 +423,17 @@ async function ensureSingleItemCrop({ collection, objectId, item, fallbackCloudP
       bbox,
       cloudPath: fallbackCloudPath,
     });
-    await collection.doc(objectId).update({
-      data: {
-        cropImageUrl,
-        croppedImageUrl: cropImageUrl,
-        displayImageUrl: item.displayImageUrl || cropImageUrl,
-        imageSourceType: item.imageSourceType === 'clean' ? 'clean' : 'crop',
-        updatedAt: nowIso(),
-      },
-    }).catch(() => undefined);
+    if (persistCropResult) {
+      await collection.doc(objectId).update({
+        data: {
+          cropImageUrl,
+          croppedImageUrl: cropImageUrl,
+          displayImageUrl: item.displayImageUrl || cropImageUrl,
+          imageSourceType: item.imageSourceType === 'clean' ? 'clean' : 'crop',
+          updatedAt: nowIso(),
+        },
+      }).catch(() => undefined);
+    }
     return { sourceFileID: cropImageUrl, cropImageUrl, cropStatus: 'success' };
   } catch (error) {
     console.warn('[segmentClothImage] crop before segment failed', {
@@ -632,6 +753,9 @@ function toClothing(item) {
     aiSegmentImageUrl: item.aiSegmentImageUrl || item.cleanImageUrl || '',
     manualCropImageUrl: item.manualCropImageUrl || '',
     segmentStatus: item.segmentStatus || item.cutoutStatus || 'not_started',
+    segmentAttemptToken: item.segmentAttemptToken || '',
+    segmentStartedAt: item.segmentStartedAt,
+    segmentHeartbeatAt: item.segmentHeartbeatAt,
     segmentProvider: item.segmentProvider || SEGMENT_PROVIDER,
     segmentModel: item.segmentModel || SEGMENT_MODEL,
     cutoutStatus: item.cutoutStatus || item.segmentStatus || 'pending',
@@ -675,6 +799,14 @@ function getErrorMessage(error) {
   return error && error.message ? error.message : String(error || 'unknown error');
 }
 
+function createAttemptToken() {
+  return crypto.randomBytes(16).toString('hex');
+}
+
+function isDeletedClothing(item) {
+  return item && (item.status === DELETED_STATUS || item.isDeleted || item.deletedAt);
+}
+
 function getRequiredEnv(name) {
   const value = process.env[name];
   if (!value || !String(value).trim()) throw new Error(`${name} is required`);
@@ -712,32 +844,6 @@ function normalizeImageSourceType(item) {
   if (item.cleanImageUrl || item.aiSegmentImageUrl) return 'clean';
   if (item.cropImageUrl || item.croppedImageUrl || item.manualCropImageUrl) return 'crop';
   return 'original';
-}
-
-async function markClothingSegmentFailed(collection, clothingId, sourceFileID, errors, cropStatus = 'skipped', currentStageStatus = {}) {
-  const data = {
-    displayImageUrl: sourceFileID,
-    imageUrl: sourceFileID,
-    cleanImageUrl: '',
-    aiSegmentImageUrl: '',
-    imageSourceType: sourceFileID ? 'crop' : 'original',
-    assetStatus: 'needs_review',
-    needsUserConfirm: true,
-    segmentStatus: 'failed',
-    cutoutStatus: 'failed',
-    segmentProvider: SEGMENT_PROVIDER,
-    segmentModel: SEGMENT_MODEL,
-    cutoutProvider: 'none',
-    segmentError: errors.join('|'),
-    cutoutError: errors.join('|'),
-    stageStatus: {
-      ...(currentStageStatus || {}),
-      crop: cropStatus,
-      segment: 'failed',
-    },
-    updatedAt: nowIso(),
-  };
-  await collection.doc(clothingId).update({ data });
 }
 
 function normalizeViapiError(error) {

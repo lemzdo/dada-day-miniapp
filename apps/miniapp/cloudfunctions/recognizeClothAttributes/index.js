@@ -1,4 +1,5 @@
 const cloud = require('wx-server-sdk');
+const crypto = require('crypto');
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
@@ -6,6 +7,9 @@ const db = cloud.database();
 const BAILIAN_BASE_URL = process.env.BAILIAN_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1';
 const BAILIAN_MODEL = process.env.BAILIAN_ATTRIBUTE_MODEL || process.env.BAILIAN_MODEL || 'qwen3-vl-flash';
 const QWEN_TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS || process.env.QWEN_TIMEOUT_MS || 20000);
+const DELETED_STATUS = 'deleted';
+const CLOTHING_NOT_ACTIVE = 'CLOTHING_NOT_ACTIVE';
+const RECOGNITION_TRANSACTION_UNAVAILABLE = 'RECOGNITION_TRANSACTION_UNAVAILABLE';
 
 exports.main = async (event = {}) => {
   try {
@@ -14,55 +18,125 @@ exports.main = async (event = {}) => {
     if (!clothingId) throw new Error('clothId is required');
 
     const collection = db.collection('clothes');
-    const currentRes = await collection.doc(clothingId).get();
-    const current = currentRes.data;
-    if (!current || current._openid !== OPENID) throw new Error('clothing not found');
-
-    const singleClothImage = getSingleClothImage(current);
-    if (!singleClothImage && (current.batchId || current.sourceImageId)) {
-      throw new Error('当前使用的是原图，暂不支持单独重新识别这件衣服。你可以手动编辑信息。');
-    }
-
-    await collection.doc(clothingId).update({
-      data: {
-        aiRecognizeStatus: 'pending',
-        aiStatus: 'recognizing',
-        aiProvider: 'bailian_qwen_vl',
-        aiError: '',
-        updatedAt: new Date().toISOString(),
-      },
-    });
+    const lease = await acquireRecognitionAttempt(collection, clothingId, OPENID);
+    const current = lease.clothing;
 
     try {
+      const singleClothImage = getSingleClothImage(current);
       const sourceImage = singleClothImage || getDisplayImage(current);
       const imageUrl = await getTempUrl(sourceImage);
+      const heartbeat = await touchRecognitionHeartbeat(collection, clothingId, OPENID, lease.token);
+      if (heartbeat.status === 'superseded') return ok(heartbeat);
       const result = await retryOnce(() => callQwenVl(imageUrl));
-      const updateData = buildRecognizeUpdate(current, result);
-      await collection.doc(clothingId).update({ data: updateData });
-      const updated = await collection.doc(clothingId).get();
-      return ok(toClothing(updated.data));
+      const success = await finishRecognitionSuccess(collection, clothingId, OPENID, lease.token, result);
+      return ok(toRecognitionAttemptResult(success));
     } catch (error) {
-      await collection.doc(clothingId).update({
-        data: {
-          aiRecognizeStatus: 'failed',
-          detectStatus: 'failed',
-          aiStatus: 'failed',
-          aiError: getErrorMessage(error),
-          stageStatus: {
-            ...(current.stageStatus || {}),
-            attribute: 'failed',
-          },
-          updatedAt: new Date().toISOString(),
-        },
-      });
-      const updated = await collection.doc(clothingId).get();
-      return ok(toClothing(updated.data));
+      const failure = await finishRecognitionFailure(collection, clothingId, OPENID, lease.token, error);
+      return ok(toRecognitionAttemptResult(failure));
     }
   } catch (error) {
     console.error('[recognizeClothAttributes] failed', error);
     return fail(error);
   }
 };
+
+async function acquireRecognitionAttempt(collection, clothingId, openid) {
+  if (typeof db.runTransaction !== 'function') throw new Error(RECOGNITION_TRANSACTION_UNAVAILABLE);
+  const token = createAttemptToken();
+  const now = new Date().toISOString();
+
+  return db.runTransaction(async (transaction) => {
+    const ref = transaction.collection('clothes').doc(clothingId);
+    const currentRes = await ref.get();
+    const current = currentRes.data;
+    if (!current || current._openid !== openid) throw new Error('clothing not found');
+    if (isDeletedClothing(current)) throw new Error(CLOTHING_NOT_ACTIVE);
+    if (!getSingleClothImage(current) && (current.batchId || current.sourceImageId)) {
+      throw new Error('当前使用的是原图，暂不支持单独重新识别这件衣服。你可以手动编辑信息。');
+    }
+
+    const data = {
+      aiRecognizeStatus: 'pending',
+      aiStatus: 'recognizing',
+      aiProvider: 'bailian_qwen_vl',
+      aiError: '',
+      recognitionAttemptToken: token,
+      recognitionStartedAt: now,
+      recognitionHeartbeatAt: now,
+      updatedAt: now,
+    };
+
+    await ref.update({ data });
+    return { token, clothing: { ...current, ...data, _id: clothingId } };
+  }, 3);
+}
+
+async function touchRecognitionHeartbeat(collection, clothingId, openid, token) {
+  return updateRecognitionWithToken(collection, {
+    clothingId,
+    openid,
+    token,
+    patchBuilder: () => ({
+      recognitionHeartbeatAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }),
+  });
+}
+
+async function finishRecognitionSuccess(collection, clothingId, openid, token, result) {
+  return updateRecognitionWithToken(collection, {
+    clothingId,
+    openid,
+    token,
+    patchBuilder: (current) => ({
+      ...buildRecognizeUpdate(current, result),
+      recognitionAttemptToken: '',
+      recognitionHeartbeatAt: new Date().toISOString(),
+    }),
+  });
+}
+
+async function finishRecognitionFailure(collection, clothingId, openid, token, error) {
+  return updateRecognitionWithToken(collection, {
+    clothingId,
+    openid,
+    token,
+    patchBuilder: (current) => ({
+      aiRecognizeStatus: 'failed',
+      detectStatus: 'failed',
+      aiStatus: 'failed',
+      aiError: getErrorMessage(error),
+      recognitionAttemptToken: '',
+      recognitionHeartbeatAt: new Date().toISOString(),
+      stageStatus: {
+        ...(current.stageStatus || {}),
+        attribute: 'failed',
+      },
+      updatedAt: new Date().toISOString(),
+    }),
+  });
+}
+
+async function updateRecognitionWithToken(collection, { clothingId, openid, token, patchBuilder }) {
+  return db.runTransaction(async (transaction) => {
+    const ref = transaction.collection('clothes').doc(clothingId);
+    const currentRes = await ref.get();
+    const current = currentRes.data;
+    if (!current || current._openid !== openid) throw new Error('clothing not found');
+    if (isDeletedClothing(current) || current.recognitionAttemptToken !== token) {
+      return { status: 'superseded' };
+    }
+
+    const data = patchBuilder(current);
+    await ref.update({ data });
+    return { status: 'updated', clothing: { ...current, ...data, _id: clothingId } };
+  }, 3);
+}
+
+function toRecognitionAttemptResult(result) {
+  if (result.status === 'superseded') return { status: 'superseded' };
+  return toClothing(result.clothing);
+}
 
 async function callQwenVl(imageUrl) {
   if (!process.env.BAILIAN_API_KEY) throw new Error('BAILIAN_API_KEY is missing');
@@ -203,8 +277,18 @@ function parseStrictJson(content) {
 }
 
 function setIfNotManual(data, manualFields, field, value) {
-  if (manualFields.has(field) || value === undefined) return;
+  if (isFieldManual(manualFields, field) || value === undefined) return;
   data[field] = value;
+}
+
+function isFieldManual(manualFields, field) {
+  if (manualFields.has(field)) return true;
+  const aliasGroups = [
+    ['subcategory', 'subCategory'],
+    ['material', 'materialGuess'],
+    ['colors', 'colorPalette'],
+  ];
+  return aliasGroups.some((group) => group.includes(field) && group.some((alias) => manualFields.has(alias)));
 }
 
 function readEnum(value, allowed, fallback) {
@@ -257,6 +341,9 @@ function toClothing(item) {
     cutoutProvider: item.cutoutProvider || 'none',
     cutoutError: item.cutoutError,
     aiRecognizeStatus: item.aiRecognizeStatus || 'pending',
+    recognitionAttemptToken: item.recognitionAttemptToken || '',
+    recognitionStartedAt: item.recognitionStartedAt,
+    recognitionHeartbeatAt: item.recognitionHeartbeatAt,
     aiProvider: item.aiProvider,
     aiError: item.aiError,
     category: item.category || '其他',
@@ -328,6 +415,14 @@ function normalizeImageSourceType(item) {
 
 function getErrorMessage(error) {
   return error && error.message ? error.message : String(error || 'unknown error');
+}
+
+function createAttemptToken() {
+  return crypto.randomBytes(16).toString('hex');
+}
+
+function isDeletedClothing(item) {
+  return item && (item.status === DELETED_STATUS || item.isDeleted || item.deletedAt);
 }
 
 function ok(data) {

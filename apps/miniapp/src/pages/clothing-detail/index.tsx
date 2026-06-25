@@ -27,6 +27,8 @@ import {
   segmentCloudClothing,
   recognizeClothAttributes,
   inspectCloudClothingDelete,
+  isClothingNotActiveError,
+  isSupersededCloudResult,
 } from '@/lib/cloud';
 import { invalidateAfterWardrobeMutation } from '@/lib/cacheInvalidation';
 import {
@@ -61,7 +63,7 @@ export default function ClothingDetailPage() {
   const requestSeqRef = useRef(0);
   const redirectingRef = useRef(false);
 
-  async function fetchClothing(itemId: string) {
+  async function fetchClothing(itemId: string, options: { force?: boolean } = {}) {
     const authContext = captureAuthContext();
     const flowRuntimeKey = boundRuntimeKeyRef.current;
     if (!itemId || !authContext || !isFlowActive(flowRuntimeKey)) return;
@@ -69,7 +71,7 @@ export default function ClothingDetailPage() {
     requestSeqRef.current = requestSeq;
     setLoading(true);
     try {
-      const item = await getClothingById(itemId);
+      const item = await getClothingById(itemId, { force: options.force });
       if (!isFlowCurrent(authContext, flowRuntimeKey, requestSeq)) return;
       setClothing(item);
     } catch (err) {
@@ -229,10 +231,14 @@ export default function ClothingDetailPage() {
   }, [boundRuntimeKeyRef, clothing, isFlowActive, navigateToWardrobe]);
 
   const handleReprocessImage = useCallback(async () => {
-    if (!clothing) return;
+    if (!clothing || processing) return;
     const authContext = captureAuthContext();
     const flowRuntimeKey = boundRuntimeKeyRef.current;
     if (!authContext || !isFlowActive(flowRuntimeKey)) return;
+    if (!isActiveClothing(clothing)) {
+      Taro.showToast({ title: '这件衣服已移出衣橱，不能继续处理', icon: 'none' });
+      return;
+    }
     
     const isProcessing = isAiProcessing(clothing);
     if (isProcessing) {
@@ -249,8 +255,12 @@ export default function ClothingDetailPage() {
       if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
       try {
         setProcessing(true);
-        await segmentCloudClothing(clothing.id);
+        const result = await segmentCloudClothing(clothing.id);
         if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
+        if (isSupersededCloudResult(result)) {
+          await fetchClothing(id, { force: true });
+          return;
+        }
         await invalidateAfterWardrobeMutation({ authContext });
         if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
         Taro.showToast({ title: '开始处理...', icon: 'none' });
@@ -262,18 +272,26 @@ export default function ClothingDetailPage() {
       } catch (err) {
         console.error('Reprocess error:', err);
         if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
+        if (isClothingNotActiveError(err)) {
+          Taro.showToast({ title: '这件衣服已移出衣橱，不能继续处理', icon: 'none' });
+          return;
+        }
         Taro.showToast({ title: '处理失败', icon: 'none' });
       } finally {
         if (isFlowCurrent(authContext, flowRuntimeKey)) setProcessing(false);
       }
     }
-  }, [boundRuntimeKeyRef, clothing, id, isFlowActive]);
+  }, [boundRuntimeKeyRef, clothing, id, isFlowActive, processing]);
 
   const handleReRecognize = useCallback(async () => {
-    if (!clothing) return;
+    if (!clothing || processing) return;
     const authContext = captureAuthContext();
     const flowRuntimeKey = boundRuntimeKeyRef.current;
     if (!authContext || !isFlowActive(flowRuntimeKey)) return;
+    if (!isActiveClothing(clothing)) {
+      Taro.showToast({ title: '这件衣服已移出衣橱，不能继续处理', icon: 'none' });
+      return;
+    }
     
     const isProcessing = isAiProcessing(clothing);
     if (isProcessing) {
@@ -290,8 +308,12 @@ export default function ClothingDetailPage() {
       if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
       try {
         setProcessing(true);
-        await recognizeClothAttributes(clothing.id);
+        const result = await recognizeClothAttributes(clothing.id);
         if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
+        if (isSupersededCloudResult(result)) {
+          await fetchClothing(id, { force: true });
+          return;
+        }
         await invalidateAfterWardrobeMutation({ authContext });
         if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
         Taro.showToast({ title: '开始识别...', icon: 'none' });
@@ -303,12 +325,16 @@ export default function ClothingDetailPage() {
       } catch (err) {
         console.error('Re-recognize error:', err);
         if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
+        if (isClothingNotActiveError(err)) {
+          Taro.showToast({ title: '这件衣服已移出衣橱，不能继续处理', icon: 'none' });
+          return;
+        }
         Taro.showToast({ title: '识别失败', icon: 'none' });
       } finally {
         if (isFlowCurrent(authContext, flowRuntimeKey)) setProcessing(false);
       }
     }
-  }, [boundRuntimeKeyRef, clothing, id, isFlowActive]);
+  }, [boundRuntimeKeyRef, clothing, id, isFlowActive, processing]);
 
   if (loading) {
     return (
@@ -531,7 +557,15 @@ export default function ClothingDetailPage() {
 
 function isAiProcessing(item: Clothing): boolean {
   const status = item.aiStatus || item.aiRecognizeStatus;
-  return status === 'pending' || status === 'recognizing';
+  return status === 'pending'
+    || status === 'recognizing'
+    || String(item.aiRecognizeStatus || '') === 'recognizing'
+    || item.segmentStatus === 'processing'
+    || item.cutoutStatus === 'processing';
+}
+
+function isActiveClothing(item: Clothing): boolean {
+  return item.status !== 'deleted';
 }
 
 interface DetailColorItem {

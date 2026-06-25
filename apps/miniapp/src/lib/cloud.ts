@@ -33,6 +33,12 @@ type CloudResult<T> = {
   message: string;
 };
 
+export interface SupersededCloudResult {
+  status: 'superseded';
+}
+
+export type ClothingAttemptResult = Clothing | SupersededCloudResult;
+
 export class CloudFunctionError extends Error {
   code?: number;
   data?: unknown;
@@ -68,6 +74,14 @@ const cloudResponseCache = new Map<string, { expiresAt: number; data: unknown }>
 interface CloudInflightRequest<T = unknown> {
   promise: Promise<T>;
   invalidated: boolean;
+}
+
+export function isSupersededCloudResult(value: unknown): value is SupersededCloudResult {
+  return Boolean(value && typeof value === 'object' && (value as { status?: unknown }).status === 'superseded');
+}
+
+export function isClothingNotActiveError(error: unknown) {
+  return error instanceof CloudFunctionError && error.message === 'CLOTHING_NOT_ACTIVE';
 }
 
 interface CachedCloudFunctionOptions {
@@ -332,34 +346,41 @@ export async function loginWithCloud() {
   return callCloudFunction<CloudUserProfile>('login');
 }
 
-export async function getWardrobe(params: GetWardrobeParams = {}) {
-  return callCachedCloudFunction<{
+export async function getWardrobe(params: GetWardrobeParams = {}, options: { force?: boolean } = {}) {
+  type WardrobeResponse = {
     list: Clothing[];
     pagination: { total: number; page: number; pageSize: number; totalPages: number };
     capacity: { total: number; used: number; remaining: number };
-  }>('getWardrobe', params as Record<string, unknown>, CACHE_TTL.wardrobe);
+  };
+  return options.force
+    ? callCloudFunction<WardrobeResponse>('getWardrobe', params as Record<string, unknown>)
+    : callCachedCloudFunction<WardrobeResponse>('getWardrobe', params as Record<string, unknown>, CACHE_TTL.wardrobe);
 }
 
-export async function getClothingById(id: string) {
-  const data = await callCachedCloudFunction<{
+export async function getClothingById(id: string, options: { force?: boolean } = {}) {
+  type ClothingDetailResponse = {
     list: Clothing[];
     pagination: { total: number; page: number; pageSize: number; totalPages: number };
     capacity: { total: number; used: number; remaining: number };
-  }>('getWardrobe', { id, detail: true, includeTotal: false, includeCapacity: false }, CACHE_TTL.wardrobe);
+  };
+  const params = { id, detail: true, includeTotal: false, includeCapacity: false };
+  const data = options.force
+    ? await callCloudFunction<ClothingDetailResponse>('getWardrobe', params)
+    : await callCachedCloudFunction<ClothingDetailResponse>('getWardrobe', params, CACHE_TTL.wardrobe);
   const item = data.list[0];
   if (!item) throw new Error('Clothing not found');
   return item;
 }
 
 export async function segmentCloudClothing(id: string) {
-  const item = await callCloudFunction<Clothing>('segmentClothImage', { clothingId: id });
-  clearCloudCache(['getWardrobe:', 'generateOutfit:']);
+  const item = await callCloudFunction<ClothingAttemptResult>('segmentClothImage', { clothingId: id });
+  if (!isSupersededCloudResult(item)) clearCloudCache(['getWardrobe:', 'generateOutfit:']);
   return item;
 }
 
 export async function recognizeClothAttributes(id: string) {
-  const item = await callCloudFunction<Clothing>('recognizeClothAttributes', { clothId: id });
-  clearCloudCache(['getWardrobe:', 'generateOutfit:']);
+  const item = await callCloudFunction<ClothingAttemptResult>('recognizeClothAttributes', { clothId: id });
+  if (!isSupersededCloudResult(item)) clearCloudCache(['getWardrobe:', 'generateOutfit:']);
   return item;
 }
 

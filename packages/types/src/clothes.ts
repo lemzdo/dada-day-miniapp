@@ -146,10 +146,16 @@ export interface Clothing {
   manualCropStatus?: ClothesDraftManualCropStatus;
   cutoutProvider?: string;
   cutoutError?: string;
+  segmentAttemptToken?: string;
+  segmentStartedAt?: string;
+  segmentHeartbeatAt?: string;
   aiRecognizeStatus?: ClothingRecognizeStatus;
   detectStatus?: ClothingRecognizeStatus;
   detectProvider?: string;
   detectModel?: string;
+  recognitionAttemptToken?: string;
+  recognitionStartedAt?: string;
+  recognitionHeartbeatAt?: string;
   segmentProvider?: string;
   segmentModel?: string;
   aiProvider?: string;

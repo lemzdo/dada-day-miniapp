@@ -13,6 +13,8 @@ import {
   getUserClothingSubcategories,
   getWardrobe,
   inspectCloudClothingDelete,
+  isClothingNotActiveError,
+  isSupersededCloudResult,
   recognizeClothAttributes,
   uploadBatchSourceImage,
 } from '@/lib/cloud';
@@ -113,6 +115,7 @@ export default function WardrobePage() {
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [batchDeleting, setBatchDeleting] = useState(false);
+  const [recognizingIds, setRecognizingIds] = useState<string[]>([]);
   const skipNextShowRefreshRef = useRef(false);
   const loadingRef = useRef(false);
   const lastFetchAtRef = useRef(0);
@@ -134,6 +137,7 @@ export default function WardrobePage() {
     setSelectionMode(false);
     setSelectedIds([]);
     setBatchDeleting(false);
+    setRecognizingIds([]);
   }, []);
 
   const applyWardrobeFirstPageCache = useCallback(async (cacheKey: string, authContext: ActiveAuthContext | null) => {
@@ -191,7 +195,7 @@ export default function WardrobePage() {
           params.subcategory = subcategoryParam;
         }
 
-        const res = await getWardrobe(params);
+        const res = await getWardrobe(params, { force });
         const nextHasMore = pageNum < res.pagination.totalPages;
         if (!isCurrentAuthContext(authContext)) return;
 
@@ -561,6 +565,11 @@ export default function WardrobePage() {
   async function handleRecognize(item: Clothing) {
     const authContext = captureAuthContext();
     if (!authContext) return;
+    if (recognizingIds.includes(item.id)) return;
+    if (item.status === 'deleted') {
+      Taro.showToast({ title: '这件衣服已移出衣橱，不能继续处理', icon: 'none' });
+      return;
+    }
 
     if (!canSafelyRecognize(item)) {
       Taro.showModal({
@@ -571,11 +580,16 @@ export default function WardrobePage() {
       return;
     }
 
+    setRecognizingIds((prev) => prev.includes(item.id) ? prev : [...prev, item.id]);
     updateClothingInList({ ...item, aiStatus: 'recognizing', aiRecognizeStatus: 'pending' });
 
     try {
       const updated = await recognizeClothAttributes(item.id);
       if (!isCurrentAuthContext(authContext)) return;
+      if (isSupersededCloudResult(updated)) {
+        refreshWardrobe();
+        return;
+      }
       updateClothingInList(updated);
       await invalidateAfterWardrobeMutation({ authContext });
       if (!isCurrentAuthContext(authContext)) return;
@@ -583,8 +597,17 @@ export default function WardrobePage() {
     } catch (err) {
       console.error('Recognize clothing error:', err);
       if (!isCurrentAuthContext(authContext)) return;
+      if (isClothingNotActiveError(err)) {
+        Taro.showToast({ title: '这件衣服已移出衣橱，不能继续处理', icon: 'none' });
+        refreshWardrobe();
+        return;
+      }
       updateClothingInList({ ...item, aiStatus: 'failed', aiRecognizeStatus: 'failed' });
       Taro.showToast({ title: '小搭暂时没整理好，可手动编辑或重新整理', icon: 'none' });
+    } finally {
+      if (isCurrentAuthContext(authContext)) {
+        setRecognizingIds((prev) => prev.filter((id) => id !== item.id));
+      }
     }
   }
 
