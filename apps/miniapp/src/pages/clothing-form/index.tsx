@@ -194,7 +194,9 @@ function toFormValue(item: Clothing): ClothingEditFormValue {
     });
   } else if (item.colorPalette && item.colorPalette.length > 0) {
     item.colorPalette.forEach(cp => {
-      const colorMeta = normalizeColor(cp.name || cp.hex);
+      const colorName = cp.name?.trim() || cp.hex?.trim();
+      if (!colorName) return;
+      const colorMeta = normalizeColor(colorName);
       if (colorMeta) colors.push(colorMeta.key);
     });
   }

@@ -792,9 +792,10 @@ AI 不得编造未出现在 evidence 中的：
 内容：
 
 - 阶段 1 第一步“识别与写入边界审计”：已完成。
-- 本轮未修改业务代码。
-- 下一步：实施字段类型、Prompt、解析、草稿与正式衣服写入闭环。
+- 阶段 1 第二步“类型与 normalize 基础能力”：已完成。
+- 下一步：上传识别 Prompt、parser 与草稿 mapper 接入。
 - 确认字段枚举。
+- 建立两份云函数本地 normalize helper。
 - 修改识别 prompt。
 - 新上传衣物写入 `aestheticFeatures`。
 - 已有衣服重新识别写入 `aestheticFeatures`。
@@ -951,21 +952,29 @@ AI 不得编造未出现在 evidence 中的：
 - 开始日期：2026-06-25
 - 完成日期：未完成
 - commit：未提交
-- 审计状态：阶段 1 第一步“识别与写入边界审计”已完成
-- 业务文件修改：无
+- 审计状态：阶段 1 第一步“识别与写入边界审计”已完成；阶段 1 第二步“类型与 normalize 基础能力”已完成
+- 业务文件修改：新增两份云函数本地 helper，未接入现有识别链路
 - 数据库修改：无
 - 部署：无
-- 修改文件：`docs/personalized-aesthetic-recommendation-v2.md`
-- 新增字段：本轮只定稿，未实施
+- 修改文件：`packages/types/src/clothes.ts`、`apps/miniapp/cloudfunctions/processUploadImage/services/aestheticFeatures.js`、`apps/miniapp/cloudfunctions/recognizeClothAttributes/aestheticFeatures.js`、`docs/personalized-aesthetic-recommendation-v2.md`
+- 新增字段：`Clothing.aestheticFeatures?: AestheticFeaturesV1`、`ClothesDraft.aestheticFeatures?: AestheticFeaturesV1`；`ColorInfo.role?: 'primary' | 'secondary' | 'accent'`
 - 新增集合：无
 - 新增索引：无
 - 环境变量：无
 - 部署云函数：无
 - 数据迁移：无
-- 自动检查：开始前 `git status --short` 干净；完成后需执行 `git status --short` 和 `git diff --stat`
-- 人工测试：未执行，本轮只更新文档
+- schema / prompt version：`version: 1`，`promptVersion: 'aesthetic-v1'`
+- TypeScript 类型：新增 `AestheticConfidenceLevel`、`ClothingFit`、`ClothingLength`、`ClothingSilhouette`、`ClothingPatternType`、`ClothingDesignElement`、`AestheticFeatureConfidence`、`AestheticFeaturesV1`
+- helper 放置：上传识别与已有衣服重识别各使用本地 `aestheticFeatures.js`，未建立跨云函数共享目录，未从 `packages/types` 运行时 require
+- normalize 规则：枚举白名单外降级；`confidence` 只接受 `high` / `medium` / `low`；字段 confidence 为 `low` 时写 `unknown` / `null` / `[]`；`formalityLevel` 只接受有限数字、四舍五入并 clamp 到 1-5；`silhouette` 按当前真实 `category/subcategory` 二次校验
+- colorPalette normalize：最多 3 色；`name` 必须非空；`hex` 只保留合法 6 位并统一 `#RRGGBB`；`ratio` clamp 到 0-1；`role` 只接受 `primary` / `secondary` / `accent`；最多一个 primary，缺失时可把第一项设为 primary；仅当全部颜色都有有效 ratio 且总和大于 0 时归一化
+- 类型消费端适配：`clothing-detail` 展示场景对缺失 `name/hex` 使用“未知颜色”文案兜底；`clothing-form` 表单初始化过滤 `name/hex` 均缺失的无效颜色项；继续保留 `ColorInfo.hex?` / `ratio?`
+- 字段级 merge：先 normalize existing 和 incoming；普通字段按 `low < medium < high` 合并，incoming high 覆盖，incoming medium 可覆盖 existing low / unknown / null 或 existing medium，incoming low / unknown / null 不覆盖有效旧值；`designElements` 作为整体字段合并；只有采用 incoming 字段时 metadata 使用 incoming/meta
+- 本轮未接入 Prompt，未改 AI 返回 schema，未改 `clothes_drafts` 写入，未改 `confirmClothesDrafts` / `getWardrobe` / `updateClothes` / `generateOutfit`，未改变数据库写入行为
+- 自动检查：开始前 `git status --short` 保留阶段 1 第二步既有改动；miniapp typecheck 已通过；miniapp lint 0 errors；两个 helper 的 `node --check` 已通过；`git diff --check`、`git status --short`、`git diff --stat` 已执行；临时 Node probe 已验证两份 helper 一致
+- 人工测试：不运行云函数；使用临时 Node probe 覆盖合法字段、非法枚举、low confidence、silhouette 品类不匹配、designElements 去重截断、formalityLevel、colorPalette、merge high / low 场景
 - 已知问题：上传识别和重识别存在两套 Prompt / schema；手工 mapper 必须显式接入新字段
-- 后续事项：阶段 1 第二步——实现类型、识别 schema 和 normalize 基础能力
+- 后续事项：上传识别 Prompt、parser 与草稿 mapper 接入；后续再处理确认入库、读取返回、重识别写回和 UI 展示
 
 ### 后续阶段更新模板
 
@@ -1022,11 +1031,18 @@ AI 不得编造未出现在 evidence 中的：
 
 ## 本轮检查要求
 
-本轮只修改本文档，不运行 typecheck / lint，不提交 commit，不继续阶段 1 第二步。
+阶段 1 第二步已进入代码实施。本轮新增共享类型和两份云函数本地 runtime helper，但不接入 Prompt、不改变数据库写入、不运行云函数、不提交 commit、不部署。
 
 完成后执行：
 
 ```bash
+cmd /c pnpm --filter @starter-template/miniapp typecheck
+cmd /c pnpm --filter @starter-template/miniapp lint
+node --check apps/miniapp/cloudfunctions/processUploadImage/services/aestheticFeatures.js
+node --check apps/miniapp/cloudfunctions/recognizeClothAttributes/aestheticFeatures.js
+git diff --check
 git status --short
 git diff --stat
 ```
+
+同时使用临时 Node probe 对两份 helper 的相同输入输出做一致性验证。

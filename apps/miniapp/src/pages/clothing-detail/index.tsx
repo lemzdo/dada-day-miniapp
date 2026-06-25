@@ -579,9 +579,10 @@ function getColorItems(item: Clothing): DetailColorItem[] {
   const palette = item.colorPalette;
   if (palette && palette.length > 0) {
     return palette.map((cp) => {
-      const colorMeta = normalizeColor(cp.name || cp.hex);
+      const colorName = cp.name?.trim() || cp.hex?.trim() || '未知颜色';
+      const colorMeta = normalizeColor(colorName);
       return {
-        name: colorMeta.label || cp.name || cp.hex || '',
+        name: colorMeta.label || colorName,
         key: colorMeta.key,
         hex: cp.hex || colorMeta.hex,
         border: colorMeta.border,

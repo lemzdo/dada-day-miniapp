@@ -92,8 +92,94 @@ export type Material =
 
 export interface ColorInfo {
   name: string;
-  hex: string;
-  ratio: number;
+  hex?: string;
+  ratio?: number;
+  role?: 'primary' | 'secondary' | 'accent';
+}
+
+export type AestheticConfidenceLevel = 'high' | 'medium' | 'low';
+
+export type ClothingFit =
+  | 'fitted'
+  | 'regular'
+  | 'relaxed'
+  | 'oversized'
+  | 'unknown';
+
+export type ClothingLength =
+  | 'cropped'
+  | 'short'
+  | 'regular'
+  | 'long'
+  | 'extraLong'
+  | 'unknown';
+
+export type ClothingSilhouette =
+  | 'straight'
+  | 'boxy'
+  | 'aLine'
+  | 'xLine'
+  | 'cocoon'
+  | 'tapered'
+  | 'wideLeg'
+  | 'flare'
+  | 'bodycon'
+  | 'unknown';
+
+export type ClothingPatternType =
+  | 'solid'
+  | 'stripe'
+  | 'plaid'
+  | 'floral'
+  | 'graphic'
+  | 'polkaDot'
+  | 'animal'
+  | 'abstract'
+  | 'colorBlock'
+  | 'other'
+  | 'unknown';
+
+export type ClothingDesignElement =
+  | 'ruffle'
+  | 'pleat'
+  | 'lace'
+  | 'cutout'
+  | 'asymmetry'
+  | 'hardware'
+  | 'embroidery'
+  | 'distressed'
+  | 'layered'
+  | 'bow'
+  | 'puffSleeve'
+  | 'sheer'
+  | 'fringe'
+  | 'belted';
+
+export interface AestheticFeatureConfidence {
+  fit: AestheticConfidenceLevel;
+  length: AestheticConfidenceLevel;
+  silhouette: AestheticConfidenceLevel;
+  patternType: AestheticConfidenceLevel;
+  designElements: AestheticConfidenceLevel;
+  formalityLevel: AestheticConfidenceLevel;
+}
+
+export interface AestheticFeaturesV1 {
+  version: 1;
+  promptVersion: 'aesthetic-v1';
+
+  fit: ClothingFit;
+  length: ClothingLength;
+  silhouette: ClothingSilhouette;
+  patternType: ClothingPatternType;
+  designElements: ClothingDesignElement[];
+  formalityLevel: 1 | 2 | 3 | 4 | 5 | null;
+
+  confidence: AestheticFeatureConfidence;
+
+  provider: string;
+  model: string;
+  recognizedAt: string;
 }
 
 export interface ClothingCropBox {
@@ -160,6 +246,7 @@ export interface Clothing {
   segmentModel?: string;
   aiProvider?: string;
   aiRawResult?: unknown;
+  aestheticFeatures?: AestheticFeaturesV1;
 
   // AI 识别结果
   category: ClothingCategory | string;
@@ -341,6 +428,7 @@ export interface ClothesDraft {
   styleTags?: string[];
   seasonTags?: string[];
   confidence?: number;
+  aestheticFeatures?: AestheticFeaturesV1;
   detectProvider?: string;
   detectModel?: string;
   segmentProvider?: string;
