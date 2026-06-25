@@ -9,6 +9,12 @@ const AITRYON_PROVIDER = 'bailian_tryon_parsing';
 const PRIMARY_AITRYON_CLOTHES_TYPES = ['upper', 'lower'];
 const FALLBACK_AITRYON_CLOTHES_TYPES = ['dress'];
 const VALID_AITRYON_CLOTHES_TYPES = new Set(['upper', 'lower', 'dress', 'jumpsuit']);
+const {
+  createDefaultAestheticFeaturesV1,
+  normalizeAestheticFeaturesV1,
+  normalizeColorPaletteV1,
+  AESTHETIC_PROMPT_VERSION,
+} = require('./aestheticFeatures');
 
 const DEFAULT_STAGE_STATUS = {
   router: 'skipped',
@@ -538,9 +544,13 @@ async function recognizeAttributes(imageUrlOrFileID) {
       model,
       imageUrl,
       prompt: buildAttributePrompt(),
-      maxTokens: 900,
+      maxTokens: 1400,
     });
-    return normalizeAttributeResult(raw);
+    return normalizeAttributeResult(raw, {
+      provider: 'bailian',
+      model,
+      recognizedAt: new Date().toISOString(),
+    });
   });
 }
 
@@ -745,9 +755,22 @@ function buildAttributePrompt() {
     'You are a wardrobe clothing attribute recognizer.',
     'Return strict JSON only. The image is a single clothing item crop/clean image whenever possible.',
     'Use Chinese values for category, subCategory, color, material, style and tags.',
+    'Only judge the clothing item itself. Do not infer the user body shape, body size, age, identity or any other sensitive attributes.',
     'Return this shape:',
-    '{"category":"上衣","subCategory":"T恤","type":"top","color":"白色","colors":["白色"],"material":"棉","style":"休闲","styleTags":["休闲"],"seasonTags":["春季","夏季"],"confidence":0.9}',
+    '{"category":"上衣","subCategory":"T恤","type":"top","color":"白色","colors":["白色"],"colorPalette":[{"name":"白色","hex":"#FFFFFF","ratio":0.85,"role":"primary"}],"material":"棉","style":"休闲","styleTags":["休闲"],"seasonTags":["春季","夏季"],"confidence":0.9,"aestheticFeatures":{"fit":"regular","length":"regular","silhouette":"straight","patternType":"solid","designElements":[],"formalityLevel":2,"confidence":{"fit":"high","length":"medium","silhouette":"medium","patternType":"high","designElements":"high","formalityLevel":"medium"}}}',
     'Allowed type values: top, bottom, onepiece, shoes, accessory, other.',
+    `aestheticFeatures prompt version is ${AESTHETIC_PROMPT_VERSION}; do not output version, promptVersion, provider, model or recognizedAt. Code will write those fields.`,
+    'fit describes garment cut only, not whether it fits a person. Allowed fit values: fitted, regular, relaxed, oversized, unknown.',
+    'length is relative within the current category/subCategory only. Allowed length values: cropped, short, regular, long, extraLong, unknown. Do not infer from body height or body shape.',
+    'Allowed silhouette values: straight, boxy, aLine, xLine, cocoon, tapered, wideLeg, flare, bodycon, unknown. Choose by clothing category; use unknown when not applicable.',
+    'Allowed patternType values: solid, stripe, plaid, floral, graphic, polkaDot, animal, abstract, colorBlock, other, unknown. Return only one main patternType.',
+    'Allowed designElements values: ruffle, pleat, lace, cutout, asymmetry, hardware, embroidery, distressed, layered, bow, puffSleeve, sheer, fringe, belted. Return at most 4 values; return [] when none are obvious; never invent free text.',
+    'formalityLevel meanings: 1 very casual, 2 daily casual, 3 refined daily, 4 commute/formal, 5 formal occasion. Return null when uncertain; never default to 3 just for completeness.',
+    'aestheticFeatures.confidence must include fit, length, silhouette, patternType, designElements and formalityLevel. Allowed confidence values: high, medium, low. Use low honestly when uncertain.',
+    'If the item is blurry, occluded or impossible to judge, use unknown/null/[] for aesthetic fields instead of guessing.',
+    'colorPalette must contain at most 3 colors using the real fields name, hex, ratio and role. ratio must be 0-1 when known; role must be primary, secondary or accent; use at most one primary.',
+    'If hex is uncertain, omit it or return an empty value instead of inventing a fake gray. If ratio is uncertain, omit it instead of inventing a precise area.',
+    'Keep the ordinary colors field compatible with existing consumers. Do not add proportion, primaryColor, secondaryColors, colorTemperature, colorValue or colorChroma.',
     'If uncertain, keep useful guesses with lower confidence.',
   ].join('\n');
 }
@@ -1287,11 +1310,13 @@ function applyAttributes(asset, attributes) {
   asset.categoryName = asset.subCategory;
   asset.color = attributes.color || (attributes.colors && attributes.colors[0]) || '';
   asset.colors = attributes.colors && attributes.colors.length > 0 ? attributes.colors : (asset.color ? [asset.color] : []);
+  asset.colorPalette = Array.isArray(attributes.colorPalette) ? cloneJson(attributes.colorPalette) : [];
   asset.material = attributes.material || '';
   asset.style = attributes.style || (attributes.styleTags && attributes.styleTags[0]) || '';
   asset.styleTags = attributes.styleTags || [];
   asset.seasonTags = attributes.seasonTags || [];
   asset.confidence = attributes.confidence || asset.confidence || 0;
+  asset.aestheticFeatures = cloneJson(attributes.aestheticFeatures || createDraftDefaultAestheticFeatures(asset));
   asset.detectStatus = 'success';
   asset.aiRawResult = {
     ...asset.aiRawResult,
@@ -1685,6 +1710,8 @@ function unionBbox(first, second) {
 function toDraftData(asset, openid) {
   const finalImageUrl = resolveFinalImageUrl(asset);
   const color = asset.color || (Array.isArray(asset.colors) ? asset.colors[0] : '');
+  const colorPalette = Array.isArray(asset.colorPalette) ? cloneJson(asset.colorPalette) : [];
+  const aestheticFeatures = cloneJson(asset.aestheticFeatures || createDraftDefaultAestheticFeatures(asset));
   return {
     _openid: openid,
     userId: openid,
@@ -1721,10 +1748,12 @@ function toDraftData(asset, openid) {
     categoryName: asset.categoryName || asset.subCategory || '',
     color: color || '',
     colors: Array.isArray(asset.colors) ? asset.colors : (color ? [color] : []),
+    colorPalette,
     material: asset.material || '',
     style: asset.style || '',
     styleTags: Array.isArray(asset.styleTags) ? asset.styleTags : [],
     seasonTags: Array.isArray(asset.seasonTags) ? asset.seasonTags : [],
+    aestheticFeatures,
     confidence: asset.confidence || 0,
     detectProvider: 'bailian',
     detectModel: getModel('BAILIAN_ATTRIBUTE_MODEL'),
@@ -1780,10 +1809,12 @@ function toDraftResponse(item) {
     categoryName: item.categoryName || item.subCategory || item.subcategory || '',
     color: item.color,
     colors: item.colors || (item.color ? [item.color] : []),
+    colorPalette: item.colorPalette || [],
     material: item.material,
     style: item.style,
     styleTags: item.styleTags || (item.style ? [item.style] : []),
     seasonTags: normalizeSeasonTags(item.seasonTags || []),
+    aestheticFeatures: item.aestheticFeatures,
     confidence: item.confidence || 0,
     detectProvider: item.detectProvider || 'bailian',
     detectModel: item.detectModel || '',
@@ -1813,24 +1844,62 @@ function resolveFinalImageUrl(asset) {
   return asset.cleanImageUrl || asset.cropImageUrl || asset.displayImageUrl || asset.originalImageUrl || '';
 }
 
-function normalizeAttributeResult(input) {
+function normalizeAttributeResult(input, meta = {}) {
   const raw = input && typeof input === 'object' ? input : {};
-  const colors = normalizeTextArray(raw.colors || (raw.color ? [raw.color] : []));
+  const colorPalette = normalizeColorPaletteV1(raw.colorPalette);
+  const rawColors = normalizeTextArray(raw.colors || []);
+  const colors = rawColors.length > 0
+    ? rawColors
+    : normalizeTextArray(raw.color ? [raw.color] : colorPalette.map((item) => item.name));
   const styleTags = normalizeTextArray(raw.styleTags || raw.styles || (raw.style ? [raw.style] : []));
   const seasonTags = normalizeSeasonTags(raw.seasonTags || raw.seasons);
+  const category = normalizeText(raw.category || raw.type || '其他');
+  const subCategory = normalizeText(raw.subCategory || raw.subcategory || raw.category || '其他');
+  const type = normalizeType(raw.type || raw.category);
+  const recognizedAt = normalizeIsoTimestamp(meta.recognizedAt);
+  const aestheticMeta = {
+    category: type || category,
+    subcategory: subCategory,
+    provider: meta.provider,
+    model: meta.model,
+    recognizedAt,
+  };
   return {
     raw,
-    category: normalizeText(raw.category || raw.type || '其他'),
-    subCategory: normalizeText(raw.subCategory || raw.subcategory || raw.category || '其他'),
-    type: normalizeType(raw.type || raw.category),
+    category,
+    subCategory,
+    type,
     color: normalizeText(raw.color || colors[0] || ''),
     colors,
+    colorPalette,
     material: normalizeText(raw.material || ''),
     style: normalizeText(raw.style || styleTags[0] || ''),
     styleTags,
     seasonTags,
+    aestheticFeatures: normalizeAestheticFeaturesSafely(raw.aestheticFeatures, aestheticMeta),
     confidence: normalizeConfidence(raw.confidence),
   };
+}
+
+function normalizeAestheticFeaturesSafely(input, meta) {
+  try {
+    return normalizeAestheticFeaturesV1(input, meta);
+  } catch (error) {
+    return createDefaultAestheticFeaturesV1(meta);
+  }
+}
+
+function createDraftDefaultAestheticFeatures(asset = {}) {
+  return createDefaultAestheticFeaturesV1({
+    provider: asset.detectProvider || 'bailian',
+    model: asset.detectModel || getModel('BAILIAN_ATTRIBUTE_MODEL'),
+    recognizedAt: asset.updatedAt || new Date().toISOString(),
+  });
+}
+
+function normalizeIsoTimestamp(value) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return text && Number.isFinite(Date.parse(text)) ? text : new Date().toISOString();
 }
 
 function normalizeType(value) {
