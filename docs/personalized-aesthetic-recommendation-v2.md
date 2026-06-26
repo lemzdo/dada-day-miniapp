@@ -2,7 +2,7 @@
 
 本文档是“搭搭day 个性化审美穿搭推荐 V2”的唯一设计和实施基线。后续每完成一个阶段，都应在本文档中更新已完成内容、实际修改文件、数据库变化、部署要求、测试要求、未完成事项和 commit hash，不再为每个小阶段新建重复文档。
 
-截至 2026-06-26，阶段 0 已完成，阶段 1 代码与最终闭环审计已完成，阶段 2 第一任务“组合级审美兼容引擎基础”和第二任务“影子评分分布离线校准与融合方案”已完成；阶段 1 的 5 个云函数仍待部署和真实小程序 smoke test，阶段 2 整体仍进行中，审美评分仍未正式参与排序。
+截至 2026-06-26，阶段 0 已完成，阶段 1 代码与最终闭环审计已完成，阶段 2 第一任务“组合级审美兼容引擎基础”和第二任务“影子评分分布离线校准与融合方案”已完成，阶段 3 行为事件采集代码已完成；阶段 1 的 5 个云函数、阶段 2 shadow telemetry 和阶段 3 `trackOutfitBehaviorEvents` 仍待部署和真实小程序 smoke test，审美评分与行为数据仍未正式参与排序。
 
 ## 版本目标
 
@@ -1136,12 +1136,26 @@ futureRankingScore = existingTotal + aestheticDelta
 
 ### 阶段 3：行为事件采集
 
-内容：
+状态：代码已完成，待创建集合、部署云函数和人工 smoke test。
 
-- `outfit_behavior_events`
-- `exposure` / `detail_view` / `favorite` / `unfavorite` / `wear` / `batch_refresh`
-- 幂等和用户隔离
-- 先采集，暂不强力影响推荐
+已实现内容：
+
+- 新增 `outfit_behavior_events` 事件规范和 `trackOutfitBehaviorEvents` 云函数。
+- 六类核心事件：`recommendation_exposure`、`outfit_detail_view`、`outfit_favorite`、`outfit_unfavorite`、`outfit_wear`、`recommendation_batch_refresh`。
+- 服务端使用 `cloud.getWXContext().OPENID` 写入 `_openid`，事件只属于当前用户。
+- 客户端只发送最小化 snapshot，不发送图片、标题、城市、AI raw result 或完整 outfit。
+- 同一用户相同 `eventId` 使用确定性 `_id` 幂等；duplicate 视为幂等成功。
+- Today 页、详情页和收藏页已接入核心成功边界。
+- 行为采集为 best-effort，不新增 UI loading/Toast，不影响主业务。
+
+明确未实现：
+
+- 不做跨用户学习。
+- 不让行为采集影响推荐排序。
+- 未实现 `learnedProfile`。
+- 未实现探索混排。
+
+下一步：阶段 4 先做 learnedProfile shadow 基础，读取当前用户行为事件并离线/影子聚合，不直接进入生产排序。
 
 ### 阶段 4：用户审美学习
 
@@ -1480,3 +1494,13 @@ git diff -- docs/personalized-aesthetic-recommendation-v2.md
 - 本轮新增 38 项 shadow 单元测试，并继续运行既有审美兼容与校准测试；最终检查结果以本任务提交前验证记录为准。
 - 本轮需要部署包含 shadow telemetry 的 `generateOutfit` 后才能开始收集真实数据；当前没有真实 shadow 样本，不能写成已完成真实分布审计。
 - 阶段 2 下一任务：下周收集真实 shadow 数据并完成正式融合决策；在此之前不启用 `rankingScore`，不实现个人偏好学习。
+
+## 阶段 3 完成记录：行为事件采集基础设施
+
+- 新增类型：`packages/types/src/outfit-behavior.ts`。
+- 新增云函数：`apps/miniapp/cloudfunctions/trackOutfitBehaviorEvents`。
+- 新增客户端 helper：`apps/miniapp/src/lib/outfitBehavior.ts` 和 `outfitBehaviorCore.js`。
+- 接入位置：Today 推荐曝光、Swiper 切换、缓存恢复曝光、手动换一批成功、Today 收藏/取消收藏/穿它成功、详情浏览成功、详情收藏/取消收藏/穿它成功、收藏页取消收藏成功。
+- 集合：`outfit_behavior_events`，待云端创建并设置仅云函数访问。
+- 当前不实现 `learnedProfile`、行为权重、探索混排或推荐排序改动。
+- 详细 schema、部署步骤和 smoke test 见 `docs/outfit-behavior-events-v1.md`。

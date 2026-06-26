@@ -136,3 +136,4 @@ export * from './weather';
 export * from './dict';
 export * from './ai';
 export * from './recommendation-profile';
+export * from './outfit-behavior';

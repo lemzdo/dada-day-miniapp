@@ -6,6 +6,12 @@ import { useAuthRuntime } from '@/hooks/useAuthRuntime';
 import { invalidateAfterOutfitFavoriteMutation, invalidateAfterOutfitWornMutation } from '@/lib/cacheInvalidation';
 import { addOutfitHistory, clearCloudRecommendationCache, generateCloudOutfit, removeFavoriteOutfit, saveFavoriteOutfit } from '@/lib/cloud';
 import {
+  buildOutfitBehaviorSnapshot,
+  createOutfitBehaviorEventId,
+  createOutfitBehaviorExposureTracker,
+  trackOutfitBehaviorEvent,
+} from '@/lib/outfitBehavior';
+import {
   captureAuthContext,
   isAuthContextCurrent,
   type ActiveAuthContext,
@@ -174,6 +180,7 @@ export default function TodayPage() {
   const initialRecommendationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastHandledRuntimeKeyRef = useRef<string | null>(null);
   const operationTargetRef = useRef<{ operation: OutfitOperation; outfitKey: string } | null>(null);
+  const behaviorTrackerRef = useRef(createOutfitBehaviorExposureTracker());
   const [currentWeather, setCurrentWeather] = useState<WeatherSnapshot | undefined>(undefined);
   const selectedScene = SCENE_TAGS[selectedSceneKey];
   const selectedSceneRef = useRef<SceneTag>(selectedScene);
@@ -204,6 +211,7 @@ export default function TodayPage() {
     recommendationWeatherFingerprintRef.current = getRecommendationWeatherFingerprint(undefined);
     loadingOwnerSeqRef.current = null;
     operationOwnerSeqRef.current = null;
+    behaviorTrackerRef.current = createOutfitBehaviorExposureTracker();
     setOutfits([]);
     setCurrentIndex(0);
     setLoading(false);
@@ -328,6 +336,9 @@ export default function TodayPage() {
       });
       recommendationWeatherSnapshotRef.current = weather;
       recommendationWeatherFingerprintRef.current = requestWeatherFingerprint;
+      outfitsRef.current = nextOutfits;
+      currentIndexRef.current = 0;
+      recommendationBatchIdRef.current = data.recommendationBatchId ?? nextOutfits[0]?.recommendationBatchId ?? '';
       setOutfits(nextOutfits);
       setCurrentIndex(0);
       setHasRecommendations(data.outfits.length > 0);
@@ -337,6 +348,7 @@ export default function TodayPage() {
       setBatchExhausted(Boolean(data.exhausted));
       setRecommendationNotice(getBatchNotice(data.recommendationNotice, Boolean(data.limited), Boolean(data.exhausted)));
       markOutfitShown(nextOutfits[0]);
+      trackCurrentOutfitExposure(nextOutfits[0], 0, data.recommendationBatchId ?? nextOutfits[0]?.recommendationBatchId ?? '');
       storeTodayRestoreSnapshot({
         outfits: nextOutfits,
         currentIndex: 0,
@@ -371,6 +383,8 @@ export default function TodayPage() {
     const seq = nextRequestSeq();
     const authContext = captureAuthContext();
     if (!authContext) return;
+    const previousOutfits = outfitsRef.current;
+    const previousRecommendationBatchId = recommendationBatchIdRef.current;
     setOperationForRequest(seq, 'refresh');
     setError('');
     setRecommendationNotice('');
@@ -410,6 +424,9 @@ export default function TodayPage() {
         });
         recommendationWeatherSnapshotRef.current = weatherForRefresh;
         recommendationWeatherFingerprintRef.current = weatherFingerprintForRefresh;
+        outfitsRef.current = nextOutfits;
+        currentIndexRef.current = 0;
+        recommendationBatchIdRef.current = data.recommendationBatchId ?? nextOutfits[0]?.recommendationBatchId ?? '';
         setOutfits(nextOutfits);
         setCurrentIndex(0);
         setHasRecommendations(true);
@@ -418,6 +435,7 @@ export default function TodayPage() {
         setBatchExhausted(Boolean(data.exhausted));
         setRecommendationNotice(getBatchNotice(data.recommendationNotice, Boolean(data.limited), Boolean(data.exhausted)));
         markOutfitShown(nextOutfits[0]);
+        trackCurrentOutfitExposure(nextOutfits[0], 0, data.recommendationBatchId ?? nextOutfits[0]?.recommendationBatchId ?? '');
         storeTodayRestoreSnapshot({
           outfits: nextOutfits,
           currentIndex: 0,
@@ -430,6 +448,12 @@ export default function TodayPage() {
           batchExhausted: Boolean(data.exhausted),
           recommendationNotice: getBatchNotice(data.recommendationNotice, Boolean(data.limited), Boolean(data.exhausted)),
         }, authContext);
+        trackOutfitBehaviorEvent(behaviorTrackerRef.current.buildBatchRefreshEvent({
+          previousRecommendationBatchId,
+          previousOutfits,
+          scene: selectedSceneKey,
+          trigger: 'manual',
+        }));
       } else {
         const notice = getBatchNotice(data.recommendationNotice, Boolean(data.limited), true);
         setBatchLimited(Boolean(data.limited));
@@ -481,6 +505,7 @@ export default function TodayPage() {
           ),
           authContext,
         );
+        trackExplicitOutfitBehavior('outfit_favorite', current, 'today');
       } else {
         const removed = await removeFavoriteOutfit(current.favoriteOutfitId || current.id, current.outfitKey);
         if (!isCurrentMutation(authContext, 'favorite', operationOutfitKey)) return;
@@ -498,6 +523,7 @@ export default function TodayPage() {
           },
           authContext,
         );
+        trackExplicitOutfitBehavior('outfit_unfavorite', current, 'today');
       }
       if (!isCurrentMutation(authContext, 'favorite', operationOutfitKey)) return;
       await invalidateAfterOutfitFavoriteMutation({ authContext });
@@ -564,6 +590,7 @@ export default function TodayPage() {
         },
         authContext,
       );
+      trackExplicitOutfitBehavior('outfit_wear', current, 'today');
       if (!isCurrentMutation(authContext, 'wear', operationOutfitKey)) return;
       await invalidateAfterOutfitWornMutation({ authContext });
       if (!isCurrentMutation(authContext, 'wear', operationOutfitKey)) return;
@@ -658,6 +685,7 @@ export default function TodayPage() {
     const next = event.detail.current;
     setCurrentIndex(next);
     markOutfitShown(outfits[next]);
+    trackCurrentOutfitExposure(outfits[next], next);
     storeTodayRestoreSnapshot({ currentIndex: next });
   }
 
@@ -724,6 +752,40 @@ export default function TodayPage() {
     return [...seenOutfitKeysRef.current];
   }
 
+  function trackCurrentOutfitExposure(
+    outfit: Outfit | undefined,
+    position: number,
+    batchId = recommendationBatchIdRef.current,
+  ) {
+    if (!outfit) return;
+    const event = behaviorTrackerRef.current.buildExposureEvent({
+      outfit,
+      recommendationBatchId: batchId || outfit.recommendationBatchId,
+      position,
+      candidateCount: outfitsRef.current.length || outfits.length || 1,
+      context: { scene: selectedSceneKeyRef.current },
+    });
+    trackOutfitBehaviorEvent(event);
+  }
+
+  function trackExplicitOutfitBehavior(
+    eventType: 'outfit_favorite' | 'outfit_unfavorite' | 'outfit_wear',
+    outfit: Outfit,
+    source: 'today',
+  ) {
+    trackOutfitBehaviorEvent({
+      schemaVersion: 1,
+      eventId: createOutfitBehaviorEventId({
+        pageSessionId: behaviorTrackerRef.current.pageSessionId,
+        eventType,
+      }),
+      eventType,
+      clientOccurredAt: new Date().toISOString(),
+      ...buildOutfitBehaviorSnapshot(outfit),
+      context: { source },
+    });
+  }
+
   function storeTodayRestoreSnapshot(
     input: TodayRestoreSnapshotInput = {},
     authContext?: ActiveAuthContext | null,
@@ -788,6 +850,7 @@ export default function TodayPage() {
     recommendationNoticeRef.current = snapshot.recommendationNotice;
     seenOutfitKeysRef.current = new Set(snapshot.seenOutfitKeys);
     markOutfitShown(restoredOutfits[restoredIndex]);
+    trackCurrentOutfitExposure(restoredOutfits[restoredIndex], restoredIndex, snapshot.recommendationBatchId);
     recommendationWeatherSnapshotRef.current = snapshot.weatherSnapshot;
     recommendationWeatherFingerprintRef.current = restoredRecommendationWeatherFingerprint;
     currentWeatherRef.current = restoredCurrentWeather;

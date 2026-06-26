@@ -8,10 +8,12 @@ import type {
   Outfit,
   OutfitAiComment,
   OutfitAiReviewResponse,
+  OutfitBehaviorEventInputV1,
   ProcessUploadImageStatus,
   RecommendRequest,
   RecommendResponse,
   RecommendationProfile,
+  TrackOutfitBehaviorEventsResponseV1,
   ResolvedWeatherResponse,
   StyleDictItem,
   UploadBatch,
@@ -582,6 +584,10 @@ export async function generateCloudOutfit(params: RecommendRequest = {}) {
     excludedOutfitKeyCount: params.excludedOutfitKeys?.length ?? 0,
   });
   return callCachedCloudFunction<RecommendResponse>('generateOutfit', params as Record<string, unknown>, ttl);
+}
+
+export async function trackCloudOutfitBehaviorEvents(events: OutfitBehaviorEventInputV1[]) {
+  return callCloudFunction<TrackOutfitBehaviorEventsResponseV1>('trackOutfitBehaviorEvents', { events });
 }
 
 export async function getCloudOutfit(id: string) {

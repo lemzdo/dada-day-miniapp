@@ -20,6 +20,11 @@ import {
   renameCloudOutfit,
   saveFavoriteOutfit,
 } from '@/lib/cloud';
+import {
+  buildOutfitBehaviorSnapshot,
+  createOutfitBehaviorEventId,
+  trackOutfitBehaviorEvent,
+} from '@/lib/outfitBehavior';
 import { buildPageCacheKey } from '@/lib/pageCache';
 import {
   captureAuthContext,
@@ -364,10 +369,12 @@ export default function OutfitDetailPage() {
   const requestSeqRef = useRef(0);
   const aiCommentRequestSeqRef = useRef(0);
   const lastHandledRuntimeKeyRef = useRef<string | null>(null);
+  const detailViewTrackedRef = useRef(false);
 
   const resetUserState = useCallback(() => {
     requestSeqRef.current += 1;
     aiCommentRequestSeqRef.current += 1;
+    detailViewTrackedRef.current = false;
     setOutfit(null);
     setDetailSource(normalizeSource(sourceParam));
     setLoading(false);
@@ -413,6 +420,7 @@ export default function OutfitDetailPage() {
   async function fetchOutfit(outfitId: string) {
     const requestSeq = requestSeqRef.current + 1;
     requestSeqRef.current = requestSeq;
+    detailViewTrackedRef.current = false;
     const authContext = captureAuthContext();
     if (!authContext) {
       setLoading(false);
@@ -436,6 +444,7 @@ export default function OutfitDetailPage() {
           setOutfit(preparedDraft);
           setLoading(false);
           hasDisplayableOutfit = true;
+          trackDetailViewOnce(preparedDraft, source);
           void loadCanonicalAiComment(preparedDraft, requestSeq, authContext);
         }
       }
@@ -448,6 +457,7 @@ export default function OutfitDetailPage() {
           setOutfit(preparedCached);
           setLoading(false);
           hasDisplayableOutfit = true;
+          trackDetailViewOnce(preparedCached, source);
           void loadCanonicalAiComment(preparedCached, requestSeq, authContext);
         }
       }
@@ -461,6 +471,7 @@ export default function OutfitDetailPage() {
       if (requestSeqRef.current !== requestSeq || !isCurrentAuthContext(authContext)) return;
       const prepared = prepareOutfitForState(detail, authContext);
       setOutfit(prepared);
+      trackDetailViewOnce(prepared, source);
       void loadCanonicalAiComment(prepared, requestSeq, authContext);
       await writeOutfitDetailCache(cacheKey, prepared, source, authContext);
     } catch (err) {
@@ -504,6 +515,7 @@ export default function OutfitDetailPage() {
           },
           authContext,
         );
+        trackExplicitOutfitBehavior('outfit_unfavorite', outfit, getBehaviorSource(detailSource));
         if (!isCurrentAuthContext(authContext)) return;
         await invalidateAfterOutfitFavoriteMutation({ authContext });
         if (!isCurrentAuthContext(authContext)) return;
@@ -536,6 +548,7 @@ export default function OutfitDetailPage() {
         },
         authContext,
       );
+      trackExplicitOutfitBehavior('outfit_favorite', outfit, getBehaviorSource(detailSource));
       if (!isCurrentAuthContext(authContext)) return;
       await invalidateAfterOutfitFavoriteMutation({ authContext });
       if (!isCurrentAuthContext(authContext)) return;
@@ -603,6 +616,7 @@ export default function OutfitDetailPage() {
         },
         authContext,
       );
+      trackExplicitOutfitBehavior('outfit_wear', outfit, getBehaviorSource(detailSource));
       void invalidateAfterOutfitWornMutation({ authContext });
       if (!isCurrentAuthContext(authContext)) return;
       Taro.showToast({ title: '已记录到穿搭历史', icon: 'success' });
@@ -813,6 +827,40 @@ export default function OutfitDetailPage() {
   function getCurrentOutfitDetailCacheKey() {
     if (!id) return '';
     return buildOutfitDetailCacheKey(detailSource, decodeURIComponent(id));
+  }
+
+  function trackDetailViewOnce(targetOutfit: Outfit, source: DetailSource) {
+    if (detailViewTrackedRef.current) return;
+    detailViewTrackedRef.current = true;
+    trackOutfitBehaviorEvent({
+      schemaVersion: 1,
+      eventId: createOutfitBehaviorEventId({
+        pageSessionId: `detail:${id || targetOutfit.id}`,
+        eventType: 'outfit_detail_view',
+      }),
+      eventType: 'outfit_detail_view',
+      clientOccurredAt: new Date().toISOString(),
+      ...buildOutfitBehaviorSnapshot(targetOutfit),
+      context: { source: getBehaviorSource(source) },
+    });
+  }
+
+  function trackExplicitOutfitBehavior(
+    eventType: 'outfit_favorite' | 'outfit_unfavorite' | 'outfit_wear',
+    targetOutfit: Outfit,
+    source: 'today' | 'favorites' | 'history' | 'other',
+  ) {
+    trackOutfitBehaviorEvent({
+      schemaVersion: 1,
+      eventId: createOutfitBehaviorEventId({
+        pageSessionId: `detail:${id || targetOutfit.id}`,
+        eventType,
+      }),
+      eventType,
+      clientOccurredAt: new Date().toISOString(),
+      ...buildOutfitBehaviorSnapshot(targetOutfit),
+      context: { source },
+    });
   }
 
   async function writeOutfitDetailCache(
@@ -1047,6 +1095,13 @@ export default function OutfitDetailPage() {
 function normalizeSource(value?: string): DetailSource {
   if (value === 'favorite' || value === 'history') return value;
   return 'recommendation';
+}
+
+function getBehaviorSource(source: DetailSource): 'today' | 'favorites' | 'history' | 'other' {
+  if (source === 'favorite') return 'favorites';
+  if (source === 'history') return 'history';
+  if (source === 'recommendation') return 'today';
+  return 'other';
 }
 
 function getDeletedItemCount(outfit: Outfit) {

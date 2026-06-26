@@ -27,6 +27,7 @@
 | 12 | `3f9b69a` | `fix: make upload image processing idempotent` | 上传识别并发幂等 | 是：`processUploadImage` | 否；新增 `upload_images` / `clothes_drafts` 字段写入 | 是 |
 | 13 | `0ab0b6e` | `fix: guard clothing reprocessing attempts` | 已有衣服重新识别 / 重新分割 attempt token | 是：`segmentClothImage`、`recognizeClothAttributes` | 否；新增 clothes attempt token 字段写入 | 是 |
 | 14 | `8bca539` | `fix: normalize clothing attribute aliases` | 衣物属性 alias / normalize 收口 | 是：`updateClothes`、`recognizeClothAttributes`、`getWardrobe` | 否；不 backfill | 是 |
+| 15 | 本次提交 | `feat: capture outfit behavior events` | 个性化审美推荐 V2 阶段 3 行为事件采集 | 是：`trackOutfitBehaviorEvents` | 是：创建 `outfit_behavior_events`、设置仅云函数访问、创建 3 个索引 | 是 |
 
 阶段合并说明：
 
@@ -48,6 +49,7 @@
 | 6 | `recognizeClothAttributes` | 重新识别 attempt token；属性 alias | 重新识别用 token 防晚归；AI 写入 canonical 并保护 manual alias | 是 | 否，当前为 `latest` | 连续点击重新识别、手动字段保护、deleted 拒绝、superseded 返回 |
 | 7 | `updateClothes` | 属性 alias normalize | 用户编辑保存时写 canonical 并同步必要 mirror | 是 | 否，当前为 `latest` | 编辑 subcategory/colorPalette/material 后 mirror 正确 |
 | 8 | `getWardrobe` | 属性 alias normalize | 衣橱列表/详情返回 canonical + mirror | 是 | 否，当前为 `latest` | 衣橱列表、衣物详情、历史 legacy 字段兼容返回 |
+| 9 | `trackOutfitBehaviorEvents` | 行为事件采集阶段 3 | 接收推荐曝光、详情、收藏、取消收藏、穿它、手动换一批事件 | 是 | 是，`3.0.4` | 行为事件写入、用户隔离、幂等、失败隔离 |
 
 必须一起部署的组合：
 
@@ -65,6 +67,17 @@
 - 不需要新环境变量。
 - 当前按确定性 `_id` 读写，暂不需要额外索引。
 - 关键写入字段包括：`_openid`、`outfitKey`、`scene`、`inputHash`、`promptVersion`、`model`、`aiComment`、`status`、`generationToken`、`generatedAt`、`updatedAt`、`previousReadyReview`。
+
+### 行为事件
+
+- 需要创建集合：`outfit_behavior_events`。
+- 权限：客户端不可直接读写，仅云函数访问。
+- 幂等不依赖唯一索引，云函数使用确定性 `_id = obv1_ + sha256(OPENID + "|" + eventId)`。
+- 建议索引：
+  - `_openid ASC + occurredAt DESC`
+  - `_openid ASC + eventType ASC + occurredAt DESC`
+  - `_openid ASC + outfitKey ASC + occurredAt DESC`
+- 当前不实现清理任务；建议阶段 4 聚合稳定后再制定 180 天左右原始事件保留策略。
 
 ### 删除修复
 
@@ -124,8 +137,10 @@
 4. 部署删除相关云函数：`deleteClothes`、`cleanupDeletedClothes`。二者必须同批部署，避免 tombstone/repair 协议不一致。
 5. 部署上传处理云函数：`processUploadImage`。部署后重点看依赖安装和 `wx-server-sdk` 版本。
 6. 部署衣服后处理云函数：`segmentClothImage`、`recognizeClothAttributes`。二者建议同批部署。
-7. 小程序重新构建并上传体验版。mutation cache、weather refresh、AI 点评入口、删除/上传/后处理页面交互都需要前端新包。
-8. 按“部署后烟测清单”先跑 10-15 项 smoke，再按模块跑完整人工测试。
+7. 创建 `outfit_behavior_events`，设置仅云函数访问，并创建 3 个行为查询索引。
+8. 部署 `trackOutfitBehaviorEvents`。
+9. 小程序重新构建并上传体验版。mutation cache、weather refresh、AI 点评入口、删除/上传/后处理页面交互和行为采集都需要前端新包。
+10. 按“部署后烟测清单”先跑 10-15 项 smoke，再按模块跑完整人工测试。
 
 协议一致性提醒：
 
@@ -133,6 +148,7 @@
 - 仅部署 `deleteClothes` 而不部署 `cleanupDeletedClothes`，stale/failed repair 接管能力不完整。
 - 仅部署 `recognizeClothAttributes` 而不部署 `updateClothes/getWardrobe`，AI 写入、手动编辑、读取返回的 alias 规则会不一致。
 - 仅部署 `processUploadImage` 而不上传新版小程序，用户可能无法看到新的 processing/draft 状态语义。
+- 仅上传新版小程序而不部署 `trackOutfitBehaviorEvents`，行为采集会 best-effort 失败，但不应影响推荐、收藏、穿它或详情。
 
 ## 五、统一人工测试清单
 
@@ -156,6 +172,22 @@
 | 晴转雨、雨转雪等 condition bucket 变化 | 推荐静默重生成，天气胶囊更新 | `getWeather`、`generateOutfit`；Today |
 | 手动刷新天气，分别制造 unchanged / refreshed / failed | 展示对应提示，不误触发重复 loading | `getWeather`；`WeatherCard`、Today |
 | 天气刷新同时点“换一批”或切换场景 | 请求晚归不覆盖新状态，loading 能收起 | `generateOutfit`；Today |
+
+### 行为事件采集
+
+| 测试步骤 | 预期结果 | 关联云函数 / 页面 |
+| --- | --- | --- |
+| 打开 Today 页并看到首张推荐 | 产生 1 条 `recommendation_exposure` | `trackOutfitBehaviorEvents`；Today |
+| 左右滑动到新推荐卡再滑回旧卡 | 新卡各 1 条 exposure，旧卡不重复 | `trackOutfitBehaviorEvents`；Today Swiper |
+| 重新进入 Today 页 | 新页面会话可再次记录当前卡 exposure | `trackOutfitBehaviorEvents`；Today |
+| 进入穿搭详情 | 成功展示后产生 1 条 `outfit_detail_view`，重渲染不重复 | `trackOutfitBehaviorEvents`；详情 |
+| Today 或详情收藏成功 | 产生 `outfit_favorite`；失败不产生 | `generateOutfit`、`trackOutfitBehaviorEvents`；Today、详情 |
+| Today、详情或收藏页取消收藏成功 | 产生 `outfit_unfavorite`；失败不产生 | `generateOutfit`、`trackOutfitBehaviorEvents`；Today、详情、收藏 |
+| Today 或详情点击“穿它”成功 | 产生 `outfit_wear`；同一套再次真实成功可产生第二条 | `generateOutfit`、`trackOutfitBehaviorEvents`；Today、详情 |
+| 手动点击“换一批”并成功切换 | 产生 `recommendation_batch_refresh`，记录上一批最多 8 个 outfitKey | `generateOutfit`、`trackOutfitBehaviorEvents`；Today |
+| 天气自动重生成推荐 | 不产生 `recommendation_batch_refresh` | `getWeather`、`generateOutfit`；Today |
+| 人为让埋点云函数失败 | 主业务无 Toast、无新增 loading，原操作仍成功 | `trackOutfitBehaviorEvents`；Today、详情、收藏 |
+| 检查事件文档 | `_openid` 为当前用户；无图片、标题、城市、raw result、openid 伪造字段 | `outfit_behavior_events` |
 
 ### AI 点评
 
@@ -243,4 +275,3 @@
 - 数据生命周期与隐私合规。
 - 自动化测试。
 - lint warning 收口。
-

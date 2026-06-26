@@ -10,6 +10,11 @@ import {
   invalidateOutfitDetailCache,
 } from '@/lib/cacheInvalidation';
 import { listFavoriteOutfits, removeFavoriteOutfit, renameCloudOutfit } from '@/lib/cloud';
+import {
+  buildOutfitBehaviorSnapshot,
+  createOutfitBehaviorEventId,
+  trackOutfitBehaviorEvent,
+} from '@/lib/outfitBehavior';
 import { buildPageCacheKey } from '@/lib/pageCache';
 import {
   captureAuthContext,
@@ -256,6 +261,17 @@ export default function FavoriteOutfitsPage() {
         invalidateAfterOutfitFavoriteMutation({ authContext: target.authContext }),
         invalidateOutfitDetailCache({ authContext: target.authContext }),
       ]);
+      trackOutfitBehaviorEvent({
+        schemaVersion: 1,
+        eventId: createOutfitBehaviorEventId({
+          pageSessionId: 'favorites',
+          eventType: 'outfit_unfavorite',
+        }),
+        eventType: 'outfit_unfavorite',
+        clientOccurredAt: new Date().toISOString(),
+        ...buildOutfitBehaviorSnapshot(outfit),
+        context: { source: 'favorites' },
+      });
     } catch (err) {
       console.error('Unfavorite outfit error:', err);
       if (!isFavoriteMutationTargetCurrent(target)) return;
