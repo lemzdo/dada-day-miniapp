@@ -105,6 +105,8 @@ const SYSTEM_FIELDS = [
   'aiError',
 ];
 
+const PROTECTED_AESTHETIC_FIELD = 'aestheticFeatures';
+
 const ATTRIBUTE_ALIAS_FIELDS = Object.keys(ATTRIBUTE_ALIAS_GROUPS)
   .reduce((fields, key) => fields.concat(ATTRIBUTE_ALIAS_GROUPS[key]), []);
 
@@ -118,7 +120,7 @@ exports.main = async (event = {}) => {
     if (!current.data || current.data._openid !== OPENID) throw new Error('clothing not found');
 
     const data = {};
-    const input = event.data || {};
+    const input = removeProtectedAestheticFields(event.data || {});
     const manualFields = new Set(Array.isArray(current.data.manualFields) ? current.data.manualFields : []);
     ALLOWED_FIELDS.forEach((field) => {
       if (Object.prototype.hasOwnProperty.call(input, field)) {
@@ -236,6 +238,20 @@ function toClothing(item) {
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
   };
+}
+
+function removeProtectedAestheticFields(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
+  return Object.keys(input).reduce((result, field) => {
+    if (isProtectedAestheticField(field)) return result;
+    result[field] = input[field];
+    return result;
+  }, {});
+}
+
+function isProtectedAestheticField(field) {
+  return field === PROTECTED_AESTHETIC_FIELD
+    || field.startsWith(`${PROTECTED_AESTHETIC_FIELD}.`);
 }
 
 function normalizeClothingAttributes(input) {

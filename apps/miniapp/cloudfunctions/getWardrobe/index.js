@@ -4,6 +4,10 @@ cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
 const db = cloud.database();
 const _ = db.command;
+const {
+  AESTHETIC_SCHEMA_VERSION,
+  normalizeAestheticFeaturesV1,
+} = require('./aestheticFeatures');
 
 const ATTRIBUTE_ALIAS_GROUPS = {
   category: ['category', 'type'],
@@ -140,6 +144,7 @@ function toClothing(item) {
   const displayImageUrl = getDisplayImage(item);
   const attributes = normalizeClothingAttributes(item);
   const mirrors = buildClothingAttributeMirrorPatch(attributes);
+  const aestheticFeatures = normalizeExistingAestheticFeatures(item);
   return {
     id: item._id,
     userId: item._openid,
@@ -188,6 +193,7 @@ function toClothing(item) {
     subcategoryId: item.subcategoryId,
     colors: mirrors.colors || [],
     colorPalette: attributes.colorPalette || [],
+    ...(aestheticFeatures ? { aestheticFeatures } : {}),
     styleTags: attributes.styleTags || [],
     seasonTags: attributes.seasonTags || [],
     material: attributes.material,
@@ -214,6 +220,20 @@ function toClothing(item) {
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
   };
+}
+
+function normalizeExistingAestheticFeatures(item) {
+  const source = item && item.aestheticFeatures;
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return undefined;
+  if (source.version !== AESTHETIC_SCHEMA_VERSION) return undefined;
+
+  return normalizeAestheticFeaturesV1(source, {
+    category: item.category || item.type,
+    subcategory: item.subcategory || item.subCategory || item.categoryName,
+    provider: source.provider,
+    model: source.model,
+    recognizedAt: source.recognizedAt,
+  });
 }
 
 function normalizeClothingAttributes(input) {

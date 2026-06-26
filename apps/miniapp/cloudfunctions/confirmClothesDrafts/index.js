@@ -4,6 +4,9 @@ cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
 const db = cloud.database();
 const CONFIRM_CONCURRENCY = 3;
+const {
+  normalizeAestheticFeaturesV1,
+} = require('./aestheticFeatures');
 
 exports.main = async (event = {}) => {
   const startedAt = Date.now();
@@ -353,6 +356,7 @@ function buildClothingFromDraft(draft, openid) {
   const styleTags = Array.isArray(draft.styleTags) && draft.styleTags.length > 0 ? draft.styleTags : (draft.style ? [draft.style] : []);
   const displayImageUrl = resolveDisplayImage(draft);
   const imageSourceType = resolveImageSourceType(draft, displayImageUrl);
+  const aestheticFeatures = normalizeDraftAestheticFeatures(draft, now);
   return {
     _openid: openid,
     userId: openid,
@@ -388,6 +392,7 @@ function buildClothingFromDraft(draft, openid) {
     categoryName: draft.categoryName || '',
     colors,
     colorPalette: colors.map((name, index) => ({ name, hex: '#8A8A8A', ratio: index === 0 ? 1 : 0 })),
+    aestheticFeatures,
     styleTags,
     seasonTags: Array.isArray(draft.seasonTags) ? draft.seasonTags : [],
     sceneTags: [],
@@ -537,6 +542,7 @@ function toClothing(item) {
     subCategory: item.subCategory || item.subcategory,
     colors: item.colors || [],
     colorPalette: item.colorPalette || [],
+    aestheticFeatures: item.aestheticFeatures,
     styleTags: item.styleTags || [],
     seasonTags: item.seasonTags || [],
     material: item.material,
@@ -553,6 +559,16 @@ function toClothing(item) {
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
   };
+}
+
+function normalizeDraftAestheticFeatures(draft, fallbackRecognizedAt) {
+  return normalizeAestheticFeaturesV1(draft && draft.aestheticFeatures, {
+    category: draft && (draft.type || draft.category),
+    subcategory: draft && (draft.categoryName || draft.subCategory || draft.subcategory),
+    provider: draft && (draft.aestheticFeatures && draft.aestheticFeatures.provider || draft.detectProvider || draft.aiProvider),
+    model: draft && (draft.aestheticFeatures && draft.aestheticFeatures.model || draft.detectModel),
+    recognizedAt: draft && (draft.aestheticFeatures && draft.aestheticFeatures.recognizedAt || draft.updatedAt || fallbackRecognizedAt),
+  });
 }
 
 function nowIso() {
