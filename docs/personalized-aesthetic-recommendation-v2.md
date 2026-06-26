@@ -2,7 +2,7 @@
 
 本文档是“搭搭day 个性化审美穿搭推荐 V2”的唯一设计和实施基线。后续每完成一个阶段，都应在本文档中更新已完成内容、实际修改文件、数据库变化、部署要求、测试要求、未完成事项和 commit hash，不再为每个小阶段新建重复文档。
 
-截至 2026-06-26，阶段 0 已完成，阶段 1 代码与最终闭环审计已完成，阶段 2 第一任务“组合级审美兼容引擎基础”已完成影子模式接入；阶段 1 的 5 个云函数仍待部署和真实小程序 smoke test，阶段 2 整体仍进行中。
+截至 2026-06-26，阶段 0 已完成，阶段 1 代码与最终闭环审计已完成，阶段 2 第一任务“组合级审美兼容引擎基础”和第二任务“影子评分分布离线校准与融合方案”已完成；阶段 1 的 5 个云函数仍待部署和真实小程序 smoke test，阶段 2 整体仍进行中，审美评分仍未正式参与排序。
 
 ## 版本目标
 
@@ -1040,7 +1040,99 @@ DETAIL_COMPETING_FOCUS
 - 需要后续部署 `generateOutfit` 云函数后才会在真实小程序返回中出现 `aestheticEvaluation`。
 - 阶段 1 的 `processUploadImage`、`confirmClothesDrafts`、`getWardrobe`、`updateClothes`、`recognizeClothAttributes` 仍待部署和 smoke test。
 - 当前不需要数据库迁移、集合、索引、环境变量或包依赖变更。
-- 下一任务暂记为：审计影子评分分布，并设计正式排名融合方案；不要在未审计前把 `aestheticEvaluation.score` 接入正式排序。
+- 下一任务暂记为：真实 shadow 样本采集方案与排名融合接入前审计；不要在未审计前把 `aestheticEvaluation.score` 接入正式排序。
+
+#### 阶段 2 第二任务：影子评分分布离线校准与融合方案
+
+- 状态：已完成，阶段 2 整体仍进行中。
+- 校准报告：`docs/aesthetic-compatibility-calibration-v1.md`。
+- fixture 版本：`aesthetic-compat-fixtures-v1`。
+- fixture 总数：60。
+- fixture 分组：positive 18、neutral 14、conflict 14、sparse 10、boundary 4。
+- 校准工具：`apps/miniapp/cloudfunctions/generateOutfit/services/aestheticCompatibility.calibration.js`。
+- 运行方式：
+  - `node apps/miniapp/cloudfunctions/generateOutfit/services/aestheticCompatibility.calibration.js`
+  - `node apps/miniapp/cloudfunctions/generateOutfit/services/aestheticCompatibility.calibration.js --json`
+  - `node apps/miniapp/cloudfunctions/generateOutfit/services/aestheticCompatibility.calibration.js --markdown`
+- 新增测试：`apps/miniapp/cloudfunctions/generateOutfit/services/aestheticCompatibility.calibration.test.js`。
+- 本轮生产引擎调整：无。
+- 不调整原因：60 个离线样本已满足宽区间校准门槛；未发现分布倒挂、越界、未知 evidence、重复 evidence、itemIds 未排序、顺序敏感或输入 mutate。
+
+分布核心数据：
+
+| 指标 | 数值 |
+| --- | ---: |
+| 样本总数 | 60 |
+| score non-null | 52 |
+| score null | 8 |
+| score min / max | 62 / 86 |
+| score mean | 73.46 |
+| score median | 72 |
+| coverage min / max | 0 / 1 |
+| coverage mean | 0.8 |
+| coverage median | 1 |
+
+分组结果：
+
+| 分组 | 数量 | score median | score range | coverage median |
+| --- | ---: | ---: | --- | ---: |
+| positive | 18 | 82 | 79-84 | 1 |
+| neutral | 14 | 70 | 70-75 | 0.9 |
+| conflict | 14 | 62 | 62-62 | 1 |
+| sparse | 10 | 78 | 74-86 | 0 |
+| boundary | 4 | 82 | 82-82 | 0.63 |
+
+校准结论：
+
+- positive median 高于 neutral median。
+- neutral median 高于 conflict median。
+- positive 与 conflict median 差值为 20，满足至少 12 分要求。
+- positive median 为 82，不低于 78。
+- conflict median 为 62，不高于 68。
+- neutral median 为 70，位于建议区间。
+- sparse 样本不会因缺字段被判低分；缺少有效覆盖时返回 `score: null`。
+- coverage `<0.25` 时总分保持 `null`。
+- 未出现 0 分或 100 分。
+- 未发现大量单一分值饱和。
+- low confidence 不产生负向证据。
+- unsupported version 不产生有效高级证据。
+- item 顺序变化结果完全一致。
+- 输入对象未被修改。
+
+六维覆盖与证据：
+
+- 维度非空数：silhouetteBalance 49、proportionBalance 48、colorHarmony 50、patternBalance 50、formalityConsistency 48、detailBalance 39。
+- 高频 evidence：`DETAIL_SINGLE_FOCUS` 22、`FORMALITY_ALIGNED` 21、`PROPORTION_CLEAR_LAYERING` 19、`SILHOUETTE_BALANCED_CONTRAST` 19、`COLOR_NEUTRAL_ACCENT` 18。
+- 负向 evidence 各 14 次，主要来自 conflict 分层样本。
+- 未知 evidence code：无。
+- evidence code 重复：无。
+- itemIds 未排序：无。
+
+正式排名融合方案锁定为后续方案，不在本轮启用：
+
+```text
+enabled = aestheticEvaluation.score != null && coverage >= 0.50
+centeredScore = clamp((score - 70) / 25, -1, 1)
+reliability = clamp((coverage - 0.50) / 0.30, 0, 1)
+aestheticDelta = centeredScore * reliability * 6
+futureRankingScore = existingTotal + aestheticDelta
+```
+
+融合边界：
+
+- coverage `<0.50` 时审美信号为 0。
+- `aestheticDelta` 范围为 `-6..+6`。
+- 不写回 `scores.total`。
+- 不改变 hard constraints、候选资格、去重、`excludedOutfitKeys`、`outfitKey` 或 `recommendationBatchId`。
+- 当原 `total` 相差超过 12 分时，审美增量不得逆转明显基础适配差距。
+- 正式启用前必须完成真实 shadow 样本、阶段 1 云函数部署 smoke test、手动颜色保护检查和接口性能观察。
+
+本轮仍不需要部署，不需要数据库迁移，不需要新集合、索引、环境变量或第三方依赖。
+
+阶段 2 下一任务：
+
+- 真实 shadow 样本采集方案与排名融合接入前审计。
+- 暂不直接启用正式排名。
 
 ### 阶段 3：行为事件采集
 
@@ -1099,7 +1191,7 @@ DETAIL_COMPETING_FOCUS
 | --- | --- |
 | 阶段 0 | 已完成 |
 | 阶段 1 | 已完成，待部署和人工 smoke test |
-| 阶段 2 | 第一任务已完成，整体进行中 |
+| 阶段 2 | 第一、第二任务已完成，整体进行中 |
 | 阶段 3 | 未开始 |
 | 阶段 4 | 未开始 |
 | 阶段 5 | 未开始 |
