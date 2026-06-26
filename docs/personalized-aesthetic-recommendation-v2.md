@@ -2,7 +2,7 @@
 
 本文档是“搭搭day 个性化审美穿搭推荐 V2”的唯一设计和实施基线。后续每完成一个阶段，都应在本文档中更新已完成内容、实际修改文件、数据库变化、部署要求、测试要求、未完成事项和 commit hash，不再为每个小阶段新建重复文档。
 
-截至 2026-06-25，阶段 0 已完成，阶段 1 正在分步实施。本轮接入新上传识别 Prompt、parser 与草稿 mapper，不提交，不部署。
+截至 2026-06-26，阶段 0 已完成，阶段 1 正在分步实施。本轮接入已有衣服重新识别的高级审美属性写回，不部署、不 push、不继续推荐算法改造。
 
 ## 版本目标
 
@@ -954,10 +954,10 @@ AI 不得编造未出现在 evidence 中的：
 - 完成日期：未完成
 - commit：未提交
 - 审计状态：阶段 1 第一步“识别与写入边界审计”已完成；阶段 1 第二步“类型与 normalize 基础能力”已完成；阶段 1 第三步“新上传识别与草稿接入”已完成；阶段 1 第四步“正式衣服入库与返回链路”已完成
-- 业务文件修改：上传识别链路已接入本地 helper、Prompt、parser 与草稿 mapper；正式衣服确认入库、衣橱返回和普通编辑保护已接入；已有衣服重新识别未接入
+- 业务文件修改：上传识别链路已接入本地 helper、Prompt、parser 与草稿 mapper；正式衣服确认入库、衣橱返回、普通编辑保护和已有衣服重新识别已接入
 - 数据库修改：无
 - 部署：无
-- 修改文件：`packages/types/src/clothes.ts`、`apps/miniapp/cloudfunctions/processUploadImage/services/aestheticFeatures.js`、`apps/miniapp/cloudfunctions/processUploadImage/services/wardrobeAssetPipeline.js`、`apps/miniapp/cloudfunctions/confirmClothesDrafts/index.js`、`apps/miniapp/cloudfunctions/confirmClothesDrafts/aestheticFeatures.js`、`apps/miniapp/cloudfunctions/getWardrobe/index.js`、`apps/miniapp/cloudfunctions/getWardrobe/aestheticFeatures.js`、`apps/miniapp/cloudfunctions/updateClothes/index.js`、`apps/miniapp/cloudfunctions/recognizeClothAttributes/aestheticFeatures.js`、`docs/personalized-aesthetic-recommendation-v2.md`
+- 修改文件：`packages/types/src/clothes.ts`、`apps/miniapp/cloudfunctions/processUploadImage/services/aestheticFeatures.js`、`apps/miniapp/cloudfunctions/processUploadImage/services/wardrobeAssetPipeline.js`、`apps/miniapp/cloudfunctions/confirmClothesDrafts/index.js`、`apps/miniapp/cloudfunctions/confirmClothesDrafts/aestheticFeatures.js`、`apps/miniapp/cloudfunctions/getWardrobe/index.js`、`apps/miniapp/cloudfunctions/getWardrobe/aestheticFeatures.js`、`apps/miniapp/cloudfunctions/updateClothes/index.js`、`apps/miniapp/cloudfunctions/recognizeClothAttributes/index.js`、`apps/miniapp/cloudfunctions/recognizeClothAttributes/aestheticFeatures.js`、`docs/personalized-aesthetic-recommendation-v2.md`
 - 新增字段：`Clothing.aestheticFeatures?: AestheticFeaturesV1`、`ClothesDraft.aestheticFeatures?: AestheticFeaturesV1`；`ColorInfo.role?: 'primary' | 'secondary' | 'accent'`
 - 新增集合：无
 - 新增索引：无
@@ -973,19 +973,26 @@ AI 不得编造未出现在 evidence 中的：
 - colorPalette Prompt：沿用 `name/hex/ratio`，增加 `role`；要求最多 3 色、`ratio` 为 0-1、`role` 为 `primary` / `secondary` / `accent`、最多一个 primary，不新增 `proportion` / `primaryColor` / `secondaryColors` / `colorTemperature` / `colorValue` / `colorChroma`
 - parser 接入：`wardrobeAssetPipeline` 在普通属性解析后使用本地 `normalizeAestheticFeaturesV1` 和 `normalizeColorPaletteV1`，高级字段缺失或非法时降级为默认 V1 对象，不阻断普通属性
 - 草稿写入：`toDraftData` 显式保存完整 normalized `aestheticFeatures`，包括 `version`、`promptVersion`、`confidence`、`provider`、`model`、`recognizedAt`；同时保存 normalized `colorPalette`
-- 新上传链路边界：已接入 `clothes_drafts.aestheticFeatures`、`confirmClothesDrafts` 正式入库和 `getWardrobe` 返回；尚未接入已有衣服重新识别，尚未修改 UI / recommendation
+- 新上传链路边界：已接入 `clothes_drafts.aestheticFeatures`、`confirmClothesDrafts` 正式入库和 `getWardrobe` 返回；尚未修改 UI / recommendation
 - 正式衣服入库：`confirmClothesDrafts` 从 draft 显式读取 `aestheticFeatures`，使用本地 `normalizeAestheticFeaturesV1` 按 `category/subcategory` normalize；草稿字段缺失或损坏时写入默认 V1，不阻断确认入库；不重新调用 AI，不展开到 clothes 顶层，不加入 `manualFields`
 - 衣橱返回：`getWardrobe` 仅在正式衣服已有 `version: 1` 的 `aestheticFeatures` 时返回 normalized object；旧衣服无字段或不支持版本时省略该字段，不伪造已识别数据；分页、筛选、图片字段和 alias normalize 不变
 - 普通编辑保护：`updateClothes` 在白名单处理前丢弃客户端传入的 `aestheticFeatures` 与 `aestheticFeatures.*` 字段；普通字段编辑保持局部 update，不清空数据库已有高级字段，不把高级字段加入 `manualFields`
 - 类型消费端适配：`clothing-detail` 展示场景对缺失 `name/hex` 使用“未知颜色”文案兜底；`clothing-form` 表单初始化过滤 `name/hex` 均缺失的无效颜色项；继续保留 `ColorInfo.hex?` / `ratio?`
 - 字段级 merge：先 normalize existing 和 incoming；普通字段按 `low < medium < high` 合并，incoming high 覆盖，incoming medium 可覆盖 existing low / unknown / null 或 existing medium，incoming low / unknown / null 不覆盖有效旧值；`designElements` 作为整体字段合并；只有采用 incoming 字段时 metadata 使用 incoming/meta
-- 本轮未改新上传识别 Prompt、`recognizeClothAttributes`、`generateOutfit`、outfit snapshot、行为事件、learnedStyleProfile、高级属性 UI、Web/BFF、集合、索引或环境变量；未接入已有衣服重新识别
-- 自动检查：开始前 `git status --short` 为空；`cmd /c pnpm --filter @starter-template/miniapp typecheck` 已通过；`cmd /c pnpm --filter @starter-template/miniapp lint` 为 0 errors，保留既有 warnings；`node --check` 已覆盖 `confirmClothesDrafts/index.js`、`getWardrobe/index.js`、`updateClothes/index.js`、`confirmClothesDrafts/aestheticFeatures.js`、`getWardrobe/aestheticFeatures.js`；`git diff --check`、`git status --short`、`git diff --stat` 已执行；临时 Node probe 已验证正式入库、返回降级、普通编辑保护、颜色兼容和 helper 一致性
-- 人工测试：不运行云函数、不真实调用外部 AI；使用临时 Node probe 覆盖合法字段、缺失/非法高级字段、low confidence、silhouette 品类不匹配、designElements 去重截断、formalityLevel、colorPalette role/ratio、多 primary、普通属性保留、多 asset 隔离、草稿确认入库、衣橱返回降级、普通编辑保护和 helper 一致性
-- 已知问题：已有衣服重新识别、`getWardrobe` 前端消费和 UI 展示仍待后续阶段接入
-- 部署云函数：后续需要部署 `processUploadImage`、`confirmClothesDrafts`、`getWardrobe`、`updateClothes`，本轮不部署
+- 已有衣服重新识别 Prompt：`recognizeClothAttributes` 已在普通属性 JSON 中加入同一套 `aestheticFeatures` V1 schema；模型只输出 `fit`、`length`、`silhouette`、`patternType`、`designElements`、`formalityLevel` 与逐字段 `confidence`；明确不输出 `version`、`promptVersion`、`provider`、`model`、`recognizedAt`；安全边界要求只分析衣服本身，不推断身材、体型、年龄、身份或敏感属性
+- 已有衣服重新识别 colorPalette：Prompt 沿用 `name/hex/ratio` 并增加 `role`；要求最多 3 色、`ratio` 为 0-1、`role` 为 `primary` / `secondary` / `accent`、最多一个 primary，不新增 `proportion` 或平行颜色字段；parser 统一使用 `normalizeColorPaletteV1`，不再为不确定颜色补假灰色或假比例
+- 已有衣服重新识别 effective category：成功写回前仍在 transaction 内重读最新 `clothes`；若最新 `manualFields` 保护 `category/type` 或 `subcategory/subCategory/categoryName`，高级字段 normalize 使用数据库当前值；未保护且本次 AI 普通属性会写入时，使用本次 AI 值；因此 silhouette 按最终实际保留类别校验
+- 已有衣服重新识别 merge：若旧衣服无 `aestheticFeatures.version = 1`，写入完整 normalized V1 或默认 V1；若已有 V1，则调用 `mergeAestheticFeaturesV1(existing, incoming, meta)` 按字段 confidence 合并。incoming high 覆盖，incoming medium 可覆盖旧 low / unknown / null 或旧 medium，incoming low / unknown / null 不覆盖旧有效值；`designElements` 作为整体字段按 confidence 替换或保留；只有字段真正采用 incoming 时 metadata 更新为本次 provider/model/recognizedAt/promptVersion
+- 已有衣服重新识别 manualFields：高级字段不加入 `manualFields`，也不允许用户编辑；普通字段仍按现有 alias group 保护。若 `colorPalette/colors/color` 被保护，本次 AI 不覆盖 `colorPalette` 和 `colors` mirror，已有颜色完整保留；其他高级审美字段仍可按 merge 规则更新
+- 已有衣服重新识别 attempt token/CAS：`recognitionAttemptToken`、`recognitionStartedAt`、`recognitionHeartbeatAt`、deleted 拒绝、stale attempt 接管、superseded、transaction CAS 均保持原链路；`aestheticFeatures` 与普通属性在同一个 token/CAS 保护的最终写回中提交，不在事务外单独更新
+- 已有衣服重新识别降级：`raw.aestheticFeatures` 缺失、类型错误、枚举非法、confidence 非法、designElements 非法或 formalityLevel 非法时，普通属性仍继续 normalize 和写回；高级字段只降级为默认 V1 或按旧值安全 merge
+- 本轮未改 `generateOutfit`、outfit snapshot、行为事件、learnedStyleProfile、高级属性 UI、Web/BFF、集合、索引或环境变量；不继续组合级推荐算法
+- 自动检查：开始前 `git status --short` 为空；`cmd /c pnpm --filter @starter-template/miniapp typecheck` 已通过；`cmd /c pnpm --filter @starter-template/miniapp lint` 为 0 errors，保留既有 warnings；`node --check` 已覆盖 `confirmClothesDrafts/index.js`、`getWardrobe/index.js`、`updateClothes/index.js`、`confirmClothesDrafts/aestheticFeatures.js`、`getWardrobe/aestheticFeatures.js`、`recognizeClothAttributes/index.js`、`recognizeClothAttributes/aestheticFeatures.js`；`git diff --check`、`git status --short`、`git diff --stat` 已执行；临时 Node probe 已验证正式入库、返回降级、普通编辑保护、颜色兼容、helper 一致性和已有衣服重新识别 merge / CAS 行为
+- 人工测试：不运行云函数、不真实调用外部 AI；使用临时 Node probe 覆盖合法字段、缺失/非法高级字段、low confidence、silhouette 品类不匹配、designElements 去重截断、formalityLevel、colorPalette role/ratio、多 primary、普通属性保留、多 asset 隔离、草稿确认入库、衣橱返回降级、普通编辑保护、已有衣服重新识别补齐、已有高级属性 merge、manualFields 颜色保护、manualFields 类别保护、token 不匹配、deleted 拒绝、旧请求晚归和 helper 一致性
+- 已知问题：`getWardrobe` 前端消费和高级属性 UI 展示仍待后续阶段；推荐、snapshot 和行为体系尚未接入高级字段
+- 部署云函数：后续需要部署 `processUploadImage`、`confirmClothesDrafts`、`getWardrobe`、`updateClothes`、`recognizeClothAttributes`，本轮不部署
 - 人工验收：待阶段 1 完整闭环后统一执行
-- 后续事项：下一步接入已有衣服重新识别链路；阶段 1 整体仍为进行中
+- 后续事项：下一步做阶段 1 完整代码审计与闭环验证，确认是否还有字段丢失或双 Prompt 漂移；阶段 1 整体仍为进行中
 
 ### 后续阶段更新模板
 
