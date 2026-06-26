@@ -1,6 +1,10 @@
 const cloud = require('wx-server-sdk');
 const crypto = require('crypto');
 const { attachAestheticEvaluation } = require('./services/aestheticCompatibility');
+const {
+  logAestheticShadowTelemetry,
+  parseAestheticShadowSampleRate,
+} = require('./services/aestheticShadowTelemetry');
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
@@ -139,6 +143,12 @@ async function generate(event) {
     scene,
     batchId: recommendationBatchId,
     shownAt: now,
+  });
+  logAestheticShadowTelemetry({
+    sampleRate: parseAestheticShadowSampleRate(process.env.AESTHETIC_SHADOW_LOG_SAMPLE_RATE),
+    seed: recommendationBatchId,
+    outfits: hydratedOutfits,
+    scene,
   });
 
   return {

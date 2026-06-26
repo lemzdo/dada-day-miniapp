@@ -213,3 +213,16 @@ WEATHER_CACHE_TTL_MS=600000
 | `ALIYUN_OSS_ACCESS_KEY_ID` | `OSS_ACCESS_KEY_ID` |
 | `ALIYUN_OSS_ACCESS_KEY_SECRET` | `OSS_ACCESS_KEY_SECRET` |
 | `ALIYUN_OSS_USE_SIGNED_URL` | `OSS_USE_SIGNED_URL` |
+
+## generateOutfit 审美 Shadow 日志
+
+`AESTHETIC_SHADOW_LOG_SAMPLE_RATE` 只用于 `generateOutfit` 的审美排名预演 shadow 日志。
+
+- 可选变量，代码默认值为 `0`。
+- 合法范围为 `0` 到 `1`，非法值按 `0` 处理。
+- `0` 表示完全关闭，不输出 `[AESTHETIC_SHADOW_V1]` 日志。
+- `1` 仅用于短期人工 smoke test。
+- `0.05` 可用于短期小流量观察。
+- 修改后需重新部署云函数，或按云平台实际环境变量刷新机制生效。
+- 日志不包含用户标识、原始衣物 ID、图片 URL、城市/GPS、prompt、AI raw result 或用户自由输入文本。
+- 不要在代码或仓库中默认开启该变量。

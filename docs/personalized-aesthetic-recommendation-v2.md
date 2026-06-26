@@ -1462,3 +1462,21 @@ git status --short
 git diff --stat
 git diff -- docs/personalized-aesthetic-recommendation-v2.md
 ```
+
+## 阶段 2 第三任务：真实 Shadow 样本采集与排名融合预演
+
+- 状态：已完成代码、测试、文档与本地验证准备；阶段 2 整体仍进行中。
+- 本轮新增 `aestheticRankingPreview.js`，实现正式融合公式的纯函数预演，不修改 `scores.total`。
+- 审美增量公式：`centeredScore = clamp((score - 70) / 25, -1, 1)`；`reliability = clamp((coverage - 0.50) / 0.30, 0, 1)`；`aestheticDelta = centeredScore * reliability * 6`，并 clamp 到 `-6..+6`。
+- `rankingScore = existingTotal + aestheticDelta` 只用于 shadow 预演。
+- 12 分保护：排序比较时如果两个候选原 `scores.total` 差值 `> 12`，仍以原 total 较高者优先；只有差值 `<= 12` 才比较 shadow `rankingScore`；仍相同时回退原顺序。
+- 本轮新增结构化脱敏日志，固定前缀 `[AESTHETIC_SHADOW_V1]`，包含 schema/engine/fusion version、sampleId、scene、候选数量、分数统计、排名变化和最多 8 个脱敏候选。
+- 环境变量：`AESTHETIC_SHADOW_LOG_SAMPLE_RATE`，可选，默认 `0` 完全关闭；非法值按 `0`；`1` 仅用于短期人工 smoke test；`0.05` 可用于短期小流量观察。
+- 日志不写数据库，不进入返回结构，不进入持久化 mapper，不改变生产排序、不改变候选过滤、不改变 hard constraints。
+- 本轮新增 JSONL 分析 CLI：`node apps/miniapp/cloudfunctions/generateOutfit/services/aestheticShadowReport.js <日志文件> [--json|--markdown]`。
+- CLI 支持纯 JSON、带前缀日志行和混杂云日志文本；非法行跳过并计数。
+- 敏感字段防护覆盖 `_openid`、`openid`、`clothingIds`、`itemIds`、`outfitKey`、`imageUrl`、`fileID`、`city`、`latitude`、`longitude`、`userTitle`、`nickname`、`avatar`、`prompt`、`rawResult`、`avoidTags`。
+- 下周真实采样流程见 `docs/aesthetic-shadow-sampling-v1.md`。
+- 本轮新增 38 项 shadow 单元测试，并继续运行既有审美兼容与校准测试；最终检查结果以本任务提交前验证记录为准。
+- 本轮需要部署包含 shadow telemetry 的 `generateOutfit` 后才能开始收集真实数据；当前没有真实 shadow 样本，不能写成已完成真实分布审计。
+- 阶段 2 下一任务：下周收集真实 shadow 数据并完成正式融合决策；在此之前不启用 `rankingScore`，不实现个人偏好学习。
