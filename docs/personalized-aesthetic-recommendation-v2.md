@@ -2,7 +2,7 @@
 
 本文档是“搭搭day 个性化审美穿搭推荐 V2”的唯一设计和实施基线。后续每完成一个阶段，都应在本文档中更新已完成内容、实际修改文件、数据库变化、部署要求、测试要求、未完成事项和 commit hash，不再为每个小阶段新建重复文档。
 
-截至 2026-06-26，阶段 0 已完成，阶段 1 代码与最终闭环审计已完成，待部署 5 个云函数并完成真实小程序 smoke test 后再进入阶段 2。
+截至 2026-06-26，阶段 0 已完成，阶段 1 代码与最终闭环审计已完成，阶段 2 第一任务“组合级审美兼容引擎基础”已完成影子模式接入；阶段 1 的 5 个云函数仍待部署和真实小程序 smoke test，阶段 2 整体仍进行中。
 
 ## 版本目标
 
@@ -914,6 +914,134 @@ recognizeClothAttributes
 - outfit snapshot 保存 evidence
 - 旧衣物降级评分
 
+#### 阶段 2 第一任务：组合级审美兼容引擎基础
+
+- 状态：已完成，阶段 2 整体仍进行中。
+- 引擎版本：`aesthetic-compat-v1`。
+- 接入方式：影子模式，只在 `generateOutfit` 返回的推荐 outfit 上附加可选 `aestheticEvaluation`。
+- 修改文件：
+  - `apps/miniapp/cloudfunctions/generateOutfit/services/aestheticCompatibility.js`
+  - `apps/miniapp/cloudfunctions/generateOutfit/services/aestheticCompatibility.test.js`
+  - `apps/miniapp/cloudfunctions/generateOutfit/index.js`
+  - `packages/types/src/outfit.ts`
+  - `docs/personalized-aesthetic-recommendation-v2.md`
+- 新增集合：无。
+- 新增索引：无。
+- 新增环境变量：无。
+- 新增依赖：无。
+- AI 调用：无。
+
+评价结果结构：
+
+```ts
+type AestheticDimensionKey =
+  | 'silhouetteBalance'
+  | 'proportionBalance'
+  | 'colorHarmony'
+  | 'patternBalance'
+  | 'formalityConsistency'
+  | 'detailBalance';
+
+type AestheticEvidencePolarity =
+  | 'positive'
+  | 'negative'
+  | 'neutral';
+
+interface AestheticEvidenceV1 {
+  code: string;
+  polarity: AestheticEvidencePolarity;
+  strength: 1 | 2 | 3;
+  itemIds: string[];
+  data?: Record<string, string | number | boolean | null>;
+}
+
+interface AestheticDimensionEvaluationV1 {
+  score: number | null;
+  coverage: number;
+  evidenceCodes: string[];
+}
+
+interface AestheticCompatibilityEvaluationV1 {
+  version: 1;
+  engineVersion: 'aesthetic-compat-v1';
+  score: number | null;
+  coverage: number;
+  dimensions: Record<AestheticDimensionKey, AestheticDimensionEvaluationV1>;
+  evidence: AestheticEvidenceV1[];
+}
+```
+
+六个维度与权重：
+
+| 维度 | 权重 | 当前规则 |
+| --- | ---: | --- |
+| `silhouetteBalance` | 25 | 上下装体量平衡、连衣裙独立轮廓、极端体量轻度负向 |
+| `proportionBalance` | 15 | 短上衣 + 长下装层次、常规长度中性、极端长款叠加轻度负向 |
+| `colorHarmony` | 25 | primary/首色、合法 hex、少量中性色名、单色/邻近色/中性色+强调色/可控对比/多主导色竞争 |
+| `patternBalance` | 15 | 单图案焦点、同类图案呼应、多个明显强图案竞争 |
+| `formalityConsistency` | 10 | 正式度差值 0-1 一致、2 可解释混搭、3-4 轻度负向 |
+| `detailBalance` | 10 | 单一设计焦点、少量分布呼应、多件强设计与明显图案竞争 |
+
+coverage 与总分：
+
+- 仅 `score !== null` 的维度参与加权。
+- `coverage = 有效维度原始权重之和 / 100`。
+- 有效维度按当前有效权重重新归一化。
+- `coverage < 0.25` 时总 `score` 返回 `null`。
+- 维度分和总分均 clamp 到 `0..100`，总分四舍五入为整数。
+- 缺失字段、`unknown`、`null`、空数组、非法 hex、非法 ratio、非法 category、非法 confidence、非法 formality、unsupported `aestheticFeatures.version` 均安全忽略，不扣分。
+- `low` confidence 的高级字段不参与负向判断；当前实现中也不参与正向证据。
+- 不推断用户身材、年龄、性别、身份、价格、品牌或社会价值。
+
+结构化 evidence codes：
+
+```text
+SILHOUETTE_BALANCED_CONTRAST
+SILHOUETTE_BALANCED_CONTINUITY
+SILHOUETTE_EXTREME_VOLUME_STACK
+PROPORTION_CLEAR_LAYERING
+PROPORTION_BALANCED_LENGTH
+PROPORTION_EXTREME_LENGTH_STACK
+COLOR_MONOCHROMATIC
+COLOR_ANALOGOUS
+COLOR_NEUTRAL_ACCENT
+COLOR_CONTROLLED_CONTRAST
+COLOR_TOO_MANY_DOMINANT_HUES
+PATTERN_SINGLE_FOCUS
+PATTERN_COHERENT_REPEAT
+PATTERN_COMPETING_FOCUS
+FORMALITY_ALIGNED
+FORMALITY_INTENTIONAL_MIX
+FORMALITY_LARGE_GAP
+DETAIL_SINGLE_FOCUS
+DETAIL_BALANCED_DISTRIBUTION
+DETAIL_COMPETING_FOCUS
+```
+
+影子模式边界：
+
+- 不参与候选过滤。
+- 不参与排序。
+- 不写入 `scores.total`。
+- 不覆盖 `styleUnity`、`preference` 等旧分数。
+- 不改变 `excludedOutfitKeys`、`outfitKey`、`recommendationBatchId`。
+- 不写 `snapshotItems`。
+- 不写 `outfits`、`favorite_outfits`、`outfit_history`。
+- `buildOutfitSaveData` 是显式持久化 mapper，当前未包含 `aestheticEvaluation`，因此不会因对象整体 spread 意外入库。
+- 老衣服缺少 `aestheticFeatures` 时返回 `score: null` / `coverage: 0`，不会天然低分。
+
+自动测试覆盖：
+
+- 使用 Node 内置 `node:test`。
+- 新增 30 个测试，覆盖空数组、旧衣服缺字段、轮廓、比例、图案、正式度、细节、颜色、unsupported version、item 顺序不变、输入不 mutate、分数范围、coverage 范围、evidence code 去重、itemIds 稳定排序、影子接入不改变 `scores.total` / `outfitKey` / `rankingScore`。
+
+后续部署影响：
+
+- 需要后续部署 `generateOutfit` 云函数后才会在真实小程序返回中出现 `aestheticEvaluation`。
+- 阶段 1 的 `processUploadImage`、`confirmClothesDrafts`、`getWardrobe`、`updateClothes`、`recognizeClothAttributes` 仍待部署和 smoke test。
+- 当前不需要数据库迁移、集合、索引、环境变量或包依赖变更。
+- 下一任务暂记为：审计影子评分分布，并设计正式排名融合方案；不要在未审计前把 `aestheticEvaluation.score` 接入正式排序。
+
 ### 阶段 3：行为事件采集
 
 内容：
@@ -971,7 +1099,7 @@ recognizeClothAttributes
 | --- | --- |
 | 阶段 0 | 已完成 |
 | 阶段 1 | 已完成，待部署和人工 smoke test |
-| 阶段 2 | 未开始 |
+| 阶段 2 | 第一任务已完成，整体进行中 |
 | 阶段 3 | 未开始 |
 | 阶段 4 | 未开始 |
 | 阶段 5 | 未开始 |

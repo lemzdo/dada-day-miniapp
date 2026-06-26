@@ -1,5 +1,6 @@
 const cloud = require('wx-server-sdk');
 const crypto = require('crypto');
+const { attachAestheticEvaluation } = require('./services/aestheticCompatibility');
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
@@ -1749,7 +1750,7 @@ function toTempOutfit(recommendation, context) {
     updatedAt: context.now,
   };
 
-  return toOutfit(data, recommendation.items);
+  return attachAestheticEvaluation(toOutfit(data, recommendation.items), recommendation.items);
 }
 
 function generateRuleRecommendations({

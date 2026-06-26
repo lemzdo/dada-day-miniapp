@@ -89,6 +89,42 @@ export interface OutfitAiReviewResponse {
   message?: string;
 }
 
+export type AestheticDimensionKey =
+  | 'silhouetteBalance'
+  | 'proportionBalance'
+  | 'colorHarmony'
+  | 'patternBalance'
+  | 'formalityConsistency'
+  | 'detailBalance';
+
+export type AestheticEvidencePolarity =
+  | 'positive'
+  | 'negative'
+  | 'neutral';
+
+export interface AestheticEvidenceV1 {
+  code: string;
+  polarity: AestheticEvidencePolarity;
+  strength: 1 | 2 | 3;
+  itemIds: string[];
+  data?: Record<string, string | number | boolean | null>;
+}
+
+export interface AestheticDimensionEvaluationV1 {
+  score: number | null;
+  coverage: number;
+  evidenceCodes: string[];
+}
+
+export interface AestheticCompatibilityEvaluationV1 {
+  version: 1;
+  engineVersion: 'aesthetic-compat-v1';
+  score: number | null;
+  coverage: number;
+  dimensions: Record<AestheticDimensionKey, AestheticDimensionEvaluationV1>;
+  evidence: AestheticEvidenceV1[];
+}
+
 export interface Outfit {
   id: string;
   userId: string;
@@ -131,6 +167,7 @@ export interface Outfit {
   reason?: string;
   reasoning?: string;
   aiComment?: OutfitAiComment;
+  aestheticEvaluation?: AestheticCompatibilityEvaluationV1;
 }
 
 export interface OutfitScores {
