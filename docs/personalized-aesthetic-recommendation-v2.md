@@ -975,6 +975,8 @@ AI 不得编造未出现在 evidence 中的：
 - 草稿写入：`toDraftData` 显式保存完整 normalized `aestheticFeatures`，包括 `version`、`promptVersion`、`confidence`、`provider`、`model`、`recognizedAt`；同时保存 normalized `colorPalette`
 - 新上传链路边界：已接入 `clothes_drafts.aestheticFeatures`、`confirmClothesDrafts` 正式入库和 `getWardrobe` 返回；尚未修改 UI / recommendation
 - 正式衣服入库：`confirmClothesDrafts` 从 draft 显式读取 `aestheticFeatures`，使用本地 `normalizeAestheticFeaturesV1` 按 `category/subcategory` normalize；草稿字段缺失或损坏时写入默认 V1，不阻断确认入库；不重新调用 AI，不展开到 clothes 顶层，不加入 `manualFields`
+- 阶段 1 第六步审计发现 P1：`confirmClothesDrafts` 曾在正式入库时忽略 `draft.colorPalette`，转而按 `draft.colors` 生成带 `#8A8A8A` 和伪比例的 palette，导致上传识别得到的 `hex`、`ratio`、`role` 丢失
+- P1 修复方式：正式入库优先使用 `normalizeColorPaletteV1(draft.colorPalette)` 的非空结果；仅在 `draft.colorPalette` 缺失、不是数组或 normalize 后无合法颜色时，才用 `draft.colors` 的真实颜色名回退；fallback 不再生成假灰色、猜测 hex、平均 ratio 或伪精确比例；`colors` mirror 由最终 normalized `colorPalette.name` 生成
 - 衣橱返回：`getWardrobe` 仅在正式衣服已有 `version: 1` 的 `aestheticFeatures` 时返回 normalized object；旧衣服无字段或不支持版本时省略该字段，不伪造已识别数据；分页、筛选、图片字段和 alias normalize 不变
 - 普通编辑保护：`updateClothes` 在白名单处理前丢弃客户端传入的 `aestheticFeatures` 与 `aestheticFeatures.*` 字段；普通字段编辑保持局部 update，不清空数据库已有高级字段，不把高级字段加入 `manualFields`
 - 类型消费端适配：`clothing-detail` 展示场景对缺失 `name/hex` 使用“未知颜色”文案兜底；`clothing-form` 表单初始化过滤 `name/hex` 均缺失的无效颜色项；继续保留 `ColorInfo.hex?` / `ratio?`
@@ -992,7 +994,7 @@ AI 不得编造未出现在 evidence 中的：
 - 已知问题：`getWardrobe` 前端消费和高级属性 UI 展示仍待后续阶段；推荐、snapshot 和行为体系尚未接入高级字段
 - 部署云函数：后续需要部署 `processUploadImage`、`confirmClothesDrafts`、`getWardrobe`、`updateClothes`、`recognizeClothAttributes`，本轮不部署
 - 人工验收：待阶段 1 完整闭环后统一执行
-- 后续事项：下一步做阶段 1 完整代码审计与闭环验证，确认是否还有字段丢失或双 Prompt 漂移；阶段 1 整体仍为进行中
+- 后续事项：阶段 1 整体仍为进行中；P1 修复需完成本轮验证后，再决定是否可将阶段 1 标记完成
 
 ### 后续阶段更新模板
 

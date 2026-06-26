@@ -6,6 +6,7 @@ const db = cloud.database();
 const CONFIRM_CONCURRENCY = 3;
 const {
   normalizeAestheticFeaturesV1,
+  normalizeColorPaletteV1,
 } = require('./aestheticFeatures');
 
 exports.main = async (event = {}) => {
@@ -352,7 +353,9 @@ async function mapWithConcurrency(items, limit, worker) {
 function buildClothingFromDraft(draft, openid) {
   const now = nowIso();
   const color = draft.color || (Array.isArray(draft.colors) ? draft.colors[0] : '');
-  const colors = Array.isArray(draft.colors) && draft.colors.length > 0 ? draft.colors : (color ? [color] : []);
+  const draftColors = normalizeDraftColors(draft.colors, color);
+  const colorPalette = normalizeDraftColorPalette(draft.colorPalette, draftColors);
+  const colors = colorPalette.length > 0 ? colorsFromColorPalette(colorPalette) : draftColors;
   const styleTags = Array.isArray(draft.styleTags) && draft.styleTags.length > 0 ? draft.styleTags : (draft.style ? [draft.style] : []);
   const displayImageUrl = resolveDisplayImage(draft);
   const imageSourceType = resolveImageSourceType(draft, displayImageUrl);
@@ -391,7 +394,7 @@ function buildClothingFromDraft(draft, openid) {
     type: draft.type || 'other',
     categoryName: draft.categoryName || '',
     colors,
-    colorPalette: colors.map((name, index) => ({ name, hex: '#8A8A8A', ratio: index === 0 ? 1 : 0 })),
+    colorPalette,
     aestheticFeatures,
     styleTags,
     seasonTags: Array.isArray(draft.seasonTags) ? draft.seasonTags : [],
@@ -569,6 +572,28 @@ function normalizeDraftAestheticFeatures(draft, fallbackRecognizedAt) {
     model: draft && (draft.aestheticFeatures && draft.aestheticFeatures.model || draft.detectModel),
     recognizedAt: draft && (draft.aestheticFeatures && draft.aestheticFeatures.recognizedAt || draft.updatedAt || fallbackRecognizedAt),
   });
+}
+
+function normalizeDraftColorPalette(rawColorPalette, fallbackColors) {
+  const normalized = normalizeColorPaletteV1(rawColorPalette);
+  if (normalized.length > 0) return normalized;
+  return normalizeColorPaletteV1(fallbackColors);
+}
+
+function normalizeDraftColors(value, fallbackColor) {
+  const colors = Array.isArray(value)
+    ? value.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim())
+    : [];
+  if (colors.length > 0) return colors;
+  return typeof fallbackColor === 'string' && fallbackColor.trim() ? [fallbackColor.trim()] : [];
+}
+
+function colorsFromColorPalette(colorPalette) {
+  return Array.isArray(colorPalette)
+    ? colorPalette
+      .map((item) => item && typeof item.name === 'string' ? item.name.trim() : '')
+      .filter(Boolean)
+    : [];
 }
 
 function nowIso() {
