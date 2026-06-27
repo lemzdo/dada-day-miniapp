@@ -2,7 +2,7 @@
 
 本文档是“搭搭day 个性化审美穿搭推荐 V2”的唯一设计和实施基线。后续每完成一个阶段，都应在本文档中更新已完成内容、实际修改文件、数据库变化、部署要求、测试要求、未完成事项和 commit hash，不再为每个小阶段新建重复文档。
 
-截至 2026-06-26，阶段 0 已完成，阶段 1 代码与最终闭环审计已完成，阶段 2 第一任务“组合级审美兼容引擎基础”和第二任务“影子评分分布离线校准与融合方案”已完成，阶段 3 行为事件采集代码已完成；阶段 1 的 5 个云函数、阶段 2 shadow telemetry 和阶段 3 `trackOutfitBehaviorEvents` 仍待部署和真实小程序 smoke test，审美评分与行为数据仍未正式参与排序。
+截至 2026-06-26，阶段 0 已完成，阶段 1 代码与最终闭环审计已完成，阶段 2 第一任务“组合级审美兼容引擎基础”和第二任务“影子评分分布离线校准与融合方案”已完成，阶段 3 行为事件采集代码已完成，阶段 4 第一任务 `learnedProfile` shadow 聚合基础已完成代码、测试和文档；阶段 1 的 5 个云函数、阶段 2 shadow telemetry、阶段 3 `trackOutfitBehaviorEvents` 和阶段 4 `refreshLearnedStyleProfile` 仍待部署和真实小程序 smoke test，审美评分与行为数据仍未正式参与排序。
 
 ## 版本目标
 
@@ -1504,3 +1504,23 @@ git diff -- docs/personalized-aesthetic-recommendation-v2.md
 - 集合：`outfit_behavior_events`，待云端创建并设置仅云函数访问。
 - 当前不实现 `learnedProfile`、行为权重、探索混排或推荐排序改动。
 - 详细 schema、部署步骤和 smoke test 见 `docs/outfit-behavior-events-v1.md`。
+
+## 阶段 4 第一任务完成记录：learnedProfile Shadow 聚合基础
+
+- 状态：已完成代码、测试、文档与本地验证准备；阶段 4 整体仍进行中。
+- 新增类型：`packages/types/src/learned-style-profile.ts`，并从 `packages/types/src/index.ts` 导出。
+- 新增云函数：`apps/miniapp/cloudfunctions/refreshLearnedStyleProfile`。
+- 新增集合：`learned_style_profiles`，待云端创建并设置仅云函数访问。
+- 数据来源：只读取当前用户 `_openid` 的 `outfit_behavior_events` 和关联 `clothes`，不做跨用户学习。
+- 输出：`LearnedStyleProfileV1`，包含 `global`、按 `home/work/date/sport` 拆分的 `contexts`、`source` 和 `quality`。
+- 七个学习维度：`fit`、`silhouette`、`patternType`、`designElement`、`formalityLevel`、`colorFamily`、`styleTag`。
+- 行为权重：detail `+0.5`、favorite `+2.0`、unfavorite `-2.5`、wear `+4.0/+5.5/+7.0`、batch refresh `-0.2`、exposure `0`。
+- 时间衰减：detail 45 天、favorite/unfavorite 120 天、wear 180 天、batch refresh 30 天；窗口为最近 180 天。
+- 门控：全局 `shadow_ready` 需要 `eligibleEventCount >= 8`、`distinctOutfitCount >= 4`、`effectiveActionWeight >= 8`、`featureCoverage >= 0.35`；单 scene context 需要 `eligibleEventCount >= 4`、`distinctOutfitCount >= 3`、`effectiveActionWeight >= 4`。
+- 幂等：`_id = lspv1_ + sha256(OPENID)`；相同 `sourceDigest` 不重复写；现有 `lastEventAt` 更新时旧聚合不覆盖新画像。
+- 安全返回：云函数只返回摘要，不返回 OPENID、原始事件、eventId、outfitKey、clothingIds、衣物详情或完整画像。
+- 隔离边界：不写 `recommendationProfile`，不修改 `preferredStyles`、`colorPreference`、`avoidTags`、`temperatureSensitivity`，不覆盖 `explicitProfile`。
+- 推荐边界：未修改 `generateOutfit`，未读取 learnedProfile，未修改 `scores.total`，未接入排序，未实现自动刷新、定时任务、探索混排或 UI。
+- 测试：新增 builder 与 persistence 单元测试，覆盖 fixtures、行为权重、重复 wear、时间衰减、refresh、feature confidence、per-outfit 归一化、门控、幂等、用户隔离和安全返回。
+- 详细设计、集合权限和下周 smoke test 见 `docs/learned-style-profile-v1.md`。
+- 阶段 4 下一步暂缓到真实 shadow 数据后再决定权重接入；下一开发阶段按计划进入阶段 6 Stylist Explanation V2。

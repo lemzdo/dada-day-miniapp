@@ -28,6 +28,7 @@
 | 13 | `0ab0b6e` | `fix: guard clothing reprocessing attempts` | 已有衣服重新识别 / 重新分割 attempt token | 是：`segmentClothImage`、`recognizeClothAttributes` | 否；新增 clothes attempt token 字段写入 | 是 |
 | 14 | `8bca539` | `fix: normalize clothing attribute aliases` | 衣物属性 alias / normalize 收口 | 是：`updateClothes`、`recognizeClothAttributes`、`getWardrobe` | 否；不 backfill | 是 |
 | 15 | 本次提交 | `feat: capture outfit behavior events` | 个性化审美推荐 V2 阶段 3 行为事件采集 | 是：`trackOutfitBehaviorEvents` | 是：创建 `outfit_behavior_events`、设置仅云函数访问、创建 3 个索引 | 是 |
+| 16 | 本次提交 | `feat: build learned style profile shadow` | 个性化审美推荐 V2 阶段 4 learnedProfile shadow 聚合基础 | 是：`refreshLearnedStyleProfile` | 是：创建 `learned_style_profiles`、设置仅云函数访问 | 是 |
 
 阶段合并说明：
 
@@ -50,6 +51,7 @@
 | 7 | `updateClothes` | 属性 alias normalize | 用户编辑保存时写 canonical 并同步必要 mirror | 是 | 否，当前为 `latest` | 编辑 subcategory/colorPalette/material 后 mirror 正确 |
 | 8 | `getWardrobe` | 属性 alias normalize | 衣橱列表/详情返回 canonical + mirror | 是 | 否，当前为 `latest` | 衣橱列表、衣物详情、历史 legacy 字段兼容返回 |
 | 9 | `trackOutfitBehaviorEvents` | 行为事件采集阶段 3 | 接收推荐曝光、详情、收藏、取消收藏、穿它、手动换一批事件 | 是 | 是，`3.0.4` | 行为事件写入、用户隔离、幂等、失败隔离 |
+| 10 | `refreshLearnedStyleProfile` | learnedProfile shadow 阶段 4 | 手动刷新当前用户 learnedProfile，写入 shadow 集合，不接入推荐排序 | 是 | 是，`3.0.4` | insufficient/shadow_ready、digest 幂等、用户隔离、缺失衣物容错 |
 
 必须一起部署的组合：
 
@@ -78,6 +80,16 @@
   - `_openid ASC + eventType ASC + occurredAt DESC`
   - `_openid ASC + outfitKey ASC + occurredAt DESC`
 - 当前不实现清理任务；建议阶段 4 聚合稳定后再制定 180 天左右原始事件保留策略。
+
+### Learned Profile Shadow
+
+- 需要创建集合：`learned_style_profiles`。
+- 权限：客户端不可直接读写，仅云函数访问。
+- 每个用户一个文档：`_id = lspv1_ + sha256(OPENID)`，不包含明文 OPENID。
+- 文档中仍保存服务端 `_openid` 用于隔离和审计。
+- 当前按确定性 `_id` 读写，暂不新增索引。
+- 不建立跨用户查询、排行榜或群体统计索引。
+- 暂不让 `generateOutfit`、Today、Profile 或偏好页读取该集合。
 
 ### 删除修复
 
@@ -139,8 +151,10 @@
 6. 部署衣服后处理云函数：`segmentClothImage`、`recognizeClothAttributes`。二者建议同批部署。
 7. 创建 `outfit_behavior_events`，设置仅云函数访问，并创建 3 个行为查询索引。
 8. 部署 `trackOutfitBehaviorEvents`。
-9. 小程序重新构建并上传体验版。mutation cache、weather refresh、AI 点评入口、删除/上传/后处理页面交互和行为采集都需要前端新包。
-10. 按“部署后烟测清单”先跑 10-15 项 smoke，再按模块跑完整人工测试。
+9. 创建 `learned_style_profiles`，设置仅云函数访问。
+10. 部署 `refreshLearnedStyleProfile`，先只通过云函数控制台或手动调用验证。
+11. 小程序重新构建并上传体验版。mutation cache、weather refresh、AI 点评入口、删除/上传/后处理页面交互和行为采集都需要前端新包。
+12. 按“部署后烟测清单”先跑 10-15 项 smoke，再按模块跑完整人工测试。
 
 协议一致性提醒：
 
@@ -149,6 +163,7 @@
 - 仅部署 `recognizeClothAttributes` 而不部署 `updateClothes/getWardrobe`，AI 写入、手动编辑、读取返回的 alias 规则会不一致。
 - 仅部署 `processUploadImage` 而不上传新版小程序，用户可能无法看到新的 processing/draft 状态语义。
 - 仅上传新版小程序而不部署 `trackOutfitBehaviorEvents`，行为采集会 best-effort 失败，但不应影响推荐、收藏、穿它或详情。
+- 部署 `refreshLearnedStyleProfile` 后仍不得让推荐读取 `learned_style_profiles`；本阶段只是 shadow 聚合验证。
 
 ## 五、统一人工测试清单
 
@@ -188,6 +203,24 @@
 | 天气自动重生成推荐 | 不产生 `recommendation_batch_refresh` | `getWeather`、`generateOutfit`；Today |
 | 人为让埋点云函数失败 | 主业务无 Toast、无新增 loading，原操作仍成功 | `trackOutfitBehaviorEvents`；Today、详情、收藏 |
 | 检查事件文档 | `_openid` 为当前用户；无图片、标题、城市、raw result、openid 伪造字段 | `outfit_behavior_events` |
+
+### Learned Profile Shadow
+
+| 测试步骤 | 预期结果 | 关联云函数 / 页面 |
+| --- | --- | --- |
+| 创建 `learned_style_profiles` 并部署 `refreshLearnedStyleProfile` 后，对没有足够行为的当前用户手动调用刷新 | 返回 `insufficient_data`，只写或更新当前用户 shadow 文档 | `refreshLearnedStyleProfile` |
+| 当前用户产生足够 exposure/detail/favorite/wear 行为后再次刷新 | 返回 `shadow_ready`，`eligibleEventCount`、`distinctOutfitCount`、`effectiveActionWeight` 和 `featureCoverage` 达标 | `refreshLearnedStyleProfile`、`outfit_behavior_events` |
+| 相同数据连续刷新两次 | 第二次返回 `unchanged: true`，不因 `generatedAt` 不同重复写入 | `refreshLearnedStyleProfile`、`learned_style_profiles` |
+| 新增一条有效行为后刷新 | `sourceDigest` 改变并更新 profile | `refreshLearnedStyleProfile` |
+| 构造只有 exposure 的行为 | 不产生负偏好 | `refreshLearnedStyleProfile` |
+| 同一 outfit 重复 wear | 第二次 wear 权重大于第一次，第三次及以后封顶 | `refreshLearnedStyleProfile` |
+| 手动换一批但对应 batch 中没有曝光 | 不产生 refresh 负向 | `refreshLearnedStyleProfile` |
+| 同一 batch 中已曝光 outfit 被手动换一批 | 只产生极弱负向，且同一自然日最多 3 次有效贡献 | `refreshLearnedStyleProfile` |
+| 不同 scene 行为混合 | 只有达标 scene 输出 context，未达标 scene 不用全局画像伪装 | `refreshLearnedStyleProfile` |
+| 删除或缺失部分衣物后刷新 | 函数不失败，可解析衣物继续参与学习 | `refreshLearnedStyleProfile`、`clothes` |
+| 切换账号后刷新 | 只读取当前 `_openid` 的事件和衣物，不串账号 | `refreshLearnedStyleProfile` |
+| 检查 profile 文档和云函数返回 | 不含原始 eventId、outfitKey、clothingIds、衣物详情或完整画像返回 | `learned_style_profiles`、`refreshLearnedStyleProfile` |
+| 刷新后查看推荐结果 | 推荐排序、`scores.total`、收藏、穿它和曝光逻辑完全不变 | `generateOutfit`、Today、详情 |
 
 ### AI 点评
 
