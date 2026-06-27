@@ -227,13 +227,22 @@
 | 测试步骤 | 预期结果 | 关联云函数 / 页面 |
 | --- | --- | --- |
 | 首次进入穿搭详情并触发点评 | 生成点评并写入 `outfit_ai_reviews` | `generateOutfit`；`pages/outfit-detail` |
-| 退出后再次进入同一详情 | 复用已持久化点评，不重复生成 | `generateOutfit`；详情 |
-| 点击重新点评 | 点评内容或生成时间更新，旧内容在失败时可保留 | `generateOutfit`；详情 |
+| 首次点击 AI 点评 | 生成 `reviewVersion=stylist-explanation-v2` 的点评，返回 `title/reason/styleTags/tip` | `generateOutfit`；`pages/outfit-detail` |
+| 检查 `outfit_ai_reviews` 文档 | 保存 `inputDigest`、`evidenceVersion`、`promptVersion`、`source` 和 `explanationV2`，不含图片 URL、定位或 learnedProfile | `generateOutfit` |
+| 退出后再次进入同一详情 | `reviewVersion` 和 `inputDigest` 一致时复用已持久化点评，不重复生成 | `generateOutfit`；详情 |
+| 修改穿搭输入、场景、天气、scores 或 aesthetic evidence 后触发点评 | `inputDigest` 改变并生成新 V2，不复用旧事实点评 | `generateOutfit`；详情 |
+| 点击重新点评 | force refresh 不复用同 digest 旧点评，点评内容或生成时间更新，旧内容在失败时可保留 | `generateOutfit`；详情 |
 | 30 秒内连续点重新点评 | 命中 cooldown，前端提示或保持旧点评 | `generateOutfit`；详情 |
 | 两个页面并发触发同一点评 | 只生成一次，另一侧看到 in-progress/cache 结果 | `generateOutfit`；详情 |
+| 模拟旧请求晚归 | 旧 generationToken 或 digest 不匹配时不覆盖新 V2 结果 | `generateOutfit` |
+| 模拟模型 malformed JSON | 使用 grounded rule fallback，输出仍引用真实 evidence code | `generateOutfit` |
+| 低 coverage 或 score=null | 点评语气谨慎，不输出整体审美优劣结论 | `generateOutfit` |
+| 构造旧 V1 点评记录后主动点击点评 | 按当前输入升级生成 V2，不做全量迁移、不删除旧数据 | `generateOutfit` |
+| 检查点评内容 | 不虚构颜色、材质、版型、天气或场景；不出现身材、年龄、职业、身份推断 | `generateOutfit`；详情 |
 | 从收藏入口 / 历史入口进入详情 | 可见同一套穿搭对应点评 | `generateOutfit`；收藏、历史、详情 |
 | 切换账号后进入同一 outfitKey | 点评按 `_openid` 隔离，不串账号 | `generateOutfit`；登录态、详情 |
 | 模型失败或网络失败 | 保留旧点评，不把 ready 点评清空 | `generateOutfit`；详情 |
+| 点评前后查看推荐列表 | 推荐顺序、`scores.total`、收藏、穿它、重命名和详情基础加载不变 | `generateOutfit`；Today、详情 |
 
 ### 删除衣物安全
 
@@ -283,21 +292,25 @@
 
 ## 六、部署后烟测清单
 
-每次部署后建议先跑以下 13 项：
+每次部署后建议先跑以下 17 项：
 
 1. 打开 Today，确认天气卡和推荐列表正常加载。
 2. Today 收藏一套搭配，再取消收藏，确认状态即时一致。
 3. 手动刷新天气一次，确认没有卡住 loading。
 4. 进入穿搭详情，触发 AI 点评，退出后再进入确认复用。
-5. 30 秒内点击重新点评，确认 cooldown 行为。
-6. 上传一张衣物图，进入上传确认页，确认草稿能出现。
-7. 对同一上传图片快速触发两次处理，确认不出现重复草稿。
-8. 确认一个草稿入库，确认衣橱和我的统计更新。
-9. 编辑新入库衣物的子品类、颜色、材质，保存后重新打开确认字段存在。
-10. 对已有衣服点击重新分割，确认图片状态最终稳定。
-11. 对已有衣服点击重新识别，期间手动改颜色，确认 AI 不覆盖。
-12. 删除一件未被引用衣物，确认衣橱消失且 Today 不再推荐它。
-13. 删除一件被收藏/历史引用的衣物，确认历史/收藏快照仍可打开。
+5. 检查 `outfit_ai_reviews`，确认有 `reviewVersion=stylist-explanation-v2` 和 `inputDigest`。
+6. 相同输入再次点击 AI 点评，确认直接复用且不再次调用模型。
+7. 点击重新点评，确认 force refresh 不复用旧 digest 结果。
+8. 模拟 malformed JSON，确认 fallback 正常且仍有 `title/reason/styleTags/tip`。
+9. 检查点评文案，不出现身材、年龄、职业、身份推断，不虚构颜色、材质或设计元素。
+10. 确认 AI 点评前后推荐顺序和 `scores.total` 完全不变。
+11. 上传一张衣物图，进入上传确认页，确认草稿能出现。
+12. 对同一上传图片快速触发两次处理，确认不出现重复草稿。
+13. 确认一个草稿入库，确认衣橱和我的统计更新。
+14. 编辑新入库衣物的子品类、颜色、材质，保存后重新打开确认字段存在。
+15. 对已有衣服点击重新分割，确认图片状态最终稳定。
+16. 对已有衣服点击重新识别，期间手动改颜色，确认 AI 不覆盖。
+17. 删除一件被收藏/历史引用的衣物，确认历史/收藏快照仍可打开，Today 不再推荐 deleted 衣物。
 
 ## 七、未完成 / 后续优化
 

@@ -5,13 +5,24 @@ const {
   logAestheticShadowTelemetry,
   parseAestheticShadowSampleRate,
 } = require('./services/aestheticShadowTelemetry');
+const { buildStylistEvidenceV1 } = require('./services/stylistEvidence');
+const {
+  STYLIST_PROMPT_VERSION,
+  STYLIST_REVIEW_VERSION,
+  buildRuleFallbackExplanationV2,
+  buildStylistPromptV2,
+  buildStylistReviewDocument,
+  parseStylistExplanationJson,
+  toLegacyAiComment,
+  validateStylistExplanationV2,
+} = require('./services/stylistExplanationV2');
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
 const db = cloud.database();
 const DELETED_STATUS = 'deleted';
 const AI_REVIEW_COLLECTION = 'outfit_ai_reviews';
-const AI_COMMENT_PROMPT_VERSION = 'v1';
+const AI_COMMENT_PROMPT_VERSION = STYLIST_PROMPT_VERSION;
 const BAILIAN_BASE_URL = process.env.BAILIAN_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1';
 const AI_COMMENT_PROVIDER = process.env.AI_COMMENT_PROVIDER || 'aliyun-bailian';
 const AI_COMMENT_MODEL = process.env.AI_COMMENT_MODEL || 'qwen-flash';
@@ -288,10 +299,7 @@ async function generateAiComment(event) {
       });
     }
 
-    const aiComment = {
-      ...(await callAiCommentModel(context.modelInput)),
-      generatedAt: new Date().toISOString(),
-    };
+    const aiComment = await callAiCommentModel(context.evidenceInput);
     const finishResult = await finishAiReviewSuccess(context, lease.generationToken, aiComment);
     const review = finishResult.review || await readAiReview(context.reviewId);
     return buildAiReviewResponse(context, review, {
@@ -350,19 +358,28 @@ async function buildAiCommentContext(event) {
         scene: requestedScene,
         weather: event.weather,
         scores: event.scores,
+        aestheticEvaluation: event.aestheticEvaluation,
         reason: event.reason,
       });
+  if (!source.aestheticEvaluation && payload?.aestheticEvaluation) {
+    source.aestheticEvaluation = payload.aestheticEvaluation;
+  }
   if (!source.scene) throw new Error('scene is required');
 
-  const modelInput = {
+  const evidenceInput = buildStylistEvidenceV1({
+    outfit: {
+      clothingIds: source.clothingIds,
+      items: source.items,
+      scene: source.scene,
+      weatherSnapshot: source.weather,
+      scores: source.scores,
+      styleTags: source.styleTags,
+      aestheticEvaluation: source.aestheticEvaluation,
+    },
     scene: source.scene,
     weather: source.weather,
-    items: source.items,
-    scores: source.scores,
-    reason: source.reason,
-    promptVersion: AI_COMMENT_PROMPT_VERSION,
-  };
-  const inputHash = sha256(stableStringify(modelInput));
+  });
+  const inputHash = evidenceInput.inputDigest;
   const reviewId = getAiReviewId(OPENID, source.outfitKey, source.scene);
 
   return {
@@ -371,8 +388,12 @@ async function buildAiCommentContext(event) {
     outfitKey: source.outfitKey,
     scene: source.scene,
     inputHash,
-    modelInput,
+    inputDigest: evidenceInput.inputDigest,
+    evidenceInput,
+    evidenceVersion: evidenceInput.evidenceVersion,
     promptVersion: AI_COMMENT_PROMPT_VERSION,
+    reviewVersion: STYLIST_REVIEW_VERSION,
+    provider: AI_COMMENT_PROVIDER,
     model: AI_COMMENT_MODEL,
   };
 }
@@ -391,7 +412,10 @@ async function buildAiCommentSourceFromOutfitAsset(openid, asset, requestedScene
     scene,
     weather: normalizeWeather(asset.weatherSnapshot || asset.weather) || null,
     items,
+    clothingIds,
     scores: sanitizeScores(asset.scores || {}),
+    styleTags: readStringArray(asset.styleTags),
+    aestheticEvaluation: asset.aestheticEvaluation,
     reason: normalizeAiCommentReason(asset.reasoning || asset.reason),
   };
 }
@@ -411,7 +435,10 @@ async function buildAiCommentSourceFromOwnedClothes(openid, payload, fallback) {
     scene,
     weather: normalizeWeather(fallback.weather || payload?.weatherSnapshot || payload?.weather) || null,
     items: buildAiCommentItemsFromClothes(clothes),
+    clothingIds,
     scores: sanitizeScores(fallback.scores || payload?.scores || {}),
+    styleTags: readStringArray(payload?.styleTags),
+    aestheticEvaluation: fallback.aestheticEvaluation || payload?.aestheticEvaluation,
     reason: normalizeAiCommentReason(fallback.reason || payload?.reasoning || payload?.reason),
   };
 }
@@ -452,11 +479,23 @@ function buildAiCommentItemsFromClothes(clothes) {
 function buildAiCommentItemFromClothing(item) {
   return {
     id: item._id,
+    clothingId: item._id,
+    category: item.category || '',
+    subcategory: item.subcategory || item.subCategory || '',
     type: limitText(item.subcategory || item.subCategory || item.category || '', 24),
     color: limitText(readColorText(item), 24),
+    colorPalette: Array.isArray(item.colorPalette) ? item.colorPalette : [],
     style: limitText(readArray(item.styleTags).join(' / '), 48),
+    styleTags: readStringArray(item.styleTags),
     thickness: limitText(item.thickness || '', 24),
     material: limitText(item.material || item.materialGuess || '', 24),
+    fit: item.fit,
+    length: item.length,
+    silhouette: item.silhouette,
+    patternType: item.patternType,
+    designElements: item.designElements,
+    formalityLevel: item.formalityLevel,
+    aestheticFeatures: item.aestheticFeatures,
   };
 }
 
@@ -469,6 +508,7 @@ async function callAiCommentModel(input) {
   if (!apiKey) throw new Error('BAILIAN_API_KEY is missing');
 
   const fetch = require('node-fetch');
+  const prompt = buildStylistPromptV2(input);
   const response = await fetch(`${BAILIAN_BASE_URL}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -478,11 +518,11 @@ async function callAiCommentModel(input) {
     body: JSON.stringify({
       model: AI_COMMENT_MODEL,
       messages: [
-        { role: 'system', content: buildAiCommentSystemPrompt() },
-        { role: 'user', content: JSON.stringify(input) },
+        { role: 'system', content: prompt.system },
+        { role: 'user', content: prompt.user },
       ],
-      temperature: 0.45,
-      max_tokens: 220,
+      temperature: 0.3,
+      max_tokens: 700,
       stream: false,
       response_format: { type: 'json_object' },
     }),
@@ -496,48 +536,80 @@ async function callAiCommentModel(input) {
 
   const data = await response.json();
   const content = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
-  const parsed = parseLooseJson(content);
-  const normalized = normalizeAiComment(parsed);
-  if (!normalized) throw new Error('invalid_ai_comment_json');
-  return normalized;
-}
-
-function buildAiCommentSystemPrompt() {
-  return [
-    '你是穿搭小程序的短点评助手。',
-    '只基于用户给出的结构化穿搭数据生成点评文案。',
-    '不要重新选择衣服，不要修改分数，不要参与推荐算法。',
-    '中文、年轻化、自然、简短，不要夸张营销腔。',
-    '只输出 JSON，不要 Markdown，不要解释过程。',
-    'JSON 格式：{"title":"string","reason":"string","styleTags":["string"],"tip":"string"}',
-    'title 不超过 12 个中文字符；reason 不超过 80 个中文字符；styleTags 最多 3 个且每个不超过 6 个中文字符；tip 不超过 40 个中文字符。',
-  ].join('\n');
-}
-
-function parseLooseJson(content) {
-  const text = String(content || '').trim().replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '');
   try {
-    return JSON.parse(text);
+    const parsed = parseStylistExplanationJson(content);
+    const explanation = validateStylistExplanationV2(parsed, input, {
+      provider: AI_COMMENT_PROVIDER,
+      model: AI_COMMENT_MODEL,
+      generatedAt: new Date().toISOString(),
+    });
+    return toLegacyAiComment(explanation);
   } catch (error) {
-    const start = text.indexOf('{');
-    const end = text.lastIndexOf('}');
-    if (start >= 0 && end > start) return JSON.parse(text.slice(start, end + 1));
-    throw error;
+    const fallback = buildRuleFallbackExplanationV2(input, {
+      provider: AI_COMMENT_PROVIDER,
+      model: AI_COMMENT_MODEL,
+      generatedAt: new Date().toISOString(),
+    });
+    return toLegacyAiComment(fallback);
   }
 }
 
 function normalizeAiComment(value) {
   if (!value || typeof value !== 'object') return null;
-  const title = limitText(value.title, 12);
-  const reason = limitText(value.reason, 80);
-  const tip = limitText(value.tip, 40);
+  const title = limitText(value.title, 16);
+  const reason = limitText(value.reason, 160);
+  const tip = limitText(value.tip, 80);
   const styleTags = readStringArray(value.styleTags)
-    .map((tag) => limitText(tag, 6))
+    .map((tag) => limitText(tag, 12))
     .filter(Boolean)
-    .slice(0, 3);
+    .slice(0, 5);
 
   if (!title || !reason || !tip) return null;
-  return { title, reason, styleTags, tip, generatedAt: value.generatedAt };
+  return {
+    title,
+    reason,
+    styleTags,
+    tip,
+    generatedAt: value.generatedAt,
+    ...(value.reviewVersion ? { reviewVersion: value.reviewVersion } : {}),
+    ...(value.promptVersion ? { promptVersion: value.promptVersion } : {}),
+    ...(value.inputDigest ? { inputDigest: value.inputDigest } : {}),
+    ...(value.source ? { source: value.source } : {}),
+    ...(value.explanationV2 ? { explanationV2: value.explanationV2 } : {}),
+  };
+}
+
+function normalizeAestheticEvaluationForStorage(value) {
+  if (!value || typeof value !== 'object') return undefined;
+  const score = value.score === null ? null : normalizeFiniteNumber(value.score);
+  const coverage = normalizeFiniteNumber(value.coverage);
+  const evidence = Array.isArray(value.evidence)
+    ? value.evidence
+        .filter((entry) => entry && typeof entry.code === 'string')
+        .map((entry) => ({
+          code: entry.code,
+          polarity: ['positive', 'negative', 'neutral'].includes(entry.polarity) ? entry.polarity : 'neutral',
+          strength: Math.max(1, Math.min(3, Math.round(Number(entry.strength) || 1))),
+          itemIds: readStringArray(entry.itemIds).sort(),
+          ...(entry.data && typeof entry.data === 'object' ? { data: sanitizePlainObject(entry.data) } : {}),
+        }))
+    : [];
+  return {
+    version: value.version || 1,
+    engineVersion: value.engineVersion || 'aesthetic-compat-v1',
+    score,
+    coverage: coverage === null ? 0 : coverage,
+    dimensions: value.dimensions && typeof value.dimensions === 'object' ? sanitizePlainObject(value.dimensions) : {},
+    evidence,
+  };
+}
+
+function sanitizePlainObject(value) {
+  return JSON.parse(JSON.stringify(value, (_key, entry) => {
+    if (typeof entry === 'number' && !Number.isFinite(entry)) return null;
+    if (typeof entry === 'function' || typeof entry === 'undefined') return undefined;
+    return entry;
+  }));
 }
 
 async function findAuthoritativeAiCommentAsset(openid, event, payload, outfitKey, scene) {
@@ -628,17 +700,6 @@ function shortHash(value) {
   return String(value || '').slice(0, 10);
 }
 
-function stableStringify(value) {
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
-  if (value && typeof value === 'object') {
-    return `{${Object.keys(value)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
-      .join(',')}}`;
-  }
-  return JSON.stringify(value);
-}
-
 async function readAiReview(reviewId) {
   if (!reviewId) return null;
   try {
@@ -672,6 +733,7 @@ function isReadyAiReview(review, context) {
       && review.status === 'ready'
       && review.inputHash === context.inputHash
       && review.promptVersion === context.promptVersion
+      && (!review.reviewVersion || review.reviewVersion === context.reviewVersion)
       && normalizeAiComment(review.aiComment),
   );
 }
@@ -683,6 +745,7 @@ function isAiReviewStale(review, context) {
   if (review.status !== 'ready') return true;
   if (review.inputHash !== context.inputHash) return true;
   if (review.promptVersion !== context.promptVersion) return true;
+  if (review.reviewVersion && review.reviewVersion !== context.reviewVersion) return true;
   return !normalizeAiComment(review.aiComment);
 }
 
@@ -699,8 +762,15 @@ function buildAiReviewResponse(context, review, options = {}) {
           outfitKey: review.outfitKey,
           scene: review.scene,
           inputHash: review.inputHash,
+          inputDigest: review.inputDigest || review.inputHash,
+          schemaVersion: review.schemaVersion,
+          reviewVersion: review.reviewVersion,
           promptVersion: review.promptVersion,
+          evidenceVersion: review.evidenceVersion,
+          source: review.source,
+          explanationV2: review.explanationV2,
           model: review.model,
+          provider: review.provider,
           aiComment,
           status: review.status,
           generatedAt: review.generatedAt,
@@ -717,6 +787,9 @@ function buildAiReviewResponse(context, review, options = {}) {
     cooldown: Boolean(options.cooldown),
     retryAfterMs: options.retryAfterMs,
     promptVersion: context?.promptVersion || review?.promptVersion || AI_COMMENT_PROMPT_VERSION,
+    reviewVersion: context?.reviewVersion || review?.reviewVersion,
+    inputDigest: context?.inputDigest || review?.inputDigest || review?.inputHash,
+    source: review?.source || aiComment?.source,
     model: context?.model || review?.model || AI_COMMENT_MODEL,
   };
 }
@@ -733,7 +806,12 @@ async function acquireAiReviewLease(context, { forceRegenerate }) {
         return { cacheHit: true, review: current };
       }
 
-      if (current?.status === 'generating' && isActiveGenerationLease(current.generationStartedAt)) {
+      if (
+        current?.status === 'generating'
+        && current.promptVersion === context.promptVersion
+        && current.inputDigest === context.inputDigest
+        && isActiveGenerationLease(current.generationStartedAt)
+      ) {
         return { inProgress: true, review: current };
       }
 
@@ -754,7 +832,12 @@ async function acquireAiReviewLease(context, { forceRegenerate }) {
         outfitKey: context.outfitKey,
         scene: context.scene,
         inputHash: context.inputHash,
+        inputDigest: context.inputDigest,
+        schemaVersion: 2,
+        reviewVersion: context.reviewVersion,
         promptVersion: context.promptVersion,
+        evidenceVersion: context.evidenceVersion,
+        provider: context.provider,
         model: context.model,
         status: 'generating',
         generationToken,
@@ -795,18 +878,17 @@ async function finishAiReviewSuccess(context, generationToken, aiComment) {
       return { saved: false, superseded: true, review: current };
     }
 
-    const readyData = {
-      _openid: context.openid,
-      userId: context.openid,
-      outfitKey: context.outfitKey,
-      scene: context.scene,
-      inputHash: context.inputHash,
-      promptVersion: context.promptVersion,
+    const explanation = aiComment.explanationV2 || buildRuleFallbackExplanationV2(context.evidenceInput, {
+      provider: context.provider,
       model: context.model,
-      aiComment,
-      status: 'ready',
       generatedAt: aiComment.generatedAt || now,
-      updatedAt: now,
+    });
+    const readyData = {
+      ...buildStylistReviewDocument({
+        context,
+        explanation,
+        now,
+      }),
       generationToken: null,
       generationStartedAt: null,
       previousReview: null,
@@ -831,7 +913,14 @@ async function finishAiReviewFailure(context, generationToken) {
           status: 'ready',
           aiComment: previous.aiComment,
           inputHash: previous.inputHash,
+          inputDigest: previous.inputDigest,
+          schemaVersion: previous.schemaVersion,
+          reviewVersion: previous.reviewVersion,
           promptVersion: previous.promptVersion,
+          evidenceVersion: previous.evidenceVersion,
+          source: previous.source,
+          explanationV2: previous.explanationV2,
+          provider: previous.provider,
           model: previous.model,
           generatedAt: previous.generatedAt,
           updatedAt: previous.updatedAt || now,
@@ -857,7 +946,14 @@ function buildPreviousAiReviewSnapshot(review) {
   return {
     aiComment: normalizeAiComment(review.aiComment),
     inputHash: review.inputHash,
+    inputDigest: review.inputDigest,
+    schemaVersion: review.schemaVersion,
+    reviewVersion: review.reviewVersion,
     promptVersion: review.promptVersion,
+    evidenceVersion: review.evidenceVersion,
+    source: review.source,
+    explanationV2: review.explanationV2,
+    provider: review.provider,
     model: review.model,
     generatedAt: review.generatedAt,
     updatedAt: review.updatedAt,
@@ -871,7 +967,8 @@ function isCurrentAiReviewGeneration(review, context, generationToken) {
       && review.generationToken === generationToken
       && review._openid === context.openid
       && review.outfitKey === context.outfitKey
-      && review.scene === context.scene,
+      && review.scene === context.scene
+      && (!review.inputDigest || review.inputDigest === context.inputDigest),
   );
 }
 
@@ -1343,6 +1440,7 @@ function buildSnapshotRecordData(base, { aiComment, outfitKey, now, source }) {
   const itemsSnapshot = buildDetailedSnapshotItems(clothingIds, base);
   const reason = base.reasoning || base.reason || '';
   const normalizedAiComment = normalizeAiComment(aiComment);
+  const aestheticEvaluation = normalizeAestheticEvaluationForStorage(base.aestheticEvaluation);
   const fallbackTitle = `${base.scene || '今日'}搭配`;
 
   return {
@@ -1369,6 +1467,7 @@ function buildSnapshotRecordData(base, { aiComment, outfitKey, now, source }) {
     weather: base.weatherSnapshot || base.weather || fallbackWeather(),
     weatherSnapshot: base.weatherSnapshot || base.weather || fallbackWeather(),
     scores: sanitizeScores(base.scores || {}),
+    ...(aestheticEvaluation ? { aestheticEvaluation } : {}),
     scoreExplanations: Array.isArray(base.scoreExplanations) ? base.scoreExplanations : [],
     generationType: base.generationType || 'auto',
     source: source || base.source || 'recommendation',
@@ -1501,6 +1600,7 @@ function toSnapshotOutfit(item, kind) {
     timeOfDay: item.timeOfDay,
     weatherSnapshot: item.weatherSnapshot || item.weather,
     scores: sanitizeScores(item.scores || {}),
+    aestheticEvaluation: normalizeAestheticEvaluationForStorage(item.aestheticEvaluation),
     scoreExplanations: item.scoreExplanations || [],
     generationType: item.generationType || 'auto',
     sourceItemId: item.sourceItemId,
@@ -1566,6 +1666,7 @@ function buildOutfitSaveData(base, { outfitKey, now, patch, current }) {
   const aiComment = normalizeAiComment(base.aiComment || current?.aiComment);
   const title = base.title || current?.title || `${base.scene || current?.scene || '今日'}搭配`;
   const userTitle = readTitle(current?.userTitle) || readTitle(base.userTitle);
+  const aestheticEvaluation = normalizeAestheticEvaluationForStorage(base.aestheticEvaluation || current?.aestheticEvaluation);
 
   return {
     title,
@@ -1582,6 +1683,7 @@ function buildOutfitSaveData(base, { outfitKey, now, patch, current }) {
     weather,
     weatherSnapshot: weather,
     scores: sanitizeScores(base.scores || current?.scores || {}),
+    ...(aestheticEvaluation ? { aestheticEvaluation } : {}),
     scoreExplanations: Array.isArray(base.scoreExplanations) ? base.scoreExplanations : current?.scoreExplanations || [],
     generationType: base.generationType || current?.generationType || 'auto',
     source: base.source || current?.source || 'recommend',
@@ -1700,6 +1802,7 @@ function normalizeOutfitPayload(payload) {
     weatherSnapshot: payload.weatherSnapshot,
     weather: payload.weather,
     scores: payload.scores,
+    aestheticEvaluation: payload.aestheticEvaluation,
     scoreExplanations: payload.scoreExplanations,
     generationType: payload.generationType,
     source: payload.source || 'recommend',
@@ -2335,6 +2438,12 @@ function normalizeScore(value) {
   return Math.max(0, Math.min(10, round1(score)));
 }
 
+function normalizeFiniteNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return Math.round(number * 100) / 100;
+}
+
 function isWithinDays(dateText, days) {
   const time = new Date(dateText).getTime();
   if (Number.isNaN(time)) return false;
@@ -2487,6 +2596,7 @@ function toOutfit(item, clothes) {
     timeOfDay: item.timeOfDay,
     weatherSnapshot: item.weatherSnapshot || item.weather,
     scores: sanitizeScores(item.scores || {}),
+    aestheticEvaluation: normalizeAestheticEvaluationForStorage(item.aestheticEvaluation),
     scoreExplanations: item.scoreExplanations || [],
     generationType: item.generationType || 'auto',
     sourceItemId: item.sourceItemId,

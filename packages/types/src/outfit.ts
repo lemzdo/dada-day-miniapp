@@ -53,6 +53,36 @@ export interface OutfitAiComment {
   styleTags: string[];
   tip: string;
   generatedAt?: string;
+  reviewVersion?: 'stylist-explanation-v2' | string;
+  promptVersion?: 'stylist-prompt-v2' | string;
+  inputDigest?: string;
+  source?: 'ai' | 'rule_fallback' | string;
+  explanationV2?: StylistExplanationV2;
+}
+
+export interface StylistExplanationPointV2 {
+  text: string;
+  evidenceCodes: string[];
+}
+
+export interface StylistExplanationV2 {
+  schemaVersion: 2;
+  reviewVersion: 'stylist-explanation-v2';
+  promptVersion: 'stylist-prompt-v2';
+  title: string;
+  summary: string;
+  strengths: StylistExplanationPointV2[];
+  tradeoffs: StylistExplanationPointV2[];
+  tip: StylistExplanationPointV2 | null;
+  styleTags: string[];
+  confidence: 'high' | 'medium' | 'low';
+  evidenceCodes: string[];
+  limitations: string[];
+  source: 'ai' | 'rule_fallback';
+  provider: string;
+  model: string;
+  generatedAt: string;
+  inputDigest: string;
 }
 
 export type OutfitAiReviewStatus = 'ready' | 'generating' | 'failed';
@@ -62,8 +92,15 @@ export interface OutfitAiReview {
   outfitKey: string;
   scene?: SceneTag | string;
   inputHash: string;
+  inputDigest?: string;
+  schemaVersion?: number;
+  reviewVersion?: 'stylist-explanation-v2' | string;
   promptVersion: string;
+  evidenceVersion?: string;
+  provider?: string;
   model: string;
+  source?: 'ai' | 'rule_fallback' | string;
+  explanationV2?: StylistExplanationV2;
   aiComment: OutfitAiComment | null;
   status: OutfitAiReviewStatus;
   generatedAt?: string;
@@ -84,6 +121,9 @@ export interface OutfitAiReviewResponse {
   cooldown?: boolean;
   retryAfterMs?: number;
   promptVersion?: string;
+  reviewVersion?: string;
+  inputDigest?: string;
+  source?: 'ai' | 'rule_fallback' | string;
   model?: string;
   fallback?: boolean;
   message?: string;

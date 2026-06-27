@@ -1524,3 +1524,24 @@ git diff -- docs/personalized-aesthetic-recommendation-v2.md
 - 测试：新增 builder 与 persistence 单元测试，覆盖 fixtures、行为权重、重复 wear、时间衰减、refresh、feature confidence、per-outfit 归一化、门控、幂等、用户隔离和安全返回。
 - 详细设计、集合权限和下周 smoke test 见 `docs/learned-style-profile-v1.md`。
 - 阶段 4 下一步暂缓到真实 shadow 数据后再决定权重接入；下一开发阶段按计划进入阶段 6 Stylist Explanation V2。
+
+## 阶段 6 第一任务完成记录：Evidence-grounded Stylist Explanation V2
+
+- 状态：已完成代码、测试、文档与本地验证准备；阶段 6 进入人工部署和 smoke test 准备。
+- 新增服务：`stylistEvidence.js`，提供确定性 `buildStylistEvidenceV1`，只使用真实结构化 outfit、weather、scores 和 `aestheticEvaluation` evidence。
+- 新增服务：`stylistExplanationV2.js`，提供 V2 prompt、JSON parser、validator、rule fallback、legacy 字段映射和复用/晚归决策纯函数。
+- 继续使用 `outfit_ai_reviews`，不新增集合、索引或环境变量。
+- 持久化字段规范为 `schemaVersion`、`reviewVersion`、`promptVersion`、`evidenceVersion`、`inputDigest`、`source`、`explanationV2`、`title`、`reason`、`styleTags`、`tip`、`provider`、`model`、`generatedAt`、`updatedAt`。
+- 普通点击在 `reviewVersion=stylist-explanation-v2` 且 `inputDigest` 一致时复用；digest 改变或旧 V1 记录会主动生成 V2；force refresh 仍强制重新点评并保留 cooldown。
+- V2 prompt 明确 AI 是解释者，不是选择器；必须引用真实 evidence code；不得虚构材质、颜色、版型、天气或场景；不得推断身材、年龄、职业、身份或经济状况；不得修改分数。
+- validator 会移除不存在的 evidence code，删除失去 evidence 支撑的 point，并覆盖模型伪造的 provider/model/generatedAt/inputDigest/source。
+- malformed JSON 或 schema 非法时使用 grounded rule fallback；真实 API/key/网络失败仍保持现有失败语义并恢复旧成功点评。
+- `inputDigest = sha256(stableStringify(canonicalInput))`，不包含 generatedAt、requestId、recommendationBatchId、临时 URL、图片、定位、字段顺序或 learnedProfile。
+- 本轮未读取 `learned_style_profiles`，未调用 `refreshLearnedStyleProfile`，未接入 learnedProfile 排序权重。
+- 本轮未修改 `aestheticCompatibility` 评分规则、`scores.total`、推荐候选、过滤、排序、shadow telemetry、行为事件、收藏、穿它、重命名或详情页视觉设计。
+- 为保证详情页后续主动点评有真实证据，`generateOutfit` 的 outfit/favorite/history 快照会保留已计算的 `aestheticEvaluation`，但不重新计算或改变排序。
+- 新增共享类型：`StylistExplanationV2`、`StylistExplanationPointV2`，并让 `OutfitAiComment` / `OutfitAiReview` 兼容 V2 metadata。
+- 本轮新增 33 项 Stylist V2 单元测试，覆盖 evidence compiler、validator、fallback、复用和持久化 payload 安全。
+- 详细设计和下周 20 项 smoke test 见 `docs/stylist-explanation-v2.md`。
+- 下周需部署 `generateOutfit` 云函数并人工验证 V2 点评生成、复用、force refresh、V1 升级、fallback、失败不清空旧点评，以及推荐顺序和分数完全不变。
+- 阶段 5 仍未开始；后续任务为统一部署、真实环境 smoke test 和人工验收，不进入 learnedProfile 排名权重接入。
