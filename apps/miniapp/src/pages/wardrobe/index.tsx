@@ -34,12 +34,13 @@ import {
   setUserStorageSync,
 } from '@/lib/userStorage';
 import { canRecognizeSingleClothing, getSubcategoryDisplayLabel } from '@/utils/clothingLabels';
-import { WARDROBE_LIMITS, type Clothing, type ClothingCategory, type UserClothingSubcategory } from '@starter-template/types';
+import type { Clothing, ClothingCategory, UserClothingSubcategory } from '@starter-template/types';
 import type { RecoverableUploadBatch } from '@/lib/cloud';
 import {
   SUBCATEGORY_OPTIONS,
   type SelectOption,
 } from '@/components/ClothingEditForm/constants';
+import { DEFAULT_WARDROBE_LIMIT } from '@/constants/wardrobeCapacity';
 import './index.scss';
 
 const WARDROBE_REFRESH_STORAGE_KEY = 'wardrobeNeedsRefresh';
@@ -47,7 +48,7 @@ const WARDROBE_REFRESH_EVENT = 'wardrobe:refresh';
 const WARDROBE_STALE_MS = 30 * 1000;
 const WARDROBE_PAGE_SIZE = 10;
 const WARDROBE_FIRST_PAGE_CACHE_TTL = 45 * 1000;
-const FREE_WARDROBE_LIMIT = WARDROBE_LIMITS.free;
+const FREE_WARDROBE_LIMIT = DEFAULT_WARDROBE_LIMIT;
 
 type WardrobeResponse = Awaited<ReturnType<typeof getWardrobe>>;
 

@@ -13,7 +13,7 @@ import {
   type ActiveAuthContext,
 } from '@/lib/userPageCache';
 import { useUserStore } from '@/stores/userStore';
-import { WARDROBE_LIMITS } from '@starter-template/types';
+import { DEFAULT_WARDROBE_LIMIT } from '@/constants/wardrobeCapacity';
 import avatar01 from '@/assets/avatars/default-avatar-01.png';
 import avatar02 from '@/assets/avatars/default-avatar-02.png';
 import avatar03 from '@/assets/avatars/default-avatar-03.png';
@@ -56,7 +56,7 @@ const PROFILE_BASE_CACHE_KEY = buildPageCacheKey(['profile', 'base', 'v1']);
 const PROFILE_STATS_CACHE_KEY = buildPageCacheKey(['profile', 'stats', 'v1']);
 const PROFILE_BASE_CACHE_TTL = 30 * 60 * 1000;
 const PROFILE_STATS_CACHE_TTL = 2 * 60 * 1000;
-const FREE_WARDROBE_LIMIT = WARDROBE_LIMITS.free;
+const FREE_WARDROBE_LIMIT = DEFAULT_WARDROBE_LIMIT;
 
 type ProfileBaseCache = Pick<
   ProfileState,

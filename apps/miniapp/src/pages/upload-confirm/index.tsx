@@ -31,11 +31,12 @@ import {
   setUserStorageSync,
 } from '@/lib/userStorage';
 import { displayClothingTags, displayClothingText, getSubcategoryDisplayLabel, getUploadDraftDisplayImage } from '@/utils/clothingLabels';
-import { WARDROBE_LIMITS, type ClothesDraft, type ClothingCategory, type ClothingImageSourceType, type UploadBatch, type UploadImage, type WardrobeCapacity } from '@starter-template/types';
+import type { ClothesDraft, ClothingCategory, ClothingImageSourceType, UploadBatch, UploadImage, WardrobeCapacity } from '@starter-template/types';
+import { DEFAULT_WARDROBE_LIMIT } from '@/constants/wardrobeCapacity';
 import './index.scss';
 
 const WARDROBE_REFRESH_STORAGE_KEY = 'wardrobeNeedsRefresh';
-const FREE_WARDROBE_LIMIT = WARDROBE_LIMITS.free;
+const FREE_WARDROBE_LIMIT = DEFAULT_WARDROBE_LIMIT;
 
 function isCurrentAuthContext(authContext: ActiveAuthContext | null | undefined) {
   return Boolean(authContext && isAuthContextCurrent(authContext));

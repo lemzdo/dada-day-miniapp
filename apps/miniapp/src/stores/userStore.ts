@@ -7,12 +7,13 @@ import Taro from '@tarojs/taro';
 import { loginWithCloud, updateCloudUserProfile } from '@/lib/cloud';
 import { CLOUD_ENV_ID } from '@/config/cloud';
 import { buildUserScope } from '@/lib/userScope';
-import { WARDROBE_LIMITS, type RecommendationProfile } from '@starter-template/types';
+import type { RecommendationProfile } from '@starter-template/types';
 import { DEFAULT_RECOMMENDATION_PROFILE } from '@/constants/recommendationProfile';
+import { DEFAULT_WARDROBE_LIMIT } from '@/constants/wardrobeCapacity';
 
 const USER_ID_KEY = 'userId';
 const DEFAULT_NICKNAME = '搭搭新朋友';
-const FREE_WARDROBE_LIMIT = WARDROBE_LIMITS.free;
+const FREE_WARDROBE_LIMIT = DEFAULT_WARDROBE_LIMIT;
 type AvatarType = 'wechat' | 'preset' | 'default';
 export type AuthStatus = 'initializing' | 'authenticated' | 'anonymous' | 'failed';
 
