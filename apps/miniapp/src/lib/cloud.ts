@@ -20,6 +20,7 @@ import type {
   UploadImage,
   UserClothingSubcategory,
   UserClothingMaterial,
+  WardrobeCapacity,
 } from '@starter-template/types';
 import { CLOUD_ENV_ID } from '@/config/cloud';
 import { buildAuthRuntimeKey } from '@/lib/userRuntimeScope';
@@ -339,6 +340,7 @@ export interface CloudUserProfile {
   capacityTotal: number;
   capacityUsed: number;
   membershipTier: string;
+  capacity?: WardrobeCapacity;
   styleProfile?: Record<string, unknown>;
   recommendationProfile?: RecommendationProfile;
   updatedAt?: string;
@@ -352,7 +354,7 @@ export async function getWardrobe(params: GetWardrobeParams = {}, options: { for
   type WardrobeResponse = {
     list: Clothing[];
     pagination: { total: number; page: number; pageSize: number; totalPages: number };
-    capacity: { total: number; used: number; remaining: number };
+    capacity: WardrobeCapacity & { total?: number };
   };
   return options.force
     ? callCloudFunction<WardrobeResponse>('getWardrobe', params as Record<string, unknown>)
@@ -363,7 +365,7 @@ export async function getClothingById(id: string, options: { force?: boolean } =
   type ClothingDetailResponse = {
     list: Clothing[];
     pagination: { total: number; page: number; pageSize: number; totalPages: number };
-    capacity: { total: number; used: number; remaining: number };
+    capacity: WardrobeCapacity & { total?: number };
   };
   const params = { id, detail: true, includeTotal: false, includeCapacity: false };
   const data = options.force
@@ -464,12 +466,15 @@ export async function confirmClothesDrafts(
     list: Clothing[];
     count: number;
     skippedDuplicateCount?: number;
+    actualCreatedCount?: number;
+    failedCount?: number;
+    capacity?: WardrobeCapacity;
   }>('confirmClothesDrafts', {
     batchId,
     drafts,
     selectedIds,
   });
-  clearCloudCache(['getWardrobe:', 'generateOutfit:']);
+  clearCloudCache(['getWardrobe:', 'generateOutfit:', 'login:']);
   return result;
 }
 
@@ -483,7 +488,7 @@ export async function discardUploadBatch(batchId: string) {
 
 export async function updateCloudClothing(id: string, data: ClothingUpdateInput) {
   const item = await callCloudFunction<Clothing>('updateClothes', { id, data });
-  clearCloudCache(['getWardrobe:', 'generateOutfit:']);
+  clearCloudCache(['getWardrobe:', 'generateOutfit:', 'login:']);
   return item;
 }
 
@@ -497,7 +502,7 @@ export interface DeleteCloudClothingResult {
 
 export async function deleteCloudClothing(id: string) {
   const result = await callCloudFunction<DeleteCloudClothingResult>('deleteClothes', { id });
-  clearCloudCache(['getWardrobe:', 'generateOutfit:']);
+  clearCloudCache(['getWardrobe:', 'generateOutfit:', 'login:']);
   return result;
 }
 
@@ -957,6 +962,7 @@ export interface GetWardrobeParams {
   detail?: boolean;
   includeTotal?: boolean;
   includeCapacity?: boolean;
+  capacityOnly?: boolean;
   category?: ClothingCategory | 'all';
   subcategory?: string | 'all';
   subcategoryId?: string;

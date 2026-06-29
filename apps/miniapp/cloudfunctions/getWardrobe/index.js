@@ -5,6 +5,10 @@ cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 const db = cloud.database();
 const _ = db.command;
 const {
+  buildWardrobeCapacity,
+  resolveWardrobeEntitlement,
+} = require('./wardrobeCapacity');
+const {
   AESTHETIC_SCHEMA_VERSION,
   normalizeAestheticFeaturesV1,
 } = require('./aestheticFeatures');
@@ -29,6 +33,7 @@ exports.main = async (event = {}) => {
     const status = event.status || 'active';
     const filter = { _openid: OPENID };
     const isDetail = Boolean(event.id || event.detail);
+    const capacityOnly = Boolean(event.capacityOnly);
 
     if (event.id) {
       const itemRes = await db.collection('clothes').doc(event.id).get();
@@ -47,11 +52,7 @@ exports.main = async (event = {}) => {
             pageSize: 1,
             totalPages: 1,
           },
-          capacity: {
-            total: 0,
-            used: 0,
-            remaining: 0,
-          },
+          capacity: buildWardrobeCapacity({ used: 0, ...resolveWardrobeEntitlement() }),
         });
       }
 
@@ -68,11 +69,7 @@ exports.main = async (event = {}) => {
           pageSize: 1,
           totalPages: 1,
         },
-        capacity: {
-          total: 0,
-          used: 0,
-          remaining: 0,
-        },
+        capacity: buildWardrobeCapacity({ used: 0, ...resolveWardrobeEntitlement() }),
       });
     }
 
@@ -88,6 +85,25 @@ exports.main = async (event = {}) => {
     const collection = db.collection('clothes');
     const includeTotal = event.includeTotal !== false;
     const includeCapacity = event.includeCapacity !== false && !isDetail;
+    if (capacityOnly) {
+      const [activeCountRes, userRes] = await Promise.all([
+        collection.where({ _openid: OPENID, status: 'active' }).count(),
+        db.collection('users').where({ _openid: OPENID }).limit(1).get(),
+      ]);
+      const entitlement = resolveWardrobeEntitlement(userRes.data && userRes.data[0]);
+      const capacity = buildWardrobeCapacity({ used: activeCountRes.total, ...entitlement });
+      return ok({
+        list: [],
+        pagination: {
+          total: 0,
+          page: 1,
+          pageSize: 0,
+          totalPages: 1,
+        },
+        capacity,
+      });
+    }
+
     const totalPromise = includeTotal ? collection.where(filter).count() : Promise.resolve({ total: 0 });
     const capacityPromise = includeCapacity
       ? collection.where({ _openid: OPENID, status: 'active' }).count()
@@ -106,7 +122,8 @@ exports.main = async (event = {}) => {
       capacityPromise,
       userPromise,
     ]);
-    const capacityTotal = userRes.data[0] && userRes.data[0].capacityTotal ? userRes.data[0].capacityTotal : 50;
+    const entitlement = resolveWardrobeEntitlement(userRes.data && userRes.data[0]);
+    const capacity = buildWardrobeCapacity({ used: activeCountRes.total, ...entitlement });
     const total = includeTotal ? totalRes.total : listRes.data.length;
 
     console.log('[getWardrobe] list', {
@@ -127,11 +144,7 @@ exports.main = async (event = {}) => {
         pageSize,
         totalPages: Math.max(1, Math.ceil(total / pageSize)),
       },
-      capacity: {
-        total: capacityTotal,
-        used: activeCountRes.total,
-        remaining: Math.max(0, capacityTotal - activeCountRes.total),
-      },
+      capacity,
     });
   } catch (error) {
     console.error('[getWardrobe] failed', error);

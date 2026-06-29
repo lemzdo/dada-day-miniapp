@@ -1,5 +1,14 @@
 # 搭搭day 近期核心改造部署与人工测试清单
 
+## 衣橱容量权益 V1 补充
+
+- 当前容量强制 `free=200`；`member=500`、`premium=1000` 仅为未来可信权益预留。
+- 需部署云函数：`login`、`getWardrobe`、`confirmClothesDrafts`、`generateOutfit`。
+- 需部署 Web/BFF，并执行 `database/migrations/005_wardrobe_capacity_v1.sql`。
+- 不需要新云集合、新云索引或新环境变量；容量租约锁字段存于现有 `users` 文档。
+- 发布前 smoke：新旧用户 0/200 或 self-heal、199+1 成功、199+2 整批拒绝、200 禁止新增、删除释放、并发双批不超限、伪造 premium 无效、Web 第 201 件拒绝、generateOutfit 读取 200+ 件不漏。
+- 回归重点：阶段 1-6 的审美、行为、画像、AI 点评、`scores.total`、shadow telemetry、Stylist Explanation V2 不改变。
+
 本文档用于集中整理近期核心稳定性改造的部署与人工测试事项。范围覆盖缓存失效、天气刷新、AI 点评、删除引用修复、上传识别幂等、已有衣服重新处理 attempt token，以及衣物属性 alias / normalize 收口。
 
 约定：

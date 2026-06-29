@@ -138,3 +138,4 @@ export * from './ai';
 export * from './recommendation-profile';
 export * from './outfit-behavior';
 export * from './learned-style-profile';
+export * from './wardrobe-capacity';

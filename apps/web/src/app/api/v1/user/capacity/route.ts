@@ -15,7 +15,7 @@ export async function GET(request: Request) {
     if (!capacity) {
       return NextResponse.json({
         code: 0,
-        data: { total: 50, used: 0, remaining: 50 },
+        data: { plan: 'free', used: 0, limit: 200, total: 200, remaining: 200, canAdd: true },
         message: 'ok',
       });
     }

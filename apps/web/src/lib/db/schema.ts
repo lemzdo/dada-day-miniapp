@@ -48,7 +48,7 @@ export const users = pgTable('users', {
   nickname: varchar('nickname', { length: 64 }),
   avatarUrl: varchar('avatar_url', { length: 512 }),
   styleProfile: jsonb('style_profile').default({}).$type<Record<string, unknown>>(),
-  capacityTotal: integer('capacity_total').default(50),
+  capacityTotal: integer('capacity_total').default(200),
   capacityUsed: integer('capacity_used').default(0),
   membershipTier: varchar('membership_tier', { length: 16 }).default('free'),
   reminderTime: time('reminder_time'),

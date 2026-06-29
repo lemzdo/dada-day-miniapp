@@ -3,11 +3,29 @@ const cloud = require('wx-server-sdk');
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
 const db = cloud.database();
+const _ = db.command;
 const CONFIRM_CONCURRENCY = 3;
 const {
   normalizeAestheticFeaturesV1,
   normalizeColorPaletteV1,
 } = require('./aestheticFeatures');
+const {
+  buildWardrobeCapacity,
+  resolveWardrobeEntitlement,
+} = require('./services/wardrobeCapacity');
+const {
+  WARDROBE_CAPACITY_EXCEEDED,
+  buildCapacityExceededResult,
+  buildHeartbeatPatch,
+  buildLockPatch,
+  buildReleasePatch,
+  createCapacityBusyError,
+  createCapacityExceededError,
+  createLockOwner,
+  getDraftsThatNeedNewClothes,
+  resolveLockState,
+  shouldReleaseCapacityLock,
+} = require('./services/capacityGate');
 
 exports.main = async (event = {}) => {
   const startedAt = Date.now();
@@ -39,6 +57,14 @@ exports.main = async (event = {}) => {
       throw new Error('no confirmable drafts');
     }
 
+    const capacityLease = await acquireWardrobeCapacityLease(OPENID);
+    try {
+      const capacityGate = await assertConfirmCapacity({
+        openid: OPENID,
+        batchId,
+        selectedIds,
+      });
+
     await mapWithConcurrency(updates, CONFIRM_CONCURRENCY, (draft) => updateDraftFromInput(draft, OPENID));
 
     const draftRes = await db.collection('clothes_drafts').where({ batchId, _openid: OPENID }).get();
@@ -58,17 +84,20 @@ exports.main = async (event = {}) => {
       draftTotal: allDrafts.length,
       filteredSaveCount: confirmableDrafts.length,
       discardedCount: discardedDrafts.length,
+      requestedCapacityCount: capacityGate.requested,
     });
 
     if (confirmableDrafts.length === 0) {
       throw new Error('no confirmable drafts');
     }
 
+    await heartbeatWardrobeCapacityLease(capacityLease).catch(() => false);
     const confirmResults = await mapWithConcurrency(
       confirmableDrafts,
       CONFIRM_CONCURRENCY,
       (draft) => confirmSingleDraft(OPENID, draft),
     );
+    await heartbeatWardrobeCapacityLease(capacityLease).catch(() => false);
     const created = confirmResults
       .filter((item) => item && item.clothing)
       .map((item) => item.clothing);
@@ -120,13 +149,19 @@ exports.main = async (event = {}) => {
       throw new Error('confirm drafts failed');
     }
 
+    const finalCapacity = await getCurrentWardrobeCapacity(OPENID);
+
     return ok({
       list: created,
       count: created.length,
       skippedDuplicateCount,
       actualCreatedCount,
       failedCount,
+      capacity: finalCapacity,
     });
+    } finally {
+      await releaseWardrobeCapacityLease(capacityLease).catch(() => undefined);
+    }
   } catch (error) {
     console.error('[confirmClothesDrafts] failed', error);
     return fail(error);
@@ -159,6 +194,124 @@ async function findExistingClothing(openid, draft) {
   if (byDocId && byDocId.data && byDocId.data._openid === openid) return byDocId.data;
 
   return null;
+}
+
+async function assertConfirmCapacity({ openid, batchId, selectedIds }) {
+  const draftRes = await db.collection('clothes_drafts').where({ batchId, _openid: openid }).get();
+  const allDrafts = draftRes.data || [];
+  const existingClothes = await loadExistingClothesForDraftIds(openid, selectedIds);
+  const draftsNeedingClothes = getDraftsThatNeedNewClothes({
+    drafts: allDrafts,
+    selectedIds,
+    existingClothes,
+  });
+  const requested = draftsNeedingClothes.length;
+  const capacity = await getCurrentWardrobeCapacity(openid);
+
+  if (capacity.used + requested > capacity.limit) {
+    const result = buildCapacityExceededResult({ capacity, requested });
+    throw createCapacityExceededError(result);
+  }
+
+  return {
+    capacity,
+    requested,
+  };
+}
+
+async function loadExistingClothesForDraftIds(openid, selectedIds) {
+  if (!selectedIds.length) return [];
+  const queryLimit = Math.min(selectedIds.length, 100);
+  const sourceRes = await db.collection('clothes').where({
+    _openid: openid,
+    sourceItemId: _.in(selectedIds),
+  }).limit(queryLimit).get();
+  const docRes = await db.collection('clothes').where({
+    _openid: openid,
+    _id: _.in(selectedIds),
+  }).limit(queryLimit).get();
+  const map = new Map();
+  for (const item of [...(sourceRes.data || []), ...(docRes.data || [])]) {
+    if (item && item._id) map.set(item._id, item);
+  }
+  return Array.from(map.values());
+}
+
+async function getCurrentWardrobeCapacity(openid) {
+  const [activeCountRes, userRes] = await Promise.all([
+    db.collection('clothes').where({ _openid: openid, status: 'active' }).count(),
+    db.collection('users').where({ _openid: openid }).limit(1).get(),
+  ]);
+  const entitlement = resolveWardrobeEntitlement(userRes.data && userRes.data[0]);
+  return buildWardrobeCapacity({ used: activeCountRes.total, ...entitlement });
+}
+
+async function acquireWardrobeCapacityLease(openid) {
+  const owner = createLockOwner();
+  const user = await findUserDocument(openid);
+  if (!user) throw new Error('user not found');
+
+  const result = await mutateUserLock(user._id, (current) => {
+    const lockState = resolveLockState(current, owner);
+    if (lockState.action === 'busy') return { busy: true };
+    return {
+      data: buildLockPatch(owner),
+      action: lockState.action,
+    };
+  });
+
+  if (!result || result.busy) throw createCapacityBusyError();
+  return {
+    userId: user._id,
+    owner,
+  };
+}
+
+async function heartbeatWardrobeCapacityLease(lease) {
+  if (!lease) return false;
+  const result = await mutateUserLock(lease.userId, (current) => {
+    if (!shouldReleaseCapacityLock(current, lease.owner)) return { skipped: true };
+    return { data: buildHeartbeatPatch(lease.owner) };
+  });
+  return Boolean(result && !result.skipped);
+}
+
+async function releaseWardrobeCapacityLease(lease) {
+  if (!lease) return false;
+  const result = await mutateUserLock(lease.userId, (current) => {
+    if (!shouldReleaseCapacityLock(current, lease.owner)) return { skipped: true };
+    return { data: buildReleasePatch() };
+  });
+  return Boolean(result && !result.skipped);
+}
+
+async function findUserDocument(openid) {
+  const res = await db.collection('users').where({ _openid: openid }).limit(1).get();
+  return res.data && res.data[0] ? res.data[0] : null;
+}
+
+async function mutateUserLock(userId, resolvePatch) {
+  if (typeof db.runTransaction === 'function') {
+    return db.runTransaction(async (transaction) => {
+      const users = transaction.collection('users');
+      const currentRes = await users.doc(userId).get();
+      const current = currentRes.data;
+      if (!current) throw new Error('user not found');
+      const patch = resolvePatch(current);
+      if (!patch || patch.busy || patch.skipped) return patch;
+      await users.doc(userId).update({ data: patch.data });
+      return patch;
+    });
+  }
+
+  const users = db.collection('users');
+  const currentRes = await users.doc(userId).get();
+  const current = currentRes.data;
+  if (!current) throw new Error('user not found');
+  const patch = resolvePatch(current);
+  if (!patch || patch.busy || patch.skipped) return patch;
+  await users.doc(userId).update({ data: patch.data });
+  return patch;
 }
 
 async function confirmSingleDraft(openid, draft) {
@@ -614,6 +767,19 @@ function ok(data) {
 }
 
 function fail(error) {
+  if (error && error.businessCode === WARDROBE_CAPACITY_EXCEEDED && error.capacityResult) {
+    return { code: 1, data: error.capacityResult, message: error.message };
+  }
+  if (error && error.businessCode) {
+    return {
+      code: 1,
+      data: {
+        ok: false,
+        code: error.businessCode,
+      },
+      message: error.message || 'unknown error',
+    };
+  }
   return { code: 1, data: null, message: error && error.message ? error.message : 'unknown error' };
 }
 

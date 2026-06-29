@@ -13,6 +13,7 @@ import {
   type ActiveAuthContext,
 } from '@/lib/userPageCache';
 import { useUserStore } from '@/stores/userStore';
+import { WARDROBE_LIMITS } from '@starter-template/types';
 import avatar01 from '@/assets/avatars/default-avatar-01.png';
 import avatar02 from '@/assets/avatars/default-avatar-02.png';
 import avatar03 from '@/assets/avatars/default-avatar-03.png';
@@ -55,6 +56,7 @@ const PROFILE_BASE_CACHE_KEY = buildPageCacheKey(['profile', 'base', 'v1']);
 const PROFILE_STATS_CACHE_KEY = buildPageCacheKey(['profile', 'stats', 'v1']);
 const PROFILE_BASE_CACHE_TTL = 30 * 60 * 1000;
 const PROFILE_STATS_CACHE_TTL = 2 * 60 * 1000;
+const FREE_WARDROBE_LIMIT = WARDROBE_LIMITS.free;
 
 type ProfileBaseCache = Pick<
   ProfileState,
@@ -97,7 +99,7 @@ const defaultProfile: ProfileState = {
   membershipTier: 'free',
   capacityTotal: 0,
   capacityUsed: 0,
-  capacityRemaining: 50,
+  capacityRemaining: FREE_WARDROBE_LIMIT,
   capacityLoaded: false,
   preferredStyles: [],
 };
@@ -205,9 +207,9 @@ export default function ProfilePage() {
           profileCompleted: user ? Boolean(user.profileCompleted ?? styleProfile['profileCompleted']) : prev.profileCompleted,
           updatedAt: user?.updatedAt ?? prev.updatedAt,
           membershipTier: user?.membershipTier ?? prev.membershipTier,
-          capacityTotal: wardrobe?.capacity.total ?? user?.capacityTotal ?? prev.capacityTotal,
-          capacityUsed: wardrobe?.capacity.used ?? user?.capacityUsed ?? prev.capacityUsed,
-          capacityRemaining: wardrobe?.capacity.remaining ?? prev.capacityRemaining,
+          capacityTotal: readCapacityTotal(wardrobe?.capacity, user?.capacityTotal ?? prev.capacityTotal),
+          capacityUsed: readCapacityUsed(wardrobe?.capacity, user?.capacityUsed ?? prev.capacityUsed),
+          capacityRemaining: readCapacityRemaining(wardrobe?.capacity, user?.capacityTotal ?? prev.capacityTotal, user?.capacityUsed ?? prev.capacityUsed),
           capacityLoaded: wardrobe ? true : user ? true : prev.capacityLoaded,
           preferredStyles,
           genderPreference: recommendationProfile?.['genderPreference'] as string | undefined,
@@ -649,11 +651,32 @@ function normalizeProfileBaseCache(cache: ProfileBaseCache): ProfileBaseCache {
   };
 }
 
+function readCapacityTotal(capacity: unknown, fallback: unknown): number {
+  const source = capacity && typeof capacity === 'object' ? capacity as { limit?: unknown; total?: unknown } : {};
+  const value = Number(source.limit ?? source.total ?? fallback);
+  if (!Number.isFinite(value) || value <= 0) return FREE_WARDROBE_LIMIT;
+  return Math.max(FREE_WARDROBE_LIMIT, Math.floor(value));
+}
+
+function readCapacityUsed(capacity: unknown, fallback: unknown): number {
+  const source = capacity && typeof capacity === 'object' ? capacity as { used?: unknown } : {};
+  const value = Number(source.used ?? fallback);
+  if (!Number.isFinite(value) || value < 0) return 0;
+  return Math.floor(value);
+}
+
+function readCapacityRemaining(capacity: unknown, fallbackTotal: unknown, fallbackUsed: unknown): number {
+  const source = capacity && typeof capacity === 'object' ? capacity as { remaining?: unknown } : {};
+  const value = Number(source.remaining);
+  if (Number.isFinite(value) && value >= 0) return Math.floor(value);
+  return Math.max(0, readCapacityTotal(capacity, fallbackTotal) - readCapacityUsed(capacity, fallbackUsed));
+}
+
 function normalizeProfileStatsCache(cache: ProfileStatsCache): ProfileStatsCache {
   return {
     capacityTotal: typeof cache.capacityTotal === 'number' ? cache.capacityTotal : 0,
     capacityUsed: typeof cache.capacityUsed === 'number' ? cache.capacityUsed : 0,
-    capacityRemaining: typeof cache.capacityRemaining === 'number' ? cache.capacityRemaining : 50,
+    capacityRemaining: typeof cache.capacityRemaining === 'number' ? Math.max(0, cache.capacityRemaining) : FREE_WARDROBE_LIMIT,
     capacityLoaded: Boolean(cache.capacityLoaded),
   };
 }

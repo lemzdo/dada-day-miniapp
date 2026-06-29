@@ -3,7 +3,7 @@
 // ============================================================
 
 import { apiClient } from './client';
-import type { LoginResult, RecommendationProfile } from '@starter-template/types';
+import type { LoginResult, RecommendationProfile, WardrobeCapacity } from '@starter-template/types';
 
 /** 微信登录 */
 export function wechatLogin(code: string) {
@@ -20,6 +20,7 @@ export function getUserProfile() {
     profileCompleted?: boolean;
     styleProfile: Record<string, unknown>;
     recommendationProfile: RecommendationProfile;
+    capacity?: WardrobeCapacity & { total?: number };
     capacityTotal: number;
     capacityUsed: number;
     membershipTier: string;
@@ -40,9 +41,5 @@ export function updateUserProfile(data: {
 
 /** 获取容量信息 */
 export function getUserCapacity() {
-  return apiClient.get<{
-    total: number;
-    used: number;
-    remaining: number;
-  }>('/user/capacity');
+  return apiClient.get<WardrobeCapacity & { total?: number }>('/user/capacity');
 }

@@ -220,8 +220,8 @@ function evaluateColorHarmony(colors: ColorInfo[]): number {
   if (colors.length === 1) return 8;
 
   const classified = colors.map((c) => ({
-    hex: c.hex,
-    family: classifyColor(c.hex),
+    hex: c.hex ?? '',
+    family: classifyColor(c.hex ?? ''),
     name: c.name,
   }));
 
@@ -577,7 +577,7 @@ function scoreOutfit(
     category: i.category,
     subcategory: i.subcategory,
     imageUrl: i.imageUrl,
-    colorPalette: i.colorPalette,
+    colorPalette: i.colorPalette.map((color) => ({ name: color.name, hex: color.hex ?? '' })),
   }));
 
   return {

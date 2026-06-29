@@ -34,7 +34,7 @@ import {
   setUserStorageSync,
 } from '@/lib/userStorage';
 import { canRecognizeSingleClothing, getSubcategoryDisplayLabel } from '@/utils/clothingLabels';
-import type { Clothing, ClothingCategory, UserClothingSubcategory } from '@starter-template/types';
+import { WARDROBE_LIMITS, type Clothing, type ClothingCategory, type UserClothingSubcategory } from '@starter-template/types';
 import type { RecoverableUploadBatch } from '@/lib/cloud';
 import {
   SUBCATEGORY_OPTIONS,
@@ -47,6 +47,7 @@ const WARDROBE_REFRESH_EVENT = 'wardrobe:refresh';
 const WARDROBE_STALE_MS = 30 * 1000;
 const WARDROBE_PAGE_SIZE = 10;
 const WARDROBE_FIRST_PAGE_CACHE_TTL = 45 * 1000;
+const FREE_WARDROBE_LIMIT = WARDROBE_LIMITS.free;
 
 type WardrobeResponse = Awaited<ReturnType<typeof getWardrobe>>;
 
@@ -100,6 +101,15 @@ function isCurrentAuthContext(authContext: ActiveAuthContext | null) {
   return Boolean(authContext && isAuthContextCurrent(authContext));
 }
 
+function readCapacityStats(capacity: WardrobeResponse['capacity'] | undefined) {
+  const limit = Number(capacity?.limit ?? capacity?.total ?? FREE_WARDROBE_LIMIT);
+  const used = Number(capacity?.used ?? 0);
+  return {
+    total: Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : FREE_WARDROBE_LIMIT,
+    used: Number.isFinite(used) && used > 0 ? Math.floor(used) : 0,
+  };
+}
+
 export default function WardrobePage() {
   const { authStatus, runtimeKey, isAuthenticated } = useAuthRuntime();
   const [clothes, setClothes] = useState<Clothing[]>([]);
@@ -110,7 +120,7 @@ export default function WardrobePage() {
   const [activeSubcategory, setActiveSubcategory] = useState<string>('all');
   const [activeSubcategoryId, setActiveSubcategoryId] = useState<string>('');
   const [userSubcategories, setUserSubcategories] = useState<UserClothingSubcategory[]>([]);
-  const [stats, setStats] = useState({ total: 50, used: 0 });
+  const [stats, setStats] = useState<{ total: number; used: number }>({ total: FREE_WARDROBE_LIMIT, used: 0 });
   const [recoverableBatches, setRecoverableBatches] = useState<RecoverableUploadBatch[]>([]);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -132,7 +142,7 @@ export default function WardrobePage() {
     setActiveSubcategory('all');
     setActiveSubcategoryId('');
     setUserSubcategories([]);
-    setStats({ total: 50, used: 0 });
+    setStats({ total: FREE_WARDROBE_LIMIT, used: 0 });
     setRecoverableBatches([]);
     setSelectionMode(false);
     setSelectedIds([]);
@@ -146,7 +156,7 @@ export default function WardrobePage() {
     if (!isCurrentAuthContext(authContext)) return false;
 
     setClothes(dedupeClothesById(cached.data.list));
-    setStats({ total: cached.data.capacity.total, used: cached.data.capacity.used });
+    setStats(readCapacityStats(cached.data.capacity));
     setHasMore(cached.data.hasMore);
     setPage(1);
     lastFetchAtRef.current = cached.record?.createdAt ?? Date.now();
@@ -210,7 +220,7 @@ export default function WardrobePage() {
           });
           return next;
         });
-        setStats({ total: res.capacity.total, used: res.capacity.used });
+        setStats(readCapacityStats(res.capacity));
         setHasMore(nextHasMore);
         if (reset || pageNum === 1) lastFetchAtRef.current = Date.now();
         if (pageNum === 1 && reset) {
@@ -611,6 +621,7 @@ export default function WardrobePage() {
     }
   }
 
+  const remaining = Math.max(0, stats.total - stats.used);
   const percent = stats.total > 0 ? Math.min(100, Math.round((stats.used / stats.total) * 100)) : 0;
   const recognitionEntryStatus = getRecognitionEntryStatus(recoverableBatches);
   const allSelected = clothes.length > 0 && clothes.every((item) => selectedIds.includes(item.id));
@@ -672,7 +683,7 @@ export default function WardrobePage() {
           <View className="capacity-track">
             <View className="capacity-fill" style={{ width: `${percent}%` }} />
           </View>
-          <Text className="capacity-hint">还可以收纳 {stats.total - stats.used} 件衣服</Text>
+          <Text className="capacity-hint">还可以收纳 {remaining} 件衣服</Text>
         </View>
 
         {recoverableBatches.length > 0 && recognitionEntryStatus && (

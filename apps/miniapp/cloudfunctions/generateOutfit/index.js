@@ -1,6 +1,7 @@
 const cloud = require('wx-server-sdk');
 const crypto = require('crypto');
 const { attachAestheticEvaluation } = require('./services/aestheticCompatibility');
+const { loadActiveWardrobe } = require('./services/loadActiveWardrobe');
 const {
   logAestheticShadowTelemetry,
   parseAestheticShadowSampleRate,
@@ -67,8 +68,7 @@ async function generate(event) {
   const targetDate = event.date || new Date().toISOString().slice(0, 10);
   const now = new Date().toISOString();
   const recommendationBatchId = event.recommendationBatchId || createRecommendationBatchId(now);
-  const clothesRes = await db.collection('clothes').where({ _openid: OPENID, status: 'active' }).limit(100).get();
-  const clothes = clothesRes.data;
+  const clothes = await loadActiveWardrobe({ database: db, openid: OPENID });
   const userRes = await db.collection('users').where({ _openid: OPENID }).limit(1).get();
   const recommendationProfile = normalizeRecommendationProfile(userRes.data[0] && userRes.data[0].styleProfile);
   const exclude = Array.isArray(event.excludeClothingIdSets) ? event.excludeClothingIdSets : [];

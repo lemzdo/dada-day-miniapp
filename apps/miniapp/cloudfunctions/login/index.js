@@ -3,6 +3,11 @@ const cloud = require('wx-server-sdk');
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
 const db = cloud.database();
+const {
+  WARDROBE_LIMITS,
+  normalizeCapacityTotal,
+  resolveWardrobeEntitlement,
+} = require('./wardrobeCapacity');
 
 exports.main = async () => {
   try {
@@ -13,8 +18,13 @@ exports.main = async () => {
 
     if (existing.data[0]) {
       const user = existing.data[0];
-      await users.doc(user._id).update({ data: { updatedAt: now, lastLoginAt: now } });
-      return ok(toUser({ ...user, updatedAt: now, lastLoginAt: now }));
+      const healedCapacityTotal = normalizeCapacityTotal(user.capacityTotal);
+      const patch = { updatedAt: now, lastLoginAt: now };
+      if (!user.capacityTotal || user.capacityTotal === 50) {
+        patch.capacityTotal = healedCapacityTotal;
+      }
+      await users.doc(user._id).update({ data: patch }).catch(() => undefined);
+      return ok(toUser({ ...user, ...patch }));
     }
 
     const userData = {
@@ -23,7 +33,7 @@ exports.main = async () => {
       avatarUrl: '',
       avatarType: 'default',
       profileCompleted: false,
-      capacityTotal: 50,
+      capacityTotal: WARDROBE_LIMITS.free,
       capacityUsed: 0,
       membershipTier: 'free',
       styleProfile: {
@@ -47,6 +57,7 @@ exports.main = async () => {
 
 function toUser(user) {
   const styleProfile = normalizeStyleProfile(user.styleProfile);
+  const entitlement = resolveWardrobeEntitlement(user);
   return {
     id: user._id,
     openid: user._openid,
@@ -54,7 +65,7 @@ function toUser(user) {
     avatarUrl: user.avatarUrl || '',
     avatarType: readAvatarType(user.avatarType || styleProfile.avatarType),
     profileCompleted: Boolean(user.profileCompleted || styleProfile.profileCompleted),
-    capacityTotal: user.capacityTotal || 50,
+    capacityTotal: normalizeCapacityTotal(user.capacityTotal || entitlement.limit),
     capacityUsed: user.capacityUsed || 0,
     membershipTier: user.membershipTier || 'free',
     styleProfile,

@@ -2,9 +2,11 @@
 // 搭一搭 · 用户 Repository
 // ============================================================
 
-import { eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db } from '@/lib/db';
-import { users } from '@/lib/db/schema';
+import { clothes, users } from '@/lib/db/schema';
+import { buildWardrobeCapacity, resolveWardrobeEntitlement } from '@/lib/wardrobe-capacity';
+import type { WardrobeCapacity } from '@starter-template/types';
 
 export interface UserProfileRow {
   id: string;
@@ -17,10 +19,8 @@ export interface UserProfileRow {
   updatedAt: Date;
 }
 
-export interface UserCapacityRow {
+export interface UserCapacityRow extends WardrobeCapacity {
   total: number;
-  used: number;
-  remaining: number;
 }
 
 // ── 查询 ──
@@ -66,21 +66,30 @@ export async function getUserProfile(userId: string): Promise<UserProfileRow | n
 
 /** 获取用户容量信息 */
 export async function getUserCapacity(userId: string): Promise<UserCapacityRow | null> {
-  const rows = await db
-    .select({
-      total: users.capacityTotal,
-      used: users.capacityUsed,
-    })
-    .from(users)
-    .where(eq(users.id, userId))
-    .limit(1);
+  const [userRows, usedRows] = await Promise.all([
+    db
+      .select({
+        id: users.id,
+        membershipTier: users.membershipTier,
+      })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1),
+    db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(clothes)
+      .where(and(eq(clothes.userId, userId), eq(clothes.status, 'active'))),
+  ]);
 
-  if (!rows[0]) return null;
-  const { total, used } = rows[0];
+  if (!userRows[0]) return null;
+  const entitlement = resolveWardrobeEntitlement(userRows[0]);
+  const capacity = buildWardrobeCapacity({
+    used: usedRows[0]?.count ?? 0,
+    ...entitlement,
+  });
   return {
-    total: total ?? 50,
-    used: used ?? 0,
-    remaining: (total ?? 50) - (used ?? 0),
+    ...capacity,
+    total: capacity.limit,
   };
 }
 

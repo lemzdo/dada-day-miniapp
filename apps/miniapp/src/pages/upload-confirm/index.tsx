@@ -6,9 +6,11 @@ import { ClothingEditForm, type ClothingEditFormValue } from '@/components/Cloth
 import { CATEGORY_OPTIONS } from '@/components/ClothingEditForm/constants';
 import { useBoundUserFlow } from '@/hooks/useBoundUserFlow';
 import {
+  CloudFunctionError,
   confirmClothesDrafts,
   discardClothesDraft,
   discardUploadBatch,
+  getWardrobe,
   getUploadBatchDetail,
   processUploadImage,
   segmentClothesDraft,
@@ -29,13 +31,52 @@ import {
   setUserStorageSync,
 } from '@/lib/userStorage';
 import { displayClothingTags, displayClothingText, getSubcategoryDisplayLabel, getUploadDraftDisplayImage } from '@/utils/clothingLabels';
-import type { ClothesDraft, ClothingCategory, ClothingImageSourceType, UploadBatch, UploadImage } from '@starter-template/types';
+import { WARDROBE_LIMITS, type ClothesDraft, type ClothingCategory, type ClothingImageSourceType, type UploadBatch, type UploadImage, type WardrobeCapacity } from '@starter-template/types';
 import './index.scss';
 
 const WARDROBE_REFRESH_STORAGE_KEY = 'wardrobeNeedsRefresh';
+const FREE_WARDROBE_LIMIT = WARDROBE_LIMITS.free;
 
 function isCurrentAuthContext(authContext: ActiveAuthContext | null | undefined) {
   return Boolean(authContext && isAuthContextCurrent(authContext));
+}
+
+function normalizeWardrobeCapacity(value?: Partial<WardrobeCapacity> | null): WardrobeCapacity {
+  const limit = normalizeNonNegativeInteger(value?.limit, FREE_WARDROBE_LIMIT) || FREE_WARDROBE_LIMIT;
+  const used = normalizeNonNegativeInteger(value?.used, 0);
+  const remaining = Math.max(0, normalizeNonNegativeInteger(value?.remaining, limit - used));
+  return {
+    plan: value?.plan === 'member' || value?.plan === 'premium' ? value.plan : 'free',
+    used,
+    limit,
+    remaining,
+    canAdd: used < limit,
+  };
+}
+
+function normalizeNonNegativeInteger(value: unknown, fallback: number) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) return fallback;
+  return Math.floor(number);
+}
+
+function readCapacityError(error: unknown): { message: string; capacity?: WardrobeCapacity } | null {
+  if (!(error instanceof CloudFunctionError) || !error.data || typeof error.data !== 'object') return null;
+  const data = error.data as {
+    code?: unknown;
+    message?: unknown;
+    capacity?: Partial<WardrobeCapacity>;
+  };
+  if (data.code === 'WARDROBE_CAPACITY_EXCEEDED') {
+    return {
+      message: error.message || '衣橱容量不足，请减少后再保存',
+      capacity: normalizeWardrobeCapacity(data.capacity),
+    };
+  }
+  if (data.code === 'WARDROBE_CAPACITY_BUSY') {
+    return { message: error.message || '正在保存另一批衣服，请稍后再试' };
+  }
+  return null;
 }
 
 export default function UploadConfirmPage() {
@@ -47,6 +88,7 @@ export default function UploadConfirmPage() {
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [capacity, setCapacity] = useState<WardrobeCapacity | null>(null);
   const [discardingBatch, setDiscardingBatch] = useState(false);
   const [editingDraft, setEditingDraft] = useState<ClothesDraft | null>(null);
   const processingLoopRef = useRef(false);
@@ -71,6 +113,7 @@ export default function UploadConfirmPage() {
     setLoading(false);
     setProcessing(false);
     setSaving(false);
+    setCapacity(null);
     setDiscardingBatch(false);
     setEditingDraft(null);
     Taro.hideLoading();
@@ -144,11 +187,28 @@ export default function UploadConfirmPage() {
 
   function initializeFlow() {
     setLoading(true);
+    void refreshCapacity();
     return refresh().then((detail) => {
       if (normalizeUploadBatchStatus(detail?.batch.status) === 'processing') {
         void processPendingImages(detail?.images);
       }
     });
+  }
+
+  async function refreshCapacity() {
+    const authContext = captureAuthContext();
+    const flowRuntimeKey = boundRuntimeKeyRef.current;
+    if (!authContext || !isFlowActive(flowRuntimeKey)) return;
+    try {
+      const result = await getWardrobe({ capacityOnly: true }, { force: true });
+      if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
+      setCapacity(normalizeWardrobeCapacity(result.capacity));
+    } catch (error) {
+      console.warn('[upload-confirm] capacity fetch failed', error);
+      if (isFlowCurrent(authContext, flowRuntimeKey)) {
+        setCapacity(null);
+      }
+    }
   }
 
   function isFlowCurrent(
@@ -413,6 +473,15 @@ export default function UploadConfirmPage() {
       Taro.showToast({ title: '这次还没有可保存的衣服', icon: 'none' });
       return;
     }
+    if (capacity && savableDrafts.length > capacity.remaining) {
+      Taro.showToast({
+        title: capacity.used >= capacity.limit
+          ? `衣橱已达 ${capacity.limit} 件上限`
+          : `还可放入 ${capacity.remaining} 件，请减少后再保存`,
+        icon: 'none',
+      });
+      return;
+    }
 
     savingRef.current = true;
     setSaving(true);
@@ -473,7 +542,9 @@ export default function UploadConfirmPage() {
     } catch (error) {
       console.error('Confirm clothes drafts failed:', error);
       if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
-      Taro.showToast({ title: '保存失败', icon: 'none' });
+      const capacityError = readCapacityError(error);
+      if (capacityError?.capacity) setCapacity(normalizeWardrobeCapacity(capacityError.capacity));
+      Taro.showToast({ title: capacityError?.message || '保存失败', icon: 'none' });
     } finally {
       Taro.hideLoading();
       savingRef.current = false;
@@ -541,6 +612,8 @@ export default function UploadConfirmPage() {
   const allSelectableDraftsSelected = selectableDraftCount > 0 && drafts.filter(isDraftSelectable).every((draft) => draft.selected);
   const selectAllText = allSelectableDraftsSelected ? '全不选' : '全选';
   const failedImageCount = images.filter((item) => item.status === 'failed').length;
+  const displayCapacity = normalizeWardrobeCapacity(capacity);
+  const capacityOverSelected = savableDrafts.length > displayCapacity.remaining;
 
   if (loading) {
     return (
@@ -577,6 +650,11 @@ export default function UploadConfirmPage() {
             <Text className="return-text">返回衣橱</Text>
           </View>
         )}
+      </View>
+
+      <View className={`capacity-panel ${capacityOverSelected ? 'warning' : ''}`}>
+        <Text className="capacity-line">已使用 {displayCapacity.used} / {displayCapacity.limit}</Text>
+        <Text className="capacity-desc">还可放入 {displayCapacity.remaining} 件</Text>
       </View>
 
       {failedImageCount > 0 && (

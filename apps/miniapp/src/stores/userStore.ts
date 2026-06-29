@@ -7,11 +7,12 @@ import Taro from '@tarojs/taro';
 import { loginWithCloud, updateCloudUserProfile } from '@/lib/cloud';
 import { CLOUD_ENV_ID } from '@/config/cloud';
 import { buildUserScope } from '@/lib/userScope';
-import type { RecommendationProfile } from '@starter-template/types';
+import { WARDROBE_LIMITS, type RecommendationProfile } from '@starter-template/types';
 import { DEFAULT_RECOMMENDATION_PROFILE } from '@/constants/recommendationProfile';
 
 const USER_ID_KEY = 'userId';
 const DEFAULT_NICKNAME = '搭搭新朋友';
+const FREE_WARDROBE_LIMIT = WARDROBE_LIMITS.free;
 type AvatarType = 'wechat' | 'preset' | 'default';
 export type AuthStatus = 'initializing' | 'authenticated' | 'anonymous' | 'failed';
 
@@ -69,7 +70,7 @@ export const useUserStore = create<UserState>((set, get) => ({
   profileCompleted: false,
   preferredStyles: [],
   recommendationProfile: DEFAULT_RECOMMENDATION_PROFILE,
-  capacityTotal: 50,
+  capacityTotal: FREE_WARDROBE_LIMIT,
   capacityUsed: 0,
   membershipTier: 'free',
   isLoggedIn: false,
@@ -96,7 +97,7 @@ export const useUserStore = create<UserState>((set, get) => ({
       profileCompleted: false,
       preferredStyles: [],
       recommendationProfile: DEFAULT_RECOMMENDATION_PROFILE,
-      capacityTotal: 50,
+      capacityTotal: FREE_WARDROBE_LIMIT,
       capacityUsed: 0,
       membershipTier: 'free',
       isLoggedIn: false,
@@ -206,8 +207,8 @@ async function runAuthenticatedProfileRequest(
       avatarType: normalizeAvatarType(user.avatarType ?? user.styleProfile?.['avatarType']),
       profileCompleted: Boolean(user.profileCompleted ?? user.styleProfile?.['profileCompleted']),
       preferredStyles: recommendationProfile.styleTags,
-      capacityTotal: user.capacityTotal,
-      capacityUsed: user.capacityUsed,
+      capacityTotal: normalizeCapacityTotal(user.capacity?.limit ?? user.capacityTotal),
+      capacityUsed: normalizeCapacityUsed(user.capacity?.used ?? user.capacityUsed),
       membershipTier: user.membershipTier,
       isLoggedIn: true,
     });
@@ -238,7 +239,7 @@ function clearFailedAuthState(set: (partial: Partial<UserState>) => void, get: (
     profileCompleted: false,
     preferredStyles: [],
     recommendationProfile: DEFAULT_RECOMMENDATION_PROFILE,
-    capacityTotal: 50,
+    capacityTotal: FREE_WARDROBE_LIMIT,
     capacityUsed: 0,
     membershipTier: 'free',
     isLoggedIn: false,
@@ -279,6 +280,18 @@ function normalizeNickname(value?: string): string {
 
 function normalizeAvatarType(value: unknown): AvatarType {
   return value === 'wechat' || value === 'preset' || value === 'default' ? value : 'default';
+}
+
+function normalizeCapacityTotal(value: unknown): number {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return FREE_WARDROBE_LIMIT;
+  return Math.max(FREE_WARDROBE_LIMIT, Math.floor(number));
+}
+
+function normalizeCapacityUsed(value: unknown): number {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) return 0;
+  return Math.floor(number);
 }
 
 function getMiniProgramEnvVersion(): string {

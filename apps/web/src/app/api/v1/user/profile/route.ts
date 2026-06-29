@@ -6,7 +6,7 @@
 
 import { NextResponse } from 'next/server';
 import { getUserIdFromRequest, isAuthError } from '@/lib/auth';
-import { getUserProfile, updateUserProfile } from '@/lib/db/repositories';
+import { getUserCapacity, getUserProfile, updateUserProfile } from '@/lib/db/repositories';
 import { normalizeRecommendationProfile } from '@starter-template/utils';
 
 export async function GET(request: Request) {
@@ -24,6 +24,7 @@ export async function GET(request: Request) {
     const styleProfile = profile.styleProfile ?? { preferredStyles: [] };
     const recommendationProfile = normalizeRecommendationProfile(styleProfile);
     const avatarType = readAvatarType(styleProfile['avatarType']);
+    const capacity = await getUserCapacity(userId);
 
     return NextResponse.json({
       code: 0,
@@ -41,8 +42,9 @@ export async function GET(request: Request) {
           recommendationProfile,
         },
         recommendationProfile,
-        capacityTotal: profile.capacityTotal ?? 50,
-        capacityUsed: profile.capacityUsed ?? 0,
+        capacity,
+        capacityTotal: capacity?.limit ?? 200,
+        capacityUsed: capacity?.used ?? 0,
         membershipTier: profile.membershipTier ?? 'free',
         updatedAt: profile.updatedAt.toISOString(),
       },

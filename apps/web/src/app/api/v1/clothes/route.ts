@@ -6,10 +6,11 @@
 
 import { NextResponse } from 'next/server';
 import { getUserIdFromRequest, isAuthError } from '@/lib/auth';
-import { getClothesList, createClothing } from '@/lib/db/repositories';
+import { createClothingWithCapacityGate, getClothesList, getUserCapacity } from '@/lib/db/repositories';
 import { storage } from '@/lib/storage';
 import { smartProvider } from '@starter-template/ai';
 import type { ClothingCategory, RecognizedClothingItem } from '@starter-template/types';
+import { createWardrobeCapacityExceeded, WardrobeCapacityError } from '@/lib/wardrobe-capacity';
 
 // 鏁版嵁搴撹绫诲瀷锛堜笌 Drizzle schema 涓€鑷达級
 interface ClothingRow {
@@ -163,7 +164,16 @@ export async function POST(request: Request) {
       );
     }
 
+    const currentCapacity = await getUserCapacity(userId);
+    if (currentCapacity && usableItems.length > currentCapacity.remaining) {
+      throw createWardrobeCapacityExceeded({
+        capacity: currentCapacity,
+        requested: usableItems.length,
+      });
+    }
+
     const created = [];
+    let latestCapacity = currentCapacity ?? undefined;
     for (const [index, item] of usableItems.entries()) {
       const bbox = item.bbox;
       if (!isUsableBBox(bbox)) continue;
@@ -175,7 +185,7 @@ export async function POST(request: Request) {
         thumbnail: true,
       });
 
-      const clothing = await createClothing({
+      const result = await createClothingWithCapacityGate({
         userId,
         imageUrl: clothingUpload.url,
         thumbnailUrl: clothingUpload.thumbnailUrl,
@@ -199,6 +209,8 @@ export async function POST(request: Request) {
         cropBox: bbox,
         confidence: item.confidence ? Math.round(item.confidence * 100) : undefined,
       });
+      const clothing = result.clothing;
+      latestCapacity = result.capacity;
 
       if (clothing) {
         created.push(formatClothingResponse(clothing));
@@ -214,7 +226,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       code: 0,
-      data: created.length === 1 ? created[0] : { list: created },
+      data: created.length === 1 ? { ...created[0], capacity: latestCapacity } : { list: created, capacity: latestCapacity },
       message: 'ok',
     });
   } catch (error) {
@@ -222,6 +234,17 @@ export async function POST(request: Request) {
       return NextResponse.json(
         { code: 1, data: null, message: error.message },
         { status: 401 },
+      );
+    }
+
+    if (error instanceof WardrobeCapacityError) {
+      return NextResponse.json(
+        {
+          code: 1,
+          data: error.details,
+          message: error.message,
+        },
+        { status: 409 },
       );
     }
 
