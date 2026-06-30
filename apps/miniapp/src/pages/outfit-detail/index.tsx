@@ -915,7 +915,7 @@ export default function OutfitDetailPage() {
   const aiReviewPresentation = outfit.aiComment ? buildAiReviewPresentation(outfit.aiComment) : null;
   const hasAiReviewContent = Boolean(
     aiReviewPresentation
-      && (aiReviewPresentation.bodyParagraphs.length > 0 || aiReviewPresentation.tags.length > 0 || aiReviewPresentation.advice),
+      && (aiReviewPresentation.bodyParagraphs.length > 0 || aiReviewPresentation.advice),
   );
 
   return (
@@ -940,7 +940,7 @@ export default function OutfitDetailPage() {
 
           {deletedItemCount > 0 && (
             <View className="deleted-notice">
-              <Text className="deleted-notice-text">部分单品已从衣柜删除，仍按当时快照展示。</Text>
+              <Text className="deleted-notice-text">部分单品已从衣柜删除，仍按当时的搭配记录展示。</Text>
             </View>
           )}
         </View>
@@ -1015,15 +1015,6 @@ export default function OutfitDetailPage() {
               {aiReviewPresentation.bodyParagraphs.map((paragraph) => (
                 <Text key={paragraph} className="ai-comment-reason">{paragraph}</Text>
               ))}
-              {aiReviewPresentation.tags.length > 0 && (
-                <View className="ai-comment-tags">
-                  {aiReviewPresentation.tags.map((tag) => (
-                    <Text key={tag} className="ai-comment-tag">
-                      {tag}
-                    </Text>
-                  ))}
-                </View>
-              )}
               {aiReviewPresentation.advice && (
                 <View className="ai-comment-advice">
                   <Text className="ai-comment-advice-title">小搭建议</Text>

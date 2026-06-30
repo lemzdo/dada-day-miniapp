@@ -894,6 +894,7 @@ export default function TodayPage() {
     if (snapshot.selectedSceneKey !== selectedSceneKeyRef.current) return false;
     if (snapshot.scene !== selectedSceneRef.current) return false;
     if (hasWardrobeRefreshSignal()) return false;
+    if (!snapshot.outfits.every((outfit) => outfit.reasonVersion === 'recommendation-reason-v3')) return false;
 
     return snapshot.outfits.length > 0;
   }

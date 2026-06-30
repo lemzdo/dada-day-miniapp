@@ -12,21 +12,33 @@ export interface OutfitScoreLabel {
   text: string;
 }
 
-const SCENE_TAGS: Record<string, string[]> = {
-  居家: ['轻松好穿', '软糯舒服', '适合居家'],
-  上班: ['干净利落', '简约得体', '适合通勤'],
-  约会: ['温柔显气质', '柔和有细节', '自然有氛围'],
-  运动: ['轻便好活动', '清爽透气', '自在舒展'],
+const STYLE_TAG_ALLOWLIST = ['休闲', '简约', '运动', '通勤', '甜美', '复古', '街头', '优雅'];
+const PATTERN_TAGS: Record<string, string> = {
+  graphic: '印花',
+  floral: '印花',
+  print: '印花',
+  printed: '印花',
+  solid: '纯色',
+  plain: '纯色',
+  stripe: '条纹',
+  striped: '条纹',
+  plaid: '格纹',
+  check: '格纹',
 };
-
-const KEYWORD_TAGS = [
-  { keywords: ['通勤', '上班', '正式', '利落', '职场'], tags: ['干净利落', '简约得体'] },
-  { keywords: ['约会', '温柔', '甜美', '优雅'], tags: ['温柔显气质', '柔和有细节'] },
-  { keywords: ['运动', '轻便', '活力', '户外'], tags: ['轻便好活动', '自在舒展'] },
-  { keywords: ['清爽', '透气', '夏', '凉爽', '不闷'], tags: ['清爽透气', '清爽不闷'] },
-  { keywords: ['休闲', '居家', '舒适', '日常'], tags: ['轻松好穿', '软糯舒服'] },
-  { keywords: ['简约', '干净', '基础'], tags: ['简约耐看', '清爽干净'] },
-];
+const FIT_TAGS: Record<string, string> = {
+  relaxed: '宽松',
+  loose: '宽松',
+  oversized: '宽松',
+  straight: '利落',
+  clean: '利落',
+  fitted: '修身',
+  slim: '修身',
+  layered: '层次',
+};
+const SCENE_STRUCTURED_TAGS: Record<string, string> = {
+  上班: '通勤',
+  运动: '运动',
+};
 
 const TIME_OF_DAY_TEXT: Record<string, string> = {
   all_day: '全天舒适',
@@ -52,17 +64,16 @@ export function getTimeLabel(outfit: Outfit) {
   return formatTimeOfDay(outfit.timeOfDay) || '全天舒适';
 }
 
-export function getOutfitStyleTags(outfit: Outfit, index = 0) {
-  const seed = getOutfitSeed(outfit, index);
+export function getOutfitStyleTags(outfit: Outfit, _index = 0) {
   const explicitTags = normalizeTags(outfit.styleTags ?? []);
-  const inferredTags = unique([
-    ...getKeywordTags(`${outfit.reason ?? ''} ${outfit.reasoning ?? ''}`),
-    ...getItemTags(outfit),
-    ...getSceneTags(outfit, seed),
-    ...getScoreTags(outfit),
-  ]);
+  const structuredTags = unique([
+    ...explicitTags.filter((tag) => STYLE_TAG_ALLOWLIST.includes(tag)),
+    ...getPatternTags(outfit),
+    ...getFitTags(outfit),
+    getSceneStructuredTag(outfit),
+  ].filter(isNonEmptyString));
 
-  return unique([...explicitTags, ...inferredTags]).slice(0, 3);
+  return structuredTags.slice(0, 3);
 }
 
 export function getOutfitHighlight(outfit: Outfit, index = 0) {
@@ -117,40 +128,42 @@ function normalizeTags(tags: string[]) {
   return tags.map((tag) => tag.trim()).filter(Boolean).slice(0, 3);
 }
 
-function getKeywordTags(text: string) {
-  if (!text.trim()) return [];
-  return KEYWORD_TAGS.flatMap((item) => (item.keywords.some((keyword) => text.includes(keyword)) ? item.tags : []));
+function getPatternTags(outfit: Outfit) {
+  return getStructuredItems(outfit)
+    .map((item) => PATTERN_TAGS[String(readNestedValue(item, 'aestheticFeatures.patternType') ?? item.patternType ?? '').toLowerCase()])
+    .filter(isNonEmptyString);
 }
 
-function getItemTags(outfit: Outfit) {
-  const itemText = [
-    ...(outfit.items ?? []).map((item) => `${item.category ?? ''}${item.subcategory ?? ''}`),
-    ...(outfit.snapshotItems ?? []).map((item) => `${item.category ?? ''}${item.type ?? ''}${item.name ?? ''}`),
-  ].join(' ');
-
-  const tags: string[] = [];
-  if (/裙|连衣裙|半身裙/.test(itemText)) tags.push('轻盈显气质');
-  if (/衬衫|西装|外套/.test(itemText)) tags.push('简约得体');
-  if (/T恤|卫衣|针织|毛衣/.test(itemText)) tags.push('软糯舒服');
-  if (/短裤|运动|鞋/.test(itemText)) tags.push('轻便好活动');
-  return tags;
+function getFitTags(outfit: Outfit) {
+  return getStructuredItems(outfit)
+    .flatMap((item) => [
+      FIT_TAGS[String(readNestedValue(item, 'aestheticFeatures.fit') ?? item.fit ?? '').toLowerCase()],
+      FIT_TAGS[String(readNestedValue(item, 'aestheticFeatures.silhouette') ?? item.silhouette ?? '').toLowerCase()],
+    ])
+    .filter(isNonEmptyString);
 }
 
-function getSceneTags(outfit: Outfit, seed: number) {
-  const tags = SCENE_TAGS[getSceneLabel(outfit)] ?? [];
-  if (tags.length === 0) return [];
-  return [tags[seed % tags.length]!];
+function getSceneStructuredTag(outfit: Outfit) {
+  return SCENE_STRUCTURED_TAGS[getSceneLabel(outfit)] ?? '';
 }
 
-function getScoreTags(outfit: Outfit) {
-  const scores = outfit.scores;
-  if (!scores) return [];
+function getStructuredItems(outfit: Outfit) {
+  return [
+    ...(outfit.items ?? []),
+    ...(outfit.snapshotItems ?? []),
+    ...(outfit.itemsSnapshot ?? []),
+  ] as unknown as Array<Record<string, unknown>>;
+}
 
-  const tags: string[] = [];
-  if ((scores.comfort ?? 0) >= 8.4) tags.push('轻松好穿');
-  if ((scores.colorHarmony ?? 0) >= 8.4) tags.push('清爽耐看');
-  if ((scores.sceneMatch ?? 0) >= 8.4) tags.push(`适合${getSceneLabel(outfit)}`);
-  return tags;
+function isNonEmptyString(value: string | undefined): value is string {
+  return Boolean(value);
+}
+
+function readNestedValue(source: Record<string, unknown>, path: string) {
+  return path.split('.').reduce<unknown>((value, key) => {
+    if (!value || typeof value !== 'object') return undefined;
+    return (value as Record<string, unknown>)[key];
+  }, source);
 }
 
 function getItemCount(outfit: Outfit) {
@@ -158,19 +171,6 @@ function getItemCount(outfit: Outfit) {
   if (outfit.snapshotItems?.length) return outfit.snapshotItems.length;
   if (outfit.itemsSnapshot?.length) return outfit.itemsSnapshot.length;
   return outfit.clothingIds?.length ?? 0;
-}
-
-function getOutfitSeed(outfit: Outfit, index: number) {
-  const source = outfit.outfitKey || outfit.id || outfit.clothingIds?.join('-') || String(index);
-  return Math.abs(hashText(`${source}:${index}`));
-}
-
-function hashText(value: string) {
-  let hash = 0;
-  for (let i = 0; i < value.length; i += 1) {
-    hash = (hash * 31 + value.charCodeAt(i)) | 0;
-  }
-  return hash;
 }
 
 function unique(values: string[]) {

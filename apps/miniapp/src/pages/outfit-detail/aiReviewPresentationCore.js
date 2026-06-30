@@ -10,12 +10,23 @@ function buildAiReviewPresentation(aiComment) {
   if (explanation && explanation.schemaVersion === 2) {
     return buildV2Presentation(aiComment, explanation);
   }
+  if (explanation && explanation.schemaVersion === 3) {
+    return buildV3Presentation(explanation);
+  }
 
   const bodyParagraphs = uniqueText([aiComment.reason]).map((text) => normalizeText(text, 120)).filter(Boolean);
   return {
     bodyParagraphs,
-    tags: uniqueText(aiComment.styleTags).slice(0, 4),
+    tags: [],
     advice: normalizeText(aiComment.tip, 120) || null,
+  };
+}
+
+function buildV3Presentation(explanation) {
+  return {
+    bodyParagraphs: uniqueText([explanation.overallComment]).map((text) => normalizeText(text, 120)).filter(Boolean),
+    tags: [],
+    advice: normalizeText(explanation.advice, 120) || null,
   };
 }
 
@@ -30,12 +41,9 @@ function buildV2Presentation(aiComment, explanation) {
     .map((text) => normalizeText(text, 120))
     .filter(Boolean)
     .slice(0, 4);
-  const v2Tags = uniqueText(explanation.styleTags).slice(0, 4);
-  const legacyTags = uniqueText(aiComment.styleTags).slice(0, 4);
-
   return {
     bodyParagraphs,
-    tags: v2Tags.length > 0 ? v2Tags : legacyTags,
+    tags: [],
     advice: normalizeText(advice, 120) || null,
   };
 }

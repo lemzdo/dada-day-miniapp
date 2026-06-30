@@ -359,3 +359,40 @@
 | 点击“重新点评” | 按钮显示“点评中...”，旧点评内容保留，并显示“小搭正在看这套的配色和轮廓……” | `generateOutfit`；详情 |
 | 5 秒内连续点击“重新点评” | 命中 force cooldown，前端只提示“小搭刚点评完，稍等一下再试”，不显示精确倒计时 | `generateOutfit`；详情 |
 | 模型失败或网络失败 | 保留旧点评，不清空 ready 点评；推荐顺序、scores、收藏、穿它、行为事件不变 | `generateOutfit`；Today、详情 |
+## Recommendation Language V3 验收补充
+
+### Today
+
+1. 每套“小搭推荐”只讲一个核心搭配关系，具体且自然。
+2. 不出现“识别、证据、线索、卡片、详情、重点更清楚、更容易读出来”。
+3. 无重复短句、无数字后缀、无“这组线索更突出”。
+4. 同批主卖点明显不同，不连续多套都以天气或场景为主。
+5. 文案与实际衣物一致，最多两行。
+
+### Detail
+
+1. “为什么推荐这套”解释 2 到 3 个真实关系。
+2. 不逐字包含 Today reason，不虚构材质、颜色、版型。
+3. 先讲衣物关系，再讲场景或天气。
+4. 顶部标签只来自结构化 styleTags、patternType、fit/silhouette 或明确 scene。
+5. 不再出现“轻盈气质、软糯舒服、轻便好活动、高级感、耐看、氛围感”。
+
+### 小搭点评
+
+1. 不展示模型 title。
+2. 不展示 AI tags。
+3. 只显示点评正文和“小搭建议”。
+4. 不解释识别、证据、线索、维度、覆盖率。
+5. 建议真正可执行，并且不重复点评正文。
+6. 与普通 recommendation reasoning 不重复。
+7. 旧 V1/V2 点评主动点击后升级 V3。
+8. 重新点评 cooldown 仍为 5 秒。
+9. AI 失败时保留旧成功内容，不清空 ready 点评。
+
+### 版本与缓存
+
+1. 新生成推荐为 `reasonVersion=recommendation-reason-v3`。
+2. Today 本地恢复只接受 V3 reason snapshot，旧 snapshot 触发重新生成。
+3. 新 AI 点评为 `reviewVersion=stylist-explanation-v3`、`promptVersion=stylist-prompt-v3`、`copyPolicyVersion=human-copy-v1`。
+4. AI 点评复用必须同时满足 inputDigest、reviewVersion、promptVersion 和 copyPolicyVersion。
+5. 推荐顺序、scores、aestheticEvaluation、outfitKey、recommendationBatchId、收藏、穿着、行为事件均不因 V3 文案改变。

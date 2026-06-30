@@ -8,6 +8,7 @@ const {
 } = require('./services/aestheticShadowTelemetry');
 const { buildStylistEvidenceV1 } = require('./services/stylistEvidence');
 const {
+  COPY_POLICY_VERSION,
   STYLIST_PROMPT_VERSION,
   STYLIST_REVIEW_VERSION,
   buildRuleFallbackExplanationV2,
@@ -17,7 +18,7 @@ const {
   toLegacyAiComment,
   validateStylistExplanationV2,
 } = require('./services/stylistExplanationV2');
-const { compileRecommendationReasonsV2 } = require('./services/recommendationReasonV2');
+const { compileRecommendationLanguageV3 } = require('./services/recommendationLanguageV3');
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
@@ -117,7 +118,7 @@ async function generate(event) {
     };
   }
 
-  const tempOutfits = compileRecommendationReasonsV2({
+  const tempOutfits = compileRecommendationLanguageV3({
     outfits: recommendations.map((recommendation) =>
       toTempOutfit(recommendation, {
         openid: OPENID,
@@ -398,6 +399,7 @@ async function buildAiCommentContext(event) {
     evidenceVersion: evidenceInput.evidenceVersion,
     promptVersion: AI_COMMENT_PROMPT_VERSION,
     reviewVersion: STYLIST_REVIEW_VERSION,
+    copyPolicyVersion: COPY_POLICY_VERSION,
     provider: AI_COMMENT_PROVIDER,
     model: AI_COMMENT_MODEL,
   };
@@ -569,7 +571,7 @@ function normalizeAiComment(value) {
     .filter(Boolean)
     .slice(0, 5);
 
-  if (!title || !reason || !tip) return null;
+  if (!reason || !tip) return null;
   return {
     title,
     reason,
@@ -578,8 +580,11 @@ function normalizeAiComment(value) {
     generatedAt: value.generatedAt,
     ...(value.reviewVersion ? { reviewVersion: value.reviewVersion } : {}),
     ...(value.promptVersion ? { promptVersion: value.promptVersion } : {}),
+    ...(value.copyPolicyVersion ? { copyPolicyVersion: value.copyPolicyVersion } : {}),
     ...(value.inputDigest ? { inputDigest: value.inputDigest } : {}),
     ...(value.source ? { source: value.source } : {}),
+    ...(value.overallComment ? { overallComment: limitText(value.overallComment, 120) } : {}),
+    ...(value.advice ? { advice: limitText(value.advice, 80) } : {}),
     ...(value.explanationV2 ? { explanationV2: value.explanationV2 } : {}),
   };
 }
@@ -738,7 +743,8 @@ function isReadyAiReview(review, context) {
       && review.status === 'ready'
       && review.inputHash === context.inputHash
       && review.promptVersion === context.promptVersion
-      && (!review.reviewVersion || review.reviewVersion === context.reviewVersion)
+      && review.reviewVersion === context.reviewVersion
+      && review.copyPolicyVersion === context.copyPolicyVersion
       && normalizeAiComment(review.aiComment),
   );
 }
@@ -750,7 +756,8 @@ function isAiReviewStale(review, context) {
   if (review.status !== 'ready') return true;
   if (review.inputHash !== context.inputHash) return true;
   if (review.promptVersion !== context.promptVersion) return true;
-  if (review.reviewVersion && review.reviewVersion !== context.reviewVersion) return true;
+  if (review.reviewVersion !== context.reviewVersion) return true;
+  if (review.copyPolicyVersion !== context.copyPolicyVersion) return true;
   return !normalizeAiComment(review.aiComment);
 }
 
@@ -771,6 +778,7 @@ function buildAiReviewResponse(context, review, options = {}) {
           schemaVersion: review.schemaVersion,
           reviewVersion: review.reviewVersion,
           promptVersion: review.promptVersion,
+          copyPolicyVersion: review.copyPolicyVersion,
           evidenceVersion: review.evidenceVersion,
           source: review.source,
           explanationV2: review.explanationV2,
@@ -793,6 +801,7 @@ function buildAiReviewResponse(context, review, options = {}) {
     retryAfterMs: options.retryAfterMs,
     promptVersion: context?.promptVersion || review?.promptVersion || AI_COMMENT_PROMPT_VERSION,
     reviewVersion: context?.reviewVersion || review?.reviewVersion,
+    copyPolicyVersion: context?.copyPolicyVersion || review?.copyPolicyVersion,
     inputDigest: context?.inputDigest || review?.inputDigest || review?.inputHash,
     source: review?.source || aiComment?.source,
     model: context?.model || review?.model || AI_COMMENT_MODEL,
@@ -814,6 +823,7 @@ async function acquireAiReviewLease(context, { forceRegenerate }) {
       if (
         current?.status === 'generating'
         && current.promptVersion === context.promptVersion
+        && current.copyPolicyVersion === context.copyPolicyVersion
         && current.inputDigest === context.inputDigest
         && isActiveGenerationLease(current.generationStartedAt)
       ) {
@@ -838,9 +848,10 @@ async function acquireAiReviewLease(context, { forceRegenerate }) {
         scene: context.scene,
         inputHash: context.inputHash,
         inputDigest: context.inputDigest,
-        schemaVersion: 2,
+        schemaVersion: 3,
         reviewVersion: context.reviewVersion,
         promptVersion: context.promptVersion,
+        copyPolicyVersion: context.copyPolicyVersion,
         evidenceVersion: context.evidenceVersion,
         provider: context.provider,
         model: context.model,
@@ -922,6 +933,7 @@ async function finishAiReviewFailure(context, generationToken) {
           schemaVersion: previous.schemaVersion,
           reviewVersion: previous.reviewVersion,
           promptVersion: previous.promptVersion,
+          copyPolicyVersion: previous.copyPolicyVersion,
           evidenceVersion: previous.evidenceVersion,
           source: previous.source,
           explanationV2: previous.explanationV2,
@@ -955,6 +967,7 @@ function buildPreviousAiReviewSnapshot(review) {
     schemaVersion: review.schemaVersion,
     reviewVersion: review.reviewVersion,
     promptVersion: review.promptVersion,
+    copyPolicyVersion: review.copyPolicyVersion,
     evidenceVersion: review.evidenceVersion,
     source: review.source,
     explanationV2: review.explanationV2,

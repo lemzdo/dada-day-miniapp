@@ -1,29 +1,34 @@
-const STYLIST_REVIEW_VERSION = 'stylist-explanation-v2';
-const STYLIST_PROMPT_VERSION = 'stylist-prompt-v2';
+const {
+  assertHumanCopy,
+  findHumanCopyPolicyViolations,
+  isTooSimilar,
+} = require('./humanCopyPolicy');
+
+const STYLIST_REVIEW_VERSION = 'stylist-explanation-v3';
+const STYLIST_PROMPT_VERSION = 'stylist-prompt-v3';
+const COPY_POLICY_VERSION = 'human-copy-v1';
+
 const VALID_LIMITATIONS = new Set([
   'LIMITED_AESTHETIC_COVERAGE',
   'INSUFFICIENT_AESTHETIC_EVIDENCE',
 ]);
 const VALID_CONFIDENCE = new Set(['high', 'medium', 'low']);
 const VALID_SOURCES = new Set(['ai', 'rule_fallback']);
-const POINT_LIMITS = {
-  strengths: 3,
-  tradeoffs: 2,
-};
+const COLOR_WORDS = ['黑色', '白色', '灰色', '灰白', '浅灰', '米色', '米白', '红色', '蓝色', '绿色', '黄色', '粉色', '紫色', '金色', '银色', '卡其', '棕色'];
+const MATERIAL_WORDS = ['棉', '羊毛', '皮革', '牛仔', '丝绸', '亚麻', '针织', '雪纺'];
 
 function buildStylistPromptV2(evidenceInput) {
   return {
     system: [
-      '你是搭搭day的小搭穿搭解释者，不是衣服选择器。',
-      '只能使用用户输入中的 facts 和 evidence code 解释既有 outfit，不得重新选择衣服。',
-      '每个 strengths、tradeoffs 和 tip 都必须引用输入中真实存在的 evidence code。',
-      '不得创造不存在的材质、颜色、版型、天气、场景、品牌、价格或品质。',
-      '不得推断身材、体型、年龄、职业、身份、经济状况，也不得评价用户本人。',
-      '禁止使用显瘦、遮肉、拉长腿等身体导向表达。',
-      'low coverage 或 INSUFFICIENT_AESTHETIC_EVIDENCE 时必须谨慎，不得输出整体审美优劣结论。',
-      '不得修改或重新计算 scores。',
-      '输出严格 JSON，不输出 Markdown，不输出 schema 外字段。',
-      '中文自然简洁，使用小搭语气但不过度卖萌。',
+      '你是穿搭顾问，不是系统说明员。',
+      '只能使用给定 facts 和 insights，不得虚构颜色、材质、版型、天气、场景、品牌、价格或品质。',
+      '不得提及识别、证据、线索、维度、覆盖率，也不得解释生成过程。',
+      '不得重复普通推荐理由，不得输出 title 或 styleTags 给 UI。',
+      '不得使用显瘦、遮肉、显高、拉长腿等身体评价，也不得推断年龄、职业、身份。',
+      '只输出严格 JSON，字段只能是 schemaVersion、reviewVersion、promptVersion、copyPolicyVersion、overallComment、advice。',
+      'overallComment 为 40 到 120 字，总结整体气质和关系。',
+      'advice 为 20 到 80 字，只给一条可执行调整。',
+      '数据少时只讲确定事实，不解释为什么信息有限。',
     ].join('\n'),
     user: JSON.stringify(stripUnsafePromptInput(evidenceInput)),
   };
@@ -50,94 +55,110 @@ function parseStylistExplanationJson(content) {
 function validateStylistExplanationV2(rawValue, evidenceInput, meta = {}) {
   const raw = clonePlain(rawValue);
   if (!raw || typeof raw !== 'object') throw new Error('invalid_stylist_explanation');
-  if (raw.schemaVersion !== 2) throw new Error('invalid_stylist_explanation');
+  if (raw.schemaVersion === 3 || raw.overallComment || raw.advice) {
+    return validateStylistExplanationV3(raw, evidenceInput, meta);
+  }
+  return validateLegacyExplanation(raw, evidenceInput, meta);
+}
+
+function validateStylistExplanationV3(raw, evidenceInput, meta = {}) {
+  if (raw.schemaVersion !== 3) throw new Error('invalid_stylist_explanation');
   if (raw.reviewVersion !== STYLIST_REVIEW_VERSION) throw new Error('invalid_stylist_explanation');
   if (raw.promptVersion !== STYLIST_PROMPT_VERSION) throw new Error('invalid_stylist_explanation');
+  if (raw.copyPolicyVersion !== COPY_POLICY_VERSION) throw new Error('invalid_stylist_explanation');
 
-  const validCodes = getValidEvidenceCodes(evidenceInput);
-  const limitations = normalizeLimitations(raw.limitations, evidenceInput);
+  const overallComment = normalizeVisibleCopy(raw.overallComment, 120);
+  const advice = normalizeVisibleCopy(raw.advice, 80);
+  if (!overallComment || !advice) throw new Error('invalid_stylist_explanation');
+  if (isTooSimilar(overallComment, advice, 0.7)) throw new Error('invalid_stylist_explanation');
+  assertKnownFactsOnly(`${overallComment}${advice}`, evidenceInput);
+
   const confidence = normalizeConfidence(raw.confidence, evidenceInput);
-  const title = limitText(raw.title, 16);
-  const summary = limitText(raw.summary, 120);
-  if (!title || !summary) throw new Error('invalid_stylist_explanation');
-
-  const strengths = normalizePoints(raw.strengths, validCodes, POINT_LIMITS.strengths);
-  const tradeoffs = normalizePoints(raw.tradeoffs, validCodes, POINT_LIMITS.tradeoffs);
-  const tip = normalizePoint(raw.tip, validCodes);
-  if (strengths.length === 0 && tradeoffs.length === 0 && !tip) {
-    throw new Error('invalid_stylist_explanation');
-  }
+  const limitations = normalizeLimitations(raw.limitations, evidenceInput);
+  const evidenceCodes = getValidEvidenceCodes(evidenceInput);
+  const primaryCode = Array.from(evidenceCodes)[0];
+  const tip = primaryCode ? { text: advice, evidenceCodes: [primaryCode] } : null;
 
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     reviewVersion: STYLIST_REVIEW_VERSION,
     promptVersion: STYLIST_PROMPT_VERSION,
-    title,
-    summary,
-    strengths,
-    tradeoffs,
+    copyPolicyVersion: COPY_POLICY_VERSION,
+    title: '',
+    summary: overallComment,
+    overallComment,
+    advice,
+    strengths: [{ text: overallComment, evidenceCodes: primaryCode ? [primaryCode] : [] }],
+    tradeoffs: [],
     tip,
-    styleTags: normalizeStyleTags(raw.styleTags),
+    styleTags: [],
     confidence,
-    evidenceCodes: collectEvidenceCodes(strengths, tradeoffs, tip, raw.evidenceCodes, validCodes),
+    evidenceCodes: Array.from(evidenceCodes).sort(),
     limitations,
     source: VALID_SOURCES.has(raw.source) ? raw.source : 'ai',
     provider: limitText(meta.provider, 48),
     model: limitText(meta.model, 64),
     generatedAt: limitText(meta.generatedAt, 40) || new Date().toISOString(),
-    inputDigest: evidenceInput.inputDigest,
+    inputDigest: evidenceInput?.inputDigest || '',
   };
 }
 
-function buildRuleFallbackExplanationV2(evidenceInput, meta = {}) {
-  const evidence = Array.isArray(evidenceInput?.evidence) ? evidenceInput.evidence : [];
-  const positive = evidence.filter((entry) => entry.polarity === 'positive');
-  const negative = evidence.filter((entry) => entry.polarity === 'negative');
-  const neutral = evidence.filter((entry) => entry.polarity === 'neutral');
-  const primary = positive[0] || neutral[0] || evidence[0] || null;
-  const hasInsufficient = readLimitations(evidenceInput).includes('INSUFFICIENT_AESTHETIC_EVIDENCE');
-  const confidence = getFallbackConfidence(evidenceInput);
-  const prefix = hasInsufficient ? '从目前可识别的信息看，' : '';
-  const strengths = primary
-    ? [{
-        text: `${prefix}${describeEvidence(primary)}，可以作为这套的主要观察点。`,
-        evidenceCodes: [primary.code],
-      }]
-    : [{
-        text: '小搭目前只能基于场景、天气和单品基础信息做谨慎点评。',
-        evidenceCodes: [],
-      }];
-  const tradeoffs = negative[0]
-    ? [{
-        text: `可以优先关注${describeDimension(negative[0].dimension)}，避免视觉重点过多。`,
-        evidenceCodes: [negative[0].code],
-      }]
-    : [];
-  const tip = primary
-    ? {
-        text: '小搭建议沿着这条已识别线索微调配饰或外层，保持整体一致。',
-        evidenceCodes: [primary.code],
-      }
-    : null;
+function validateLegacyExplanation(raw, evidenceInput, meta = {}) {
+  if (raw.schemaVersion !== 2) throw new Error('invalid_stylist_explanation');
+  if (raw.reviewVersion !== STYLIST_REVIEW_VERSION) throw new Error('invalid_stylist_explanation');
+  if (raw.promptVersion !== STYLIST_PROMPT_VERSION) throw new Error('invalid_stylist_explanation');
+
+  const summary = normalizeVisibleCopy(raw.summary, 120);
+  const advice = normalizeVisibleCopy(raw.tip?.text || raw.tip || raw.advice || '想让整体更完整，可以让鞋子或配饰延续其中一个主色。', 80);
+  if (!summary) throw new Error('invalid_stylist_explanation');
+
+  const validCodes = getValidEvidenceCodes(evidenceInput);
+  const strengths = normalizePoints(raw.strengths, validCodes, 3);
+  const tradeoffs = normalizePoints(raw.tradeoffs, validCodes, 2);
+  const tip = normalizePoint(raw.tip, validCodes) || (Array.from(validCodes)[0] ? { text: advice, evidenceCodes: [Array.from(validCodes)[0]] } : null);
 
   return {
     schemaVersion: 2,
     reviewVersion: STYLIST_REVIEW_VERSION,
     promptVersion: STYLIST_PROMPT_VERSION,
-    title: hasInsufficient ? '谨慎参考' : '小搭参考',
-    summary: hasInsufficient
-      ? '当前审美证据较少，小搭先基于已知信息给出谨慎点评。'
-      : '小搭根据已识别的组合证据给出这次点评。',
-    strengths,
+    copyPolicyVersion: COPY_POLICY_VERSION,
+    title: '',
+    summary,
+    strengths: strengths.length > 0 ? strengths : [{ text: summary, evidenceCodes: Array.from(validCodes).slice(0, 1) }],
     tradeoffs,
     tip,
-    styleTags: buildFallbackStyleTags(evidenceInput),
-    confidence,
-    evidenceCodes: uniqueStrings([
-      ...strengths.flatMap((point) => point.evidenceCodes),
-      ...tradeoffs.flatMap((point) => point.evidenceCodes),
-      ...(tip ? tip.evidenceCodes : []),
-    ]),
+    styleTags: [],
+    confidence: normalizeConfidence(raw.confidence, evidenceInput),
+    evidenceCodes: collectEvidenceCodes(strengths, tradeoffs, tip, raw.evidenceCodes, validCodes),
+    limitations: normalizeLimitations(raw.limitations, evidenceInput),
+    source: VALID_SOURCES.has(raw.source) ? raw.source : 'ai',
+    provider: limitText(meta.provider, 48),
+    model: limitText(meta.model, 64),
+    generatedAt: limitText(meta.generatedAt, 40) || new Date().toISOString(),
+    inputDigest: evidenceInput?.inputDigest || '',
+  };
+}
+
+function buildRuleFallbackExplanationV2(evidenceInput, meta = {}) {
+  const copy = buildHumanFallbackCopy(evidenceInput);
+  const validCodes = getValidEvidenceCodes(evidenceInput);
+  const primaryCode = Array.from(validCodes)[0];
+  const tip = primaryCode ? { text: copy.advice, evidenceCodes: [primaryCode] } : null;
+  return {
+    schemaVersion: 3,
+    reviewVersion: STYLIST_REVIEW_VERSION,
+    promptVersion: STYLIST_PROMPT_VERSION,
+    copyPolicyVersion: COPY_POLICY_VERSION,
+    title: '',
+    summary: copy.overallComment,
+    overallComment: copy.overallComment,
+    advice: copy.advice,
+    strengths: [{ text: copy.overallComment, evidenceCodes: primaryCode ? [primaryCode] : [] }],
+    tradeoffs: [],
+    tip,
+    styleTags: [],
+    confidence: getFallbackConfidence(evidenceInput),
+    evidenceCodes: Array.from(validCodes).sort(),
     limitations: readLimitations(evidenceInput),
     source: 'rule_fallback',
     provider: limitText(meta.provider, 48),
@@ -148,19 +169,22 @@ function buildRuleFallbackExplanationV2(evidenceInput, meta = {}) {
 }
 
 function toLegacyAiComment(explanation) {
-  const reasonParts = [
-    explanation.summary,
-    ...explanation.strengths.map((point) => point.text),
-    ...explanation.tradeoffs.map((point) => point.text),
-  ].filter(Boolean);
+  const reasonParts = explanation.schemaVersion === 3 && explanation.overallComment
+    ? [explanation.overallComment]
+    : [
+        explanation.summary,
+        ...uniqueStrings(explanation.strengths?.map((point) => point.text)),
+        ...uniqueStrings(explanation.tradeoffs?.map((point) => point.text)),
+      ].filter(Boolean);
   return {
-    title: explanation.title,
+    title: '',
     reason: limitText(reasonParts.join(' '), 160),
-    styleTags: explanation.styleTags,
-    tip: explanation.tip ? explanation.tip.text : '小搭建议保持整体信息简单，优先选择你今天最舒服的穿法。',
+    styleTags: [],
+    tip: explanation.advice || explanation.tip?.text || '想让整体更完整，可以让鞋子或配饰延续其中一个主色。',
     generatedAt: explanation.generatedAt,
     reviewVersion: explanation.reviewVersion,
     promptVersion: explanation.promptVersion,
+    copyPolicyVersion: explanation.copyPolicyVersion,
     inputDigest: explanation.inputDigest,
     source: explanation.source,
     explanationV2: explanation,
@@ -186,13 +210,13 @@ function resolveStylistReviewReuse({
     return review.previousReview ? { action: 'restore_previous' } : { action: 'mark_failed' };
   }
   if (!review) return { action: 'generate' };
-  if (!forceRegenerate && isReadyV2Review(review, context)) return { action: 'reuse' };
-  if (forceRegenerate && isReadyV2Review(review, context)) {
+  if (!forceRegenerate && isReadyV3Review(review, context)) return { action: 'reuse' };
+  if (forceRegenerate && isReadyV3Review(review, context)) {
     const generatedAt = Date.parse(review.generatedAt || review.updatedAt || '');
     const retryAfterMs = Number.isFinite(generatedAt) ? Math.max(0, cooldownMs - (nowMs - generatedAt)) : 0;
     if (retryAfterMs > 0) return { action: 'cooldown', retryAfterMs };
   }
-  if (review.status === 'generating' && review.promptVersion === STYLIST_PROMPT_VERSION) {
+  if (review.status === 'generating' && review.promptVersion === STYLIST_PROMPT_VERSION && review.inputDigest === context?.inputDigest) {
     return { action: 'in_progress' };
   }
   return { action: 'generate' };
@@ -205,17 +229,20 @@ function buildStylistReviewDocument({ context, explanation, now }) {
     userId: context.openid,
     outfitKey: context.outfitKey,
     scene: context.scene,
-    schemaVersion: 2,
+    schemaVersion: explanation.schemaVersion,
     reviewVersion: STYLIST_REVIEW_VERSION,
     promptVersion: STYLIST_PROMPT_VERSION,
+    copyPolicyVersion: COPY_POLICY_VERSION,
     evidenceVersion: context.evidenceVersion,
     inputDigest: context.inputDigest,
     inputHash: context.inputDigest,
     source: explanation.source,
     explanationV2: explanation,
-    title: aiComment.title,
+    overallComment: explanation.overallComment,
+    advice: explanation.advice,
+    title: '',
     reason: aiComment.reason,
-    styleTags: aiComment.styleTags,
+    styleTags: [],
     tip: aiComment.tip,
     provider: context.provider || explanation.provider,
     model: context.model || explanation.model,
@@ -226,25 +253,6 @@ function buildStylistReviewDocument({ context, explanation, now }) {
   };
 }
 
-function isReadyV2Review(review, context) {
-  return Boolean(
-    review
-      && review.status === 'ready'
-      && review.reviewVersion === STYLIST_REVIEW_VERSION
-      && (!review.promptVersion || review.promptVersion === STYLIST_PROMPT_VERSION)
-      && review.inputDigest === context.inputDigest,
-  );
-}
-
-function isCurrentGeneration(review, context, generationToken) {
-  return Boolean(
-    review
-      && review.status === 'generating'
-      && review.generationToken === generationToken
-      && (!context?.inputDigest || review.inputDigest === context.inputDigest),
-  );
-}
-
 function normalizePoints(values, validCodes, maxCount) {
   return Array.isArray(values)
     ? values.map((value) => normalizePoint(value, validCodes)).filter(Boolean).slice(0, maxCount)
@@ -253,25 +261,68 @@ function normalizePoints(values, validCodes, maxCount) {
 
 function normalizePoint(value, validCodes) {
   if (!value || typeof value !== 'object') return null;
-  const text = limitText(value.text, 80);
+  const text = normalizeVisibleCopy(value.text, 80);
   const evidenceCodes = uniqueStrings(value.evidenceCodes).filter((code) => validCodes.has(code));
   if (!text || evidenceCodes.length === 0) return null;
   return { text, evidenceCodes };
 }
 
-function collectEvidenceCodes(strengths, tradeoffs, tip) {
+function collectEvidenceCodes(strengths, tradeoffs, tip, rawCodes, validCodes) {
   return uniqueStrings([
     ...strengths.flatMap((point) => point.evidenceCodes),
     ...tradeoffs.flatMap((point) => point.evidenceCodes),
     ...(tip ? tip.evidenceCodes : []),
-  ]).sort();
+    ...(Array.isArray(rawCodes) ? rawCodes : []),
+  ]).filter((code) => validCodes.has(code)).sort();
 }
 
-function normalizeStyleTags(value) {
-  return uniqueStrings(value)
-    .map((tag) => limitText(tag, 12))
-    .filter(Boolean)
-    .slice(0, 5);
+function buildHumanFallbackCopy(evidenceInput) {
+  const colors = readOutfitColorNames(evidenceInput);
+  const tags = uniqueStrings(evidenceInput?.outfit?.styleTags);
+  const categories = uniqueStrings(evidenceInput?.outfit?.categories);
+  if (colors.includes('白色') && (colors.includes('灰色') || colors.includes('灰白'))) {
+    return {
+      overallComment: '整体偏轻松日常，白色和灰色放在一起比较稳定。',
+      advice: '想更完整，可以让鞋子延续白色或灰色。',
+    };
+  }
+  if (tags.includes('通勤') || categories.includes('top') && categories.includes('bottom')) {
+    return {
+      overallComment: '整体偏干净日常，单品之间没有明显冲突。',
+      advice: '想让整体更完整，可以让鞋子或配饰延续其中一个主色。',
+    };
+  }
+  return {
+    overallComment: '整体偏轻松日常，适合不需要太正式的场合。',
+    advice: '想让整体更完整，可以让鞋子或配饰延续其中一个主色。',
+  };
+}
+
+function normalizeVisibleCopy(value, maxLength) {
+  const text = limitText(value, maxLength).replace(/\s+/g, '');
+  if (!text) return '';
+  try {
+    assertHumanCopy(text);
+  } catch {
+    throw new Error('invalid_stylist_explanation');
+  }
+  return text;
+}
+
+function assertKnownFactsOnly(text, evidenceInput) {
+  const allowedColors = readOutfitColorNames(evidenceInput);
+  if (allowedColors.length > 0) {
+    for (const color of COLOR_WORDS) {
+      if (text.includes(color) && !allowedColors.includes(color)) throw new Error('invalid_stylist_explanation');
+    }
+  }
+  const allowedMaterials = readOutfitMaterials(evidenceInput);
+  if (allowedMaterials.length > 0) {
+    for (const material of MATERIAL_WORDS) {
+      if (text.includes(material) && !allowedMaterials.includes(material)) throw new Error('invalid_stylist_explanation');
+    }
+  }
+  if (findHumanCopyPolicyViolations(text).length > 0) throw new Error('invalid_stylist_explanation');
 }
 
 function normalizeLimitations(rawLimitations, evidenceInput) {
@@ -306,46 +357,45 @@ function readLimitations(evidenceInput) {
   return uniqueStrings(evidenceInput?.limitations).filter((limitation) => VALID_LIMITATIONS.has(limitation)).sort();
 }
 
-function describeEvidence(entry) {
-  if (!entry) return '已知信息有限';
-  if (entry.code.includes('COLOR')) return '配色证据比较明确';
-  if (entry.code.includes('SILHOUETTE')) return '轮廓关系比较清楚';
-  if (entry.code.includes('FORMALITY')) return '场合正式度较一致';
-  if (entry.code.includes('PATTERN')) return '图案重点有可观察线索';
-  if (entry.code.includes('DETAIL')) return '细节分布有可观察线索';
-  return '这套有可识别的搭配线索';
+function readOutfitColorNames(evidenceInput) {
+  return uniqueStrings((evidenceInput?.outfit?.colors || []).map((entry) => (typeof entry === 'string' ? entry : entry?.name))).sort();
 }
 
-function describeDimension(dimension) {
-  const map = {
-    colorHarmony: '配色',
-    silhouetteBalance: '轮廓',
-    proportionBalance: '比例',
-    patternBalance: '图案',
-    formalityConsistency: '正式度',
-    detailBalance: '细节',
-  };
-  return map[dimension] || '已识别的搭配线索';
-}
-
-function buildFallbackStyleTags(evidenceInput) {
-  const tags = uniqueStrings(evidenceInput?.outfit?.styleTags).slice(0, 3);
-  if (tags.length >= 2) return tags;
-  return uniqueStrings([...tags, '日常参考', '小搭点评']).slice(0, 5);
+function readOutfitMaterials(evidenceInput) {
+  const items = evidenceInput?.outfit?.items || [];
+  return uniqueStrings(items.map((item) => item?.material)).sort();
 }
 
 function stripUnsafePromptInput(evidenceInput) {
   return {
     schemaVersion: evidenceInput?.schemaVersion,
-    evidenceVersion: evidenceInput?.evidenceVersion,
     context: evidenceInput?.context,
     outfit: evidenceInput?.outfit,
     scores: evidenceInput?.scores,
     aesthetic: evidenceInput?.aesthetic,
-    evidence: evidenceInput?.evidence,
     limitations: evidenceInput?.limitations,
     inputDigest: evidenceInput?.inputDigest,
   };
+}
+
+function isReadyV3Review(review, context) {
+  return Boolean(
+    review
+      && review.status === 'ready'
+      && review.reviewVersion === STYLIST_REVIEW_VERSION
+      && review.promptVersion === STYLIST_PROMPT_VERSION
+      && (!context?.copyPolicyVersion || review.copyPolicyVersion === context.copyPolicyVersion)
+      && review.inputDigest === context.inputDigest,
+  );
+}
+
+function isCurrentGeneration(review, context, generationToken) {
+  return Boolean(
+    review
+      && review.status === 'generating'
+      && review.generationToken === generationToken
+      && (!context?.inputDigest || review.inputDigest === context.inputDigest),
+  );
 }
 
 function limitText(value, maxLength) {
@@ -368,6 +418,7 @@ function clonePlain(value) {
 }
 
 module.exports = {
+  COPY_POLICY_VERSION,
   STYLIST_PROMPT_VERSION,
   STYLIST_REVIEW_VERSION,
   buildRuleFallbackExplanationV2,
