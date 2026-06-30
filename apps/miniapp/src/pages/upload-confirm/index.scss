@@ -4,12 +4,24 @@
  * ============================================ */
 
 .upload-confirm-page {
+  height: 100vh;
   min-height: 100vh;
+  padding: 0;
+  background: var(--dada-bg-page, #FAF6F1);
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.upload-confirm-main-scroll {
+  height: 100%;
+  box-sizing: border-box;
   padding: 24rpx 24rpx 280rpx;
   padding-bottom: calc(280rpx + constant(safe-area-inset-bottom));
   padding-bottom: calc(280rpx + env(safe-area-inset-bottom));
-  background: var(--dada-bg-page, #FAF6F1);
-  box-sizing: border-box;
+}
+
+.upload-confirm-page.editing .upload-confirm-main-scroll {
+  padding-bottom: 24rpx;
 }
 
 .upload-confirm-page.loading {
@@ -585,8 +597,13 @@
   position: fixed;
   z-index: 20;
   inset: 0;
-  background: rgba(46, 36, 29, 0.46);
   overflow: hidden;
+}
+
+.draft-edit-mask {
+  position: absolute;
+  inset: 0;
+  background: rgba(46, 36, 29, 0.46);
 }
 
 .draft-edit-panel {
@@ -600,12 +617,6 @@
   border-radius: 40rpx 40rpx 0 0;
   display: flex;
   flex-direction: column;
-}
-
-.draft-edit-scroll {
-  flex: 1;
-  min-height: 0;
-  height: 100%;
 }
 
 /* ============== 底部操作栏 ============== */

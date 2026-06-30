@@ -38,6 +38,14 @@ import {
   SUBCATEGORY_OPTIONS,
   THICKNESS_OPTIONS
 } from './constants';
+import {
+  cancelPanelRoute,
+  confirmPanelRoute,
+  createPanelSessionState,
+  openPanelRoute,
+  updateMainScroll,
+  type ClothingEditPanelRoute,
+} from './panelNavigation';
 import './index.scss';
 
 export interface ClothingEditFormValue {
@@ -117,11 +125,14 @@ export function ClothingEditForm({
   const [managingMaterials, setManagingMaterials] = useState(false);
   const [archivingMaterialIds, setArchivingMaterialIds] = useState<string[]>([]);
   const [rejoiningMaterial, setRejoiningMaterial] = useState(false);
+  const [panelSession, setPanelSession] = useState(() => createPanelSessionState());
 
   const isDraftConfirm = mode === 'draft-confirm';
+  const isPanelMode = layoutMode === 'panel';
 
   useEffect(() => {
     setValue(normalizeInitialValue(initialValue));
+    setPanelSession(createPanelSessionState());
   }, [initialValue]);
 
   useEffect(() => {
@@ -241,34 +252,52 @@ export function ClothingEditForm({
     return MATERIAL_OPTIONS.some((opt) => opt.value === material || opt.label === material);
   }
 
-  function openPopup(type: PopupType) {
+  function getPopupTempValue(type: PopupType) {
     if (type === 'category') {
-      setTempValue(value.category);
+      return value.category;
     } else if (type === 'subcategory') {
-      setTempValue(value.subcategory);
+      return value.subcategory;
     } else if (type === 'colors') {
-      setTempValue([...value.colors]);
+      return [...value.colors];
     } else if (type === 'material') {
-      setTempValue(value.material);
+      return value.material;
     } else if (type === 'thickness') {
-      setTempValue(value.thickness);
+      return value.thickness;
     } else if (type === 'styleTags') {
-      setTempValue([...value.styleTags]);
+      return [...value.styleTags];
     } else if (type === 'seasonTags') {
-      setTempValue([...value.seasonTags]);
+      return [...value.seasonTags];
     } else if (type === 'sceneTags') {
-      setTempValue([...(value.sceneTags || [])]);
+      return [...(value.sceneTags || [])];
+    }
+    return null;
+  }
+
+  function openPopup(type: PopupType) {
+    const nextTempValue = getPopupTempValue(type);
+    setTempValue(nextTempValue);
+    if (layoutMode === 'panel' && type) {
+      setPopup(null);
+      setPanelSession(prev => openPanelRoute(prev, { name: type } as ClothingEditPanelRoute, prev.mainScrollTop, value));
+      return;
     }
     setPopup(type);
   }
 
-  function closePopup() {
+  function resetTransientEditorState() {
     setPopup(null);
     setTempValue(null);
     setNewSubcategoryName('');
     setNewMaterialName('');
     setNewTagName('');
     setManagingMaterials(false);
+  }
+
+  function closePopup() {
+    if (isPanelMode) {
+      setPanelSession(prev => cancelPanelRoute(prev));
+    }
+    resetTransientEditorState();
   }
 
   function updateTempValue(newVal: any) {
@@ -303,6 +332,17 @@ export function ClothingEditForm({
   }
 
   function confirmMultiple(type: PopupType) {
+    if (isPanelMode) {
+      const selectedValue = tempValue;
+      setValue(prev => {
+        const result = confirmPanelRoute(panelSession, prev, selectedValue);
+        setPanelSession(result.state);
+        return result.formValue;
+      });
+      resetTransientEditorState();
+      return;
+    }
+
     setValue(prev => {
       const update: Partial<ClothingEditFormValue> = {};
       if (type === 'colors') update.colors = tempValue;
@@ -759,9 +799,679 @@ export function ClothingEditForm({
   const moreMaterials = materialPresetOptions.slice(10);
 
   const recommendedStyles = STYLE_OPTIONS.slice(0, 12);
+  const shouldRenderPagePopups = !isPanelMode;
+
+  function handlePanelRouteScroll(event: { detail?: { scrollTop?: number } }) {
+    if (panelSession.route.name !== 'main') return;
+    setPanelSession(prev => updateMainScroll(prev, event.detail?.scrollTop ?? prev.mainScrollTop));
+  }
+
+  function getPanelRouteTitle() {
+    const routeName = panelSession.route.name;
+    if (routeName === 'category') return '编辑品类';
+    if (routeName === 'subcategory') return '编辑细分类';
+    if (routeName === 'colors') return '编辑颜色';
+    if (routeName === 'material') return '编辑材质';
+    if (routeName === 'thickness') return '编辑厚薄';
+    if (routeName === 'styleTags') return '编辑风格';
+    if (routeName === 'seasonTags') return '编辑季节';
+    if (routeName === 'sceneTags') return '编辑场景';
+    if (routeName === 'addTag') return '添加标签';
+    return '编辑衣服属性';
+  }
+
+  function isPanelConfirmRoute() {
+    return ['colors', 'styleTags', 'seasonTags', 'sceneTags'].includes(panelSession.route.name);
+  }
+
+  function renderPanelHeader() {
+    const isMainRoute = panelSession.route.name === 'main';
+    return (
+      <View className="panel-route-header">
+        {!isMainRoute && (
+          <View className="panel-back-button" onClick={closePopup}>
+            <Text className="panel-back-text">返回</Text>
+          </View>
+        )}
+        <Text className="panel-route-title">{getPanelRouteTitle()}</Text>
+      </View>
+    );
+  }
+
+  function renderPanelFooter() {
+    if (panelSession.route.name === 'main') {
+      return (
+        <View className="save-button-bar panel-footer">
+          {isDraftConfirm && onCancel && (
+            <View className="cancel-button" onClick={onCancel}>
+              <Text className="cancel-button-text">取消</Text>
+            </View>
+          )}
+          <View className="save-button" onClick={submitting ? undefined : handleSubmit}>
+            <Text className="save-button-text">{submitting ? '保存中...' : submitText}</Text>
+          </View>
+        </View>
+      );
+    }
+
+    if (isPanelConfirmRoute()) {
+      return (
+        <View className="popup-footer panel-footer">
+          <View className="popup-cancel-button" onClick={closePopup}>
+            <Text className="popup-cancel-button-text">取消</Text>
+          </View>
+          <View className="popup-confirm-button" onClick={() => confirmMultiple(panelSession.route.name as PopupType)}>
+            <Text className="popup-confirm-button-text">确定</Text>
+          </View>
+        </View>
+      );
+    }
+
+    if (panelSession.route.name === 'addTag') {
+      return (
+        <View className="popup-footer panel-footer">
+          <View className="popup-cancel-button" onClick={closePopup}>
+            <Text className="popup-cancel-button-text">取消</Text>
+          </View>
+          <View className="popup-confirm-button" onClick={handleAddTag}>
+            <Text className="popup-confirm-button-text">添加</Text>
+          </View>
+        </View>
+      );
+    }
+
+    return null;
+  }
+
+  function renderMainFormContent() {
+    return (
+      <>
+        {showImage && value.imageUrl && !isDraftConfirm && (
+          <View className="preview-card">
+            <View className="preview-image-wrapper">
+              <SafeImage className="preview-image" src={value.imageUrl} mode="aspectFit" />
+            </View>
+            <Text className="preview-title">编辑衣物档案</Text>
+            <Text className="preview-subtitle">把这件衣服整理得更懂你</Text>
+          </View>
+        )}
+
+        {showImage && value.imageUrl && isDraftConfirm && (
+          <View className="preview-card">
+            <View className="preview-image-wrapper">
+              <SafeImage className="preview-image" src={value.imageUrl} mode="aspectFit" />
+            </View>
+            <Text className="preview-title">编辑属性</Text>
+            <Text className="preview-subtitle">调整一下这件衣服的信息</Text>
+          </View>
+        )}
+
+        <View className="form-section">
+          <Text className="section-title">基础档案</Text>
+
+          {showMetaFields && !isDraftConfirm && (
+            <View className="form-item">
+              <Text className="item-label">备注名称</Text>
+              <Input
+                className="item-input"
+                value={value.customName ?? ''}
+                onInput={(event) => setValue(prev => ({ ...prev, customName: String(event.detail.value ?? '') }))}
+                placeholder="给这件衣服起个名字"
+                maxlength={64}
+              />
+            </View>
+          )}
+
+          <View className="summary-item" onClick={() => openPopup('category')}>
+            <View className="summary-item-left">
+              <Text className="summary-item-label">品类</Text>
+              <Text className="summary-item-value">{getCategoryLabel()}</Text>
+            </View>
+            <Text className="summary-item-arrow">调整</Text>
+          </View>
+
+          <View className="summary-item" onClick={() => openPopup('subcategory')}>
+            <View className="summary-item-left">
+              <Text className="summary-item-label">细分类</Text>
+              <Text className="summary-item-value">{getSubcategoryLabel()}</Text>
+            </View>
+            <Text className="summary-item-arrow">调整</Text>
+          </View>
+
+          {showMetaFields && !isDraftConfirm && (
+            <View className="form-item">
+              <Text className="item-label">品牌</Text>
+              <Input
+                className="item-input"
+                value={value.brand ?? ''}
+                onInput={(event) => setValue(prev => ({ ...prev, brand: String(event.detail.value ?? '') }))}
+                placeholder="品牌名称"
+                maxlength={64}
+              />
+            </View>
+          )}
+        </View>
+
+        <View className="form-section">
+          <Text className="section-title">外观属性</Text>
+
+          <View className="summary-item" onClick={() => openPopup('colors')}>
+            <View className="summary-item-left">
+              <Text className="summary-item-label">主色调</Text>
+              <View className="color-summary">
+                {value.colors.slice(0, 3).map(c => {
+                  const colorMeta = normalizeColor(c);
+                  return (
+                    <View
+                      key={c}
+                      className="color-summary-dot"
+                      style={{
+                        backgroundColor: colorMeta.hex,
+                        borderColor: colorMeta.border
+                      }}
+                    />
+                  );
+                })}
+                <Text className="color-summary-text">{getColorsDisplay()}</Text>
+              </View>
+            </View>
+            <Text className="summary-item-arrow">调整</Text>
+          </View>
+
+          <View className="summary-item" onClick={() => openPopup('material')}>
+            <View className="summary-item-left">
+              <Text className="summary-item-label">材质</Text>
+              <Text className="summary-item-value">{getMaterialDisplay()}</Text>
+            </View>
+            <Text className="summary-item-arrow">调整</Text>
+          </View>
+
+          <View className="summary-item" onClick={() => openPopup('thickness')}>
+            <View className="summary-item-left">
+              <Text className="summary-item-label">厚薄</Text>
+              <Text className="summary-item-value">{getThicknessDisplay()}</Text>
+            </View>
+            <Text className="summary-item-arrow">调整</Text>
+          </View>
+        </View>
+
+        <View className="form-section">
+          <Text className="section-title">穿搭标签</Text>
+
+          <View className="summary-item" onClick={() => openPopup('styleTags')}>
+            <View className="summary-item-left">
+              <Text className="summary-item-label">风格</Text>
+              <Text className="summary-item-value">{getStyleTagsDisplay()}</Text>
+            </View>
+            <Text className="summary-item-arrow">调整</Text>
+          </View>
+
+          <View className="summary-item" onClick={() => openPopup('seasonTags')}>
+            <View className="summary-item-left">
+              <Text className="summary-item-label">季节</Text>
+              <Text className="summary-item-value">{getSeasonTagsDisplay()}</Text>
+            </View>
+            <Text className="summary-item-arrow">调整</Text>
+          </View>
+
+          {!isDraftConfirm && (
+            <View className="summary-item" onClick={() => openPopup('sceneTags')}>
+              <View className="summary-item-left">
+                <Text className="summary-item-label">适合场景</Text>
+                <Text className="summary-item-value">{getSceneTagsDisplay()}</Text>
+              </View>
+              <Text className="summary-item-arrow">调整</Text>
+            </View>
+          )}
+        </View>
+
+        {!isDraftConfirm && (
+          <View className="form-section">
+            <Text className="section-title">我的标签</Text>
+            <View className="custom-tags-section">
+              <View className="custom-tags-grid">
+                {(value.customTags || []).map(tag => (
+                  <View key={tag} className="custom-tag-chip">
+                    <Text className="custom-tag-text">{tag}</Text>
+                    <View className="custom-tag-remove" onClick={() => removeCustomTag(tag)}>
+                      <Text className="custom-tag-remove-text">×</Text>
+                    </View>
+                  </View>
+                ))}
+                <View className="add-tag-chip" onClick={() => openPopup('addTag')}>
+                  <Text className="add-tag-chip-text">+ 添加标签</Text>
+                </View>
+              </View>
+            </View>
+          </View>
+        )}
+
+        <View className="bottom-padding" />
+      </>
+    );
+  }
+
+  function renderPanelRouteContent() {
+    const routeName = panelSession.route.name;
+    if (routeName === 'main') return renderMainFormContent();
+
+    if (routeName === 'category') {
+      return (
+        <View className="options-grid">
+          {CATEGORY_OPTIONS.map(opt => (
+            <View
+              key={opt.value}
+              className={`option-chip ${tempValue === opt.value ? 'active' : ''}`}
+              onClick={() => confirmSingle('category', opt.value)}
+            >
+              <Text className="option-chip-text">{opt.label}</Text>
+            </View>
+          ))}
+        </View>
+      );
+    }
+
+    if (routeName === 'subcategory') {
+      return (
+        <>
+          <View className="popup-current-category">
+            <Text className="popup-current-category-text">
+              当前品类：{CATEGORY_OPTIONS.find(o => o.value === value.category)?.label}
+            </Text>
+          </View>
+          {renderSubcategoryOptions()}
+        </>
+      );
+    }
+
+    if (routeName === 'colors') return renderColorOptions();
+    if (routeName === 'material') return renderMaterialOptions();
+    if (routeName === 'thickness') {
+      return (
+        <View className="options-grid">
+          {THICKNESS_OPTIONS.map(opt => (
+            <View
+              key={opt.value}
+              className={`option-chip ${tempValue === opt.value ? 'active' : ''}`}
+              onClick={() => confirmSingle('thickness', opt.value)}
+            >
+              <Text className="option-chip-text">{opt.label}</Text>
+            </View>
+          ))}
+        </View>
+      );
+    }
+    if (routeName === 'styleTags') return renderStyleOptions();
+    if (routeName === 'seasonTags') return renderSeasonOptions();
+    if (routeName === 'sceneTags') return renderSceneOptions();
+    if (routeName === 'addTag') {
+      return (
+        <Input
+          className="add-tag-popup-input"
+          value={newTagName}
+          onInput={(e) => setNewTagName(String(e.detail.value ?? ''))}
+          placeholder="例如：通勤、春秋"
+          maxlength={8}
+        />
+      );
+    }
+
+    return null;
+  }
+
+  function renderSubcategoryOptions() {
+    return (
+      <>
+        {myCommonSubcategories.currentSelection.length > 0 && (
+          <View className="options-group">
+            <Text className="options-group-title">当前选择</Text>
+            <View className="options-grid">
+              {myCommonSubcategories.currentSelection.map(opt => (
+                <View
+                  key={opt.value}
+                  className={`option-chip ${tempValue === opt.value || tempValue === opt.label ? 'active' : ''}`}
+                  onClick={() => confirmSingle('subcategory', opt.value || opt.label)}
+                >
+                  <Text className="option-chip-text">{opt.label}</Text>
+                </View>
+              ))}
+            </View>
+          </View>
+        )}
+
+        {myCommonSubcategories.userAdded.length > 0 && (
+          <View className="options-group">
+            <Text className="options-group-title">我添加的分类</Text>
+            <View className="options-grid">
+              {myCommonSubcategories.userAdded.map(opt => (
+                <View
+                  key={opt.value}
+                  className={`option-chip ${tempValue === opt.value || tempValue === opt.label ? 'active' : ''}`}
+                  onClick={() => confirmSingle('subcategory', opt.value || opt.label)}
+                >
+                  <Text className="option-chip-text">{opt.label}</Text>
+                </View>
+              ))}
+            </View>
+          </View>
+        )}
+
+        <View className="options-group">
+          <Text className="options-group-title">常用分类</Text>
+          <View className="options-grid">
+            {subcategoryOptions.slice(0, 20).filter(o => !o.isCustom).map(opt => (
+              <View
+                key={opt.value}
+                className={`option-chip ${tempValue === opt.value || tempValue === opt.label ? 'active' : ''}`}
+                onClick={() => confirmSingle('subcategory', opt.value || opt.label)}
+              >
+                <Text className="option-chip-text">{opt.label}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+
+        <View className="add-option-section">
+          <Input
+            className="add-option-input"
+            value={newSubcategoryName}
+            onInput={(e) => setNewSubcategoryName(String(e.detail.value ?? ''))}
+            placeholder="输入新的细分类名称"
+            maxlength={24}
+          />
+          <View
+            className={`add-option-button ${addingSubcategory ? 'disabled' : ''}`}
+            onClick={addingSubcategory ? undefined : handleAddSubcategory}
+          >
+            <Text className="add-option-button-text">{addingSubcategory ? '添加中...' : '添加并使用'}</Text>
+          </View>
+        </View>
+      </>
+    );
+  }
+
+  function renderColorOptions() {
+    return (
+      <>
+        {colorGroups.map((group) => (
+          <View key={group.name} className="options-group color-options-group">
+            <Text className="options-group-title">{group.name}</Text>
+            <View className="color-options-grid">
+              {group.colors.map(c => {
+                const selectedColors = Array.isArray(tempValue) ? tempValue : [];
+                const isSelected = selectedColors.includes(c.key);
+                return (
+                  <View
+                    key={c.key}
+                    className={`color-option-chip ${isSelected ? 'active' : ''}`}
+                    onClick={() => {
+                      if (isSelected) {
+                        updateTempValue(selectedColors.filter((v: string) => v !== c.key));
+                      } else {
+                        updateTempValue([...selectedColors, c.key]);
+                      }
+                    }}
+                  >
+                    <View
+                      className="color-option-dot"
+                      style={{ backgroundColor: c.hex, borderColor: c.border }}
+                    >
+                      {isSelected && <View className="color-option-mark" />}
+                    </View>
+                    <Text className="color-option-label">{c.label}</Text>
+                  </View>
+                );
+              })}
+            </View>
+          </View>
+        ))}
+        <View className="panel-route-bottom-padding" />
+      </>
+    );
+  }
+
+  function renderMaterialOptions() {
+    return (
+      <>
+        {myCommonMaterials.currentSelection.length > 0 && (
+          <View className="options-group">
+            <Text className="options-group-title">当前选择</Text>
+            <View className="options-grid">
+              {myCommonMaterials.currentSelection.map(opt => (
+                <View
+                  key={opt.value}
+                  className={`option-chip ${tempValue === opt.value || tempValue === opt.label ? 'active' : ''}`}
+                  onClick={() => confirmSingle('material', opt.value || opt.label)}
+                >
+                  <Text className="option-chip-text">{opt.label}</Text>
+                </View>
+              ))}
+            </View>
+            {currentMaterialNeedsRejoin && (
+              <View className="material-rejoin-row">
+                <Text className="material-rejoin-hint">仅保留在这件衣服上</Text>
+                <View
+                  className={`material-rejoin-button ${rejoiningMaterial ? 'disabled' : ''}`}
+                  onClick={rejoiningMaterial ? undefined : handleRejoinCurrentMaterial}
+                >
+                  <Text className="material-rejoin-button-text">
+                    {rejoiningMaterial ? '加入中...' : '重新加入'}
+                  </Text>
+                </View>
+              </View>
+            )}
+          </View>
+        )}
+
+        {myCommonMaterials.userAdded.length > 0 && (
+          <View className="options-group">
+            <View className="options-group-header">
+              <Text className="options-group-title">我添加的材质</Text>
+              <View className="options-manage-toggle" onClick={() => setManagingMaterials(prev => !prev)}>
+                <Text className="options-manage-toggle-text">{managingMaterials ? '完成' : '整理'}</Text>
+              </View>
+            </View>
+            <View className="options-grid">
+              {myCommonMaterials.userAdded.map(opt => (
+                <View
+                  key={opt.value}
+                  className={`option-chip managed ${tempValue === opt.value || tempValue === opt.label ? 'active' : ''} ${archivingMaterialIds.includes(opt.id ?? '') ? 'disabled' : ''}`}
+                  onClick={() => confirmSingle('material', opt.value || opt.label)}
+                >
+                  <Text className="option-chip-text">{opt.label}</Text>
+                  {managingMaterials && opt.id && (
+                    <View
+                      className="option-chip-remove"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        handleArchiveMaterial(opt);
+                      }}
+                    >
+                      <Text className="option-chip-remove-text">×</Text>
+                    </View>
+                  )}
+                </View>
+              ))}
+            </View>
+          </View>
+        )}
+
+        <View className="options-group">
+          <Text className="options-group-title">常用材质</Text>
+          <View className="options-grid">
+            {commonMaterials.map(opt => (
+              <View
+                key={opt.value}
+                className={`option-chip ${tempValue === opt.value || tempValue === opt.label ? 'active' : ''}`}
+                onClick={() => confirmSingle('material', opt.value || opt.label)}
+              >
+                <Text className="option-chip-text">{opt.label}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+
+        {moreMaterials.length > 0 && (
+          <View className="options-group">
+            <Text className="options-group-title">更多材质</Text>
+            <View className="options-grid">
+              {moreMaterials.map(opt => (
+                <View
+                  key={opt.value}
+                  className={`option-chip ${tempValue === opt.value || tempValue === opt.label ? 'active' : ''}`}
+                  onClick={() => confirmSingle('material', opt.value || opt.label)}
+                >
+                  <Text className="option-chip-text">{opt.label}</Text>
+                </View>
+              ))}
+            </View>
+          </View>
+        )}
+
+        <View className="add-option-section">
+          <Input
+            className="add-option-input"
+            value={newMaterialName}
+            onInput={(e) => setNewMaterialName(String(e.detail.value ?? ''))}
+            placeholder="输入新的材质名称"
+            maxlength={24}
+          />
+          <View
+            className={`add-option-button ${addingMaterial ? 'disabled' : ''}`}
+            onClick={addingMaterial ? undefined : handleAddMaterial}
+          >
+            <Text className="add-option-button-text">{addingMaterial ? '添加中...' : '添加并使用'}</Text>
+          </View>
+        </View>
+        <View className="panel-route-bottom-padding" />
+      </>
+    );
+  }
+
+  function renderStyleOptions() {
+    return (
+      <>
+        <View className="options-group">
+          <Text className="options-group-title">推荐风格</Text>
+          <View className="options-grid">
+            {recommendedStyles.map(opt => (
+              <View
+                key={opt.value}
+                className={`option-chip ${Array.isArray(tempValue) && tempValue.includes(opt.value) ? 'active' : ''}`}
+                onClick={() => {
+                  const currentTemp = Array.isArray(tempValue) ? tempValue : [];
+                  if (currentTemp.includes(opt.value)) {
+                    updateTempValue(currentTemp.filter((v: string) => v !== opt.value));
+                  } else {
+                    updateTempValue([...currentTemp, opt.value]);
+                  }
+                }}
+              >
+                <Text className="option-chip-text">{opt.label}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+
+        <View className="options-group">
+          <Text className="options-group-title">全部风格</Text>
+          <View className="options-grid">
+            {STYLE_OPTIONS.map(opt => (
+              <View
+                key={opt.value}
+                className={`option-chip ${Array.isArray(tempValue) && tempValue.includes(opt.value) ? 'active' : ''}`}
+                onClick={() => {
+                  const currentTemp = Array.isArray(tempValue) ? tempValue : [];
+                  if (currentTemp.includes(opt.value)) {
+                    updateTempValue(currentTemp.filter((v: string) => v !== opt.value));
+                  } else {
+                    updateTempValue([...currentTemp, opt.value]);
+                  }
+                }}
+              >
+                <Text className="option-chip-text">{opt.label}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+        <View className="panel-route-bottom-padding" />
+      </>
+    );
+  }
+
+  function renderSeasonOptions() {
+    return (
+      <View className="options-grid">
+        {SEASON_OPTIONS.map(opt => {
+          const currentTemp = Array.isArray(tempValue) ? tempValue : [];
+          return (
+            <View
+              key={opt.value}
+              className={`option-chip ${currentTemp.includes(opt.value) ? 'active' : ''}`}
+              onClick={() => {
+                if (currentTemp.includes(opt.value)) {
+                  updateTempValue(currentTemp.filter((v: string) => v !== opt.value));
+                } else {
+                  updateTempValue([...currentTemp, opt.value]);
+                }
+              }}
+            >
+              <Text className="option-chip-text">{opt.label}</Text>
+            </View>
+          );
+        })}
+      </View>
+    );
+  }
+
+  function renderSceneOptions() {
+    return (
+      <View className="options-grid">
+        {SCENE_OPTIONS.map(opt => {
+          const currentTemp = Array.isArray(tempValue) ? tempValue : [];
+          return (
+            <View
+              key={opt.value}
+              className={`option-chip ${currentTemp.includes(opt.value) ? 'active' : ''}`}
+              onClick={() => {
+                if (currentTemp.includes(opt.value)) {
+                  updateTempValue(currentTemp.filter((v: string) => v !== opt.value));
+                } else {
+                  updateTempValue([...currentTemp, opt.value]);
+                }
+              }}
+            >
+              <Text className="option-chip-text">{opt.label}</Text>
+            </View>
+          );
+        })}
+      </View>
+    );
+  }
+
+  if (layoutMode === 'panel') {
+    return (
+      <View className="clothing-edit-form panel">
+        {renderPanelHeader()}
+        <View className="panel-route-content">
+          <ScrollView
+            className="panel-route-scroll"
+            scrollY
+            enhanced
+            showScrollbar={false}
+            scrollTop={panelSession.route.name === 'main' ? panelSession.restoreScrollTop : 0}
+            onScroll={handlePanelRouteScroll}
+          >
+            {renderPanelRouteContent()}
+          </ScrollView>
+        </View>
+        {renderPanelFooter()}
+      </View>
+    );
+  }
 
   return (
-    <View className={`clothing-edit-form ${layoutMode === 'panel' ? 'panel' : 'page'}`}>
+    <View className="clothing-edit-form page">
       <ScrollView className="edit-form-scroll" scrollY>
         {showImage && value.imageUrl && !isDraftConfirm && (
           <View className="preview-card">
@@ -937,7 +1647,7 @@ export function ClothingEditForm({
         </View>
       </View>
 
-      {popup === 'category' && (
+      {shouldRenderPagePopups && popup === 'category' && (
         <View className="bottom-popup-overlay" onClick={closePopup}>
           <View className="bottom-popup" onClick={(e) => e.stopPropagation()}>
             <View className="popup-header">
@@ -963,7 +1673,7 @@ export function ClothingEditForm({
         </View>
       )}
 
-      {popup === 'subcategory' && (
+      {shouldRenderPagePopups && popup === 'subcategory' && (
         <View className="bottom-popup-overlay" onClick={closePopup}>
           <View className="bottom-popup" onClick={(e) => e.stopPropagation()}>
             <View className="popup-header">
@@ -1047,7 +1757,7 @@ export function ClothingEditForm({
         </View>
       )}
 
-      {popup === 'colors' && (
+      {shouldRenderPagePopups && popup === 'colors' && (
         <View className="bottom-popup-overlay" onClick={closePopup}>
           <View className="bottom-popup" onClick={(e) => e.stopPropagation()}>
             <View className="popup-header">
@@ -1099,7 +1809,7 @@ export function ClothingEditForm({
         </View>
       )}
 
-      {popup === 'material' && (
+      {shouldRenderPagePopups && popup === 'material' && (
         <View className="bottom-popup-overlay" onClick={closePopup}>
           <View className="bottom-popup" onClick={(e) => e.stopPropagation()}>
             <View className="popup-header">
@@ -1224,7 +1934,7 @@ export function ClothingEditForm({
         </View>
       )}
 
-      {popup === 'thickness' && (
+      {shouldRenderPagePopups && popup === 'thickness' && (
         <View className="bottom-popup-overlay" onClick={closePopup}>
           <View className="bottom-popup" onClick={(e) => e.stopPropagation()}>
             <View className="popup-header">
@@ -1250,7 +1960,7 @@ export function ClothingEditForm({
         </View>
       )}
 
-      {popup === 'styleTags' && (
+      {shouldRenderPagePopups && popup === 'styleTags' && (
         <View className="bottom-popup-overlay" onClick={closePopup}>
           <View className="bottom-popup" onClick={(e) => e.stopPropagation()}>
             <View className="popup-header">
@@ -1311,7 +2021,7 @@ export function ClothingEditForm({
         </View>
       )}
 
-      {popup === 'seasonTags' && (
+      {shouldRenderPagePopups && popup === 'seasonTags' && (
         <View className="bottom-popup-overlay" onClick={closePopup}>
           <View className="bottom-popup" onClick={(e) => e.stopPropagation()}>
             <View className="popup-header">
@@ -1348,7 +2058,7 @@ export function ClothingEditForm({
         </View>
       )}
 
-      {popup === 'sceneTags' && (
+      {shouldRenderPagePopups && popup === 'sceneTags' && (
         <View className="bottom-popup-overlay" onClick={closePopup}>
           <View className="bottom-popup" onClick={(e) => e.stopPropagation()}>
             <View className="popup-header">
@@ -1386,7 +2096,7 @@ export function ClothingEditForm({
         </View>
       )}
 
-      {popup === 'addTag' && (
+      {shouldRenderPagePopups && popup === 'addTag' && (
         <View className="bottom-popup-overlay" onClick={closePopup}>
           <View className="bottom-popup small" onClick={(e) => e.stopPropagation()}>
             <View className="popup-header">

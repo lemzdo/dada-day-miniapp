@@ -396,3 +396,23 @@
 3. 新 AI 点评为 `reviewVersion=stylist-explanation-v3`、`promptVersion=stylist-prompt-v3`、`copyPolicyVersion=human-copy-v1`。
 4. AI 点评复用必须同时满足 inputDigest、reviewVersion、promptVersion 和 copyPolicyVersion。
 5. 推荐顺序、scores、aestheticEvaluation、outfitKey、recommendationBatchId、收藏、穿着、行为事件均不因 V3 文案改变。
+
+## 属性编辑器单面板 Drill-down 真机验收
+
+1. 上传确认页打开编辑面板后，主属性页可上下滚动。
+2. 主属性页滑到中部后打开颜色编辑页。
+3. 颜色列表在 iPhone 和 Android 真机都可滚到底。
+4. 确认颜色后返回主属性页，滚动位置接近打开前位置。
+5. 取消颜色后返回主属性页，滚动位置接近打开前位置。
+6. 材质列表在真机可滚动，当前材质高亮清晰。
+7. 自定义材质输入框、键盘弹出、键盘收起后布局正常。
+8. 风格、季节、场景长列表可滚动并能确认选择。
+9. 连续打开颜色、材质、风格等多个属性页，返回后不回顶。
+10. 编辑一个字段时，其他尚未保存字段不丢失。
+11. 编辑面板打开时，底层上传确认页不滚动。
+12. 子页滚到顶部或底部继续滑动时，底层页面仍不滚动。
+13. 关闭整个编辑面板后，底层上传确认页恢复滚动。
+14. 保存草稿属性成功，重新进入仍能看到颜色、材质、风格等字段。
+15. 正式衣服编辑页仍保持页面级编辑和原有保存方式。
+16. iPhone 底部安全区不遮挡取消、保存、确定按钮。
+17. Android 真机长列表滚动正常，没有开发工具能滚、真机不能滚的情况。

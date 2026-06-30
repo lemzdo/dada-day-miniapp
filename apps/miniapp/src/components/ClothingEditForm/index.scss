@@ -12,8 +12,11 @@
 .clothing-edit-form.panel {
   min-height: 0;
   height: 100%;
+  max-height: 92vh;
   background: transparent;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 
   .edit-form-scroll {
     height: auto;
@@ -37,6 +40,106 @@
   .bottom-padding {
     height: 24rpx;
   }
+}
+
+.panel-route-header {
+  flex-shrink: 0;
+  min-height: 96rpx;
+  padding: 24rpx 32rpx 20rpx;
+  background: var(--dada-bg-page, #FAF6F1);
+  border-bottom: 1rpx solid rgba(234, 219, 200, 0.5);
+  display: flex;
+  align-items: center;
+  gap: 20rpx;
+  box-sizing: border-box;
+}
+
+.panel-back-button {
+  flex: 0 0 auto;
+  padding: 10rpx 18rpx;
+  margin-left: -8rpx;
+  border-radius: 999rpx;
+  background: rgba(244, 231, 215, 0.72);
+}
+
+.panel-back-text {
+  font-size: 26rpx;
+  font-weight: 600;
+  color: var(--dada-milk-tea-dark, #8B5E3C);
+  display: block;
+}
+
+.panel-route-title {
+  flex: 1;
+  font-size: 32rpx;
+  font-weight: 700;
+  color: var(--dada-text-primary, #2E241D);
+  display: block;
+}
+
+.panel-route-content {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.panel-route-scroll {
+  height: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+}
+
+.panel-route-scroll .options-grid,
+.panel-route-scroll .options-group,
+.panel-route-scroll .popup-current-category,
+.panel-route-scroll .add-option-section,
+.panel-route-scroll .add-tag-popup-input {
+  margin-left: 24rpx;
+  margin-right: 24rpx;
+}
+
+.panel-route-scroll .options-grid .options-grid,
+.panel-route-scroll .options-group .options-grid {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.panel-route-bottom-padding {
+  height: 40rpx;
+}
+
+.panel-footer {
+  flex-shrink: 0;
+  box-sizing: border-box;
+  background: var(--dada-bg-card, #FFFDF9);
+  padding-bottom: calc(18rpx + constant(safe-area-inset-bottom));
+  padding-bottom: calc(18rpx + env(safe-area-inset-bottom));
+}
+
+.popup-footer.panel-footer {
+  margin-top: 0;
+  padding: 18rpx 24rpx;
+  padding-bottom: calc(18rpx + constant(safe-area-inset-bottom));
+  padding-bottom: calc(18rpx + env(safe-area-inset-bottom));
+  display: flex;
+  gap: 16rpx;
+}
+
+.popup-cancel-button {
+  flex: 0 0 150rpx;
+  height: 88rpx;
+  border-radius: 999rpx;
+  background: rgba(244, 231, 215, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.popup-cancel-button-text {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--dada-milk-tea-dark, #8B5E3C);
+  display: block;
 }
 
 .edit-form-scroll {

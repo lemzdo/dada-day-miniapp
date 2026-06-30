@@ -701,7 +701,8 @@ export default function UploadConfirmPage() {
   }
 
   return (
-    <View className="upload-confirm-page">
+    <View className={`upload-confirm-page ${editingDraft ? 'editing' : ''}`}>
+      <ScrollView className="upload-confirm-main-scroll" scrollY={!editingDraft} enhanced showScrollbar={false}>
       <View className={`progress-panel ${taskStatus}`}>
         <Text className="progress-title">{uploadConfirmState.getProgressTitle(derivedState)}</Text>
         <Text className="progress-desc">{uploadConfirmState.getProgressDesc(derivedState)}</Text>
@@ -824,21 +825,22 @@ export default function UploadConfirmPage() {
         })}
       </View>
 
+      </ScrollView>
+
       {editingDraft && (
-        <View className="draft-edit-overlay" catchMove onTouchMove={(event) => event.stopPropagation()}>
-          <View className="draft-edit-panel" catchMove onClick={(event) => event.stopPropagation()} onTouchMove={(event) => event.stopPropagation()}>
-            <ScrollView className="draft-edit-scroll" scrollY enhanced showScrollbar={false}>
-              <ClothingEditForm
-                initialValue={toDraftFormValue(editingDraft)}
-                showImage
-                showMetaFields={false}
-                submitText="保存属性"
-                onSave={handleDraftFormSave}
-                onCancel={() => setEditingDraft(null)}
-                mode="draft-confirm"
-                layoutMode="panel"
-              />
-            </ScrollView>
+        <View className="draft-edit-overlay">
+          <View className="draft-edit-mask" catchMove />
+          <View className="draft-edit-panel" onClick={(event) => event.stopPropagation()}>
+            <ClothingEditForm
+              initialValue={toDraftFormValue(editingDraft)}
+              showImage
+              showMetaFields={false}
+              submitText="保存属性"
+              onSave={handleDraftFormSave}
+              onCancel={() => setEditingDraft(null)}
+              mode="draft-confirm"
+              layoutMode="panel"
+            />
           </View>
         </View>
       )}
