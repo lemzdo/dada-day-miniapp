@@ -172,7 +172,7 @@ function resolveStylistReviewReuse({
   context,
   forceRegenerate = false,
   nowMs = Date.now(),
-  cooldownMs = 30 * 1000,
+  cooldownMs = 5 * 1000,
   generationToken,
   mode = 'acquire',
 } = {}) {

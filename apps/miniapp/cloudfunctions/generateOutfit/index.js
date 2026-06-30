@@ -17,6 +17,7 @@ const {
   toLegacyAiComment,
   validateStylistExplanationV2,
 } = require('./services/stylistExplanationV2');
+const { compileRecommendationReasonsV2 } = require('./services/recommendationReasonV2');
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
@@ -29,7 +30,7 @@ const AI_COMMENT_PROVIDER = process.env.AI_COMMENT_PROVIDER || 'aliyun-bailian';
 const AI_COMMENT_MODEL = process.env.AI_COMMENT_MODEL || 'qwen-flash';
 const AI_COMMENT_TIMEOUT_MS = Number(process.env.AI_COMMENT_TIMEOUT_MS || 5000);
 const AI_COMMENT_LEASE_TIMEOUT_MS = Math.max(AI_COMMENT_TIMEOUT_MS + 5000, 10000);
-const AI_COMMENT_FORCE_COOLDOWN_MS = 30 * 1000;
+const AI_COMMENT_FORCE_COOLDOWN_MS = 5 * 1000;
 
 exports.main = async (event = {}) => {
   const action = event.action || 'generate';
@@ -116,17 +117,21 @@ async function generate(event) {
     };
   }
 
-  const tempOutfits = recommendations.map((recommendation) =>
-    toTempOutfit(recommendation, {
-      openid: OPENID,
-      scene,
-      targetDate,
-      timeOfDay: event.timeOfDay || 'all_day',
-      weather,
-      now,
-      recommendationBatchId,
-    }),
-  );
+  const tempOutfits = compileRecommendationReasonsV2({
+    outfits: recommendations.map((recommendation) =>
+      toTempOutfit(recommendation, {
+        openid: OPENID,
+        scene,
+        targetDate,
+        timeOfDay: event.timeOfDay || 'all_day',
+        weather,
+        now,
+        recommendationBatchId,
+      }),
+    ),
+    scene,
+    weather,
+  });
   const outfits = [];
   for (const tempOutfit of tempOutfits) {
     const outfitRecord = await upsertOutfitByKey({
@@ -1438,7 +1443,8 @@ async function findFavoriteByKey(openid, outfitKey, database = db) {
 function buildSnapshotRecordData(base, { aiComment, outfitKey, now, source }) {
   const clothingIds = readBaseClothingIds(base);
   const itemsSnapshot = buildDetailedSnapshotItems(clothingIds, base);
-  const reason = base.reasoning || base.reason || '';
+  const reason = base.reason || base.reasoning || '';
+  const reasoning = base.reasoning || base.reason || '';
   const normalizedAiComment = normalizeAiComment(aiComment);
   const aestheticEvaluation = normalizeAestheticEvaluationForStorage(base.aestheticEvaluation);
   const fallbackTitle = `${base.scene || '今日'}搭配`;
@@ -1472,7 +1478,8 @@ function buildSnapshotRecordData(base, { aiComment, outfitKey, now, source }) {
     generationType: base.generationType || 'auto',
     source: source || base.source || 'recommendation',
     reason,
-    reasoning: reason,
+    reasoning,
+    ...(base.reasonVersion ? { reasonVersion: base.reasonVersion } : {}),
     ...(normalizedAiComment ? { aiComment: normalizedAiComment.generatedAt ? normalizedAiComment : { ...normalizedAiComment, generatedAt: now } } : {}),
   };
 }
@@ -1622,6 +1629,7 @@ function toSnapshotOutfit(item, kind) {
     updatedAt: item.updatedAt || item.createdAt,
     reason: item.reason || item.reasoning,
     reasoning: item.reasoning || item.reason,
+    reasonVersion: item.reasonVersion,
     aiComment: normalizeAiComment(item.aiComment) || undefined,
   };
 }
@@ -1659,7 +1667,8 @@ async function upsertOutfitByKey({ openid, existing, base, patch, now }) {
 
 function buildOutfitSaveData(base, { outfitKey, now, patch, current }) {
   const weather = base.weatherSnapshot || base.weather || current?.weatherSnapshot || current?.weather || fallbackWeather();
-  const reason = base.reasoning || base.reason || current?.reasoning || current?.reason || '';
+  const reason = base.reason || base.reasoning || current?.reason || current?.reasoning || '';
+  const reasoning = base.reasoning || base.reason || current?.reasoning || current?.reason || '';
   const clothingIds = readBaseClothingIds(base);
   const snapshotItems = buildSnapshotItems(clothingIds, base, current);
   const incomplete = snapshotItems.some((item) => item.isDeleted) || Boolean(current?.incomplete);
@@ -1696,7 +1705,8 @@ function buildOutfitSaveData(base, { outfitKey, now, patch, current }) {
     generatedAt: base.generatedAt || current?.generatedAt,
     styleTags: readStringArray(base.styleTags).length ? readStringArray(base.styleTags) : readSnapshotStyleTags(snapshotItems),
     reason,
-    reasoning: reason,
+    reasoning,
+    reasonVersion: base.reasonVersion || current?.reasonVersion,
     ...(aiComment ? { aiComment } : {}),
     updatedAt: now,
   };
@@ -1821,6 +1831,7 @@ function normalizeOutfitPayload(payload) {
     generatedAt: payload.generatedAt,
     styleTags: readStringArray(payload.styleTags),
     aiComment: normalizeAiComment(payload.aiComment),
+    reasonVersion: payload.reasonVersion,
   };
 }
 
@@ -2615,7 +2626,9 @@ function toOutfit(item, clothes) {
     styleTags: readSnapshotStyleTags(snapshotItems),
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
+    reason: item.reason || item.reasoning,
     reasoning: item.reasoning || item.reason,
+    reasonVersion: item.reasonVersion,
     aiComment: normalizeAiComment(item.aiComment) || undefined,
   };
 }

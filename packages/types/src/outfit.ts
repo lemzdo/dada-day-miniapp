@@ -206,6 +206,9 @@ export interface Outfit {
   updatedAt: string;
   reason?: string;
   reasoning?: string;
+  reasonVersion?: string;
+  primaryDimension?: string;
+  evidenceCodes?: string[];
   aiComment?: OutfitAiComment;
   aestheticEvaluation?: AestheticCompatibilityEvaluationV1;
 }

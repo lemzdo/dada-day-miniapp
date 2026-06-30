@@ -46,6 +46,7 @@ import {
   getTimeLabel,
 } from '@/utils/outfitContextText';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
+import { buildAiReviewPresentation } from './aiReviewPresentation';
 import type { OutfitStatusPatch } from '@/stores/outfitStatusStore';
 import type { Outfit, OutfitAiReviewResponse, OutfitItemSummary, OutfitSnapshotItem } from '@starter-template/types';
 import './index.scss';
@@ -738,8 +739,7 @@ export default function OutfitDetailPage() {
       if (aiCommentRequestSeqRef.current !== commentRequestSeq || !isCurrentAuthContext(authContext)) return;
       if (result.cooldown) {
         applyAiReviewResult(result);
-        const retryAfterSeconds = Math.max(1, Math.ceil((result.retryAfterMs ?? 0) / 1000));
-        Taro.showToast({ title: `刚点评好，${retryAfterSeconds}秒后可再试`, icon: 'none' });
+        Taro.showToast({ title: '小搭刚点评完，稍等一下再试', icon: 'none' });
         return;
       }
       if (result.inProgress) {
@@ -912,6 +912,11 @@ export default function OutfitDetailPage() {
   const displayItems = items.slice(0, showCount);
   const hasCanonicalAiComment = Boolean(aiReviewMeta?.hasCanonical && outfit.aiComment);
   const aiCommentButtonText = commentLoading ? '点评中...' : hasCanonicalAiComment ? '重新点评' : '让小搭点评这套';
+  const aiReviewPresentation = outfit.aiComment ? buildAiReviewPresentation(outfit.aiComment) : null;
+  const hasAiReviewContent = Boolean(
+    aiReviewPresentation
+      && (aiReviewPresentation.bodyParagraphs.length > 0 || aiReviewPresentation.tags.length > 0 || aiReviewPresentation.advice),
+  );
 
   return (
     <View className="outfit-detail-page">
@@ -1001,23 +1006,33 @@ export default function OutfitDetailPage() {
             </View>
           </View>
 
-          {outfit.aiComment ? (
+          {commentLoading && (
+            <Text className="ai-comment-loading">小搭正在看这套的配色和轮廓……</Text>
+          )}
+
+          {hasAiReviewContent && aiReviewPresentation ? (
             <View className="ai-comment-content">
-              <Text className="ai-comment-title">{outfit.aiComment.title}</Text>
-              <Text className="ai-comment-reason">{outfit.aiComment.reason}</Text>
-              {outfit.aiComment.styleTags.length > 0 && (
+              {aiReviewPresentation.bodyParagraphs.map((paragraph) => (
+                <Text key={paragraph} className="ai-comment-reason">{paragraph}</Text>
+              ))}
+              {aiReviewPresentation.tags.length > 0 && (
                 <View className="ai-comment-tags">
-                  {outfit.aiComment.styleTags.map((tag) => (
+                  {aiReviewPresentation.tags.map((tag) => (
                     <Text key={tag} className="ai-comment-tag">
                       {tag}
                     </Text>
                   ))}
                 </View>
               )}
-              <Text className="ai-comment-tip">{outfit.aiComment.tip}</Text>
+              {aiReviewPresentation.advice && (
+                <View className="ai-comment-advice">
+                  <Text className="ai-comment-advice-title">小搭建议</Text>
+                  <Text className="ai-comment-tip">{aiReviewPresentation.advice}</Text>
+                </View>
+              )}
             </View>
           ) : (
-            <Text className="ai-comment-empty">想听听小搭怎么看这套时，可以手动生成一次。</Text>
+            !commentLoading && <Text className="ai-comment-empty">想听听小搭怎么看这套时，可以手动生成一次。</Text>
           )}
         </View>
 

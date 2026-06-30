@@ -228,6 +228,34 @@ test('resolveStylistReviewReuse covers digest reuse digest change force refresh 
   assert.equal(resolveStylistReviewReuse({ review: { status: 'ready', promptVersion: 'v1', inputHash: 'new' }, context }).action, 'generate');
 });
 
+test('resolveStylistReviewReuse uses a 5 second default cooldown only for force regenerate', () => {
+  const context = { inputDigest: 'new', reviewVersion: STYLIST_REVIEW_VERSION, promptVersion: STYLIST_PROMPT_VERSION };
+  const review = {
+    status: 'ready',
+    reviewVersion: STYLIST_REVIEW_VERSION,
+    promptVersion: STYLIST_PROMPT_VERSION,
+    inputDigest: 'new',
+    generatedAt: new Date(10_000).toISOString(),
+  };
+  const fourSecondsLater = resolveStylistReviewReuse({ review, context, forceRegenerate: true, nowMs: 14_000 });
+  assert.equal(fourSecondsLater.action, 'cooldown');
+  assert.equal(fourSecondsLater.retryAfterMs, 1000);
+  assert.equal(resolveStylistReviewReuse({ review, context, forceRegenerate: true, nowMs: 15_100 }).action, 'generate');
+  assert.equal(resolveStylistReviewReuse({ review, context, forceRegenerate: false, nowMs: 14_000 }).action, 'reuse');
+});
+
+test('resolveStylistReviewReuse keeps lease blocking ahead of forced cooldown after generating starts', () => {
+  const context = { inputDigest: 'new', reviewVersion: STYLIST_REVIEW_VERSION, promptVersion: STYLIST_PROMPT_VERSION };
+  const review = {
+    status: 'generating',
+    reviewVersion: STYLIST_REVIEW_VERSION,
+    promptVersion: STYLIST_PROMPT_VERSION,
+    inputDigest: 'new',
+    generatedAt: new Date(10_000).toISOString(),
+  };
+  assert.equal(resolveStylistReviewReuse({ review, context, forceRegenerate: true, nowMs: 11_000 }).action, 'in_progress');
+});
+
 test('resolveStylistReviewReuse preserves old success on AI failure and blocks stale late writes', () => {
   const current = {
     status: 'generating',

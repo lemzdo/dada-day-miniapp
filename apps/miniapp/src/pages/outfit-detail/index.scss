@@ -540,12 +540,18 @@
   color: #fff;
 }
 
-.ai-comment-title {
+.ai-comment-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ai-comment-loading {
   display: block;
-  font-size: 30px;
-  font-weight: 700;
-  color: #1a1a1a;
-  margin-bottom: 12px;
+  margin-bottom: 16px;
+  font-size: 24px;
+  color: #9a6d43;
+  line-height: 1.5;
 }
 
 .ai-comment-reason,
@@ -560,7 +566,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
-  margin: 18px 0;
+  margin: 6px 0;
 }
 
 .ai-comment-tag {
@@ -573,12 +579,23 @@
   line-height: 42px;
 }
 
-.ai-comment-tip {
-  display: block;
-  margin-top: 18px;
+.ai-comment-advice {
+  margin-top: 4px;
   padding: 18px;
   border-radius: 16px;
   background: #f7f7f7;
+}
+
+.ai-comment-advice-title {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 24px;
+  font-weight: 700;
+  color: #333;
+}
+
+.ai-comment-tip {
+  display: block;
   font-size: 24px;
   color: #666;
   line-height: 1.5;
