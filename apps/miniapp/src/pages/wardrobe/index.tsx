@@ -33,6 +33,8 @@ import {
   removeUserStorageSync,
   setUserStorageSync,
 } from '@/lib/userStorage';
+import { buildAuthRuntimeKey } from '@/lib/userRuntimeScope';
+import { filterTerminalBatches } from '@/lib/uploadTaskLocalCache';
 import { canRecognizeSingleClothing, getSubcategoryDisplayLabel } from '@/utils/clothingLabels';
 import type { Clothing, ClothingCategory, UserClothingSubcategory } from '@starter-template/types';
 import type { RecoverableUploadBatch } from '@/lib/cloud';
@@ -258,7 +260,8 @@ export default function WardrobePage() {
     try {
       const result = await getRecoverableUploadBatches(10);
       if (!isCurrentAuthContext(authContext)) return;
-      setRecoverableBatches((result.list || []).filter(isActiveRecoverableBatch));
+      const filtered = filterTerminalBatches(buildAuthRuntimeKey(authContext), result.list || []) as RecoverableUploadBatch[];
+      setRecoverableBatches(filtered.filter(isActiveRecoverableBatch));
     } catch (err) {
       console.warn('Fetch recoverable upload task failed:', err);
       if (isCurrentAuthContext(authContext)) {
@@ -296,6 +299,11 @@ export default function WardrobePage() {
     }
 
     const authContext = captureAuthContext();
+    if (authContext) {
+      setRecoverableBatches((prev) => (
+        filterTerminalBatches(buildAuthRuntimeKey(authContext), prev) as RecoverableUploadBatch[]
+      ).filter(isActiveRecoverableBatch));
+    }
     const needsRefresh = Boolean(getUserStorageSync(WARDROBE_REFRESH_STORAGE_KEY, { authContext }));
     if (needsRefresh) {
       removeUserStorageSync(WARDROBE_REFRESH_STORAGE_KEY, { authContext });

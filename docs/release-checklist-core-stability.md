@@ -299,6 +299,23 @@
 | 调用 `getWardrobe` 列表和详情 | 返回 canonical + mirror，不破坏 legacy 数据读取 | `getWardrobe`；衣橱、详情 |
 | 手动字段来自 legacy alias，例如 `color` / `style` / `materialGuess` | 重新识别不覆盖对应 canonical group | `recognizeClothAttributes`、`updateClothes` |
 
+### 识别确认流程收口
+
+| 测试步骤 | 预期结果 | 关联云函数 / 页面 |
+| --- | --- | --- |
+| 识别 1 件衣服后取消勾选 | 标题仍显示“这次识别到 1 件衣服”，副文案提示暂未选择，保存按钮显示“请选择要保存的衣服” | `pages/upload-confirm` |
+| 全不选后重新勾选 | 页面回到 ready 状态，可正常保存选中的衣服 | `pages/upload-confirm`、`confirmClothesDrafts` |
+| 识别多件后只选择 1 件 | 标题使用识别件数，保存按钮使用已选可保存件数 | `pages/upload-confirm` |
+| 舍弃其中 1 件 | 二次确认后服务端成功才移除卡片，剩余卡片和标题数量立即更新 | `discardClothesDraft`、`pages/upload-confirm` |
+| 舍弃唯一 1 件且无处理中图片 | 服务端返回 batchTerminal，页面提示本次识别已舍弃并自动返回衣橱 | `discardClothesDraft`、`pages/upload-confirm`、`pages/wardrobe` |
+| 舍弃唯一 1 件但仍有 processing/pending/detecting 图片 | 不提前终结 batch，不自动返回衣橱，继续展示处理状态 | `discardClothesDraft`、`processUploadImage`、`pages/upload-confirm` |
+| 整批放弃本次识别 | 已保存内容不受影响，未保存草稿进入 discarded，返回衣橱前本地入口已清理 | `discardUploadBatch`、`pages/upload-confirm` |
+| 返回衣橱 | 可恢复识别入口不闪旧批次，后台刷新只做校正 | `pages/wardrobe`、`pages/upload-tasks` |
+| 打开新衣整理列表 | 已本地终结的 batch 不再从 5 秒本地缓存中出现，其他用户和其他 batch 不受影响 | `pages/upload-tasks` |
+| 在上传确认页编辑属性 | 底部面板内表单可独立滚动，保存栏固定在 panel 内 | `ClothingEditForm`、`pages/upload-confirm` |
+| 编辑面板打开时滑动遮罩或滑到表单边界 | 背景上传确认页不滚动穿透 | `ClothingEditForm`、`pages/upload-confirm` |
+| 正式衣物编辑页打开表单 | page 模式布局和原保存行为保持不变 | `pages/clothing-form`、`ClothingEditForm` |
+
 ## 六、部署后烟测清单
 
 每次部署后建议先跑以下 17 项：

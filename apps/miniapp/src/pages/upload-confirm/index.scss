@@ -586,6 +586,7 @@
   z-index: 20;
   inset: 0;
   background: rgba(46, 36, 29, 0.46);
+  overflow: hidden;
 }
 
 .draft-edit-panel {
@@ -597,6 +598,14 @@
   overflow: hidden;
   background: var(--dada-bg-page, #FAF6F1);
   border-radius: 40rpx 40rpx 0 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.draft-edit-scroll {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
 }
 
 /* ============== 底部操作栏 ============== */

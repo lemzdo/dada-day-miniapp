@@ -479,7 +479,12 @@ export async function confirmClothesDrafts(
 }
 
 export async function discardClothesDraft(draftId: string) {
-  return callCloudFunction<{ id: string }>('discardClothesDraft', { draftId });
+  return callCloudFunction<{
+    id: string;
+    draftDiscarded: boolean;
+    batchTerminal: boolean;
+    batchStatus?: 'discarded';
+  }>('discardClothesDraft', { draftId });
 }
 
 export async function discardUploadBatch(batchId: string) {

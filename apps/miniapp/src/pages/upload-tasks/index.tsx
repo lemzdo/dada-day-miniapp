@@ -9,20 +9,16 @@ import {
   isAuthContextCurrent,
   type ActiveAuthContext,
 } from '@/lib/userPageCache';
+import {
+  clearUploadTaskLocalCache,
+  filterTerminalBatches,
+  getUploadTaskLocalCache,
+  writeUploadTaskLocalCache,
+} from '@/lib/uploadTaskLocalCache';
 import type { RecoverableUploadBatch } from '@/lib/cloud';
 import './index.scss';
 
 type UploadTaskViewStatus = 'processing' | 'ready' | 'partial' | 'failed';
-
-const UPLOAD_TASKS_MEMORY_CACHE_TTL = 5 * 1000;
-
-interface UploadTasksMemoryCache {
-  authRuntimeKey: string;
-  data: RecoverableUploadBatch[];
-  createdAt: number;
-}
-
-let uploadTasksMemoryCache: UploadTasksMemoryCache | null = null;
 
 function isCurrentAuthContext(authContext: ActiveAuthContext | null | undefined) {
   return Boolean(authContext && isAuthContextCurrent(authContext));
@@ -72,9 +68,11 @@ export default function UploadTasksPage() {
       setErrorState(false);
       const result = await getRecoverableUploadBatches(10);
       if (!isCurrentAuthContext(authContext)) return;
-      const nextBatches = (result.list || []).filter(isActiveUploadBatch);
+      const nextBatches = (
+        filterTerminalBatches(authRuntimeKey, result.list || []) as RecoverableUploadBatch[]
+      ).filter(isActiveUploadBatch);
       setBatches(nextBatches);
-      writeUploadTasksMemoryCache(nextBatches, authRuntimeKey);
+      writeUploadTaskLocalCache({ authRuntimeKey, data: nextBatches });
       console.log('[UploadTasksPage] fetchBatches', {
         returned: result.list?.length ?? 0,
         durationMs: Date.now() - startedAt,
@@ -130,7 +128,7 @@ export default function UploadTasksPage() {
   });
 
   usePullDownRefresh(() => {
-    clearUploadTasksMemoryCache();
+    if (runtimeKey) clearUploadTaskLocalCache(runtimeKey);
     void fetchBatches({ force: true });
   });
 
@@ -233,25 +231,7 @@ export default function UploadTasksPage() {
 }
 
 function readUploadTasksMemoryCache(authRuntimeKey: string) {
-  if (!uploadTasksMemoryCache) return null;
-  if (uploadTasksMemoryCache.authRuntimeKey !== authRuntimeKey) return null;
-  if (Date.now() - uploadTasksMemoryCache.createdAt > UPLOAD_TASKS_MEMORY_CACHE_TTL) {
-    clearUploadTasksMemoryCache();
-    return null;
-  }
-  return uploadTasksMemoryCache.data;
-}
-
-function writeUploadTasksMemoryCache(data: RecoverableUploadBatch[], authRuntimeKey: string) {
-  uploadTasksMemoryCache = {
-    authRuntimeKey,
-    data,
-    createdAt: Date.now(),
-  };
-}
-
-function clearUploadTasksMemoryCache() {
-  uploadTasksMemoryCache = null;
+  return getUploadTaskLocalCache({ authRuntimeKey }) as RecoverableUploadBatch[] | null;
 }
 
 function isActiveUploadBatch(batch: RecoverableUploadBatch) {

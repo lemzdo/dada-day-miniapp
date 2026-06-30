@@ -9,6 +9,36 @@
   flex-direction: column;
 }
 
+.clothing-edit-form.panel {
+  min-height: 0;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+
+  .edit-form-scroll {
+    height: auto;
+    flex: 1;
+    min-height: 0;
+    padding-bottom: 24rpx;
+  }
+
+  .save-button-bar {
+    position: relative;
+    right: auto;
+    bottom: auto;
+    left: auto;
+    flex-shrink: 0;
+    padding: 18rpx 24rpx;
+    padding-bottom: calc(18rpx + constant(safe-area-inset-bottom));
+    padding-bottom: calc(18rpx + env(safe-area-inset-bottom));
+    border-radius: 0;
+  }
+
+  .bottom-padding {
+    height: 24rpx;
+  }
+}
+
 .edit-form-scroll {
   flex: 1;
   padding: 0;

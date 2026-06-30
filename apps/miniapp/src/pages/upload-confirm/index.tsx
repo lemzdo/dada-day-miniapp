@@ -1,4 +1,4 @@
-import { Text, View } from '@tarojs/components';
+import { ScrollView, Text, View } from '@tarojs/components';
 import Taro, { useLoad, usePullDownRefresh, useRouter, useUnload } from '@tarojs/taro';
 import { useCallback, useRef, useState } from 'react';
 import { SafeImage } from '@/components/SafeImage';
@@ -30,9 +30,15 @@ import {
   removeUserStorageSync,
   setUserStorageSync,
 } from '@/lib/userStorage';
+import { buildAuthRuntimeKey } from '@/lib/userRuntimeScope';
+import {
+  markUploadBatchTerminal,
+  removeUploadBatchFromLocalCache,
+} from '@/lib/uploadTaskLocalCache';
 import { displayClothingTags, displayClothingText, getSubcategoryDisplayLabel, getUploadDraftDisplayImage } from '@/utils/clothingLabels';
 import type { ClothesDraft, ClothingCategory, ClothingImageSourceType, UploadBatch, UploadImage, WardrobeCapacity } from '@starter-template/types';
 import { DEFAULT_WARDROBE_LIMIT } from '@/constants/wardrobeCapacity';
+import * as uploadConfirmState from './uploadConfirmStateCore';
 import './index.scss';
 
 const WARDROBE_REFRESH_STORAGE_KEY = 'wardrobeNeedsRefresh';
@@ -91,6 +97,7 @@ export default function UploadConfirmPage() {
   const [saving, setSaving] = useState(false);
   const [capacity, setCapacity] = useState<WardrobeCapacity | null>(null);
   const [discardingBatch, setDiscardingBatch] = useState(false);
+  const [discardingDraftIds, setDiscardingDraftIds] = useState<Set<string>>(() => new Set());
   const [editingDraft, setEditingDraft] = useState<ClothesDraft | null>(null);
   const processingLoopRef = useRef(false);
   const mountedRef = useRef(true);
@@ -116,6 +123,7 @@ export default function UploadConfirmPage() {
     setSaving(false);
     setCapacity(null);
     setDiscardingBatch(false);
+    setDiscardingDraftIds(new Set());
     setEditingDraft(null);
     Taro.hideLoading();
     Taro.stopPullDownRefresh();
@@ -378,6 +386,7 @@ export default function UploadConfirmPage() {
 
   function toggleDraftSelected(draft: ClothesDraft) {
     if (!canEditDrafts || !isDraftSelectable(draft)) return;
+    if (discardingDraftIds.has(draft.id)) return;
     patchDraft(draft.id, { selected: !draft.selected });
   }
 
@@ -415,13 +424,58 @@ export default function UploadConfirmPage() {
     const authContext = captureAuthContext();
     const flowRuntimeKey = boundRuntimeKeyRef.current;
     if (!authContext || !isFlowActive(flowRuntimeKey)) return;
-    patchDraft(draft.id, { selected: false, status: 'discarded' });
+    if (discardingDraftIds.has(draft.id)) return;
+    const modalRes = await Taro.showModal({
+      title: '舍弃这件衣服？',
+      content: '舍弃后，这件识别结果不会保存到衣橱。',
+      cancelText: '取消',
+      confirmText: '舍弃',
+      confirmColor: '#D97973',
+    });
+    if (!modalRes.confirm) return;
+    if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
+
+    setDiscardingDraftIds((prev) => new Set(prev).add(draft.id));
     try {
-      await discardClothesDraft(draft.id);
+      const result = await discardClothesDraft(draft.id);
       if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
+      setDrafts((prev) => prev.filter((item) => item.id !== draft.id));
       await invalidateAfterUploadTaskMutation({ authContext });
+      if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
+      if (result.batchTerminal && batchId) {
+        discardRequestedRef.current = true;
+        setBatch((prev) => prev ? { ...prev, status: result.batchStatus || 'discarded' } : prev);
+        removeUserStorageSync(buildUserStorageBusinessKey('uploadBatchImages', batchId), { authContext });
+        markUploadBatchTerminal({
+          authRuntimeKey: buildAuthRuntimeKey(authContext),
+          batchId,
+          status: result.batchStatus || 'discarded',
+        });
+        removeUploadBatchFromLocalCache({
+          authRuntimeKey: buildAuthRuntimeKey(authContext),
+          batchId,
+          batchTerminal: true,
+        });
+        Taro.showToast({ title: '本次识别已舍弃', icon: 'success' });
+        setTimeout(() => {
+          if (isFlowCurrent(authContext, flowRuntimeKey)) navigateToWardrobe();
+        }, 500);
+        return;
+      }
+      void refresh();
     } catch (error) {
       console.warn('Discard draft failed:', error);
+      if (isFlowCurrent(authContext, flowRuntimeKey)) {
+        Taro.showToast({ title: '舍弃失败，请稍后再试', icon: 'none' });
+      }
+    } finally {
+      if (isFlowCurrent(authContext, flowRuntimeKey)) {
+        setDiscardingDraftIds((prev) => {
+          const next = new Set(prev);
+          next.delete(draft.id);
+          return next;
+        });
+      }
     }
   }
 
@@ -572,9 +626,21 @@ export default function UploadConfirmPage() {
     setDiscardingBatch(true);
     try {
       Taro.showLoading({ title: '正在舍弃...' });
-      removeUserStorageSync(buildUserStorageBusinessKey('uploadBatchImages', batchId), { authContext });
       await discardUploadBatch(batchId);
       if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
+      setBatch((prev) => prev ? { ...prev, status: 'discarded' } : prev);
+      setDrafts([]);
+      removeUserStorageSync(buildUserStorageBusinessKey('uploadBatchImages', batchId), { authContext });
+      markUploadBatchTerminal({
+        authRuntimeKey: buildAuthRuntimeKey(authContext),
+        batchId,
+        status: 'discarded',
+      });
+      removeUploadBatchFromLocalCache({
+        authRuntimeKey: buildAuthRuntimeKey(authContext),
+        batchId,
+        batchTerminal: true,
+      });
       await invalidateAfterUploadTaskMutation({ authContext });
       if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
       Taro.showToast({ title: '已舍弃本次识别', icon: 'success' });
@@ -592,25 +658,32 @@ export default function UploadConfirmPage() {
     }
   }
 
-  const savableDrafts = drafts.filter(isSavableDraft);
-  const batchProgress = getBatchProgress(batch, images);
-  const totalImages = batchProgress.totalImages;
-  const processedImages = batchProgress.processedImages;
-  const imageDetectedCount = images.reduce((sum, item) => sum + item.detectedCount, 0);
-  const detectedCount = Math.max(drafts.length, batch?.totalDetectedClothes ?? 0, imageDetectedCount);
+  const derivedState = uploadConfirmState.buildUploadConfirmState({
+    batch,
+    images,
+    drafts,
+    saving,
+  });
+  const {
+    savableDrafts,
+    visibleDrafts,
+    batchProgress,
+    totalImages,
+    processedImages,
+    recognizedCount,
+    taskStatus,
+    pageState,
+    showProcessingProgress,
+    canEditDrafts,
+    canDiscardBatch,
+    canSave,
+    selectableDraftCount,
+    allSelectableDraftsSelected,
+  } = derivedState;
   const progress = totalImages > 0 ? Math.round((processedImages / totalImages) * 100) : 0;
-  const taskStatus = normalizeUploadBatchStatus(batch?.status);
-  const hasSavableDrafts = savableDrafts.length > 0;
   const isBatchComplete = batchProgress.isBatchComplete;
-  const pageState = getPageState(isBatchComplete, hasSavableDrafts);
-  const showProcessingProgress = pageState === 'processing';
-  const canEditDrafts = taskStatus !== 'saved' && taskStatus !== 'discarded';
-  const canDiscardBatch = taskStatus === 'processing' || taskStatus === 'ready' || taskStatus === 'failed';
-  const canSave = isBatchComplete && hasSavableDrafts && !saving;
   const saveDisabled = !canSave;
-  const saveText = getSaveButtonText(pageState, processedImages, totalImages, saving, savableDrafts.length);
-  const selectableDraftCount = drafts.filter(isDraftSelectable).length;
-  const allSelectableDraftsSelected = selectableDraftCount > 0 && drafts.filter(isDraftSelectable).every((draft) => draft.selected);
+  const saveText = uploadConfirmState.getSaveButtonText(derivedState);
   const selectAllText = allSelectableDraftsSelected ? '全不选' : '全选';
   const failedImageCount = images.filter((item) => item.status === 'failed').length;
   const displayCapacity = normalizeWardrobeCapacity(capacity);
@@ -630,8 +703,8 @@ export default function UploadConfirmPage() {
   return (
     <View className="upload-confirm-page">
       <View className={`progress-panel ${taskStatus}`}>
-        <Text className="progress-title">{getProgressTitle(pageState, taskStatus)}</Text>
-        <Text className="progress-desc">{getProgressDesc(pageState, detectedCount, processedImages, totalImages, taskStatus)}</Text>
+        <Text className="progress-title">{uploadConfirmState.getProgressTitle(derivedState)}</Text>
+        <Text className="progress-desc">{uploadConfirmState.getProgressDesc(derivedState)}</Text>
         {showProcessingProgress && (
           <>
             <View className="progress-track">
@@ -639,11 +712,11 @@ export default function UploadConfirmPage() {
             </View>
             <View className="progress-stat-list">
               <Text className="progress-stat">正在处理 {processedImages}/{totalImages} 张图片</Text>
-              {detectedCount > 0 && <Text className="progress-stat">已识别 {detectedCount} 件衣服</Text>}
+              {recognizedCount > 0 && <Text className="progress-stat">已识别 {recognizedCount} 件衣服</Text>}
             </View>
           </>
         )}
-        {showProcessingProgress && detectedCount === 0 && (
+        {showProcessingProgress && recognizedCount === 0 && (
           <Text className="progress-subhint">暂未识别到衣服，请稍等</Text>
         )}
         {(taskStatus === 'saved' || taskStatus === 'discarded') && (
@@ -672,20 +745,22 @@ export default function UploadConfirmPage() {
       )}
 
       <View className="draft-list">
-        {drafts.length === 0 && pageState !== 'processing' && (
+        {visibleDrafts.length === 0 && pageState !== 'processing' && (
           <View className="empty-state">
             <View className="empty-illustration">
               <Text className="empty-icon">衣</Text>
             </View>
-            <Text className="empty-title">{getEmptyTitle(pageState, taskStatus)}</Text>
-            <Text className="empty-desc">{getEmptyDesc(pageState, taskStatus, batch)}</Text>
+            <Text className="empty-title">{uploadConfirmState.getEmptyTitle(derivedState)}</Text>
+            <Text className="empty-desc">{uploadConfirmState.getEmptyDesc(derivedState, batch)}</Text>
           </View>
         )}
 
-        {drafts.map((draft) => (
+        {visibleDrafts.map((draft: ClothesDraft) => {
+          const isDiscardingDraft = discardingDraftIds.has(draft.id);
+          return (
           <View
             key={draft.id}
-            className={`draft-card ${draft.selected ? 'selected' : 'muted'} ${canEditDrafts && isDraftSelectable(draft) ? 'selectable' : 'readonly'}`}
+            className={`draft-card ${draft.selected ? 'selected' : 'muted'} ${canEditDrafts && isDraftSelectable(draft) ? 'selectable' : 'readonly'} ${isDiscardingDraft ? 'discarding' : ''}`}
             onClick={() => toggleDraftSelected(draft)}
           >
             <View className="draft-image-wrapper">
@@ -694,7 +769,7 @@ export default function UploadConfirmPage() {
             <View className="draft-body">
               <View className="draft-topline">
                 <Text className={`draft-keep-badge ${draft.selected ? 'active' : ''}`}>
-                  {draft.selected ? '已保留' : '未保留'}
+                  {draft.selected ? '已选择' : '未选择'}
                 </Text>
                 <Text className="confidence">置信度 {draft.confidence || 0}%</Text>
               </View>
@@ -734,32 +809,36 @@ export default function UploadConfirmPage() {
                     }}>
                       <Text className="reprocess-text">重新处理</Text>
                     </View>
-                    <View className="discard-btn" onClick={(event) => {
+                    <View className={`discard-btn ${isDiscardingDraft ? 'disabled' : ''}`} onClick={(event) => {
                       event.stopPropagation();
                       handleDiscard(draft);
                     }}>
-                      <Text className="discard-text">丢弃</Text>
+                      <Text className="discard-text">{isDiscardingDraft ? '舍弃中...' : '舍弃这件'}</Text>
                     </View>
                   </>
                 )}
               </View>
             </View>
           </View>
-        ))}
+          );
+        })}
       </View>
 
       {editingDraft && (
-        <View className="draft-edit-overlay">
-          <View className="draft-edit-panel">
-            <ClothingEditForm
-              initialValue={toDraftFormValue(editingDraft)}
-              showImage
-              showMetaFields={false}
-              submitText="保存属性"
-              onSave={handleDraftFormSave}
-              onCancel={() => setEditingDraft(null)}
-              mode="draft-confirm"
-            />
+        <View className="draft-edit-overlay" catchMove onTouchMove={(event) => event.stopPropagation()}>
+          <View className="draft-edit-panel" catchMove onClick={(event) => event.stopPropagation()} onTouchMove={(event) => event.stopPropagation()}>
+            <ScrollView className="draft-edit-scroll" scrollY enhanced showScrollbar={false}>
+              <ClothingEditForm
+                initialValue={toDraftFormValue(editingDraft)}
+                showImage
+                showMetaFields={false}
+                submitText="保存属性"
+                onSave={handleDraftFormSave}
+                onCancel={() => setEditingDraft(null)}
+                mode="draft-confirm"
+                layoutMode="panel"
+              />
+            </ScrollView>
           </View>
         </View>
       )}
@@ -939,20 +1018,15 @@ function getFailedStatusMessage(batch?: UploadBatch | null) {
 }
 
 function isSavableDraft(draft: ClothesDraft) {
-  return (
-    draft.status === 'pending'
-    && draft.selected
-    && !isDraftProcessing(draft)
-    && Boolean(getSavableDraftImage(draft))
-  );
+  return uploadConfirmState.isSavableDraft(draft);
 }
 
 function isDraftSelectable(draft: ClothesDraft) {
-  return draft.status === 'pending';
+  return uploadConfirmState.isDraftSelectable(draft);
 }
 
 function isDraftProcessing(draft: ClothesDraft) {
-  return draft.segmentStatus === 'queued' || draft.segmentStatus === 'processing';
+  return uploadConfirmState.isProcessingDraft(draft);
 }
 
 function getSavableDraftImage(draft: ClothesDraft) {

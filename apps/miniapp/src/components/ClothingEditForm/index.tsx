@@ -65,6 +65,7 @@ export interface ClothingEditFormProps {
   onSave: (value: ClothingEditFormValue) => void | Promise<void>;
   onCancel?: () => void;
   mode?: 'detail-edit' | 'draft-confirm';
+  layoutMode?: 'page' | 'panel';
 }
 
 type PopupType = 
@@ -98,7 +99,8 @@ export function ClothingEditForm({
   submitting = false,
   onSave,
   onCancel,
-  mode = 'detail-edit'
+  mode = 'detail-edit',
+  layoutMode = 'page'
 }: ClothingEditFormProps) {
   const [value, setValue] = useState<ClothingEditFormValue>(() => normalizeInitialValue(initialValue));
   const [popup, setPopup] = useState<PopupType>(null);
@@ -759,7 +761,7 @@ export function ClothingEditForm({
   const recommendedStyles = STYLE_OPTIONS.slice(0, 12);
 
   return (
-    <View className="clothing-edit-form">
+    <View className={`clothing-edit-form ${layoutMode === 'panel' ? 'panel' : 'page'}`}>
       <ScrollView className="edit-form-scroll" scrollY>
         {showImage && value.imageUrl && !isDraftConfirm && (
           <View className="preview-card">
