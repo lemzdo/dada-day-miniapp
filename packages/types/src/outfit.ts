@@ -55,6 +55,8 @@ export interface OutfitAiComment {
   generatedAt?: string;
   reviewVersion?: 'stylist-explanation-v2' | string;
   promptVersion?: 'stylist-prompt-v2' | string;
+  copyPolicyVersion?: string;
+  voicePolicyVersion?: string;
   inputDigest?: string;
   source?: 'ai' | 'rule_fallback' | string;
   explanationV2?: StylistExplanationV2;
@@ -96,6 +98,8 @@ export interface OutfitAiReview {
   schemaVersion?: number;
   reviewVersion?: 'stylist-explanation-v2' | string;
   promptVersion: string;
+  copyPolicyVersion?: string;
+  voicePolicyVersion?: string;
   evidenceVersion?: string;
   provider?: string;
   model: string;
@@ -122,10 +126,13 @@ export interface OutfitAiReviewResponse {
   retryAfterMs?: number;
   promptVersion?: string;
   reviewVersion?: string;
+  copyPolicyVersion?: string;
+  voicePolicyVersion?: string;
   inputDigest?: string;
   source?: 'ai' | 'rule_fallback' | string;
   model?: string;
   fallback?: boolean;
+  errorCode?: string;
   message?: string;
 }
 

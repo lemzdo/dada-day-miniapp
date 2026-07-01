@@ -393,9 +393,37 @@
 
 1. 新生成推荐为 `reasonVersion=recommendation-reason-v3`。
 2. Today 本地恢复只接受 V3 reason snapshot，旧 snapshot 触发重新生成。
-3. 新 AI 点评为 `reviewVersion=stylist-explanation-v3`、`promptVersion=stylist-prompt-v3`、`copyPolicyVersion=human-copy-v1`。
-4. AI 点评复用必须同时满足 inputDigest、reviewVersion、promptVersion 和 copyPolicyVersion。
+3. 新 AI 点评为 `reviewVersion=stylist-explanation-v4`、`promptVersion=stylist-prompt-v4`、`copyPolicyVersion=human-copy-v1`、`voicePolicyVersion=xiaoda-voice-v1`。
+4. AI 点评复用必须同时满足 inputDigest、reviewVersion、promptVersion、copyPolicyVersion 和 voicePolicyVersion。
 5. 推荐顺序、scores、aestheticEvaluation、outfitKey、recommendationBatchId、收藏、穿着、行为事件均不因 V3 文案改变。
+
+## 小搭语言系统 V1 人工验收
+
+### 推荐语言
+
+1. 不出现克制、稳定、明显冲突、基础单品、延续休闲感、更完整、正式度接近、视觉关系、整体有秩序等机械表达。
+2. Today 说清“今天为什么值得穿这套”，优先表达当天收益或具体衣物关系。
+3. Detail 同时说明衣物关系和天气/场景/用户收益，不复制 Today 原句。
+4. 小搭点评像朋友总结，不像设计报告，不展示 title/tags/model 信息。
+5. 小搭建议温和、具体、可选，不强行要求用户拥有某件衣服。
+6. 不虚构舒服、透气、保暖、柔软、不闷、吸汗等穿着感受。
+7. 白T + 灰短裤 + 运动鞋 + 30°C + home 能体现可靠高温收益。
+8. 图案竞争场景前后结论一致，不反说“不乱/没有冲突”。
+9. 数据不足场景只讲确定事实，不编颜色、版型或材质。
+10. 8-10 套高度相似搭配 Today 不完全重复，Comment/Advice 也有自然差异。
+
+### AI 点评错误状态
+
+1. 不再只有“小搭点评暂时不可用”。
+2. provider 未配置显示“点评服务还没准备好，稍后再试试。”
+3. provider 临时失败显示“小搭这会儿没连上点评服务，稍后再试试。”
+4. 输入不完整显示“这套的信息还不够完整，回到推荐页重新打开后再试试。”
+5. storage/transaction 失败显示“这次点评没保存下来，稍后再试试。”
+6. cooldown 显示“刚刚已经点评过啦，过几秒再试试。”
+7. inProgress 显示“小搭正在点评这套，再等一会儿。”
+8. 有旧点评时失败只提示，不清空旧内容；无旧点评时显示友好错误并可再次点击。
+9. malformed AI 输出走 rule fallback，不直接报服务不可用。
+10. 服务恢复后可重新点评，按钮在请求结束后恢复。
 
 ## 属性编辑器单面板 Drill-down 真机验收
 

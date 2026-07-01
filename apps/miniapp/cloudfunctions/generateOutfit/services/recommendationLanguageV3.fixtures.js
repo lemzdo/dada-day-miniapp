@@ -89,7 +89,67 @@ const graphicTeeHome = outfitFixture('graphic_tee_gray_bottom_red_white_sneakers
   weatherSnapshot: { temp: 22, weather: '多云' },
 });
 
+const hotWhiteTGrayShortsHome = outfitFixture('white_t_gray_shorts_sneakers_hot_home', [
+  clothing({
+    clothingId: 'top-white-tee',
+    category: 'top',
+    subcategory: '白色短袖T恤',
+    color: '白色',
+    styleTags: ['休闲'],
+    material: '棉',
+    thickness: '薄',
+    aestheticFeatures: {
+      fit: 'regular',
+      length: 'regular',
+      patternType: 'solid',
+      formalityLevel: 1,
+    },
+  }),
+  clothing({
+    clothingId: 'bottom-gray-shorts',
+    category: 'bottom',
+    subcategory: '灰色短裤',
+    color: '灰色',
+    styleTags: ['休闲'],
+    thickness: '薄',
+    aestheticFeatures: {
+      fit: 'regular',
+      length: 'short',
+      patternType: 'solid',
+      formalityLevel: 1,
+    },
+  }),
+  clothing({
+    clothingId: 'shoes-sneaker',
+    category: 'shoes',
+    subcategory: '运动鞋',
+    color: '白色',
+    styleTags: ['运动', '休闲'],
+    aestheticFeatures: {
+      patternType: 'solid',
+      formalityLevel: 1,
+    },
+  }),
+], {
+  scene: 'home',
+  weatherSnapshot: { temp: 30, weather: '晴' },
+});
+
 const fixtures = [
+  {
+    id: 'white_t_gray_shorts_sneakers_hot_home',
+    outfit: hotWhiteTGrayShortsHome,
+    expectedFacts: { categories: ['bottom', 'shoes', 'top'], primaryColor: '白色' },
+    expectedInsightCodes: ['STYLE_CASUAL_EASY', 'SCENE_HOME_EASY'],
+    expectedBenefitCodes: ['HOT_DAY_LIGHT_AND_EASY', 'HOT_DAY_EASY_TO_MOVE', 'HOME_READY_FOR_QUICK_OUTING'],
+    todayPersonaGoal: '今天这么热，白T配灰色短裤穿着更轻松，运动鞋也方便随时出门。',
+    detailPersonaGoal: '白T和灰色短裤让整套看起来很清爽，运动鞋加了一点活力。今天温度比较高，这样穿更轻松，待在家或临时出门都合适。',
+    commentPersonaGoal: '白T配灰色短裤很适合今天想穿得简单一点的时候，颜色清爽，出门也不费劲。',
+    advicePersonaGoal: '想再有精神一点，可以让上衣或小包呼应运动鞋里的颜色。',
+    forbiddenMechanicalTerms: ['克制', '稳定', '基础单品', '正式度', '视觉', '层次', '关系'],
+    forbiddenUnsupportedSensations: ['透气', '不闷', '保暖', '吸汗'],
+    expectedForbiddenTermsAbsent: ['识别', '证据', '线索', '克制', '稳定', '基础单品', '正式度', '视觉', '层次', '关系', '透气', '不闷', '保暖', '吸汗'],
+  },
   {
     id: 'graphic_tee_gray_bottom_red_white_sneakers_home',
     outfit: graphicTeeHome,
@@ -198,6 +258,27 @@ const fixtures = [
     goldenDetailReasoning: '西装外套本身更利落，运动鞋降低了整套的正式感，所以不会太严肃。黑白配色也比较基础，能让这种混搭更稳。',
     goldenFallbackComment: '整体是通勤和休闲之间的平衡，正式感被鞋子放松了一点。',
     goldenAdvice: '如果要更适合正式场合，可以把鞋子换成更简洁的皮鞋或乐福鞋。',
+  },
+  {
+    id: 'hot_commute',
+    outfit: outfitFixture('hot_commute', [
+      clothing({ clothingId: 'hot-shirt', category: 'top', subcategory: '短袖衬衫', color: '白色', styleTags: ['通勤'], thickness: '薄', aestheticFeatures: { patternType: 'solid', formalityLevel: 3 } }),
+      clothing({ clothingId: 'hot-trousers', category: 'bottom', subcategory: '灰色长裤', color: '灰色', styleTags: ['通勤'], aestheticFeatures: { patternType: 'solid', formalityLevel: 3 } }),
+    ], { scene: 'work', weatherSnapshot: { temp: 31, weather: '晴' } }),
+    expectedFacts: { categories: ['bottom', 'top'] },
+    expectedInsightCodes: ['COLOR_LIGHT_NEUTRAL_BALANCE', 'FORMALITY_ALIGNED', 'SCENE_WORK_CLEAN'],
+    expectedForbiddenTermsAbsent: ['识别', '证据', '线索'],
+  },
+  {
+    id: 'cold_commute',
+    outfit: outfitFixture('cold_commute', [
+      clothing({ clothingId: 'coat', category: 'outerwear', subcategory: '深色外套', color: '黑色', styleTags: ['通勤'], thickness: '厚', aestheticFeatures: { patternType: 'solid', formalityLevel: 3 } }),
+      clothing({ clothingId: 'long-shirt', category: 'top', subcategory: '长袖衬衫', color: '白色', styleTags: ['通勤'], aestheticFeatures: { patternType: 'solid', formalityLevel: 3 } }),
+      clothing({ clothingId: 'cold-trousers', category: 'bottom', subcategory: '灰色长裤', color: '灰色', styleTags: ['通勤'], aestheticFeatures: { patternType: 'solid', formalityLevel: 3 } }),
+    ], { scene: 'work', weatherSnapshot: { temp: 8, weather: '阴' } }),
+    expectedFacts: { categories: ['bottom', 'outerwear', 'top'] },
+    expectedInsightCodes: ['COLOR_CLEAR_LIGHT_DARK_CONTRAST', 'FORMALITY_ALIGNED', 'SCENE_WORK_CLEAN', 'WEATHER_LAYERING_MATCH'],
+    expectedForbiddenTermsAbsent: ['识别', '证据', '线索'],
   },
   {
     id: 'commute_set',
@@ -370,6 +451,172 @@ const fixtures = [
   },
 ];
 
+const personaFixtureMetadata = {
+  white_t_gray_shorts_sneakers_hot_home: {
+    expectedBenefitCodes: ['HOT_DAY_LIGHT_AND_EASY', 'HOT_DAY_EASY_TO_MOVE', 'HOME_READY_FOR_QUICK_OUTING'],
+    todayPersonaGoal: '高温、白T、灰色短裤、运动鞋和临时出门收益都要读得出来。',
+    detailPersonaGoal: '同时说明白T灰短裤的衣物关系，以及30°C和居家的当天收益。',
+    commentPersonaGoal: '像朋友总结这套简单清爽，不像设计报告。',
+    advicePersonaGoal: '温和建议用已有颜色或鞋子颜色做呼应。',
+  },
+  graphic_tee_gray_bottom_red_white_sneakers_home: {
+    expectedBenefitCodes: ['HOME_READY_FOR_QUICK_OUTING', 'READY_FOR_CASUAL_OUTING'],
+    todayPersonaGoal: '印花上衣和浅色下装关系具体，居家临时出门收益明确。',
+    detailPersonaGoal: '说明印花主角和简单下装的关系，再补居家场景收益。',
+    commentPersonaGoal: '活泼但不卖萌。',
+    advicePersonaGoal: '只基于已有颜色或单品给小调整。',
+  },
+  solid_top_solid_trousers: {
+    expectedBenefitCodes: ['EASY_TO_PUT_ON', 'LOW_EFFORT_COHERENT_LOOK'],
+    todayPersonaGoal: '说明简单配色的省心收益。',
+    detailPersonaGoal: '解释纯色上衣和长裤为什么好搭。',
+    commentPersonaGoal: '日常简洁，不说克制稳定。',
+    advicePersonaGoal: '温和建议小面积变化。',
+  },
+  relaxed_top_clean_bottom: {
+    expectedBenefitCodes: ['READY_FOR_CASUAL_OUTING'],
+    todayPersonaGoal: '说明宽松上衣和利落下装的日常收益。',
+    detailPersonaGoal: '讲上下装关系，不虚构舒适。',
+    commentPersonaGoal: '轻松利落但不用设计术语。',
+    advicePersonaGoal: '建议保持简单，不命令用户换衣服。',
+  },
+  all_light_colors: {
+    expectedBenefitCodes: ['EASY_TO_PUT_ON'],
+    todayPersonaGoal: '全身浅色要说清柔和清爽，不说透气轻盈。',
+    detailPersonaGoal: '说明浅色关系和日常收益。',
+    commentPersonaGoal: '柔和自然，不说视觉重量。',
+    advicePersonaGoal: '建议可选小面积呼应。',
+  },
+  neutral_with_accent: {
+    expectedBenefitCodes: ['EASY_TO_PUT_ON'],
+    todayPersonaGoal: '中性色和亮色鞋的重点明确。',
+    detailPersonaGoal: '说明灰色如何托住亮色，不说平衡/稳定。',
+    commentPersonaGoal: '有亮点但不过满。',
+    advicePersonaGoal: '建议呼应亮色或中性色。',
+  },
+  home_relaxed: {
+    expectedBenefitCodes: ['HOME_READY_FOR_QUICK_OUTING', 'READY_FOR_CASUAL_OUTING'],
+    todayPersonaGoal: '宽松居家要有临时出门收益，不能只说舒服。',
+    detailPersonaGoal: '说明居家场景和完整搭配。',
+    commentPersonaGoal: '日常轻松，不虚构亲肤柔软。',
+    advicePersonaGoal: '建议基于鞋或颜色。',
+  },
+  hot_commute: {
+    expectedBenefitCodes: ['HOT_DAY_LIGHT_AND_EASY', 'WORK_CLEAN_WITHOUT_FEELING_STIFF'],
+    todayPersonaGoal: '高温通勤必须读出天气收益和上班可用性。',
+    detailPersonaGoal: '说明短袖衬衫、灰色长裤和高温通勤收益。',
+    commentPersonaGoal: '清爽利落，不说正式度。',
+    advicePersonaGoal: '建议温和、可选。',
+  },
+  cold_commute: {
+    expectedBenefitCodes: ['COLD_DAY_LAYERING_READY', 'WORK_CLEAN_WITHOUT_FEELING_STIFF'],
+    todayPersonaGoal: '低温通勤只有在外套/长袖事实下才可讲覆盖或层搭。',
+    detailPersonaGoal: '说明外套、衬衫、长裤的关系和低温收益。',
+    commentPersonaGoal: '通勤清楚，不虚构保暖。',
+    advicePersonaGoal: '建议基于已有深浅色。',
+  },
+  date_soft_colors: {
+    expectedBenefitCodes: ['DATE_SOFT_AND_EASY', 'EASY_TO_PUT_ON'],
+    todayPersonaGoal: '约会柔和配色不涉及身体或吸引异性。',
+    detailPersonaGoal: '说明柔和配色和约会场景。',
+    commentPersonaGoal: '温和自然。',
+    advicePersonaGoal: '建议呼应已有浅色。',
+  },
+  sport_set: {
+    expectedBenefitCodes: ['SPORT_EASY_TO_MOVE', 'SPORT_LOOKS_ACTIVE'],
+    todayPersonaGoal: '运动场景必须有运动单品依据。',
+    detailPersonaGoal: '说明运动单品和场景收益。',
+    commentPersonaGoal: '精神活跃，不夸张。',
+    advicePersonaGoal: '建议围绕鞋子或颜色。',
+  },
+  two_patterns_compete: {
+    expectedBenefitCodes: [],
+    todayPersonaGoal: '图案竞争时不能反说不乱或没有冲突。',
+    detailPersonaGoal: '前后结论一致，承认图案偏热闹。',
+    commentPersonaGoal: '热闹有记忆点，不像报告。',
+    advicePersonaGoal: '建议减少一个图案主角。',
+  },
+  category_only: {
+    expectedBenefitCodes: [],
+    todayPersonaGoal: '只有类别时只讲确定事实。',
+    detailPersonaGoal: '不虚构颜色、版型、体感。',
+    commentPersonaGoal: '低数据也自然。',
+    advicePersonaGoal: '建议补一个颜色简单的单品。',
+  },
+  missing_color_palette: {
+    expectedBenefitCodes: ['WORK_CLEAN_WITHOUT_FEELING_STIFF'],
+    todayPersonaGoal: '缺颜色时不编颜色。',
+    detailPersonaGoal: '只讲类别、场景和可靠正式度事实。',
+    commentPersonaGoal: '不解释数据不足。',
+    advicePersonaGoal: '建议不依赖不存在颜色。',
+  },
+  missing_fit: {
+    expectedBenefitCodes: ['EASY_FOR_EVERYDAY'],
+    todayPersonaGoal: '缺版型时不编版型。',
+    detailPersonaGoal: '只讲颜色或类别事实。',
+    commentPersonaGoal: '自然日常。',
+    advicePersonaGoal: '建议基于已有颜色。',
+  },
+  full_aesthetic_fields: {
+    expectedBenefitCodes: ['EASY_TO_PUT_ON', 'LOW_EFFORT_COHERENT_LOOK'],
+    todayPersonaGoal: '数据充分时表达更具体，但仍不设计报告化。',
+    detailPersonaGoal: '衣物关系和用户收益都明确。',
+    commentPersonaGoal: '朋友总结感。',
+    advicePersonaGoal: '建议温和可执行。',
+  },
+  aesthetic_low_coverage: {
+    expectedBenefitCodes: [],
+    todayPersonaGoal: '数据不足时不把缺失当优点。',
+    detailPersonaGoal: '只讲确定事实。',
+    commentPersonaGoal: '不说证据不足。',
+    advicePersonaGoal: '建议保守且可选。',
+  },
+  similar_batch_base: {
+    expectedBenefitCodes: ['HOME_READY_FOR_QUICK_OUTING'],
+    todayPersonaGoal: '相似搭配批量输出仍自然分散。',
+    detailPersonaGoal: '不机械换序。',
+    commentPersonaGoal: '保留朋友语气。',
+    advicePersonaGoal: '不固定推荐配饰。',
+  },
+};
+
+function withPersonaMetadata(fixture) {
+  const metadata = personaFixtureMetadata[fixture.id];
+  if (!metadata) return fixture;
+  return {
+    ...fixture,
+    ...metadata,
+    forbiddenMechanicalTerms: ['克制', '稳定', '基础单品', '明显冲突', '正式度接近', '延续休闲感', '更完整', '整体有秩序', '视觉关系'],
+    forbiddenUnsupportedSensations: ['舒服', '不闷', '透气', '保暖', '柔软', '软糯', '轻便', '亲肤'],
+    expectedForbiddenTermsAbsent: uniqueFixtureStrings([
+      ...(fixture.expectedForbiddenTermsAbsent || []),
+      '克制',
+      '稳定',
+      '基础单品',
+      '明显冲突',
+      '正式度接近',
+      '延续休闲感',
+      '更完整',
+      '整体有秩序',
+      '视觉关系',
+      '舒服',
+      '不闷',
+      '透气',
+      '保暖',
+      '柔软',
+      '软糯',
+      '亲肤',
+      '灰色灰色',
+    ]),
+  };
+}
+
+function uniqueFixtureStrings(values) {
+  return values.filter((value, index, array) => value && array.indexOf(value) === index);
+}
+
+const personaFixtures = fixtures.map(withPersonaMetadata);
+
 function similarGraphicTeeBatch(count = 10) {
   return Array.from({ length: count }, (_, index) => ({
     ...JSON.parse(JSON.stringify(graphicTeeHome)),
@@ -380,8 +627,9 @@ function similarGraphicTeeBatch(count = 10) {
 
 module.exports = {
   clothing,
-  fixtures,
+  fixtures: personaFixtures,
   graphicTeeHome,
+  hotWhiteTGrayShortsHome,
   outfitFixture,
   similarGraphicTeeBatch,
 };

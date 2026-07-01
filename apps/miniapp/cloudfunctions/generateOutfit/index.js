@@ -6,11 +6,19 @@ const {
   logAestheticShadowTelemetry,
   parseAestheticShadowSampleRate,
 } = require('./services/aestheticShadowTelemetry');
+const {
+  createAiReviewServiceError,
+  getAiReviewInternalErrorCode,
+  getSafeAiReviewMessage,
+  isAiReviewServiceError,
+  mapAiReviewErrorCode,
+} = require('./services/aiReviewErrorPolicy');
 const { buildStylistEvidenceV1 } = require('./services/stylistEvidence');
 const {
   COPY_POLICY_VERSION,
   STYLIST_PROMPT_VERSION,
   STYLIST_REVIEW_VERSION,
+  VOICE_POLICY_VERSION,
   buildRuleFallbackExplanationV2,
   buildStylistPromptV2,
   buildStylistReviewDocument,
@@ -57,7 +65,7 @@ exports.main = async (event = {}) => {
       isAiReviewAction ? { code: getAiReviewInternalErrorCode(error) } : error,
     );
     if (isAiReviewAction) {
-      return fail(new Error('AI 点评服务暂时不可用，请稍后再试'));
+      return fail(createSafeAiReviewClientError(mapAiReviewErrorCode(error)));
     }
     return fail(error);
   }
@@ -285,7 +293,6 @@ async function getAiComment(event) {
 }
 
 async function generateAiComment(event) {
-  const fallbackMessage = 'AI 点评暂时不可用，请稍后再试';
   let context = null;
   let lease = null;
   const startedAt = Date.now();
@@ -302,6 +309,7 @@ async function generateAiComment(event) {
         inProgress: Boolean(lease.inProgress),
         cooldown: Boolean(lease.cooldown),
         retryAfterMs: lease.retryAfterMs,
+        errorCode: lease.inProgress ? 'AI_REVIEW_IN_PROGRESS' : lease.cooldown ? 'AI_REVIEW_COOLDOWN' : undefined,
       });
     }
 
@@ -325,14 +333,16 @@ async function generateAiComment(event) {
       await finishAiReviewFailure(context, lease.generationToken).catch(() => false);
     }
     const review = context ? await readAiReview(context.reviewId).catch(() => null) : null;
+    const errorCode = mapAiReviewErrorCode(error);
     return {
       ...buildAiReviewResponse(context, review, {
         cacheHit: false,
         saved: false,
         fallback: true,
+        errorCode,
       }),
       success: false,
-      message: fallbackMessage,
+      message: getSafeAiReviewMessage(errorCode),
     };
   }
 }
@@ -400,6 +410,7 @@ async function buildAiCommentContext(event) {
     promptVersion: AI_COMMENT_PROMPT_VERSION,
     reviewVersion: STYLIST_REVIEW_VERSION,
     copyPolicyVersion: COPY_POLICY_VERSION,
+    voicePolicyVersion: VOICE_POLICY_VERSION,
     provider: AI_COMMENT_PROVIDER,
     model: AI_COMMENT_MODEL,
   };
@@ -508,11 +519,11 @@ function buildAiCommentItemFromClothing(item) {
 
 async function callAiCommentModel(input) {
   if (AI_COMMENT_PROVIDER !== 'aliyun-bailian') {
-    throw new Error(`unsupported_ai_comment_provider:${AI_COMMENT_PROVIDER}`);
+    throw createAiReviewServiceError('AI_REVIEW_PROVIDER_NOT_CONFIGURED');
   }
 
   const apiKey = process.env.BAILIAN_API_KEY || process.env.DASHSCOPE_API_KEY;
-  if (!apiKey) throw new Error('BAILIAN_API_KEY is missing');
+  if (!apiKey) throw createAiReviewServiceError('AI_REVIEW_PROVIDER_NOT_CONFIGURED');
 
   const fetch = require('node-fetch');
   const prompt = buildStylistPromptV2(input);
@@ -538,7 +549,10 @@ async function callAiCommentModel(input) {
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`ai_comment_api_error_${response.status}:${text.slice(0, 200)}`);
+    throw createAiReviewServiceError(
+      'AI_REVIEW_PROVIDER_UNAVAILABLE',
+      new Error(`ai_comment_api_error_${response.status}:${text.slice(0, 200)}`),
+    );
   }
 
   const data = await response.json();
@@ -581,6 +595,7 @@ function normalizeAiComment(value) {
     ...(value.reviewVersion ? { reviewVersion: value.reviewVersion } : {}),
     ...(value.promptVersion ? { promptVersion: value.promptVersion } : {}),
     ...(value.copyPolicyVersion ? { copyPolicyVersion: value.copyPolicyVersion } : {}),
+    ...(value.voicePolicyVersion ? { voicePolicyVersion: value.voicePolicyVersion } : {}),
     ...(value.inputDigest ? { inputDigest: value.inputDigest } : {}),
     ...(value.source ? { source: value.source } : {}),
     ...(value.overallComment ? { overallComment: limitText(value.overallComment, 120) } : {}),
@@ -745,6 +760,7 @@ function isReadyAiReview(review, context) {
       && review.promptVersion === context.promptVersion
       && review.reviewVersion === context.reviewVersion
       && review.copyPolicyVersion === context.copyPolicyVersion
+      && review.voicePolicyVersion === context.voicePolicyVersion
       && normalizeAiComment(review.aiComment),
   );
 }
@@ -758,6 +774,7 @@ function isAiReviewStale(review, context) {
   if (review.promptVersion !== context.promptVersion) return true;
   if (review.reviewVersion !== context.reviewVersion) return true;
   if (review.copyPolicyVersion !== context.copyPolicyVersion) return true;
+  if (review.voicePolicyVersion !== context.voicePolicyVersion) return true;
   return !normalizeAiComment(review.aiComment);
 }
 
@@ -779,6 +796,7 @@ function buildAiReviewResponse(context, review, options = {}) {
           reviewVersion: review.reviewVersion,
           promptVersion: review.promptVersion,
           copyPolicyVersion: review.copyPolicyVersion,
+          voicePolicyVersion: review.voicePolicyVersion,
           evidenceVersion: review.evidenceVersion,
           source: review.source,
           explanationV2: review.explanationV2,
@@ -802,9 +820,11 @@ function buildAiReviewResponse(context, review, options = {}) {
     promptVersion: context?.promptVersion || review?.promptVersion || AI_COMMENT_PROMPT_VERSION,
     reviewVersion: context?.reviewVersion || review?.reviewVersion,
     copyPolicyVersion: context?.copyPolicyVersion || review?.copyPolicyVersion,
+    voicePolicyVersion: context?.voicePolicyVersion || review?.voicePolicyVersion,
     inputDigest: context?.inputDigest || review?.inputDigest || review?.inputHash,
     source: review?.source || aiComment?.source,
     model: context?.model || review?.model || AI_COMMENT_MODEL,
+    errorCode: options.errorCode,
   };
 }
 
@@ -824,6 +844,7 @@ async function acquireAiReviewLease(context, { forceRegenerate }) {
         current?.status === 'generating'
         && current.promptVersion === context.promptVersion
         && current.copyPolicyVersion === context.copyPolicyVersion
+        && current.voicePolicyVersion === context.voicePolicyVersion
         && current.inputDigest === context.inputDigest
         && isActiveGenerationLease(current.generationStartedAt)
       ) {
@@ -852,6 +873,7 @@ async function acquireAiReviewLease(context, { forceRegenerate }) {
         reviewVersion: context.reviewVersion,
         promptVersion: context.promptVersion,
         copyPolicyVersion: context.copyPolicyVersion,
+        voicePolicyVersion: context.voicePolicyVersion,
         evidenceVersion: context.evidenceVersion,
         provider: context.provider,
         model: context.model,
@@ -1017,19 +1039,10 @@ async function runAiReviewTransaction(callback) {
   }
 }
 
-function createAiReviewServiceError(code, cause) {
-  const error = new Error('AI 点评服务暂时不可用，请稍后再试');
+function createSafeAiReviewClientError(code) {
+  const error = new Error(getSafeAiReviewMessage(code));
   error.aiReviewCode = code;
-  if (cause) error.cause = cause;
   return error;
-}
-
-function isAiReviewServiceError(error) {
-  return Boolean(error && typeof error.aiReviewCode === 'string');
-}
-
-function getAiReviewInternalErrorCode(error) {
-  return isAiReviewServiceError(error) ? error.aiReviewCode : 'AI_REVIEW_REQUEST_FAILED';
 }
 
 function limitText(value, maxLength) {
@@ -2712,9 +2725,10 @@ function ok(data) {
 }
 
 function fail(error) {
+  const errorCode = error && (error.businessCode || error.aiReviewCode);
   return {
     code: 1,
-    data: error && error.businessCode ? { errorCode: error.businessCode } : null,
+    data: errorCode ? { errorCode } : null,
     message: error && error.message ? error.message : 'unknown error',
   };
 }

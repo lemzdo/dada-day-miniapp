@@ -18,8 +18,13 @@ const {
   isTooSimilar,
 } = require('./humanCopyPolicy');
 const {
+  deriveUserBenefitsV1,
+  findXiaodaVoicePolicyViolations,
+} = require('./xiaodaVoicePolicy');
+const {
   fixtures,
   graphicTeeHome,
+  hotWhiteTGrayShortsHome,
   similarGraphicTeeBatch,
 } = require('./recommendationLanguageV3.fixtures');
 
@@ -113,15 +118,15 @@ test('deriveOutfitInsightsV3 covers golden fixture expected codes', () => {
 });
 
 test('renderers produce the locked anonymous screenshot sample style', () => {
-  const [plan] = planBatchCopyV3([{ outfit: graphicTeeHome }]);
+  const [plan] = planBatchCopyV3([{ outfit: hotWhiteTGrayShortsHome }]);
   const today = renderTodayReasonV3(plan);
   const detail = renderDetailReasoningV3(plan);
   const fallback = renderStylistFallbackCopyV3(plan);
 
-  assert.equal(today, '印花上衣做主角，浅色下装和运动鞋让整体轻松但不杂乱。');
-  assert.equal(detail, '印花上衣是整套最明显的视觉重点，浅色下装没有再增加复杂元素，所以层次比较清楚。运动鞋延续了休闲感，居家穿或临时出门都比较自然。');
-  assert.equal(fallback.overallComment, '这套整体偏轻松活泼。上衣和运动鞋都有一点存在感，浅色下装把它们稳住了，所以看起来有重点但不会太满。');
-  assert.equal(fallback.advice, '想让整体更清爽，可以让鞋子或配饰只保留一个明显的色彩重点。');
+  assert.equal(today, '今天温度高，白T配灰色短裤穿着更轻松，运动鞋也方便临时出门。');
+  assert.equal(detail, '白T和灰色短裤放在一起很日常，颜色不会互相抢。今天温度比较高，短袖、短裤这类单品穿起来更轻松，运动鞋也方便临时出门。');
+  assert.equal(fallback.overallComment, '白T配灰色短裤很适合今天想穿得简单一点的时候，颜色清爽，出门也不费劲。');
+  assert.equal(fallback.advice, '想再利落一点，可以让上衣或小包呼应运动鞋里的颜色。');
 });
 
 test('renderRecommendationCopyV3 keeps Today, detail, comment and advice distinct', () => {
@@ -174,6 +179,8 @@ test('batch planner avoids exact duplicate reasons, numeric suffixes and weather
   const results = compileRecommendationLanguageV3({ outfits: source, scene: 'home', weather: { temp: 22, weather: '多云' } });
   assert.deepEqual(results.map((entry) => entry.id), source.map((entry) => entry.id));
   assert.equal(new Set(results.map((entry) => entry.reason)).size, results.length);
+  assert.equal(new Set(results.map((entry) => entry.aiComment.overallComment)).size, results.length);
+  assert.equal(new Set(results.map((entry) => entry.aiComment.advice)).size, results.length);
   assert.equal(results.some((entry) => /\d+$/.test(entry.reason)), false);
   assert.equal(results.some((entry) => /这组线索更突出|整体重点更清楚|识别|证据|线索/.test(visibleText(entry))), false);
   assert.ok(results.filter((entry) => entry.primaryDimension === 'weather').length <= 1);
@@ -194,6 +201,67 @@ test('golden fixtures remain human readable and pass copy policy', () => {
     for (const text of [result.reason, result.reasoning, result.aiComment.overallComment, result.aiComment.advice]) {
       assertHumanCopy(text);
       assert.equal(hasRepeatedSentenceParts(text), false, `${fixture.id}: ${text}`);
+    }
+  }
+});
+
+test('persona fixtures cover Xiaoda V1 scenarios with grounded benefits and quality gates', () => {
+  const personaFixtures = fixtures.filter((fixture) => fixture.todayPersonaGoal);
+  assert.ok(personaFixtures.length >= 16);
+  const ids = new Set(personaFixtures.map((fixture) => fixture.id));
+  for (const id of [
+    'white_t_gray_shorts_sneakers_hot_home',
+    'graphic_tee_gray_bottom_red_white_sneakers_home',
+    'neutral_with_accent',
+    'all_light_colors',
+    'home_relaxed',
+    'hot_commute',
+    'cold_commute',
+    'date_soft_colors',
+    'sport_set',
+    'two_patterns_compete',
+    'category_only',
+    'missing_color_palette',
+    'missing_fit',
+    'full_aesthetic_fields',
+    'aesthetic_low_coverage',
+    'similar_batch_base',
+  ]) {
+    assert.ok(ids.has(id), `${id} persona fixture missing`);
+  }
+
+  for (const fixture of personaFixtures) {
+    const facts = extractOutfitFactsV3(fixture.outfit, {
+      scene: fixture.outfit.scene,
+      weather: fixture.outfit.weatherSnapshot,
+    });
+    const insights = deriveOutfitInsightsV3(facts);
+    const benefitCodes = deriveUserBenefitsV1(facts, insights, {
+      scene: fixture.outfit.scene,
+      weather: fixture.outfit.weatherSnapshot,
+    }).map((benefit) => benefit.code);
+    for (const code of fixture.expectedBenefitCodes) {
+      assert.ok(benefitCodes.includes(code), `${fixture.id} should include benefit ${code}`);
+    }
+
+    const [result] = compileRecommendationLanguageV3({
+      outfits: [fixture.outfit],
+      scene: fixture.outfit.scene,
+      weather: fixture.outfit.weatherSnapshot,
+    });
+    const text = visibleText(result);
+    assert.equal(findXiaodaVoicePolicyViolations(text).length, 0, `${fixture.id}: ${text}`);
+    assert.doesNotMatch(text, /灰色灰色|白色白色|黑色黑色/);
+    assert.ok(result.reason.length > 0, fixture.id);
+    assert.ok(result.reasoning.length > result.reason.length, fixture.id);
+    assert.equal(isTooSimilar(result.aiComment.overallComment, result.reasoning), false, fixture.id);
+    assert.equal(isTooSimilar(result.aiComment.overallComment, result.aiComment.advice), false, fixture.id);
+    if (fixture.id === 'two_patterns_compete') {
+      assert.doesNotMatch(text, /不乱|不会显得太乱|没有冲突|明显冲突/);
+      assert.match(text, /醒目|热闹|图案|简单/);
+    }
+    if (fixture.id === 'category_only' || fixture.id === 'missing_color_palette') {
+      assert.doesNotMatch(text, /颜色不会互相抢|小面积颜色|颜色方向|灰色|白色|黑色/);
     }
   }
 });

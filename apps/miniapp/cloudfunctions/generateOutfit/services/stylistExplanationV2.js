@@ -3,9 +3,14 @@ const {
   findHumanCopyPolicyViolations,
   isTooSimilar,
 } = require('./humanCopyPolicy');
+const {
+  VOICE_POLICY_VERSION,
+  findXiaodaVoicePolicyViolations,
+  renderXiaodaStylistFallback,
+} = require('./xiaodaVoicePolicy');
 
-const STYLIST_REVIEW_VERSION = 'stylist-explanation-v3';
-const STYLIST_PROMPT_VERSION = 'stylist-prompt-v3';
+const STYLIST_REVIEW_VERSION = 'stylist-explanation-v4';
+const STYLIST_PROMPT_VERSION = 'stylist-prompt-v4';
 const COPY_POLICY_VERSION = 'human-copy-v1';
 
 const VALID_LIMITATIONS = new Set([
@@ -20,12 +25,15 @@ const MATERIAL_WORDS = ['棉', '羊毛', '皮革', '牛仔', '丝绸', '亚麻',
 function buildStylistPromptV2(evidenceInput) {
   return {
     system: [
-      '你是穿搭顾问，不是系统说明员。',
-      '只能使用给定 facts 和 insights，不得虚构颜色、材质、版型、天气、场景、品牌、价格或品质。',
-      '不得提及识别、证据、线索、维度、覆盖率，也不得解释生成过程。',
+      '你是用户身边懂穿搭的贴心朋友，表达要具体、温和、有生活感。',
+      '只能使用给定 facts、insights 和 benefits，不得虚构颜色、材质、版型、天气、场景、品牌、价格或品质。',
+      '不得解释识别、算法或生成过程，也不得提及识别、证据、线索、维度、覆盖率。',
+      '不得使用机械设计词，例如克制、稳定、基础单品、正式度接近、视觉关系、更完整。',
+      '不虚构舒适、材质、透气、保暖、柔软、亲肤等穿着感受。',
       '不得重复普通推荐理由，不得输出 title 或 styleTags 给 UI。',
       '不得使用显瘦、遮肉、显高、拉长腿等身体评价，也不得推断年龄、职业、身份。',
-      '只输出严格 JSON，字段只能是 schemaVersion、reviewVersion、promptVersion、copyPolicyVersion、overallComment、advice。',
+      '不过度卖萌，不使用宝宝、绝绝子、拿捏。',
+      '只输出严格 JSON，字段只能是 schemaVersion、reviewVersion、promptVersion、copyPolicyVersion、voicePolicyVersion、overallComment、advice。',
       'overallComment 为 40 到 120 字，总结整体气质和关系。',
       'advice 为 20 到 80 字，只给一条可执行调整。',
       '数据少时只讲确定事实，不解释为什么信息有限。',
@@ -66,6 +74,7 @@ function validateStylistExplanationV3(raw, evidenceInput, meta = {}) {
   if (raw.reviewVersion !== STYLIST_REVIEW_VERSION) throw new Error('invalid_stylist_explanation');
   if (raw.promptVersion !== STYLIST_PROMPT_VERSION) throw new Error('invalid_stylist_explanation');
   if (raw.copyPolicyVersion !== COPY_POLICY_VERSION) throw new Error('invalid_stylist_explanation');
+  if (raw.voicePolicyVersion !== VOICE_POLICY_VERSION) throw new Error('invalid_stylist_explanation');
 
   const overallComment = normalizeVisibleCopy(raw.overallComment, 120);
   const advice = normalizeVisibleCopy(raw.advice, 80);
@@ -84,6 +93,7 @@ function validateStylistExplanationV3(raw, evidenceInput, meta = {}) {
     reviewVersion: STYLIST_REVIEW_VERSION,
     promptVersion: STYLIST_PROMPT_VERSION,
     copyPolicyVersion: COPY_POLICY_VERSION,
+    voicePolicyVersion: VOICE_POLICY_VERSION,
     title: '',
     summary: overallComment,
     overallComment,
@@ -109,7 +119,7 @@ function validateLegacyExplanation(raw, evidenceInput, meta = {}) {
   if (raw.promptVersion !== STYLIST_PROMPT_VERSION) throw new Error('invalid_stylist_explanation');
 
   const summary = normalizeVisibleCopy(raw.summary, 120);
-  const advice = normalizeVisibleCopy(raw.tip?.text || raw.tip || raw.advice || '想让整体更完整，可以让鞋子或配饰延续其中一个主色。', 80);
+  const advice = normalizeVisibleCopy(raw.tip?.text || raw.tip || raw.advice || '想再有精神一点，可以让鞋子或小包呼应其中一个主色。', 80);
   if (!summary) throw new Error('invalid_stylist_explanation');
 
   const validCodes = getValidEvidenceCodes(evidenceInput);
@@ -122,6 +132,7 @@ function validateLegacyExplanation(raw, evidenceInput, meta = {}) {
     reviewVersion: STYLIST_REVIEW_VERSION,
     promptVersion: STYLIST_PROMPT_VERSION,
     copyPolicyVersion: COPY_POLICY_VERSION,
+    voicePolicyVersion: VOICE_POLICY_VERSION,
     title: '',
     summary,
     strengths: strengths.length > 0 ? strengths : [{ text: summary, evidenceCodes: Array.from(validCodes).slice(0, 1) }],
@@ -149,6 +160,7 @@ function buildRuleFallbackExplanationV2(evidenceInput, meta = {}) {
     reviewVersion: STYLIST_REVIEW_VERSION,
     promptVersion: STYLIST_PROMPT_VERSION,
     copyPolicyVersion: COPY_POLICY_VERSION,
+    voicePolicyVersion: VOICE_POLICY_VERSION,
     title: '',
     summary: copy.overallComment,
     overallComment: copy.overallComment,
@@ -180,11 +192,12 @@ function toLegacyAiComment(explanation) {
     title: '',
     reason: limitText(reasonParts.join(' '), 160),
     styleTags: [],
-    tip: explanation.advice || explanation.tip?.text || '想让整体更完整，可以让鞋子或配饰延续其中一个主色。',
+    tip: explanation.advice || explanation.tip?.text || '想再有精神一点，可以让鞋子或小包呼应其中一个主色。',
     generatedAt: explanation.generatedAt,
     reviewVersion: explanation.reviewVersion,
     promptVersion: explanation.promptVersion,
     copyPolicyVersion: explanation.copyPolicyVersion,
+    voicePolicyVersion: explanation.voicePolicyVersion || VOICE_POLICY_VERSION,
     inputDigest: explanation.inputDigest,
     source: explanation.source,
     explanationV2: explanation,
@@ -233,6 +246,7 @@ function buildStylistReviewDocument({ context, explanation, now }) {
     reviewVersion: STYLIST_REVIEW_VERSION,
     promptVersion: STYLIST_PROMPT_VERSION,
     copyPolicyVersion: COPY_POLICY_VERSION,
+    voicePolicyVersion: VOICE_POLICY_VERSION,
     evidenceVersion: context.evidenceVersion,
     inputDigest: context.inputDigest,
     inputHash: context.inputDigest,
@@ -277,25 +291,7 @@ function collectEvidenceCodes(strengths, tradeoffs, tip, rawCodes, validCodes) {
 }
 
 function buildHumanFallbackCopy(evidenceInput) {
-  const colors = readOutfitColorNames(evidenceInput);
-  const tags = uniqueStrings(evidenceInput?.outfit?.styleTags);
-  const categories = uniqueStrings(evidenceInput?.outfit?.categories);
-  if (colors.includes('白色') && (colors.includes('灰色') || colors.includes('灰白'))) {
-    return {
-      overallComment: '整体偏轻松日常，白色和灰色放在一起比较稳定。',
-      advice: '想更完整，可以让鞋子延续白色或灰色。',
-    };
-  }
-  if (tags.includes('通勤') || categories.includes('top') && categories.includes('bottom')) {
-    return {
-      overallComment: '整体偏干净日常，单品之间没有明显冲突。',
-      advice: '想让整体更完整，可以让鞋子或配饰延续其中一个主色。',
-    };
-  }
-  return {
-    overallComment: '整体偏轻松日常，适合不需要太正式的场合。',
-    advice: '想让整体更完整，可以让鞋子或配饰延续其中一个主色。',
-  };
+  return renderXiaodaStylistFallback({ facts: evidenceToVoiceFacts(evidenceInput), benefits: [] });
 }
 
 function normalizeVisibleCopy(value, maxLength) {
@@ -304,6 +300,9 @@ function normalizeVisibleCopy(value, maxLength) {
   try {
     assertHumanCopy(text);
   } catch {
+    throw new Error('invalid_stylist_explanation');
+  }
+  if (findXiaodaVoicePolicyViolations(text).length > 0) {
     throw new Error('invalid_stylist_explanation');
   }
   return text;
@@ -366,6 +365,28 @@ function readOutfitMaterials(evidenceInput) {
   return uniqueStrings(items.map((item) => item?.material)).sort();
 }
 
+function evidenceToVoiceFacts(evidenceInput = {}) {
+  const items = Array.isArray(evidenceInput.outfit?.items)
+    ? evidenceInput.outfit.items.map((entry, index) => ({
+        id: entry.itemId || entry.clothingId || `item-${index}`,
+        slot: entry.category || entry.slot || 'other',
+        name: entry.subcategory || entry.name || entry.category || '单品',
+        colors: readOutfitColorNames(evidenceInput),
+        styleTags: uniqueStrings(evidenceInput.outfit?.styleTags),
+        material: entry.material || '',
+        thickness: entry.thickness || '',
+      }))
+    : [];
+  return {
+    items,
+    outfit: {
+      categories: uniqueStrings(evidenceInput.outfit?.categories),
+      styleTags: uniqueStrings(evidenceInput.outfit?.styleTags),
+    },
+    context: evidenceInput.context || {},
+  };
+}
+
 function stripUnsafePromptInput(evidenceInput) {
   return {
     schemaVersion: evidenceInput?.schemaVersion,
@@ -385,6 +406,7 @@ function isReadyV3Review(review, context) {
       && review.reviewVersion === STYLIST_REVIEW_VERSION
       && review.promptVersion === STYLIST_PROMPT_VERSION
       && (!context?.copyPolicyVersion || review.copyPolicyVersion === context.copyPolicyVersion)
+      && (!context?.voicePolicyVersion || review.voicePolicyVersion === context.voicePolicyVersion)
       && review.inputDigest === context.inputDigest,
   );
 }
@@ -421,6 +443,7 @@ module.exports = {
   COPY_POLICY_VERSION,
   STYLIST_PROMPT_VERSION,
   STYLIST_REVIEW_VERSION,
+  VOICE_POLICY_VERSION,
   buildRuleFallbackExplanationV2,
   buildStylistPromptV2,
   buildStylistReviewDocument,

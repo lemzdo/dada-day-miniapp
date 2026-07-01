@@ -17,13 +17,13 @@ function v2Comment(overrides = {}) {
       reviewVersion: 'stylist-explanation-v2',
       promptVersion: 'stylist-prompt-v2',
       title: '内部标题不展示',
-      summary: '整体是干净利落的通勤感，配色和轮廓都比较收束。',
+      summary: '这套是清爽利落的通勤感，配色和轮廓都比较收束。',
       strengths: [
         { text: '黑白配色让视觉重点更清楚。', evidenceCodes: ['COLOR_MONOCHROMATIC'] },
         { text: '短上衣和长裤的比例层次明确。', evidenceCodes: ['PROPORTION_CLEAR_LAYERING'] },
       ],
       tradeoffs: [{ text: '如果场合更正式，可以减少装饰感。', evidenceCodes: ['FORMALITY_ALIGNED'] }],
-      tip: { text: '鞋包保持同色，让主线更完整。', evidenceCodes: ['COLOR_MONOCHROMATIC'] },
+      tip: { text: '鞋包保持同色，主线会更清楚。', evidenceCodes: ['COLOR_MONOCHROMATIC'] },
       styleTags: ['通勤', '利落', '通勤'],
       confidence: 'high',
       evidenceCodes: ['COLOR_MONOCHROMATIC'],
@@ -42,7 +42,7 @@ function v2Comment(overrides = {}) {
 test('V2 presentation uses summary and strengths as body paragraphs', () => {
   const result = buildAiReviewPresentation(v2Comment());
   assert.deepEqual(result.bodyParagraphs, [
-    '整体是干净利落的通勤感，配色和轮廓都比较收束。',
+    '这套是清爽利落的通勤感，配色和轮廓都比较收束。',
     '黑白配色让视觉重点更清楚。',
     '短上衣和长裤的比例层次明确。',
   ]);
@@ -59,12 +59,12 @@ test('tip appears only as advice and not repeated in body', () => {
   const result = buildAiReviewPresentation(v2Comment({
     explanationV2: {
       strengths: [
-        { text: '鞋包保持同色，让主线更完整。', evidenceCodes: ['COLOR_MONOCHROMATIC'] },
+        { text: '鞋包保持同色，主线会更清楚。', evidenceCodes: ['COLOR_MONOCHROMATIC'] },
         { text: '黑白配色让视觉重点更清楚。', evidenceCodes: ['COLOR_MONOCHROMATIC'] },
       ],
     },
   }));
-  assert.equal(result.advice, '鞋包保持同色，让主线更完整。');
+  assert.equal(result.advice, '鞋包保持同色，主线会更清楚。');
   assert.equal(result.bodyParagraphs.includes(result.advice), false);
 });
 
@@ -158,8 +158,9 @@ test('tradeoff is not duplicated when it matches advice and evidence codes stay 
 test('outfit detail UI keeps old content during loading and uses a friendly cooldown message', () => {
   const source = fs.readFileSync(path.join(__dirname, 'index.tsx'), 'utf8');
   assert.match(source, /commentLoading/);
-  assert.match(source, /小搭正在看这套的配色和轮廓/);
-  assert.match(source, /小搭刚点评完，稍等一下再试/);
+  assert.match(source, /USER_FACING_COPY\.aiReview\.loading/);
+  assert.match(source, /AI_REVIEW_COOLDOWN/);
+  assert.match(source, /getAiReviewErrorCopy/);
   assert.doesNotMatch(source, /retryAfterSeconds|秒后可再试/);
 });
 

@@ -27,6 +27,26 @@ const FORBIDDEN_HUMAN_COPY_TERMS = [
   '快照',
   '模板',
   '字段',
+  '克制',
+  '稳定',
+  '干净稳定',
+  '比较稳定',
+  '明显冲突',
+  '基础单品',
+  '延续休闲感',
+  '更完整',
+  '正式度接近',
+  '视觉重量',
+  '视觉关系',
+  '色彩关系',
+  '视觉重点',
+  '完成度',
+  '保持统一',
+  '形成平衡',
+  '增强层次',
+  '整体有秩序',
+  '主要观察点',
+  '关系清楚',
 ];
 
 const SENSITIVE_HUMAN_COPY_TERMS = [
@@ -43,6 +63,9 @@ const SENSITIVE_HUMAN_COPY_TERMS = [
   '贵气',
   '廉价',
   '品质好',
+  '宝宝',
+  '绝绝子',
+  '拿捏',
 ];
 
 function findHumanCopyPolicyViolations(value) {

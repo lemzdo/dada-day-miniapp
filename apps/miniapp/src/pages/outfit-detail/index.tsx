@@ -2,6 +2,7 @@ import { Input, Text, View } from '@tarojs/components';
 import Taro, { useDidShow, useLoad, useRouter, useUnload } from '@tarojs/taro';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { SafeImage } from '@/components/SafeImage';
+import { getAiReviewErrorCopy, USER_FACING_COPY } from '@/constants/userFacingCopy';
 import { useAuthRuntime } from '@/hooks/useAuthRuntime';
 import {
   invalidateAfterOutfitFavoriteMutation,
@@ -11,6 +12,7 @@ import {
 } from '@/lib/cacheInvalidation';
 import {
   addOutfitHistory,
+  CloudFunctionError,
   generateCloudOutfitComment,
   getCloudOutfit,
   getCloudOutfitAiComment,
@@ -172,6 +174,14 @@ function hasWardrobeRefreshSignal(authContext?: ActiveAuthContext | null) {
   } catch {
     return false;
   }
+}
+
+function readCloudAiReviewErrorCode(error: unknown) {
+  if (error instanceof CloudFunctionError) {
+    const data = error.data as { errorCode?: unknown } | undefined;
+    if (typeof data?.errorCode === 'string') return data.errorCode;
+  }
+  return 'AI_REVIEW_UNKNOWN';
 }
 
 // 获取单品数据源（优先级：snapshotItems > itemsSnapshot > items）
@@ -361,6 +371,7 @@ export default function OutfitDetailPage() {
   const [loading, setLoading] = useState(true);
   const [operating, setOperating] = useState(false);
   const [commentLoading, setCommentLoading] = useState(false);
+  const [commentError, setCommentError] = useState('');
   const [itemsExpanded, setItemsExpanded] = useState(false);
   const [showNameModal, setShowNameModal] = useState(false);
   const [draftName, setDraftName] = useState('');
@@ -381,6 +392,7 @@ export default function OutfitDetailPage() {
     setLoading(false);
     setOperating(false);
     setCommentLoading(false);
+    setCommentError('');
     setItemsExpanded(false);
     setShowNameModal(false);
     setDraftName('');
@@ -734,17 +746,18 @@ export default function OutfitDetailPage() {
     aiCommentRequestSeqRef.current = commentRequestSeq;
     const forceRegenerate = Boolean(aiReviewMeta?.hasCanonical && outfit.aiComment);
     setCommentLoading(true);
+    setCommentError('');
     try {
       const result = await generateCloudOutfitComment(outfit, { forceRegenerate });
       if (aiCommentRequestSeqRef.current !== commentRequestSeq || !isCurrentAuthContext(authContext)) return;
       if (result.cooldown) {
         applyAiReviewResult(result);
-        Taro.showToast({ title: '小搭刚点评完，稍等一下再试', icon: 'none' });
+        showAiReviewError(result.errorCode || 'AI_REVIEW_COOLDOWN');
         return;
       }
       if (result.inProgress) {
         applyAiReviewResult(result);
-        Taro.showToast({ title: '小搭正在点评，稍后再看看', icon: 'none' });
+        showAiReviewError(result.errorCode || 'AI_REVIEW_IN_PROGRESS');
         return;
       }
       if (result.superseded) {
@@ -760,16 +773,22 @@ export default function OutfitDetailPage() {
         });
         return;
       }
-      Taro.showToast({ title: result.message || '小搭点评暂时不可用', icon: 'none' });
+      showAiReviewError(result.errorCode || 'AI_REVIEW_UNKNOWN', result.message);
     } catch (err) {
       console.error('Generate outfit AI comment error:', err);
       if (aiCommentRequestSeqRef.current !== commentRequestSeq || !isCurrentAuthContext(authContext)) return;
-      Taro.showToast({ title: '小搭点评暂时不可用', icon: 'none' });
+      showAiReviewError(readCloudAiReviewErrorCode(err));
     } finally {
       if (aiCommentRequestSeqRef.current === commentRequestSeq && isCurrentAuthContext(authContext)) {
         setCommentLoading(false);
       }
     }
+  }
+
+  function showAiReviewError(errorCode: string | undefined, fallbackMessage?: string) {
+    const message = getAiReviewErrorCopy(errorCode || 'AI_REVIEW_UNKNOWN') || fallbackMessage || USER_FACING_COPY.aiReview.genericRetry;
+    if (!outfit?.aiComment) setCommentError(message);
+    Taro.showToast({ title: message, icon: 'none' });
   }
 
   function applyAiReviewResult(
@@ -793,6 +812,7 @@ export default function OutfitDetailPage() {
       promptVersion: result.promptVersion ?? result.review?.promptVersion,
       model: result.model ?? result.review?.model,
     });
+    if (result.success && result.aiComment) setCommentError('');
 
     if (shouldPreserveDisplayedComment && result.aiComment) {
       setOutfit((current) => (current ? normalizeOutfitSnapshot({ ...current, aiComment: result.aiComment ?? undefined }) : current));
@@ -1007,7 +1027,7 @@ export default function OutfitDetailPage() {
           </View>
 
           {commentLoading && (
-            <Text className="ai-comment-loading">小搭正在看这套的配色和轮廓……</Text>
+            <Text className="ai-comment-loading">{USER_FACING_COPY.aiReview.loading}</Text>
           )}
 
           {hasAiReviewContent && aiReviewPresentation ? (
@@ -1023,7 +1043,11 @@ export default function OutfitDetailPage() {
               )}
             </View>
           ) : (
-            !commentLoading && <Text className="ai-comment-empty">想听听小搭怎么看这套时，可以手动生成一次。</Text>
+            !commentLoading && (
+              <Text className="ai-comment-empty">
+                {commentError || '想听听小搭怎么看这套时，可以手动生成一次。'}
+              </Text>
+            )
           )}
         </View>
 

@@ -4,6 +4,12 @@ const {
   hasRepeatedSentenceParts,
   isTooSimilar,
 } = require('./humanCopyPolicy');
+const {
+  deriveUserBenefitsV1,
+  renderXiaodaDetailCopy,
+  renderXiaodaStylistFallback,
+  renderXiaodaTodayCopy,
+} = require('./xiaodaVoicePolicy');
 
 const RECOMMENDATION_REASON_VERSION_V3 = 'recommendation-reason-v3';
 const CATEGORY_ORDER = ['top', 'outerwear', 'onepiece', 'bottom', 'skirt', 'shoes', 'accessory', 'other'];
@@ -67,9 +73,10 @@ function compileRecommendationLanguageV3({ outfits = [], scene, weather } = {}) 
         ...(plan.outfit.aiComment && typeof plan.outfit.aiComment === 'object' ? plan.outfit.aiComment : {}),
         overallComment: copy.aiComment.overallComment,
         advice: copy.aiComment.advice,
-        reviewVersion: 'stylist-explanation-v3',
-        promptVersion: 'stylist-prompt-v3',
+        reviewVersion: 'stylist-explanation-v4',
+        promptVersion: 'stylist-prompt-v4',
         copyPolicyVersion: 'human-copy-v1',
+        voicePolicyVersion: 'xiaoda-voice-v1',
       },
     });
   });
@@ -130,6 +137,7 @@ function planBatchCopyV3(outfitPlans = []) {
     const outfit = entry.outfit || entry;
     const facts = extractOutfitFactsV3(outfit, { scene: entry.scene, weather: entry.weather });
     const insights = deriveOutfitInsightsV3(facts);
+    const benefits = deriveUserBenefitsV1(facts, insights, { scene: entry.scene, weather: entry.weather });
     const primaryInsight = choosePrimaryInsight(insights, {
       usedCodes,
       usedDimensions,
@@ -142,6 +150,7 @@ function planBatchCopyV3(outfitPlans = []) {
       outfit,
       facts,
       insights,
+      benefits,
       primaryInsight,
       detailInsights,
       sentenceFamily: family,
@@ -186,6 +195,13 @@ function renderRecommendationCopyV3(plan) {
 }
 
 function renderTodayReasonV3(plan) {
+  const xiaodaText = renderXiaodaTodayCopy({
+    facts: plan.facts,
+    insights: [plan.primaryInsight, ...plan.detailInsights].filter(Boolean),
+    benefits: plan.benefits,
+    batchIndex: plan.batchIndex,
+  });
+  if (xiaodaText) return ensureCopy(xiaodaText, () => renderFallbackToday(plan.facts, plan.batchIndex));
   const text = renderTodayByInsight(plan, plan.primaryInsight, plan.sentenceFamily);
   return ensureCopy(text, () => renderFallbackToday(plan.facts, plan.batchIndex));
 }
@@ -195,7 +211,11 @@ function renderDetailReasoningV3(plan) {
     .filter(Boolean)
     .filter((insight, index, array) => array.findIndex((entry) => entry.code === insight.code) === index)
     .slice(0, 3);
-  const text = renderDetailByInsights(plan.facts, insights);
+  const text = renderXiaodaDetailCopy({
+    facts: plan.facts,
+    insights,
+    benefits: plan.benefits,
+  }) || renderDetailByInsights(plan.facts, insights);
   const today = renderTodayReasonV3(plan);
   if (text.includes(today) || isTooSimilar(today, text, 0.82)) {
     const alternate = renderAlternateDetail(plan.facts, insights);
@@ -212,31 +232,41 @@ function renderStylistFallbackCopyV3(planOrFacts, options = {}) {
     batchIndex: 0,
   };
   const facts = plan.facts;
+  const xiaodaCopy = renderXiaodaStylistFallback({
+    facts,
+    insights: [plan.primaryInsight, ...plan.detailInsights].filter(Boolean),
+    benefits: plan.benefits || deriveUserBenefitsV1(facts, [plan.primaryInsight, ...plan.detailInsights].filter(Boolean)),
+    batchIndex: plan.batchIndex || 0,
+  });
+  if (xiaodaCopy?.overallComment && xiaodaCopy?.advice) return xiaodaCopy;
   const pattern = findInsight([plan.primaryInsight, ...plan.detailInsights], 'PATTERN_FOCUS_WITH_SIMPLE_BOTTOM');
   if (pattern) {
     return {
       overallComment: ensureCopy('这套整体偏轻松活泼。上衣和运动鞋都有一点存在感，浅色下装把它们稳住了，所以看起来有重点但不会太满。', () => renderBasicStylistCopy(facts, plan.primaryInsight).overallComment),
       advice: ensureCopy('想让整体更清爽，可以让鞋子或配饰只保留一个明显的色彩重点。', () => renderBasicStylistCopy(facts, plan.primaryInsight).advice),
-      reviewVersion: 'stylist-explanation-v3',
-      promptVersion: 'stylist-prompt-v3',
+      reviewVersion: 'stylist-explanation-v4',
+      promptVersion: 'stylist-prompt-v4',
       copyPolicyVersion: 'human-copy-v1',
+      voicePolicyVersion: 'xiaoda-voice-v1',
     };
   }
   const copy = renderBasicStylistCopy(facts, plan.primaryInsight);
   if (options.reasoning && isTooSimilar(copy.overallComment, options.reasoning)) {
     return {
-      overallComment: ensureCopy(`整体偏${styleMood(facts)}，单品之间没有明显冲突。`, () => '整体偏轻松日常，适合不需要太正式的场合。'),
+      overallComment: ensureCopy(`${itemLabel(findSlot(facts.items, 'top') || facts.items[0])}和${itemLabel(findSlot(facts.items, 'bottom') || findSlot(facts.items, 'skirt') || facts.items[1])}放在一起很日常，今天不用花太多心思。`, () => '这套适合今天想穿得简单一点的时候。'),
       advice: copy.advice,
-      reviewVersion: 'stylist-explanation-v3',
-      promptVersion: 'stylist-prompt-v3',
+      reviewVersion: 'stylist-explanation-v4',
+      promptVersion: 'stylist-prompt-v4',
       copyPolicyVersion: 'human-copy-v1',
+      voicePolicyVersion: 'xiaoda-voice-v1',
     };
   }
   return {
     ...copy,
-    reviewVersion: 'stylist-explanation-v3',
-    promptVersion: 'stylist-prompt-v3',
+    reviewVersion: 'stylist-explanation-v4',
+    promptVersion: 'stylist-prompt-v4',
     copyPolicyVersion: 'human-copy-v1',
+    voicePolicyVersion: 'xiaoda-voice-v1',
   };
 }
 
@@ -392,20 +422,20 @@ function renderTodayByInsight(plan, insightEntry, family) {
   if (code === 'PATTERN_FOCUS_WITH_SIMPLE_BOTTOM') {
     const support = [bottom && lightItemLabel(bottom), shoes && itemKind(shoes)].filter(Boolean).join('和');
     return family === 'focus'
-      ? `${patternTopLabel(top)}做主角，${support || '基础单品'}让整体轻松但不杂乱。`
-      : `${patternTopLabel(top)}先抓住视线，${support || '其它单品'}负责把整体稳住。`;
+      ? `${patternTopLabel(top)}做主角，${support || '其他单品'}在旁边简单一点，穿起来更轻松。`
+      : `${patternTopLabel(top)}先抓住视线，${support || '其他单品'}不用太复杂。`;
   }
   if (code === 'PATTERN_COMPETITION') return `${itemKind(top)}和${itemKind(bottom)}都很醒目，搭在一起时视觉重点会比较多。`;
   if (code === 'COLOR_NEUTRAL_BALANCES_ACCENT') return `${neutralColorName(colors)}${itemKind(top)}把${accentColorName(colors)}${itemKind(shoes || bottom)}稳住，亮色有存在感但不会抢得太满。`;
   if (code === 'COLOR_SOFT_HARMONY') return `${colors.slice(0, 2).join('和')}放在一起很柔和，整体显得轻快又干净。`;
-  if (code === 'COLOR_LIGHT_NEUTRAL_BALANCE') return `${itemLabel(top)}和${itemLabel(bottom)}都很克制，整体看起来干净稳定。`;
+  if (code === 'COLOR_LIGHT_NEUTRAL_BALANCE') return `${itemLabel(top)}和${itemLabel(bottom)}颜色都比较轻，放在一起很顺眼。`;
   if (code === 'COLOR_CLEAR_LIGHT_DARK_CONTRAST') return `${colors.find(isLightColor) || '浅色'}和${colors.find(isDarkColor) || '深色'}分区明确，整体层次直接不含糊。`;
   if (code === 'SILHOUETTE_TOP_RELAXED_BOTTOM_CLEAN') return `${itemLabel(top)}配${itemLabel(bottom)}，上半身轻松，下半身把线条收住。`;
   if (code === 'PROPORTION_SHORT_TOP_LONG_BOTTOM') return `${itemLabel(top)}和${itemLabel(bottom)}形成清楚的长短关系，整体比例更有秩序。`;
   if (code === 'FORMALITY_SOFTENED_BY_CASUAL_ITEM') return `${itemLabel(top)}偏正式，${itemKind(shoes)}把整体拉回更轻松的日常感。`;
-  if (code === 'FORMALITY_ALIGNED') return `${itemLabel(top)}和${itemLabel(bottom)}正式度接近，${scenePhrase(facts)}看起来稳定利落。`;
+  if (code === 'FORMALITY_ALIGNED') return `${itemLabel(top)}和${itemLabel(bottom)}都偏利落，${scenePhrase(facts)}看起来不费劲。`;
   if (code === 'DETAIL_SINGLE_FOCUS') return `${itemLabel(top)}带来细节重点，${itemLabel(bottom)}让整体保持安静。`;
-  if (code === 'STYLE_COHERENT') return `${itemLabel(top)}和${itemLabel(bottom)}风格一致，整体方向很稳定。`;
+  if (code === 'STYLE_COHERENT') return `${itemLabel(top)}和${itemLabel(bottom)}风格接近，今天穿起来不用反复想。`;
   if (code === 'STYLE_CASUAL_EASY') return `${itemLabel(top)}配${itemLabel(bottom)}，整体是很直接的轻松日常感。`;
   if (code === 'SCENE_HOME_EASY') return `${itemLabel(top)}和${itemLabel(bottom)}组合简单，居家场景里不会显得过分正式。`;
   if (code === 'SCENE_WORK_CLEAN') return `${itemLabel(top)}和${itemLabel(bottom)}放在一起，通勤时更干净利落。`;
@@ -437,7 +467,7 @@ function renderDetailByInsights(facts, insights) {
     return `${itemLabel(top)}本身更利落，${itemLabel(shoes)}降低了整套的正式感，所以不会太严肃。${colors.slice(0, 2).join('和') || '基础配色'}也比较基础，能让这种混搭更稳。`;
   }
   if (codes.includes('FORMALITY_ALIGNED') || codes.includes('STYLE_COHERENT')) {
-    return `${itemLabel(top)}和${itemLabel(bottom)}的正式度接近，风格也落在同一方向，组合起来比较稳。${colors.length ? `${colors.slice(0, 2).join('和')}不跳，` : ''}${scenePhrase(facts)}也自然。`;
+    return `${itemLabel(top)}和${itemLabel(bottom)}都偏同一个方向，放在一起很容易成立。${colors.length ? `${colors.slice(0, 2).join('和')}不跳，` : ''}${scenePhrase(facts)}也自然。`;
   }
   if (codes.includes('COLOR_SOFT_HARMONY')) {
     return `${itemLabel(top)}和${itemLabel(bottom)}都属于浅色，视觉重量接近，组合起来会比较柔和。两件单品也没有复杂图案，整体层次安静清楚。`;
@@ -449,7 +479,7 @@ function renderDetailByInsights(facts, insights) {
     return `${itemLabel(top)}有小面积细节，${itemLabel(bottom)}没有再增加复杂元素，所以重点集中。${codes.includes('PROPORTION_SHORT_TOP_LONG_BOTTOM') ? '短上衣和长下装也形成长短层次，整体关系比较清楚。' : '其它单品保持简单，整体关系比较清楚。'}`;
   }
   if (codes.includes('SCENE_HOME_EASY') || codes.includes('STYLE_CASUAL_EASY')) {
-    return `${itemLabel(top)}和${itemLabel(bottom)}都是基础单品，搭在一起不会有明显冲突。${colors.length ? `颜色以${colors.slice(0, 2).join('和')}为主，` : ''}适合不需要太正式的场合。`;
+    return `${itemLabel(top)}和${itemLabel(bottom)}都是日常好穿的单品，搭在一起不用太费心。${colors.length ? `颜色以${colors.slice(0, 2).join('和')}为主，` : ''}适合不需要太正式的场合。`;
   }
   return renderFallbackDetail(facts);
 }
@@ -468,25 +498,25 @@ function renderBasicStylistCopy(facts, primaryInsight) {
   const code = primaryInsight?.code || '';
   if (code.includes('FORMALITY')) {
     return {
-      overallComment: ensureCopy(`整体偏${facts.context?.scene === '上班' ? '通勤利落' : '稳定日常'}，单品之间的正式感比较接近。`, () => '整体偏轻松日常，适合不需要太正式的场合。'),
-      advice: ensureCopy('想更轻松，可以把鞋包换成更简洁的浅色款式。', () => '想更完整，可以让鞋子或配饰延续其中一个主色。'),
+      overallComment: ensureCopy(`${itemLabel(top)}和${itemLabel(bottom)}都偏利落，${facts.context?.scene === '上班' ? '上班穿很直接' : '日常穿也不费劲'}。`, () => '这套适合今天想穿得简单一点的时候。'),
+      advice: ensureCopy('想更轻松，可以把鞋包换成更简洁的浅色款式。', () => '想再利落一点，可以让鞋子或小包呼应其中一个主色。'),
     };
   }
   if (code.includes('COLOR')) {
     return {
-      overallComment: ensureCopy('整体有清楚的色彩重点，基础颜色负责让它更稳。', () => '整体偏轻松日常，适合不需要太正式的场合。'),
-      advice: ensureCopy('想更统一，可以让包或配饰呼应其中一个主色。', () => '想更完整，可以让鞋子或配饰延续其中一个主色。'),
+      overallComment: ensureCopy('这套有清楚的颜色重点，其他颜色简单一点，日常穿更好驾驭。', () => '这套适合今天想穿得简单一点的时候。'),
+      advice: ensureCopy('想再利落一点，可以让包或配饰呼应其中一个主色。', () => '想再利落一点，可以让鞋子或小包呼应其中一个主色。'),
     };
   }
   if (code.includes('SILHOUETTE') || code.includes('PROPORTION')) {
     return {
       overallComment: ensureCopy(`整体比较有秩序，${itemKind(top)}和${itemKind(bottom)}的关系是主要特点。`, () => '整体偏轻松日常，适合不需要太正式的场合。'),
-      advice: ensureCopy('想保持这种感觉，可以让外层不要打乱上下单品的分界。', () => '想更完整，可以让鞋子或配饰延续其中一个主色。'),
+      advice: ensureCopy('想保持这种感觉，可以让外层不要打乱上下单品的分界。', () => '想再利落一点，可以让鞋子或小包呼应其中一个主色。'),
     };
   }
   return {
-    overallComment: ensureCopy(`整体偏${styleMood(facts)}，单品之间没有明显冲突。`, () => '整体偏轻松日常，适合不需要太正式的场合。'),
-    advice: ensureCopy('想更完整，可以让鞋子或配饰延续其中一个主色。', () => '想更完整，可以让鞋子或配饰延续其中一个主色。'),
+    overallComment: ensureCopy(`${itemLabel(top)}和${itemLabel(bottom)}放在一起很日常，今天不用花太多心思。`, () => '这套适合今天想穿得简单一点的时候。'),
+    advice: ensureCopy('想再利落一点，可以让鞋子或小包呼应其中一个主色。', () => '想再利落一点，可以让鞋子或小包呼应其中一个主色。'),
   };
 }
 
@@ -578,7 +608,7 @@ function renderFallbackDetail(facts) {
   const top = findSlot(items, 'top') || items[0];
   const bottom = findSlot(items, 'bottom') || findSlot(items, 'skirt') || items[1];
   if (!top || !bottom) return '这组单品信息比较基础，能确认的是组合本身偏日常。整体适合不需要太正式的场合。';
-  return `${itemLabel(top)}和${itemLabel(bottom)}都是基础单品，搭在一起不会有明显冲突。${facts.context?.scene ? `${facts.context.scene}场景里，` : ''}整体会偏轻松日常。`;
+  return `${itemLabel(top)}和${itemLabel(bottom)}都是日常好穿的单品，搭在一起不用太费心。${facts.context?.scene ? `${facts.context.scene}场景里，` : ''}会更适合轻松一点的安排。`;
 }
 
 function insight(code, dimension, strength, subjectSlots, facts) {
@@ -777,15 +807,6 @@ function scenePhrase(facts) {
   if (scene === '运动') return '运动时';
   if (scene === '约会') return '约会时';
   return '日常穿';
-}
-
-function styleMood(facts) {
-  const tags = facts.outfit?.styleTags || [];
-  if (tags.includes('通勤')) return '通勤利落';
-  if (tags.includes('运动')) return '运动日常';
-  if (tags.includes('优雅')) return '优雅安静';
-  if (tags.includes('甜美')) return '温和柔和';
-  return '轻松日常';
 }
 
 function defaultItemName(slot) {

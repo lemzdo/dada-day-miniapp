@@ -2,11 +2,12 @@
 
 ## 目标
 
-Recommendation Language V3 把普通推荐理由和小搭点评拆成三层：
+Recommendation Language V3 继续保留 `reasonVersion=recommendation-reason-v3`，本轮在其上建立“小搭语言系统 V1”，把普通推荐理由和小搭点评拆成四层：
 
 - Facts：只保存结构化事实，不含图片 URL、fileID、OPENID、昵称、页面名、batchId、原始 AI 输出或调试文案。
 - Insights：只表达搭配关系，不写用户文案。
-- Human Copy：只消费 facts 和 insights，输出 Today reason、详情 reasoning、小搭点评正文和建议。
+- User Benefits：把搭配关系翻译成用户当天穿着收益，不是最终文案。
+- Xiaoda Voice Copy：消费 facts、insights 和 benefits，输出 Today reason、详情 reasoning、小搭点评正文和建议。
 
 本轮只改变展示字段：`reason`、`reasoning`、`reasonVersion`、展示标签、AI review copy/version。不得改变 outfit 组合、候选过滤、推荐数量、排序、scores、`scores.total`、`aestheticEvaluation`、`outfitKey`、`recommendationBatchId`、收藏、穿着、行为事件、learnedProfile、衣橱容量或上传确认流程。
 
@@ -44,7 +45,27 @@ V3 facts 结构包含：
 
 敏感表达包括：显瘦、遮肉、显高、拉长腿、修饰身材、显腿长、适合某种体型、适合某年龄、适合某职业、高级感、贵气、廉价、品质好。
 
+小搭机械表达新增禁用：克制、稳定、干净稳定、比较稳定、明显冲突、基础单品、延续休闲感、更完整、正式度接近、视觉重量、视觉关系、色彩关系、视觉重点、完成度、保持统一、形成平衡、增强层次、整体有秩序、主要观察点、关系清楚。
+
 命中禁用词时丢弃整条候选，重新选择其他 insight 或安全 fallback；不得只删除单词后保留残句。
+
+## User Benefits V1
+
+`deriveUserBenefitsV1(facts, insights, context)` 输出稳定、可测试、可去重的收益结构：
+
+```js
+{
+  code: 'HOT_DAY_LIGHT_AND_EASY',
+  strength: 3,
+  sourceInsightCodes: ['WEATHER_THICKNESS_MATCH'],
+  subjectSlots: ['top', 'bottom'],
+  facts: {}
+}
+```
+
+allowlist 覆盖高温、低温、居家、通勤、约会、运动、省心搭配和日常可用性。收益只在事实足够时产生：高温必须有偏热温度和短袖/短裤/轻薄/运动单品，低温必须有外套/长袖/厚度/层搭，居家临时出门必须有日常单品和鞋或完整搭配，省心搭配必须有颜色少、无图案竞争或风格接近等依据。
+
+禁止无依据生成体感词：舒服、不闷、透气、保暖、柔软、软糯、活动方便、轻便、不勒、亲肤。
 
 ## 重复门禁
 
@@ -67,9 +88,9 @@ V3 facts 结构包含：
 
 ## 展示规则
 
-Today「小搭推荐」只回答一个核心搭配关系，最多两句话，优先提真实单品关系。
+Today「小搭推荐」只回答“今天为什么值得穿这套？”，建议 28-58 个中文字符，优先用户当天收益，其次具体单品关系、场景或天气。
 
-详情「为什么推荐这套」解释 2 到 3 个不同搭配关系，先讲衣物关系，再讲场景或天气，不逐字复用 Today 文案。
+详情「为什么推荐这套」回答“为什么这些衣服放在一起合适，以及今天穿它有什么好处？”，建议两句话，第一句讲衣物关系，第二句讲天气、场景或用户收益，不逐字复用 Today 文案。
 
 小搭点评只展示：
 
@@ -97,32 +118,33 @@ Today 和详情顶部标签只来自可靠结构化信息：
 
 小搭点评区域不再渲染标签。数据库和 API 可继续保存旧 `styleTags` 用于兼容。
 
-## AI Stylist V3
+## AI Stylist V4 / Xiaoda Voice V1
 
 版本：
 
-- `reviewVersion=stylist-explanation-v3`
-- `promptVersion=stylist-prompt-v3`
+- `reviewVersion=stylist-explanation-v4`
+- `promptVersion=stylist-prompt-v4`
 - `copyPolicyVersion=human-copy-v1`
+- `voicePolicyVersion=xiaoda-voice-v1`
 
-V3 prompt 只允许输出 `overallComment` 和 `advice`。validator 检查禁用词、敏感词、事实颜色/材质约束、重复、comment/advice 相似度、长度和空值。AI 输出不合格时使用 V3 rule fallback，不能把不合格内容展示给用户。
+V4 prompt 只允许输出 `overallComment` 和 `advice`，要求像懂穿搭的贴心朋友，不卖弄专业术语，不解释识别/算法/生成过程，不使用机械设计词，不虚构舒适、材质、透气、保暖，不推断身体、年龄、职业或经济情况。validator 检查内部术语、机械表达、敏感词、事实颜色/材质约束、重复、comment/advice 相似度、长度和空值。AI 输出不合格时使用 Xiaoda rule fallback，不能把不合格内容展示给用户。
 
-复用已有点评必须同时满足：`inputDigest` 相同、`reviewVersion` 为 V3、`promptVersion` 为 V3、`copyPolicyVersion` 正确。旧 V1/V2 记录不批量迁移，用户下一次主动点评时重新生成 V3。
+复用已有点评必须同时满足：`inputDigest` 相同、`reviewVersion` 为 V4、`promptVersion` 为 V4、`copyPolicyVersion` 正确、`voicePolicyVersion` 正确。旧 V1/V2/V3 记录不批量迁移，用户下一次主动点评时重新生成 V4。
 
 ## Golden Fixtures
 
-当前 V3 fixtures 覆盖 20 组以上场景，包括截图匿名样例：
+当前 fixtures 覆盖 20 组以上场景，并新增 persona golden 字段。截图匿名样例：
 
 ```text
-印花T恤 + 灰白下装 + 红白运动鞋 + home + mild weather
+白色短袖T恤 + 灰色短裤 + 运动鞋 + 30°C + home
 ```
 
 目标输出锁定为：
 
-- Today：印花上衣做主角，浅色下装和运动鞋让整体轻松但不杂乱。
-- Detail：印花上衣是视觉重点，浅色下装平衡复杂度，运动鞋延续休闲感。
-- Comment：整体轻松活泼，有重点但不过满。
-- Advice：减少额外色彩竞争，或让配饰延续一个主色。
+- Today：今天温度高，白T配灰色短裤穿着更轻松，运动鞋也方便临时出门。
+- Detail：白T和灰色短裤放在一起很日常，颜色不会互相抢。今天温度比较高，短袖、短裤这类单品穿起来更轻松，运动鞋也方便临时出门。
+- Comment：白T配灰色短裤很适合今天想穿得简单一点的时候，颜色清爽，出门也不费劲。
+- Advice：想再利落一点，可以让上衣或小包呼应运动鞋里的颜色。
 
 ## 部署与人工验收
 

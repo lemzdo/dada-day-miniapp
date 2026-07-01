@@ -2,6 +2,25 @@
 
 本文档记录阶段 6 第一任务：Evidence-grounded Stylist Explanation V2。当前实现只升级用户手动触发的“AI 点评这套”，不改变推荐候选、`scores.total`、排序、行为权重或页面视觉设计。
 
+## 当前增量：小搭点评 V4
+
+本轮在原 V2/V3 evidence-grounded 机制上升级为：
+
+```text
+reviewVersion = stylist-explanation-v4
+promptVersion = stylist-prompt-v4
+copyPolicyVersion = human-copy-v1
+voicePolicyVersion = xiaoda-voice-v1
+```
+
+复用旧点评必须同时满足 `inputDigest`、review version、prompt version、copy policy version 和 voice policy version。缺少 `voicePolicyVersion` 的旧 V3 点评不会被普通点击永久复用，用户下次主动点评时按 V4 重新生成。
+
+V4 prompt 要求模型像用户身边懂穿搭的贴心朋友，只输出 `overallComment` 和 `advice`。禁止解释识别、算法或生成过程，禁止机械设计词，禁止过度卖萌，禁止推断身体、年龄、职业或经济情况，禁止虚构舒适、材质、透气、保暖等穿着感受。
+
+validator 增加小搭机械表达检查、事实门槛检查和 advice/comment 重复检查。不合格输出继续走 rule fallback，不把 malformed AI 输出当成服务不可用。fallback 由 `xiaodaVoicePolicy` 渲染，基于可展示的 outfit/context facts，不使用“整体偏轻松日常、没有明显冲突、基础单品、更完整、想更统一”等旧模板。
+
+AI 点评错误码集中收口为：`AI_REVIEW_INCOMPLETE_INPUT`、`AI_REVIEW_PROVIDER_NOT_CONFIGURED`、`AI_REVIEW_PROVIDER_UNAVAILABLE`、`AI_REVIEW_STORAGE_UNAVAILABLE`、`AI_REVIEW_TRANSACTION_UNAVAILABLE`、`AI_REVIEW_IN_PROGRESS`、`AI_REVIEW_COOLDOWN`、`AI_REVIEW_UNKNOWN`。客户端只展示安全 message，旧成功点评在失败时保留。
+
 ## 目标
 
 V2 链路为：
