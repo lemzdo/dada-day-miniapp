@@ -23,7 +23,7 @@ test('panel mode does not use viewport min-height or window fixed footer', () =>
 });
 
 test('upload-confirm freezes background without wrapping panel content in a second ScrollView', () => {
-  assert.match(uploadConfirmTsx, /scrollY=\{!editingDraft\}/);
+  assert.match(uploadConfirmTsx, /scrollY=\{!editingDraft && !interactionLocked\}/);
   assert.doesNotMatch(uploadConfirmTsx, /<ScrollView[\s\S]*className="draft-edit-scroll"[\s\S]*scrollY/);
   assert.match(uploadConfirmTsx, /layoutMode="panel"/);
   assert.doesNotMatch(uploadConfirmScss, /\.draft-edit-scroll/);

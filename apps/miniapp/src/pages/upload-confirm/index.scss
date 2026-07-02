@@ -619,6 +619,46 @@
   flex-direction: column;
 }
 
+/* ============== 离场锁定 ============== */
+
+.leaving-discard-overlay {
+  position: fixed;
+  z-index: 30;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(250, 246, 241, 0.48);
+  backdrop-filter: blur(8rpx);
+}
+
+.leaving-discard-panel {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  min-height: 76rpx;
+  padding: 0 28rpx;
+  background: rgba(255, 253, 249, 0.94);
+  border: 1.5rpx solid rgba(234, 219, 200, 0.65);
+  border-radius: 999rpx;
+  box-shadow: 0 10rpx 28rpx rgba(164, 126, 84, 0.12);
+}
+
+.leaving-discard-dot {
+  width: 18rpx;
+  height: 18rpx;
+  border-radius: 50%;
+  background: var(--dada-milk-tea-gold, #C9A06A);
+  animation: dadaPulse 1.4s ease-in-out infinite;
+}
+
+.leaving-discard-text {
+  font-size: 24rpx;
+  font-weight: 600;
+  color: var(--dada-text-secondary, #7E6A59);
+  line-height: 1;
+}
+
 /* ============== 底部操作栏 ============== */
 
 .save-bar {

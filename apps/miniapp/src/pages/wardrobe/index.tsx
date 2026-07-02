@@ -35,6 +35,7 @@ import {
 } from '@/lib/userStorage';
 import { buildAuthRuntimeKey } from '@/lib/userRuntimeScope';
 import { filterTerminalBatches } from '@/lib/uploadTaskLocalCache';
+import { consumePendingWardrobeNotice } from '@/pages/upload-confirm/uploadTerminalDiscardFlow';
 import { canRecognizeSingleClothing, getSubcategoryDisplayLabel } from '@/utils/clothingLabels';
 import type { Clothing, ClothingCategory, UserClothingSubcategory } from '@starter-template/types';
 import type { RecoverableUploadBatch } from '@/lib/cloud';
@@ -293,12 +294,21 @@ export default function WardrobePage() {
   });
 
   useDidShow(() => {
+    const authContext = captureAuthContext();
+    const pendingNotice = consumePendingWardrobeNotice({
+      authContext,
+      getUserStorageSync,
+      removeUserStorageSync,
+    });
+    if (pendingNotice) {
+      Taro.showToast({ title: pendingNotice, icon: 'success' });
+    }
+
     if (skipNextShowRefreshRef.current) {
       skipNextShowRefreshRef.current = false;
       return;
     }
 
-    const authContext = captureAuthContext();
     if (authContext) {
       setRecoverableBatches((prev) => (
         filterTerminalBatches(buildAuthRuntimeKey(authContext), prev) as RecoverableUploadBatch[]

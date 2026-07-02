@@ -39,6 +39,13 @@ import { displayClothingTags, displayClothingText, getSubcategoryDisplayLabel, g
 import type { ClothesDraft, ClothingCategory, ClothingImageSourceType, UploadBatch, UploadImage, WardrobeCapacity } from '@starter-template/types';
 import { DEFAULT_WARDROBE_LIMIT } from '@/constants/wardrobeCapacity';
 import * as uploadConfirmState from './uploadConfirmStateCore';
+import {
+  TERMINAL_DISCARD_FALLBACK_NOTICE,
+  WARDROBE_TAB_URL,
+  normalizeTerminalDiscardStatus,
+  setPendingWardrobeNotice,
+  shouldEnterTerminalDiscardLeaving,
+} from './uploadTerminalDiscardFlow';
 import './index.scss';
 
 const WARDROBE_REFRESH_STORAGE_KEY = 'wardrobeNeedsRefresh';
@@ -99,6 +106,7 @@ export default function UploadConfirmPage() {
   const [discardingBatch, setDiscardingBatch] = useState(false);
   const [discardingDraftIds, setDiscardingDraftIds] = useState<Set<string>>(() => new Set());
   const [editingDraft, setEditingDraft] = useState<ClothesDraft | null>(null);
+  const [isLeavingAfterDiscard, setIsLeavingAfterDiscard] = useState(false);
   const processingLoopRef = useRef(false);
   const mountedRef = useRef(true);
   const discardRequestedRef = useRef(false);
@@ -125,16 +133,18 @@ export default function UploadConfirmPage() {
     setDiscardingBatch(false);
     setDiscardingDraftIds(new Set());
     setEditingDraft(null);
+    setIsLeavingAfterDiscard(false);
     Taro.hideLoading();
     Taro.stopPullDownRefresh();
   }, []);
 
   const navigateToWardrobe = useCallback(() => {
-    if (redirectingRef.current) return;
+    if (redirectingRef.current) return Promise.resolve(false);
     redirectingRef.current = true;
-    Taro.switchTab({ url: '/pages/wardrobe/index' }).catch((error) => {
+    return Taro.switchTab({ url: WARDROBE_TAB_URL }).then(() => true).catch((error) => {
       console.warn('Navigate to wardrobe failed:', error);
       redirectingRef.current = false;
+      throw error;
     });
   }, []);
 
@@ -151,7 +161,7 @@ export default function UploadConfirmPage() {
     },
     onInvalidate: () => {
       resetFlowState();
-      navigateToWardrobe();
+      void navigateToWardrobe();
     },
   });
 
@@ -235,7 +245,7 @@ export default function UploadConfirmPage() {
   }
 
   async function processPendingImages(imagesOverride?: UploadImage[]) {
-    if (!batchId || processingLoopRef.current || !mountedRef.current || discardRequestedRef.current) return;
+    if (!batchId || processingLoopRef.current || !mountedRef.current || discardRequestedRef.current || isLeavingAfterDiscard) return;
     const authContext = captureAuthContext();
     const flowRuntimeKey = boundRuntimeKeyRef.current;
     if (!authContext || !isFlowActive(flowRuntimeKey)) return;
@@ -385,19 +395,20 @@ export default function UploadConfirmPage() {
   }
 
   function toggleDraftSelected(draft: ClothesDraft) {
-    if (!canEditDrafts || !isDraftSelectable(draft)) return;
+    if (!canEditDrafts || isLeavingAfterDiscard || !isDraftSelectable(draft)) return;
     if (discardingDraftIds.has(draft.id)) return;
     patchDraft(draft.id, { selected: !draft.selected });
   }
 
   function handleSelectAllDraftsToggle() {
-    if (!canEditDrafts || selectableDraftCount === 0) return;
+    if (!canEditDrafts || isLeavingAfterDiscard || selectableDraftCount === 0) return;
     setDrafts((prev) => prev.map((draft) => (
       isDraftSelectable(draft) ? { ...draft, selected: !allSelectableDraftsSelected } : draft
     )));
   }
 
   function handleEditDraft(draft: ClothesDraft) {
+    if (isLeavingAfterDiscard) return;
     setEditingDraft(draft);
   }
 
@@ -424,7 +435,7 @@ export default function UploadConfirmPage() {
     const authContext = captureAuthContext();
     const flowRuntimeKey = boundRuntimeKeyRef.current;
     if (!authContext || !isFlowActive(flowRuntimeKey)) return;
-    if (discardingDraftIds.has(draft.id)) return;
+    if (isLeavingAfterDiscard || discardingDraftIds.has(draft.id)) return;
     const modalRes = await Taro.showModal({
       title: '舍弃这件衣服？',
       content: '舍弃后，这件识别结果不会保存到衣橱。',
@@ -439,37 +450,46 @@ export default function UploadConfirmPage() {
     try {
       const result = await discardClothesDraft(draft.id);
       if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
-      setDrafts((prev) => prev.filter((item) => item.id !== draft.id));
-      await invalidateAfterUploadTaskMutation({ authContext });
-      if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
-      if (result.batchTerminal && batchId) {
+      if (shouldEnterTerminalDiscardLeaving(result, batchId)) {
         discardRequestedRef.current = true;
-        setBatch((prev) => prev ? { ...prev, status: result.batchStatus || 'discarded' } : prev);
+        setIsLeavingAfterDiscard(true);
+        const authRuntimeKey = buildAuthRuntimeKey(authContext);
+        const terminalStatus = normalizeTerminalDiscardStatus(result.batchStatus);
         removeUserStorageSync(buildUserStorageBusinessKey('uploadBatchImages', batchId), { authContext });
         markUploadBatchTerminal({
-          authRuntimeKey: buildAuthRuntimeKey(authContext),
+          authRuntimeKey,
           batchId,
-          status: result.batchStatus || 'discarded',
+          status: terminalStatus,
         });
         removeUploadBatchFromLocalCache({
-          authRuntimeKey: buildAuthRuntimeKey(authContext),
+          authRuntimeKey,
           batchId,
           batchTerminal: true,
         });
-        Taro.showToast({ title: '本次识别已舍弃', icon: 'success' });
-        setTimeout(() => {
-          if (isFlowCurrent(authContext, flowRuntimeKey)) navigateToWardrobe();
-        }, 500);
+        setPendingWardrobeNotice({ authContext, setUserStorageSync });
+        await invalidateAfterUploadTaskMutation({ authContext });
+        if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
+        await navigateToWardrobe();
         return;
       }
+      setDrafts((prev) => prev.filter((item) => item.id !== draft.id));
+      await invalidateAfterUploadTaskMutation({ authContext });
+      if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
       void refresh();
     } catch (error) {
       console.warn('Discard draft failed:', error);
       if (isFlowCurrent(authContext, flowRuntimeKey)) {
-        Taro.showToast({ title: '舍弃失败，请稍后再试', icon: 'none' });
+        if (discardRequestedRef.current) {
+          setIsLeavingAfterDiscard(false);
+          setBatch((prev) => prev ? { ...prev, status: 'discarded' } : prev);
+          setDrafts((prev) => prev.filter((item) => item.id !== draft.id));
+          Taro.showToast({ title: TERMINAL_DISCARD_FALLBACK_NOTICE, icon: 'none' });
+        } else {
+          Taro.showToast({ title: '舍弃失败，请稍后再试', icon: 'none' });
+        }
       }
     } finally {
-      if (isFlowCurrent(authContext, flowRuntimeKey)) {
+      if (isFlowCurrent(authContext, flowRuntimeKey) && !discardRequestedRef.current) {
         setDiscardingDraftIds((prev) => {
           const next = new Set(prev);
           next.delete(draft.id);
@@ -483,6 +503,7 @@ export default function UploadConfirmPage() {
     const authContext = captureAuthContext();
     const flowRuntimeKey = boundRuntimeKeyRef.current;
     if (!authContext || !isFlowActive(flowRuntimeKey)) return;
+    if (isLeavingAfterDiscard) return;
     if (segmentingDraftIdsRef.current.has(draft.id)) return;
     segmentingDraftIdsRef.current.add(draft.id);
     patchDraft(draft.id, {
@@ -515,7 +536,7 @@ export default function UploadConfirmPage() {
   }
 
   async function handleSave() {
-    if (!batchId || saving || savingRef.current) return;
+    if (!batchId || saving || savingRef.current || isLeavingAfterDiscard) return;
     const authContext = captureAuthContext();
     const flowRuntimeKey = boundRuntimeKeyRef.current;
     if (!authContext || !isFlowActive(flowRuntimeKey)) return;
@@ -608,7 +629,7 @@ export default function UploadConfirmPage() {
   }
 
   async function handleDiscardBatch() {
-    if (!batchId || discardingBatch) return;
+    if (!batchId || discardingBatch || isLeavingAfterDiscard) return;
     const authContext = captureAuthContext();
     const flowRuntimeKey = boundRuntimeKeyRef.current;
     if (!authContext || !isFlowActive(flowRuntimeKey)) return;
@@ -682,7 +703,9 @@ export default function UploadConfirmPage() {
   } = derivedState;
   const progress = totalImages > 0 ? Math.round((processedImages / totalImages) * 100) : 0;
   const isBatchComplete = batchProgress.isBatchComplete;
-  const saveDisabled = !canSave;
+  const interactionLocked = isLeavingAfterDiscard;
+  const canEditDraftsNow = canEditDrafts && !interactionLocked;
+  const saveDisabled = !canSave || interactionLocked;
   const saveText = uploadConfirmState.getSaveButtonText(derivedState);
   const selectAllText = allSelectableDraftsSelected ? '全不选' : '全选';
   const failedImageCount = images.filter((item) => item.status === 'failed').length;
@@ -701,8 +724,8 @@ export default function UploadConfirmPage() {
   }
 
   return (
-    <View className={`upload-confirm-page ${editingDraft ? 'editing' : ''}`}>
-      <ScrollView className="upload-confirm-main-scroll" scrollY={!editingDraft} enhanced showScrollbar={false}>
+    <View className={`upload-confirm-page ${editingDraft ? 'editing' : ''} ${isLeavingAfterDiscard ? 'leaving-after-discard' : ''}`}>
+      <ScrollView className="upload-confirm-main-scroll" scrollY={!editingDraft && !interactionLocked} enhanced showScrollbar={false}>
       <View className={`progress-panel ${taskStatus}`}>
         <Text className="progress-title">{uploadConfirmState.getProgressTitle(derivedState)}</Text>
         <Text className="progress-desc">{uploadConfirmState.getProgressDesc(derivedState)}</Text>
@@ -761,7 +784,7 @@ export default function UploadConfirmPage() {
           return (
           <View
             key={draft.id}
-            className={`draft-card ${draft.selected ? 'selected' : 'muted'} ${canEditDrafts && isDraftSelectable(draft) ? 'selectable' : 'readonly'} ${isDiscardingDraft ? 'discarding' : ''}`}
+            className={`draft-card ${draft.selected ? 'selected' : 'muted'} ${canEditDraftsNow && isDraftSelectable(draft) ? 'selectable' : 'readonly'} ${isDiscardingDraft ? 'discarding' : ''}`}
             onClick={() => toggleDraftSelected(draft)}
           >
             <View className="draft-image-wrapper">
@@ -796,7 +819,7 @@ export default function UploadConfirmPage() {
               </View>
 
               <View className="draft-actions">
-                {canEditDrafts && (
+                {canEditDraftsNow && (
                   <>
                     <View className="edit-btn" onClick={(event) => {
                       event.stopPropagation();
@@ -810,7 +833,7 @@ export default function UploadConfirmPage() {
                     }}>
                       <Text className="reprocess-text">重新处理</Text>
                     </View>
-                    <View className={`discard-btn ${isDiscardingDraft ? 'disabled' : ''}`} onClick={(event) => {
+                    <View className={`discard-btn ${isDiscardingDraft || interactionLocked ? 'disabled' : ''}`} onClick={(event) => {
                       event.stopPropagation();
                       handleDiscard(draft);
                     }}>
@@ -845,16 +868,25 @@ export default function UploadConfirmPage() {
         </View>
       )}
 
+      {isLeavingAfterDiscard && (
+        <View className="leaving-discard-overlay" catchMove>
+          <View className="leaving-discard-panel">
+            <View className="leaving-discard-dot" />
+            <Text className="leaving-discard-text">正在返回衣橱...</Text>
+          </View>
+        </View>
+      )}
+
       <View className="save-bar">
         {canDiscardBatch ? (
-          <View className={`discard-batch-btn ${discardingBatch ? 'disabled' : ''}`} onClick={handleDiscardBatch}>
+          <View className={`discard-batch-btn ${discardingBatch || interactionLocked ? 'disabled' : ''}`} onClick={handleDiscardBatch}>
             <Text className="discard-batch-text">{discardingBatch ? '舍弃中...' : '舍弃本次'}</Text>
           </View>
         ) : (
           <View className="save-bar-placeholder" />
         )}
         <View
-          className={`select-all-drafts-btn ${!canEditDrafts || selectableDraftCount === 0 ? 'disabled' : ''}`}
+          className={`select-all-drafts-btn ${!canEditDraftsNow || selectableDraftCount === 0 ? 'disabled' : ''}`}
           onClick={handleSelectAllDraftsToggle}
         >
           <Text className="select-all-drafts-text">{selectAllText}</Text>
