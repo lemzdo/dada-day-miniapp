@@ -42,8 +42,7 @@ import * as uploadConfirmState from './uploadConfirmStateCore';
 import {
   TERMINAL_DISCARD_FALLBACK_NOTICE,
   WARDROBE_TAB_URL,
-  normalizeTerminalDiscardStatus,
-  setPendingWardrobeNotice,
+  finalizeTerminalDiscard,
   shouldEnterTerminalDiscardLeaving,
 } from './uploadTerminalDiscardFlow';
 import './index.scss';
@@ -435,7 +434,7 @@ export default function UploadConfirmPage() {
     const authContext = captureAuthContext();
     const flowRuntimeKey = boundRuntimeKeyRef.current;
     if (!authContext || !isFlowActive(flowRuntimeKey)) return;
-    if (isLeavingAfterDiscard || discardingDraftIds.has(draft.id)) return;
+    if (isLeavingAfterDiscard || discardRequestedRef.current || discardingDraftIds.has(draft.id)) return;
     const modalRes = await Taro.showModal({
       title: '舍弃这件衣服？',
       content: '舍弃后，这件识别结果不会保存到衣橱。',
@@ -452,24 +451,28 @@ export default function UploadConfirmPage() {
       if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
       if (shouldEnterTerminalDiscardLeaving(result, batchId)) {
         discardRequestedRef.current = true;
-        setIsLeavingAfterDiscard(true);
-        const authRuntimeKey = buildAuthRuntimeKey(authContext);
-        const terminalStatus = normalizeTerminalDiscardStatus(result.batchStatus);
-        removeUserStorageSync(buildUserStorageBusinessKey('uploadBatchImages', batchId), { authContext });
-        markUploadBatchTerminal({
-          authRuntimeKey,
+        await finalizeTerminalDiscard({
+          source: 'draft',
           batchId,
-          status: terminalStatus,
+          batchStatus: result.batchStatus,
+          authContext,
+          flowRuntimeKey,
+          isFlowCurrent,
+          setIsLeavingAfterDiscard,
+          buildAuthRuntimeKey,
+          buildUserStorageBusinessKey,
+          removeUserStorageSync,
+          markUploadBatchTerminal,
+          removeUploadBatchFromLocalCache,
+          setUserStorageSync,
+          invalidateAfterUploadTaskMutation,
+          navigateToWardrobe,
+          onNavigationFailure: () => {
+            setBatch((prev) => prev ? { ...prev, status: 'discarded' } : prev);
+            setDrafts((prev) => prev.filter((item) => item.id !== draft.id));
+            Taro.showToast({ title: TERMINAL_DISCARD_FALLBACK_NOTICE, icon: 'none' });
+          },
         });
-        removeUploadBatchFromLocalCache({
-          authRuntimeKey,
-          batchId,
-          batchTerminal: true,
-        });
-        setPendingWardrobeNotice({ authContext, setUserStorageSync });
-        await invalidateAfterUploadTaskMutation({ authContext });
-        if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
-        await navigateToWardrobe();
         return;
       }
       setDrafts((prev) => prev.filter((item) => item.id !== draft.id));
@@ -629,7 +632,7 @@ export default function UploadConfirmPage() {
   }
 
   async function handleDiscardBatch() {
-    if (!batchId || discardingBatch || isLeavingAfterDiscard) return;
+    if (!batchId || discardingBatch || discardRequestedRef.current || isLeavingAfterDiscard) return;
     const authContext = captureAuthContext();
     const flowRuntimeKey = boundRuntimeKeyRef.current;
     if (!authContext || !isFlowActive(flowRuntimeKey)) return;
@@ -643,36 +646,48 @@ export default function UploadConfirmPage() {
     if (!modalRes.confirm) return;
     if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
 
+    let batchDiscarded = false;
     discardRequestedRef.current = true;
     setDiscardingBatch(true);
     try {
       Taro.showLoading({ title: '正在舍弃...' });
       await discardUploadBatch(batchId);
+      batchDiscarded = true;
       if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
-      setBatch((prev) => prev ? { ...prev, status: 'discarded' } : prev);
-      setDrafts([]);
-      removeUserStorageSync(buildUserStorageBusinessKey('uploadBatchImages', batchId), { authContext });
-      markUploadBatchTerminal({
-        authRuntimeKey: buildAuthRuntimeKey(authContext),
+      await finalizeTerminalDiscard({
+        source: 'batch',
         batchId,
-        status: 'discarded',
+        batchStatus: 'discarded',
+        authContext,
+        flowRuntimeKey,
+        isFlowCurrent,
+        setIsLeavingAfterDiscard,
+        buildAuthRuntimeKey,
+        buildUserStorageBusinessKey,
+        removeUserStorageSync,
+        markUploadBatchTerminal,
+        removeUploadBatchFromLocalCache,
+        setUserStorageSync,
+        invalidateAfterUploadTaskMutation,
+        navigateToWardrobe,
+        onNavigationFailure: () => {
+          setBatch((prev) => prev ? { ...prev, status: 'discarded' } : prev);
+          setDrafts([]);
+          Taro.showToast({ title: TERMINAL_DISCARD_FALLBACK_NOTICE, icon: 'none' });
+        },
       });
-      removeUploadBatchFromLocalCache({
-        authRuntimeKey: buildAuthRuntimeKey(authContext),
-        batchId,
-        batchTerminal: true,
-      });
-      await invalidateAfterUploadTaskMutation({ authContext });
-      if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
-      Taro.showToast({ title: '已舍弃本次识别', icon: 'success' });
-      setTimeout(() => {
-        if (isFlowCurrent(authContext, flowRuntimeKey)) navigateToWardrobe();
-      }, 600);
     } catch (error) {
       console.error('Discard upload batch failed:', error);
-      discardRequestedRef.current = false;
       if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
-      Taro.showToast({ title: '舍弃失败，请稍后再试', icon: 'none' });
+      if (batchDiscarded) {
+        setIsLeavingAfterDiscard(false);
+        setBatch((prev) => prev ? { ...prev, status: 'discarded' } : prev);
+        setDrafts([]);
+        Taro.showToast({ title: TERMINAL_DISCARD_FALLBACK_NOTICE, icon: 'none' });
+      } else {
+        discardRequestedRef.current = false;
+        Taro.showToast({ title: '舍弃失败，请稍后再试', icon: 'none' });
+      }
     } finally {
       Taro.hideLoading();
       if (isFlowCurrent(authContext, flowRuntimeKey)) setDiscardingBatch(false);

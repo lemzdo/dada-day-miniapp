@@ -33,12 +33,82 @@ function consumePendingWardrobeNotice({
   return String(notice);
 }
 
+async function finalizeTerminalDiscard({
+  source,
+  batchId,
+  batchStatus,
+  authContext,
+  flowRuntimeKey,
+  isFlowCurrent = () => true,
+  setIsLeavingAfterDiscard,
+  buildAuthRuntimeKey,
+  buildUserStorageBusinessKey,
+  removeUserStorageSync,
+  markUploadBatchTerminal,
+  removeUploadBatchFromLocalCache,
+  setUserStorageSync,
+  invalidateAfterUploadTaskMutation,
+  navigateToWardrobe,
+  onNavigationFailure,
+} = {}) {
+  if (!batchId || !authContext) return { navigated: false };
+  const terminalStatus = normalizeTerminalDiscardStatus(batchStatus);
+  if (typeof setIsLeavingAfterDiscard === 'function') {
+    setIsLeavingAfterDiscard(true);
+  }
+
+  const authRuntimeKey = typeof buildAuthRuntimeKey === 'function'
+    ? buildAuthRuntimeKey(authContext)
+    : undefined;
+  if (typeof removeUserStorageSync === 'function' && typeof buildUserStorageBusinessKey === 'function') {
+    removeUserStorageSync(buildUserStorageBusinessKey('uploadBatchImages', batchId), { authContext });
+  }
+  if (typeof markUploadBatchTerminal === 'function') {
+    markUploadBatchTerminal({
+      authRuntimeKey,
+      batchId,
+      status: terminalStatus,
+    });
+  }
+  if (typeof removeUploadBatchFromLocalCache === 'function') {
+    removeUploadBatchFromLocalCache({
+      authRuntimeKey,
+      batchId,
+      batchTerminal: true,
+    });
+  }
+  setPendingWardrobeNotice({ authContext, setUserStorageSync });
+
+  if (typeof invalidateAfterUploadTaskMutation === 'function') {
+    await invalidateAfterUploadTaskMutation({ authContext });
+  }
+  if (!isFlowCurrent(authContext, flowRuntimeKey)) return { navigated: false };
+
+  try {
+    if (typeof navigateToWardrobe === 'function') {
+      await navigateToWardrobe();
+      return { navigated: true };
+    }
+  } catch (error) {
+    if (isFlowCurrent(authContext, flowRuntimeKey)) {
+      if (typeof setIsLeavingAfterDiscard === 'function') {
+        setIsLeavingAfterDiscard(false);
+      }
+      if (typeof onNavigationFailure === 'function') {
+        onNavigationFailure({ source, error, terminalStatus });
+      }
+    }
+  }
+  return { navigated: false };
+}
+
 module.exports = {
   TERMINAL_DISCARD_FALLBACK_NOTICE,
   WARDROBE_DISCARD_NOTICE,
   WARDROBE_NOTICE_STORAGE_KEY,
   WARDROBE_TAB_URL,
   consumePendingWardrobeNotice,
+  finalizeTerminalDiscard,
   normalizeTerminalDiscardStatus,
   setPendingWardrobeNotice,
   shouldEnterTerminalDiscardLeaving,

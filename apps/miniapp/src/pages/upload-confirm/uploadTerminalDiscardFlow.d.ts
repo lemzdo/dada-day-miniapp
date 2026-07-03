@@ -23,3 +23,34 @@ export function consumePendingWardrobeNotice(input?: {
   getUserStorageSync: <T>(key: string, options?: { authContext?: ActiveAuthContext | null }) => T | undefined | null;
   removeUserStorageSync: (key: string, options?: { authContext?: ActiveAuthContext | null }) => void;
 }): string;
+
+export function finalizeTerminalDiscard(input?: {
+  source?: 'draft' | 'batch' | string;
+  batchId?: string | null;
+  batchStatus?: string;
+  authContext?: ActiveAuthContext | null;
+  flowRuntimeKey?: string | null;
+  isFlowCurrent?: (authContext: ActiveAuthContext | null | undefined, flowRuntimeKey: string | null) => boolean;
+  setIsLeavingAfterDiscard?: (value: boolean) => void;
+  buildAuthRuntimeKey?: (authContext: ActiveAuthContext) => string;
+  buildUserStorageBusinessKey?: (...parts: Array<string | number | boolean>) => string;
+  removeUserStorageSync?: (key: string, options?: { authContext?: ActiveAuthContext | null }) => void;
+  markUploadBatchTerminal?: (input: {
+    authRuntimeKey?: string;
+    batchId: string;
+    status: string;
+  }) => void;
+  removeUploadBatchFromLocalCache?: (input: {
+    authRuntimeKey?: string;
+    batchId: string;
+    batchTerminal?: boolean;
+  }) => void;
+  setUserStorageSync?: (key: string, value: unknown, options?: { authContext?: ActiveAuthContext | null }) => void;
+  invalidateAfterUploadTaskMutation?: (input: { authContext?: ActiveAuthContext | null }) => Promise<unknown>;
+  navigateToWardrobe?: () => Promise<unknown>;
+  onNavigationFailure?: (input: {
+    source?: 'draft' | 'batch' | string;
+    error: unknown;
+    terminalStatus: string;
+  }) => void;
+}): Promise<{ navigated: boolean }>;
