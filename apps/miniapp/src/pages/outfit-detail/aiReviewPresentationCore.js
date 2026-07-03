@@ -1,6 +1,34 @@
-function buildAiReviewPresentation(aiComment) {
+const BENEFIT_LABELS = {
+  indoor_relax: '在家活动更轻松',
+  walkable: '走动和临时出门更方便',
+  clean_daily: '日常穿着清楚省心',
+  commute_polish: '通勤场景更利落',
+  temperature_buffer: '温差变化时更好调整',
+  soft_mood: '约会时更柔和',
+  clear_highlight: '有一个清楚的亮点',
+  light_activity: '轻活动时不笨重',
+  formal_training: '适合正式训练',
+  hot_weather: '高温下更清爽',
+  accent: '用小面积细节提气色',
+};
+
+const SLOT_LABELS = {
+  top: '上衣',
+  bottom: '下装',
+  skirt: '半裙',
+  onepiece: '连衣裙',
+  outerwear: '外套',
+  shoes: '鞋子',
+  accessory: '配饰',
+  other: '单品',
+};
+
+const EMPTY_PHRASES = ['单品和单品很日常', '想再明确一点', '整体比较完整', '场景适配度比较高'];
+
+function buildAiReviewPresentation(aiComment, contentPlan) {
+  const fallback = buildContentPlanPresentation(contentPlan);
   if (!aiComment || typeof aiComment !== 'object') {
-    return emptyPresentation();
+    return fallback;
   }
 
   const explanation = aiComment.explanationV2 && typeof aiComment.explanationV2 === 'object'
@@ -8,18 +36,35 @@ function buildAiReviewPresentation(aiComment) {
     : null;
 
   if (explanation && explanation.schemaVersion === 2) {
-    return buildV2Presentation(aiComment, explanation);
+    return choosePresentation(buildV2Presentation(aiComment, explanation), fallback, contentPlan);
   }
   if (explanation && explanation.schemaVersion === 3) {
-    return buildV3Presentation(explanation);
+    return choosePresentation(buildV3Presentation(explanation), fallback, contentPlan);
   }
 
   const bodyParagraphs = uniqueText([aiComment.reason]).map((text) => normalizeText(text, 120)).filter(Boolean);
-  return {
+  return choosePresentation({
     bodyParagraphs,
     tags: [],
     advice: normalizeText(aiComment.tip, 120) || null,
-  };
+  }, fallback, contentPlan);
+}
+
+function choosePresentation(candidate, fallback, contentPlan) {
+  if (!hasQualifiedContent(candidate, contentPlan, fallback)) return fallback;
+  return candidate;
+}
+
+function hasQualifiedContent(candidate, contentPlan, fallback) {
+  const body = (candidate?.bodyParagraphs || []).join('');
+  const advice = candidate?.advice || '';
+  const text = `${body}${advice}`;
+  if (!body) return false;
+  if (EMPTY_PHRASES.some((phrase) => text.includes(phrase))) return false;
+  if (/\b(category|subcategory|slot|top|bottom|shoes|outerwear|accessory|onepiece)\b/i.test(text)) return false;
+  if (contentPlan && !mentionsPlanFact(text, contentPlan)) return false;
+  if (fallback?.bodyParagraphs?.length && normalizeComparable(body) === normalizeComparable(fallback.bodyParagraphs.join(''))) return false;
+  return true;
 }
 
 function buildV3Presentation(explanation) {
@@ -90,6 +135,54 @@ function emptyPresentation() {
     tags: [],
     advice: null,
   };
+}
+
+function buildContentPlanPresentation(contentPlan) {
+  if (!contentPlan || typeof contentPlan !== 'object') return emptyPresentation();
+  const items = Array.isArray(contentPlan.items) ? contentPlan.items : [];
+  const core = items.filter((item) => item.role === 'core');
+  const functional = items.filter((item) => item.role === 'functional');
+  const optional = items.filter((item) => item.role === 'optional');
+  const benefit = BENEFIT_LABELS[contentPlan.primaryBenefit] || '今天穿起来更省心';
+  const bodyParagraphs = [];
+  const coreText = joinNames(core);
+  bodyParagraphs.push(coreText ? `${coreText}是这套的主线，${benefit}。` : `这套主线比较简单，${benefit}。`);
+  if (functional.length > 0) {
+    bodyParagraphs.push(`${joinNames(functional)}主要负责天气或场景上的需要，不是为了凑件数。`);
+  } else if (optional.length > 0) {
+    bodyParagraphs.push(`${joinNames(optional)}只是加一点小细节，没有它也不影响这套成立。`);
+  } else {
+    bodyParagraphs.push(renderSecondObservation(contentPlan, items));
+  }
+  return {
+    bodyParagraphs,
+    tags: [],
+    advice: normalizeText(contentPlan.suggestion?.text, 120) || null,
+  };
+}
+
+function renderSecondObservation(contentPlan, items) {
+  const shoes = items.find((item) => item.slot === 'shoes');
+  if (contentPlan.primaryBenefit === 'walkable' && shoes) return `${shoes.displayName}负责走动时的稳定感，场景价值比多加一件配饰更明确。`;
+  if (contentPlan.primaryBenefit === 'formal_training' && shoes) return `${shoes.displayName}和运动单品一起承担训练用途，普通日常单品不会被当成专业装备。`;
+  if (contentPlan.primaryBenefit === 'hot_weather') return '高温时这套没有额外加外套，重点放在少层次和清爽度上。';
+  if (contentPlan.primaryBenefit === 'commute_polish') return '这套没有靠夸张细节撑场面，主要用清楚的单品关系服务通勤状态。';
+  if (contentPlan.primaryBenefit === 'soft_mood') return '柔和感来自已有单品本身，不需要强行再加外套或配饰。';
+  if (contentPlan.primaryBenefit === 'clear_highlight') return '亮点已经落在现有单品里，其他部分保持简单会更稳。';
+  return '这套成立的关键是主线清楚，不需要为了完整感再硬加单品。';
+}
+
+function mentionsPlanFact(text, contentPlan) {
+  const facts = [
+    ...(contentPlan.items || []).flatMap((item) => [item.displayName, SLOT_LABELS[item.slot]]),
+    BENEFIT_LABELS[contentPlan.primaryBenefit],
+    BENEFIT_LABELS[contentPlan.secondaryBenefit],
+  ].filter(Boolean);
+  return facts.some((fact) => text.includes(fact));
+}
+
+function joinNames(items) {
+  return items.map((item) => normalizeText(item.displayName, 32)).filter(Boolean).join('、');
 }
 
 module.exports = {

@@ -10,6 +10,12 @@ const {
   renderXiaodaStylistFallback,
   renderXiaodaTodayCopy,
 } = require('./xiaodaVoicePolicy');
+const {
+  XIAODA_CONTENT_PLAN_VERSION,
+  buildXiaodaContentPlanV1,
+  buildXiaodaDefaultReviewV1,
+  renderXiaodaPlanTextV1,
+} = require('./xiaodaContentPlan');
 
 const RECOMMENDATION_REASON_VERSION_V3 = 'recommendation-reason-v3';
 const CATEGORY_ORDER = ['top', 'outerwear', 'onepiece', 'bottom', 'skirt', 'shoes', 'accessory', 'other'];
@@ -65,6 +71,13 @@ function compileRecommendationLanguageV3({ outfits = [], scene, weather } = {}) 
       reasonVersion: RECOMMENDATION_REASON_VERSION_V3,
       reason: copy.reason,
       reasoning: copy.reasoning,
+      reviewSource: 'rule_default',
+      contentPlanVersion: plan.contentPlan.version,
+      contentPlan: plan.contentPlan,
+      sceneIntent: plan.contentPlan.sceneIntent,
+      primaryBenefitCode: plan.contentPlan.primaryBenefit,
+      validatorRejectReasons: [],
+      cacheReuseReason: '',
       primaryDimension: plan.primaryInsight.dimension,
       primaryInsightCode: plan.primaryInsight.code,
       evidenceCodes: plan.detailInsights.map((insight) => insight.code),
@@ -73,6 +86,10 @@ function compileRecommendationLanguageV3({ outfits = [], scene, weather } = {}) 
         ...(plan.outfit.aiComment && typeof plan.outfit.aiComment === 'object' ? plan.outfit.aiComment : {}),
         overallComment: copy.aiComment.overallComment,
         advice: copy.aiComment.advice,
+        contentPlanVersion: plan.contentPlan.version,
+        sceneIntent: plan.contentPlan.sceneIntent,
+        primaryBenefitCode: plan.contentPlan.primaryBenefit,
+        reviewSource: 'rule_default',
         reviewVersion: 'stylist-explanation-v4',
         promptVersion: 'stylist-prompt-v4',
         copyPolicyVersion: 'human-copy-v1',
@@ -157,6 +174,12 @@ function planBatchCopyV3(outfitPlans = []) {
       batchIndex: index,
     };
     plan = ensureUniquePlanReason(plan, usedReasons);
+    plan.contentPlan = buildXiaodaContentPlanV1(outfit, {
+      sceneIntent: outfit.sceneIntent,
+      primaryBenefit: outfit.primaryBenefit || benefitFromInsight(plan.primaryInsight, index),
+      secondaryBenefit: outfit.secondaryBenefit,
+      observationFocus: outfit.observationFocus || plan.primaryInsight.dimension,
+    });
     usedCodes.add(primaryInsight.code);
     usedDimensions.add(primaryInsight.dimension);
     usedFamilies.add(plan.sentenceFamily);
@@ -167,23 +190,40 @@ function planBatchCopyV3(outfitPlans = []) {
   });
 }
 
+function benefitFromInsight(insightEntry, index = 0) {
+  const code = insightEntry?.code || '';
+  if (code.includes('WEATHER') || insightEntry?.dimension === 'weather') return 'temperature_buffer';
+  if (code.includes('FORMALITY') || insightEntry?.dimension === 'formality') return 'commute_polish';
+  if (code.includes('COLOR') && index % 2 === 0) return 'clear_highlight';
+  if (code.includes('COLOR')) return 'soft_mood';
+  if (code.includes('PATTERN') || code.includes('DETAIL')) return 'clear_highlight';
+  if (code.includes('SILHOUETTE') || code.includes('PROPORTION')) return 'clean_daily';
+  if (code.includes('SCENE_HOME')) return 'indoor_relax';
+  if (code.includes('SCENE_SPORT')) return 'light_activity';
+  if (code.includes('SCENE_DATE')) return 'soft_mood';
+  if (code.includes('SCENE_WORK')) return 'commute_polish';
+  return ['clean_daily', 'walkable', 'clear_highlight', 'soft_mood'][index % 4];
+}
+
 function renderRecommendationCopyV3(plan) {
-  const reason = renderTodayReasonV3(plan);
-  const reasoning = renderDetailReasoningV3(plan);
-  const aiComment = renderStylistFallbackCopyV3(plan, { reasoning });
+  const planCopy = renderXiaodaPlanTextV1(plan.contentPlan);
+  const defaultReview = buildXiaodaDefaultReviewV1(plan.contentPlan);
+  const reason = ensureCopy(planCopy.bodyParagraphs[0] || defaultReview.reason, () => renderTodayReasonV3(plan));
+  const reasoning = ensureCopy(planCopy.bodyParagraphs.join('') || defaultReview.reason, () => renderDetailReasoningV3(plan));
+  const aiComment = {
+    overallComment: reasoning,
+    advice: planCopy.suggestion?.text || '',
+  };
   assertHumanCopy(reason);
-  assertHumanCopy(reasoning, { compareWith: reason });
+  assertHumanCopy(reasoning);
   assertHumanCopy(aiComment.overallComment);
-  assertHumanCopy(aiComment.advice, { compareWith: aiComment.overallComment });
+  if (aiComment.advice) assertHumanCopy(aiComment.advice, { compareWith: aiComment.overallComment });
   if (isTooSimilar(aiComment.overallComment, reasoning)) {
-    const fallback = renderBasicStylistCopy(plan.facts, plan.primaryInsight);
-    assertHumanCopy(fallback.overallComment);
-    assertHumanCopy(fallback.advice);
     return {
       reasonVersion: RECOMMENDATION_REASON_VERSION_V3,
       reason,
       reasoning,
-      aiComment: fallback,
+      aiComment,
     };
   }
   return {
@@ -967,6 +1007,7 @@ function stripNonFinite(value) {
 
 module.exports = {
   RECOMMENDATION_REASON_VERSION_V3,
+  XIAODA_CONTENT_PLAN_VERSION,
   compileRecommendationLanguageV3,
   deriveDisplayTagsV3,
   deriveOutfitInsightsV3,

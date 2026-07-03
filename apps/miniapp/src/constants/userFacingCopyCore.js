@@ -15,14 +15,14 @@ const USER_FACING_COPY = {
     empty: '今天还没找到特别合适的一套，再换个场景试试。',
   },
   aiReview: {
-    loading: '小搭正在看看这套哪里最出彩……',
-    inProgress: '小搭正在点评这套，再等一会儿。',
-    cooldown: '刚刚已经点评过啦，过几秒再试试。',
-    providerUnavailable: '小搭这会儿没连上点评服务，稍后再试试。',
-    incompleteOutfit: '这套的信息还不够完整，回到推荐页重新打开后再试试。',
-    serviceNotReady: '点评服务还没准备好，稍后再试试。',
-    storageUnavailable: '这次点评没保存下来，稍后再试试。',
-    genericRetry: '小搭这会儿没能完成点评，稍后再试试。',
+    loading: '让我再想想……',
+    inProgress: '让我再想想……',
+    cooldown: '刚刚没接上话，再试一次吧。',
+    providerUnavailable: '刚刚没接上话，再试一次吧。',
+    incompleteOutfit: '刚刚没接上话，再试一次吧。',
+    serviceNotReady: '刚刚没接上话，再试一次吧。',
+    storageUnavailable: '刚刚没接上话，再试一次吧。',
+    genericRetry: '刚刚没接上话，再试一次吧。',
   },
 };
 

@@ -1,4 +1,4 @@
-import type { OutfitAiComment } from '@starter-template/types';
+import type { OutfitAiComment, XiaodaContentPlan } from '@starter-template/types';
 import {
   buildAiReviewPresentation as buildAiReviewPresentationCore,
   type AiReviewPresentation,
@@ -6,6 +6,9 @@ import {
 
 export type { AiReviewPresentation };
 
-export function buildAiReviewPresentation(aiComment?: OutfitAiComment | null): AiReviewPresentation {
-  return buildAiReviewPresentationCore(aiComment);
+export function buildAiReviewPresentation(
+  aiComment?: OutfitAiComment | null,
+  contentPlan?: XiaodaContentPlan | null,
+): AiReviewPresentation {
+  return buildAiReviewPresentationCore(aiComment, contentPlan);
 }

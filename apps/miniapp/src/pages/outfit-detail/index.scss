@@ -519,6 +519,29 @@
   }
 }
 
+.xiaoda-review-heading {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ai-comment-invite {
+  display: block;
+  font-size: 26px;
+  font-weight: 700;
+  color: #5a3f29;
+  line-height: 1.4;
+}
+
+.ai-comment-desc {
+  display: block;
+  font-size: 24px;
+  color: #8a735f;
+  line-height: 1.5;
+}
+
 .ai-comment-btn {
   flex-shrink: 0;
   height: 56px;
@@ -554,8 +577,7 @@
   line-height: 1.5;
 }
 
-.ai-comment-reason,
-.ai-comment-empty {
+.ai-comment-reason {
   display: block;
   font-size: 26px;
   color: #555;

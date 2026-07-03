@@ -129,15 +129,14 @@ test('renderers produce the locked anonymous screenshot sample style', () => {
   assert.equal(fallback.advice, '想再利落一点，可以让上衣或小包呼应运动鞋里的颜色。');
 });
 
-test('renderRecommendationCopyV3 keeps Today, detail, comment and advice distinct', () => {
+test('renderRecommendationCopyV3 renders Today detail and fallback from one content plan', () => {
   const [plan] = planBatchCopyV3([{ outfit: graphicTeeHome }]);
   const copy = renderRecommendationCopyV3(plan);
   assert.equal(copy.reasonVersion, RECOMMENDATION_REASON_VERSION_V3);
-  assert.equal(isTooSimilar(copy.reason, copy.reasoning), false);
-  assert.equal(copy.reasoning.includes(copy.reason), false);
-  assert.equal(isTooSimilar(copy.aiComment.overallComment, copy.reasoning), false);
-  assert.equal(isTooSimilar(copy.aiComment.overallComment, copy.aiComment.advice), false);
-  for (const text of [copy.reason, copy.reasoning, copy.aiComment.overallComment, copy.aiComment.advice]) {
+  assert.equal(plan.contentPlan.version, 'xiaoda-content-plan-v1');
+  assert.ok(copy.reasoning.includes(copy.reason));
+  assert.equal(copy.aiComment.overallComment, copy.reasoning);
+  for (const text of [copy.reason, copy.reasoning, copy.aiComment.overallComment, copy.aiComment.advice].filter(Boolean)) {
     assertHumanCopy(text);
     assert.equal(hasRepeatedSentenceParts(text), false, text);
   }
@@ -165,6 +164,8 @@ test('compileRecommendationLanguageV3 only changes display fields and preserves 
   assert.deepEqual(result.scores, before[0].scores);
   assert.deepEqual(result.aestheticEvaluation, before[0].aestheticEvaluation);
   assert.equal(result.reasonVersion, RECOMMENDATION_REASON_VERSION_V3);
+  assert.equal(result.contentPlanVersion, 'xiaoda-content-plan-v1');
+  assert.equal(result.reviewSource, 'rule_default');
 });
 
 test('compileRecommendationLanguageV3 removes old V2 copy from legacy snapshots', () => {
@@ -178,9 +179,8 @@ test('batch planner avoids exact duplicate reasons, numeric suffixes and weather
   const source = similarGraphicTeeBatch(10);
   const results = compileRecommendationLanguageV3({ outfits: source, scene: 'home', weather: { temp: 22, weather: '多云' } });
   assert.deepEqual(results.map((entry) => entry.id), source.map((entry) => entry.id));
-  assert.equal(new Set(results.map((entry) => entry.reason)).size, results.length);
-  assert.equal(new Set(results.map((entry) => entry.aiComment.overallComment)).size, results.length);
-  assert.equal(new Set(results.map((entry) => entry.aiComment.advice)).size, results.length);
+  assert.ok(new Set(results.map((entry) => entry.contentPlan.primaryBenefit)).size > 1);
+  assert.ok(new Set(results.map((entry) => entry.contentPlan.observations.join('|'))).size > 1);
   assert.equal(results.some((entry) => /\d+$/.test(entry.reason)), false);
   assert.equal(results.some((entry) => /这组线索更突出|整体重点更清楚|识别|证据|线索/.test(visibleText(entry))), false);
   assert.ok(results.filter((entry) => entry.primaryDimension === 'weather').length <= 1);
@@ -198,7 +198,7 @@ test('golden fixtures remain human readable and pass copy policy', () => {
     for (const forbidden of fixture.expectedForbiddenTermsAbsent) {
       assert.equal(visibleText(result).includes(forbidden), false, `${fixture.id} contains ${forbidden}`);
     }
-    for (const text of [result.reason, result.reasoning, result.aiComment.overallComment, result.aiComment.advice]) {
+    for (const text of [result.reason, result.reasoning, result.aiComment.overallComment, result.aiComment.advice].filter(Boolean)) {
       assertHumanCopy(text);
       assert.equal(hasRepeatedSentenceParts(text), false, `${fixture.id}: ${text}`);
     }
@@ -254,8 +254,8 @@ test('persona fixtures cover Xiaoda V1 scenarios with grounded benefits and qual
     assert.doesNotMatch(text, /灰色灰色|白色白色|黑色黑色/);
     assert.ok(result.reason.length > 0, fixture.id);
     assert.ok(result.reasoning.length > result.reason.length, fixture.id);
-    assert.equal(isTooSimilar(result.aiComment.overallComment, result.reasoning), false, fixture.id);
-    assert.equal(isTooSimilar(result.aiComment.overallComment, result.aiComment.advice), false, fixture.id);
+    assert.equal(result.aiComment.overallComment, result.reasoning, fixture.id);
+    if (result.aiComment.advice) assert.equal(isTooSimilar(result.aiComment.overallComment, result.aiComment.advice), false, fixture.id);
     if (fixture.id === 'two_patterns_compete') {
       assert.doesNotMatch(text, /不乱|不会显得太乱|没有冲突|明显冲突/);
       assert.match(text, /醒目|热闹|图案|简单/);

@@ -371,7 +371,6 @@ export default function OutfitDetailPage() {
   const [loading, setLoading] = useState(true);
   const [operating, setOperating] = useState(false);
   const [commentLoading, setCommentLoading] = useState(false);
-  const [commentError, setCommentError] = useState('');
   const [itemsExpanded, setItemsExpanded] = useState(false);
   const [showNameModal, setShowNameModal] = useState(false);
   const [draftName, setDraftName] = useState('');
@@ -392,7 +391,6 @@ export default function OutfitDetailPage() {
     setLoading(false);
     setOperating(false);
     setCommentLoading(false);
-    setCommentError('');
     setItemsExpanded(false);
     setShowNameModal(false);
     setDraftName('');
@@ -746,7 +744,6 @@ export default function OutfitDetailPage() {
     aiCommentRequestSeqRef.current = commentRequestSeq;
     const forceRegenerate = Boolean(aiReviewMeta?.hasCanonical && outfit.aiComment);
     setCommentLoading(true);
-    setCommentError('');
     try {
       const result = await generateCloudOutfitComment(outfit, { forceRegenerate });
       if (aiCommentRequestSeqRef.current !== commentRequestSeq || !isCurrentAuthContext(authContext)) return;
@@ -762,13 +759,13 @@ export default function OutfitDetailPage() {
       }
       if (result.superseded) {
         applyAiReviewResult(result);
-        Taro.showToast({ title: result.aiComment ? '已显示最新点评' : '小搭正在处理最新点评', icon: 'none' });
+        Taro.showToast({ title: result.aiComment ? '小搭多说了两句' : '让我再想想……', icon: 'none' });
         return;
       }
       if (result.success && result.aiComment) {
         applyAiReviewResult(result);
         Taro.showToast({
-          title: result.cacheHit ? '小搭点评已准备好' : forceRegenerate ? '小搭重新点评好了' : '小搭点评已生成',
+          title: result.cacheHit ? '小搭多说了两句' : forceRegenerate ? '换了个角度说' : '小搭多说了两句',
           icon: 'success',
         });
         return;
@@ -787,7 +784,6 @@ export default function OutfitDetailPage() {
 
   function showAiReviewError(errorCode: string | undefined, fallbackMessage?: string) {
     const message = getAiReviewErrorCopy(errorCode || 'AI_REVIEW_UNKNOWN') || fallbackMessage || USER_FACING_COPY.aiReview.genericRetry;
-    if (!outfit?.aiComment) setCommentError(message);
     Taro.showToast({ title: message, icon: 'none' });
   }
 
@@ -812,8 +808,6 @@ export default function OutfitDetailPage() {
       promptVersion: result.promptVersion ?? result.review?.promptVersion,
       model: result.model ?? result.review?.model,
     });
-    if (result.success && result.aiComment) setCommentError('');
-
     if (shouldPreserveDisplayedComment && result.aiComment) {
       setOutfit((current) => (current ? normalizeOutfitSnapshot({ ...current, aiComment: result.aiComment ?? undefined }) : current));
       return;
@@ -931,8 +925,8 @@ export default function OutfitDetailPage() {
   const showCount = itemsExpanded || items.length <= 4 ? items.length : 4;
   const displayItems = items.slice(0, showCount);
   const hasCanonicalAiComment = Boolean(aiReviewMeta?.hasCanonical && outfit.aiComment);
-  const aiCommentButtonText = commentLoading ? '点评中...' : hasCanonicalAiComment ? '重新点评' : '让小搭点评这套';
-  const aiReviewPresentation = outfit.aiComment ? buildAiReviewPresentation(outfit.aiComment) : null;
+  const aiCommentButtonText = commentLoading ? '让我再想想……' : hasCanonicalAiComment ? '换个角度再说说' : '听小搭多说两句';
+  const aiReviewPresentation = buildAiReviewPresentation(outfit.aiComment, outfit.contentPlan);
   const hasAiReviewContent = Boolean(
     aiReviewPresentation
       && (aiReviewPresentation.bodyParagraphs.length > 0 || aiReviewPresentation.advice),
@@ -985,13 +979,6 @@ export default function OutfitDetailPage() {
           </View>
         )}
 
-        {(outfit.reasoning || outfit.reason) && (
-          <View className="detail-card reason-card">
-            <Text className="card-title">为什么推荐这套</Text>
-            <Text className="reasoning-text">{outfit.reasoning || outfit.reason}</Text>
-          </View>
-        )}
-
         <View className="detail-card weather-card">
           <Text className="card-title">今日天气参考</Text>
           <View className="weather-summary">
@@ -1017,7 +1004,11 @@ export default function OutfitDetailPage() {
 
         <View className="detail-card ai-comment-card">
           <View className="ai-comment-header">
-            <Text className="card-title">小搭点评</Text>
+            <View className="xiaoda-review-heading">
+              <Text className="card-title">小搭说衣</Text>
+              <Text className="ai-comment-invite">这套，我还想多说两句</Text>
+              <Text className="ai-comment-desc">再结合今天的天气和场景，看看有没有容易忽略的小细节。</Text>
+            </View>
             <View
               className={`ai-comment-btn ${commentLoading ? 'disabled' : ''}`}
               onClick={handleGenerateAiComment}
@@ -1037,18 +1028,12 @@ export default function OutfitDetailPage() {
               ))}
               {aiReviewPresentation.advice && (
                 <View className="ai-comment-advice">
-                  <Text className="ai-comment-advice-title">小搭建议</Text>
+                  <Text className="ai-comment-advice-title">可以试试</Text>
                   <Text className="ai-comment-tip">{aiReviewPresentation.advice}</Text>
                 </View>
               )}
             </View>
-          ) : (
-            !commentLoading && (
-              <Text className="ai-comment-empty">
-                {commentError || '想听听小搭怎么看这套时，可以手动生成一次。'}
-              </Text>
-            )
-          )}
+          ) : null}
         </View>
 
         <View className="detail-card item-list-card">

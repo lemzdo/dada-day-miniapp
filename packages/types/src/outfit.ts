@@ -60,6 +60,44 @@ export interface OutfitAiComment {
   inputDigest?: string;
   source?: 'ai' | 'rule_fallback' | string;
   explanationV2?: StylistExplanationV2;
+  overallComment?: string;
+  advice?: string;
+  contentPlanVersion?: string;
+  sceneIntent?: string;
+  primaryBenefitCode?: string;
+  reviewSource?: OutfitReviewSource;
+  validatorRejectReasons?: string[];
+}
+
+export type OutfitItemRole = 'core' | 'functional' | 'optional';
+
+export type OutfitReviewSource =
+  | 'rule_default'
+  | 'ai'
+  | 'rule_fallback'
+  | 'cached_ai'
+  | 'cached_fallback'
+  | string;
+
+export interface XiaodaContentPlanItem {
+  id: string;
+  slot: string;
+  role: OutfitItemRole;
+  displayName: string;
+}
+
+export interface XiaodaContentPlanSuggestion {
+  text: string;
+}
+
+export interface XiaodaContentPlan {
+  version: string;
+  sceneIntent: string;
+  items: XiaodaContentPlanItem[];
+  observations: string[];
+  primaryBenefit: string;
+  secondaryBenefit?: string;
+  suggestion?: XiaodaContentPlanSuggestion | null;
 }
 
 export interface StylistExplanationPointV2 {
@@ -106,6 +144,12 @@ export interface OutfitAiReview {
   source?: 'ai' | 'rule_fallback' | string;
   explanationV2?: StylistExplanationV2;
   aiComment: OutfitAiComment | null;
+  contentPlanVersion?: string;
+  sceneIntent?: string;
+  primaryBenefitCode?: string;
+  reviewSource?: OutfitReviewSource;
+  validatorRejectReasons?: string[];
+  cacheReuseReason?: string;
   status: OutfitAiReviewStatus;
   generatedAt?: string;
   updatedAt?: string;
@@ -130,6 +174,12 @@ export interface OutfitAiReviewResponse {
   voicePolicyVersion?: string;
   inputDigest?: string;
   source?: 'ai' | 'rule_fallback' | string;
+  reviewSource?: OutfitReviewSource;
+  contentPlanVersion?: string;
+  sceneIntent?: string;
+  primaryBenefitCode?: string;
+  validatorRejectReasons?: string[];
+  cacheReuseReason?: string;
   model?: string;
   fallback?: boolean;
   errorCode?: string;
@@ -214,6 +264,14 @@ export interface Outfit {
   reason?: string;
   reasoning?: string;
   reasonVersion?: string;
+  outfitItemRoles?: XiaodaContentPlanItem[];
+  contentPlan?: XiaodaContentPlan;
+  contentPlanVersion?: string;
+  sceneIntent?: string;
+  primaryBenefitCode?: string;
+  reviewSource?: OutfitReviewSource;
+  validatorRejectReasons?: string[];
+  cacheReuseReason?: string;
   primaryDimension?: string;
   evidenceCodes?: string[];
   aiComment?: OutfitAiComment;

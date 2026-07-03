@@ -1,4 +1,4 @@
-import type { OutfitAiComment } from '@starter-template/types';
+import type { OutfitAiComment, XiaodaContentPlan } from '@starter-template/types';
 
 export interface AiReviewPresentation {
   bodyParagraphs: string[];
@@ -6,4 +6,7 @@ export interface AiReviewPresentation {
   advice: string | null;
 }
 
-export function buildAiReviewPresentation(aiComment?: OutfitAiComment | null): AiReviewPresentation;
+export function buildAiReviewPresentation(
+  aiComment?: OutfitAiComment | null,
+  contentPlan?: XiaodaContentPlan | null,
+): AiReviewPresentation;

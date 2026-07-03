@@ -8,6 +8,10 @@ const {
   findXiaodaVoicePolicyViolations,
   renderXiaodaStylistFallback,
 } = require('./xiaodaVoicePolicy');
+const {
+  buildXiaodaDefaultReviewV1,
+  hasQualifiedAiReviewIncrementV1,
+} = require('./xiaodaContentPlan');
 
 const STYLIST_REVIEW_VERSION = 'stylist-explanation-v4';
 const STYLIST_PROMPT_VERSION = 'stylist-prompt-v4';
@@ -77,16 +81,30 @@ function validateStylistExplanationV3(raw, evidenceInput, meta = {}) {
   if (raw.voicePolicyVersion !== VOICE_POLICY_VERSION) throw new Error('invalid_stylist_explanation');
 
   const overallComment = normalizeVisibleCopy(raw.overallComment, 120);
-  const advice = normalizeVisibleCopy(raw.advice, 80);
-  if (!overallComment || !advice) throw new Error('invalid_stylist_explanation');
-  if (isTooSimilar(overallComment, advice, 0.7)) throw new Error('invalid_stylist_explanation');
+  const advice = normalizeVisibleCopy(raw.advice, 80, { optional: true });
+  if (!overallComment) throw new Error('invalid_stylist_explanation');
+  if (advice && isTooSimilar(overallComment, advice, 0.7)) throw new Error('invalid_stylist_explanation');
   assertKnownFactsOnly(`${overallComment}${advice}`, evidenceInput);
+  const contentPlan = evidenceInput?.contentPlan;
+  if (contentPlan) {
+    const defaultReview = buildXiaodaDefaultReviewV1(contentPlan);
+    const increment = hasQualifiedAiReviewIncrementV1(
+      { reason: overallComment, tip: advice, source: VALID_SOURCES.has(raw.source) ? raw.source : 'ai' },
+      contentPlan,
+      defaultReview,
+    );
+    if (!increment.qualified) {
+      const error = new Error('invalid_stylist_explanation');
+      error.validatorRejectReasons = increment.rejectReasons;
+      throw error;
+    }
+  }
 
   const confidence = normalizeConfidence(raw.confidence, evidenceInput);
   const limitations = normalizeLimitations(raw.limitations, evidenceInput);
   const evidenceCodes = getValidEvidenceCodes(evidenceInput);
   const primaryCode = Array.from(evidenceCodes)[0];
-  const tip = primaryCode ? { text: advice, evidenceCodes: [primaryCode] } : null;
+  const tip = primaryCode && advice ? { text: advice, evidenceCodes: [primaryCode] } : null;
 
   return {
     schemaVersion: 3,
@@ -154,7 +172,7 @@ function buildRuleFallbackExplanationV2(evidenceInput, meta = {}) {
   const copy = buildHumanFallbackCopy(evidenceInput);
   const validCodes = getValidEvidenceCodes(evidenceInput);
   const primaryCode = Array.from(validCodes)[0];
-  const tip = primaryCode ? { text: copy.advice, evidenceCodes: [primaryCode] } : null;
+  const tip = primaryCode && copy.advice ? { text: copy.advice, evidenceCodes: [primaryCode] } : null;
   return {
     schemaVersion: 3,
     reviewVersion: STYLIST_REVIEW_VERSION,
@@ -192,7 +210,7 @@ function toLegacyAiComment(explanation) {
     title: '',
     reason: limitText(reasonParts.join(' '), 160),
     styleTags: [],
-    tip: explanation.advice || explanation.tip?.text || '想再有精神一点，可以让鞋子或小包呼应其中一个主色。',
+    tip: explanation.advice || explanation.tip?.text || '',
     generatedAt: explanation.generatedAt,
     reviewVersion: explanation.reviewVersion,
     promptVersion: explanation.promptVersion,
@@ -251,6 +269,11 @@ function buildStylistReviewDocument({ context, explanation, now }) {
     inputDigest: context.inputDigest,
     inputHash: context.inputDigest,
     source: explanation.source,
+    reviewSource: explanation.source,
+    contentPlanVersion: context.contentPlanVersion || context.evidenceInput?.contentPlan?.version,
+    sceneIntent: context.sceneIntent || context.evidenceInput?.contentPlan?.sceneIntent,
+    primaryBenefitCode: context.primaryBenefitCode || context.evidenceInput?.contentPlan?.primaryBenefit,
+    validatorRejectReasons: [],
     explanationV2: explanation,
     overallComment: explanation.overallComment,
     advice: explanation.advice,
@@ -291,12 +314,22 @@ function collectEvidenceCodes(strengths, tradeoffs, tip, rawCodes, validCodes) {
 }
 
 function buildHumanFallbackCopy(evidenceInput) {
+  if (evidenceInput?.contentPlan) {
+    const review = buildXiaodaDefaultReviewV1(evidenceInput.contentPlan);
+    return {
+      overallComment: review.reason,
+      advice: review.tip || '',
+    };
+  }
   return renderXiaodaStylistFallback({ facts: evidenceToVoiceFacts(evidenceInput), benefits: [] });
 }
 
-function normalizeVisibleCopy(value, maxLength) {
+function normalizeVisibleCopy(value, maxLength, options = {}) {
   const text = limitText(value, maxLength).replace(/\s+/g, '');
-  if (!text) return '';
+  if (!text) {
+    if (options.optional) return '';
+    return '';
+  }
   try {
     assertHumanCopy(text);
   } catch {

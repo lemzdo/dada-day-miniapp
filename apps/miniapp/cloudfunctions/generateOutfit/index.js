@@ -27,6 +27,7 @@ const {
   validateStylistExplanationV2,
 } = require('./services/stylistExplanationV2');
 const { compileRecommendationLanguageV3 } = require('./services/recommendationLanguageV3');
+const { buildOutfitCandidatesV1 } = require('./services/outfitCompositionV1');
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
@@ -391,6 +392,11 @@ async function buildAiCommentContext(event) {
       scores: source.scores,
       styleTags: source.styleTags,
       aestheticEvaluation: source.aestheticEvaluation,
+      outfitItemRoles: source.outfitItemRoles,
+      contentPlan: source.contentPlan,
+      contentPlanVersion: source.contentPlanVersion,
+      sceneIntent: source.sceneIntent,
+      primaryBenefitCode: source.primaryBenefitCode,
     },
     scene: source.scene,
     weather: source.weather,
@@ -407,6 +413,9 @@ async function buildAiCommentContext(event) {
     inputDigest: evidenceInput.inputDigest,
     evidenceInput,
     evidenceVersion: evidenceInput.evidenceVersion,
+    contentPlanVersion: evidenceInput.contentPlan?.version,
+    sceneIntent: evidenceInput.contentPlan?.sceneIntent,
+    primaryBenefitCode: evidenceInput.contentPlan?.primaryBenefit,
     promptVersion: AI_COMMENT_PROMPT_VERSION,
     reviewVersion: STYLIST_REVIEW_VERSION,
     copyPolicyVersion: COPY_POLICY_VERSION,
@@ -434,6 +443,7 @@ async function buildAiCommentSourceFromOutfitAsset(openid, asset, requestedScene
     scores: sanitizeScores(asset.scores || {}),
     styleTags: readStringArray(asset.styleTags),
     aestheticEvaluation: asset.aestheticEvaluation,
+    ...pickOutfitStoryFields(asset),
     reason: normalizeAiCommentReason(asset.reasoning || asset.reason),
   };
 }
@@ -457,6 +467,7 @@ async function buildAiCommentSourceFromOwnedClothes(openid, payload, fallback) {
     scores: sanitizeScores(fallback.scores || payload?.scores || {}),
     styleTags: readStringArray(payload?.styleTags),
     aestheticEvaluation: fallback.aestheticEvaluation || payload?.aestheticEvaluation,
+    ...pickOutfitStoryFields(payload, fallback),
     reason: normalizeAiCommentReason(fallback.reason || payload?.reasoning || payload?.reason),
   };
 }
@@ -571,7 +582,11 @@ async function callAiCommentModel(input) {
       model: AI_COMMENT_MODEL,
       generatedAt: new Date().toISOString(),
     });
-    return toLegacyAiComment(fallback);
+    return {
+      ...toLegacyAiComment(fallback),
+      reviewSource: 'rule_fallback',
+      validatorRejectReasons: readStringArray(error?.validatorRejectReasons),
+    };
   }
 }
 
@@ -585,7 +600,7 @@ function normalizeAiComment(value) {
     .filter(Boolean)
     .slice(0, 5);
 
-  if (!reason || !tip) return null;
+  if (!reason) return null;
   return {
     title,
     reason,
@@ -601,6 +616,69 @@ function normalizeAiComment(value) {
     ...(value.overallComment ? { overallComment: limitText(value.overallComment, 120) } : {}),
     ...(value.advice ? { advice: limitText(value.advice, 80) } : {}),
     ...(value.explanationV2 ? { explanationV2: value.explanationV2 } : {}),
+    ...(value.contentPlanVersion ? { contentPlanVersion: limitText(value.contentPlanVersion, 48) } : {}),
+    ...(value.sceneIntent ? { sceneIntent: limitText(value.sceneIntent, 48) } : {}),
+    ...(value.primaryBenefitCode ? { primaryBenefitCode: limitText(value.primaryBenefitCode, 64) } : {}),
+    ...(value.reviewSource ? { reviewSource: limitText(value.reviewSource, 32) } : {}),
+    ...(Array.isArray(value.validatorRejectReasons) ? { validatorRejectReasons: readStringArray(value.validatorRejectReasons) } : {}),
+  };
+}
+
+function normalizeOutfitItemRoles(value) {
+  return Array.isArray(value)
+    ? value
+        .map((item) => {
+          if (!item || typeof item !== 'object') return null;
+          const id = limitText(item.id || item.itemId || item.clothingId, 80);
+          const slot = limitText(item.slot || item.category, 32);
+          const role = ['core', 'functional', 'optional'].includes(item.role) ? item.role : '';
+          const displayName = limitText(item.displayName || item.name, 32);
+          if (!id || !slot || !role || !displayName) return null;
+          return { id, slot, role, displayName };
+        })
+        .filter(Boolean)
+    : [];
+}
+
+function normalizeContentPlan(value) {
+  if (!value || typeof value !== 'object') return undefined;
+  const items = normalizeOutfitItemRoles(value.items);
+  const sceneIntent = limitText(value.sceneIntent, 48);
+  const primaryBenefit = limitText(value.primaryBenefit, 64);
+  if (!value.version || !sceneIntent || !primaryBenefit || items.length === 0) return undefined;
+  return {
+    version: limitText(value.version, 48),
+    sceneIntent,
+    items,
+    observations: readStringArray(value.observations).slice(0, 8),
+    primaryBenefit,
+    ...(value.secondaryBenefit ? { secondaryBenefit: limitText(value.secondaryBenefit, 64) } : {}),
+    ...(value.suggestion && typeof value.suggestion === 'object' && value.suggestion.text
+      ? { suggestion: { text: limitText(value.suggestion.text, 120) } }
+      : { suggestion: null }),
+  };
+}
+
+function pickOutfitStoryFields(primary, fallback) {
+  const contentPlan = normalizeContentPlan(primary?.contentPlan) || normalizeContentPlan(fallback?.contentPlan);
+  const outfitItemRoles = normalizeOutfitItemRoles(primary?.outfitItemRoles).length
+    ? normalizeOutfitItemRoles(primary.outfitItemRoles)
+    : normalizeOutfitItemRoles(fallback?.outfitItemRoles);
+  return {
+    ...(outfitItemRoles.length ? { outfitItemRoles } : {}),
+    ...(contentPlan ? { contentPlan } : {}),
+    ...(primary?.contentPlanVersion || fallback?.contentPlanVersion ? { contentPlanVersion: primary?.contentPlanVersion || fallback?.contentPlanVersion } : {}),
+    ...(primary?.sceneIntent || fallback?.sceneIntent ? { sceneIntent: primary?.sceneIntent || fallback?.sceneIntent } : {}),
+    ...(primary?.primaryBenefitCode || primary?.primaryBenefit || fallback?.primaryBenefitCode || fallback?.primaryBenefit
+      ? { primaryBenefitCode: primary?.primaryBenefitCode || primary?.primaryBenefit || fallback?.primaryBenefitCode || fallback?.primaryBenefit }
+      : {}),
+    ...(primary?.secondaryBenefit || fallback?.secondaryBenefit ? { secondaryBenefit: primary?.secondaryBenefit || fallback?.secondaryBenefit } : {}),
+    ...(primary?.observationFocus || fallback?.observationFocus ? { observationFocus: primary?.observationFocus || fallback?.observationFocus } : {}),
+    ...(primary?.reviewSource || fallback?.reviewSource ? { reviewSource: primary?.reviewSource || fallback?.reviewSource } : {}),
+    ...(readStringArray(primary?.validatorRejectReasons).length || readStringArray(fallback?.validatorRejectReasons).length
+      ? { validatorRejectReasons: readStringArray(primary?.validatorRejectReasons).length ? readStringArray(primary.validatorRejectReasons) : readStringArray(fallback?.validatorRejectReasons) }
+      : {}),
+    ...(primary?.cacheReuseReason || fallback?.cacheReuseReason ? { cacheReuseReason: primary?.cacheReuseReason || fallback?.cacheReuseReason } : {}),
   };
 }
 
@@ -800,6 +878,12 @@ function buildAiReviewResponse(context, review, options = {}) {
           evidenceVersion: review.evidenceVersion,
           source: review.source,
           explanationV2: review.explanationV2,
+          reviewSource: review.source || aiComment?.reviewSource || aiComment?.source,
+          contentPlanVersion: context?.contentPlanVersion || review.contentPlanVersion || aiComment?.contentPlanVersion,
+          sceneIntent: context?.sceneIntent || review.sceneIntent || aiComment?.sceneIntent,
+          primaryBenefitCode: context?.primaryBenefitCode || review.primaryBenefitCode || aiComment?.primaryBenefitCode,
+          validatorRejectReasons: readStringArray(review.validatorRejectReasons || aiComment?.validatorRejectReasons),
+          cacheReuseReason: options.cacheHit ? 'ready_review_match' : '',
           model: review.model,
           provider: review.provider,
           aiComment,
@@ -823,6 +907,12 @@ function buildAiReviewResponse(context, review, options = {}) {
     voicePolicyVersion: context?.voicePolicyVersion || review?.voicePolicyVersion,
     inputDigest: context?.inputDigest || review?.inputDigest || review?.inputHash,
     source: review?.source || aiComment?.source,
+    reviewSource: review?.source || aiComment?.reviewSource || aiComment?.source,
+    contentPlanVersion: context?.contentPlanVersion || review?.contentPlanVersion || aiComment?.contentPlanVersion,
+    sceneIntent: context?.sceneIntent || review?.sceneIntent || aiComment?.sceneIntent,
+    primaryBenefitCode: context?.primaryBenefitCode || review?.primaryBenefitCode || aiComment?.primaryBenefitCode,
+    validatorRejectReasons: readStringArray(review?.validatorRejectReasons || aiComment?.validatorRejectReasons),
+    cacheReuseReason: options.cacheHit ? 'ready_review_match' : options.inProgress ? 'generation_in_progress' : options.cooldown ? 'force_regenerate_cooldown' : '',
     model: context?.model || review?.model || AI_COMMENT_MODEL,
     errorCode: options.errorCode,
   };
@@ -1506,6 +1596,7 @@ function buildSnapshotRecordData(base, { aiComment, outfitKey, now, source }) {
     reason,
     reasoning,
     ...(base.reasonVersion ? { reasonVersion: base.reasonVersion } : {}),
+    ...pickOutfitStoryFields(base),
     ...(normalizedAiComment ? { aiComment: normalizedAiComment.generatedAt ? normalizedAiComment : { ...normalizedAiComment, generatedAt: now } } : {}),
   };
 }
@@ -1656,6 +1747,7 @@ function toSnapshotOutfit(item, kind) {
     reason: item.reason || item.reasoning,
     reasoning: item.reasoning || item.reason,
     reasonVersion: item.reasonVersion,
+    ...pickOutfitStoryFields(item),
     aiComment: normalizeAiComment(item.aiComment) || undefined,
   };
 }
@@ -1733,6 +1825,7 @@ function buildOutfitSaveData(base, { outfitKey, now, patch, current }) {
     reason,
     reasoning,
     reasonVersion: base.reasonVersion || current?.reasonVersion,
+    ...pickOutfitStoryFields(base, current),
     ...(aiComment ? { aiComment } : {}),
     updatedAt: now,
   };
@@ -1858,6 +1951,17 @@ function normalizeOutfitPayload(payload) {
     styleTags: readStringArray(payload.styleTags),
     aiComment: normalizeAiComment(payload.aiComment),
     reasonVersion: payload.reasonVersion,
+    outfitItemRoles: normalizeOutfitItemRoles(payload.outfitItemRoles),
+    contentPlan: normalizeContentPlan(payload.contentPlan),
+    contentPlanVersion: payload.contentPlanVersion,
+    sceneIntent: payload.sceneIntent,
+    primaryBenefitCode: payload.primaryBenefitCode,
+    primaryBenefit: payload.primaryBenefit,
+    secondaryBenefit: payload.secondaryBenefit,
+    observationFocus: payload.observationFocus,
+    reviewSource: payload.reviewSource,
+    validatorRejectReasons: readStringArray(payload.validatorRejectReasons),
+    cacheReuseReason: payload.cacheReuseReason,
   };
 }
 
@@ -1884,6 +1988,17 @@ function toTempOutfit(recommendation, context) {
     weatherSnapshot: context.weather,
     scores: recommendation.scores,
     scoreExplanations: recommendation.scoreExplanations,
+    outfitItemRoles: normalizeOutfitItemRoles(recommendation.outfitItemRoles),
+    compositionVersion: recommendation.compositionVersion,
+    structureType: recommendation.structureType,
+    sceneIntent: recommendation.sceneIntent,
+    primaryBenefit: recommendation.primaryBenefit,
+    primaryBenefitCode: recommendation.primaryBenefitCode || recommendation.primaryBenefit,
+    secondaryBenefit: recommendation.secondaryBenefit,
+    observationFocus: recommendation.observationFocus,
+    reviewSource: recommendation.reviewSource || 'rule_default',
+    validatorRejectReasons: readStringArray(recommendation.validatorRejectReasons),
+    cacheReuseReason: recommendation.cacheReuseReason || '',
     generationType: 'auto',
     source: 'recommend',
     isFavorite: false,
@@ -1915,18 +2030,38 @@ function generateRuleRecommendations({
   const tempConfig = getTemperatureConfig(Number(weather.temp || weather.temperature || 22));
   const filtered = clothes
     .filter((item) => item && item._id)
-    .filter((item) => matchesSeason(item, tempConfig))
-    .filter((item) => matchesTemperature(item, tempConfig));
-  const grouped = groupClothes(filtered);
-  const combos = generateCandidateCombos(grouped);
+    .filter((item) => matchesSeason(item, tempConfig));
+  const candidates = buildOutfitCandidatesV1({
+    clothes: filtered,
+    scene,
+    weather,
+    recommendationProfile,
+    excludeClothingIdSets,
+    excludedOutfitKeys,
+    maxResults: Math.max(Number(maxResults || 8), 1) * 4,
+  });
   const excluded = new Set([
     ...(excludeClothingIdSets || []).filter(Array.isArray).map((ids) => signature(ids)),
     ...readStringArray(excludedOutfitKeys),
   ]);
   const limit = Math.min(Math.max(Number(maxResults || 8), 1), 8);
 
-  const scored = combos
-    .map((items) => scoreCandidate(items, { scene, tempConfig, weather, recommendationProfile }))
+  const scored = candidates
+    .map((candidate) => {
+      const scoredCandidate = scoreCandidate(candidate.items, { scene, tempConfig, weather, recommendationProfile });
+      return {
+        ...scoredCandidate,
+        outfitItemRoles: candidate.outfitItemRoles,
+        compositionVersion: candidate.compositionVersion,
+        structureType: candidate.structureType,
+        sceneIntent: candidate.sceneIntent,
+        primaryBenefit: candidate.primaryBenefit,
+        primaryBenefitCode: candidate.primaryBenefit,
+        secondaryBenefit: candidate.secondaryBenefit,
+        observationFocus: candidate.observationFocus,
+        compositionRankingScore: candidate.rankingScore,
+      };
+    })
     .map((rec) => {
       const outfitKey = signature(rec.items.map((item) => item._id));
       return {
@@ -2655,6 +2790,7 @@ function toOutfit(item, clothes) {
     reason: item.reason || item.reasoning,
     reasoning: item.reasoning || item.reason,
     reasonVersion: item.reasonVersion,
+    ...pickOutfitStoryFields(item),
     aiComment: normalizeAiComment(item.aiComment) || undefined,
   };
 }

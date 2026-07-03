@@ -38,6 +38,7 @@ function buildStylistEvidenceV1({ outfit, scene, weather, explicitProfile } = {}
     evidenceVersion: STYLIST_EVIDENCE_VERSION,
     context,
     outfit: buildCanonicalOutfit(safeItems, explicitProfile),
+    contentPlan: normalizeContentPlan(outfit?.contentPlan),
     scores,
     aesthetic: aestheticEvaluation,
     evidence,
@@ -54,6 +55,7 @@ function buildStylistEvidenceV1({ outfit, scene, weather, explicitProfile } = {}
       colors: uniqueColors(safeItems.flatMap((item) => item.colorPalette)).sort(compareColor),
       styleTags: uniqueStrings(safeItems.flatMap((item) => item.styleTags)).sort(),
     },
+    contentPlan: normalizeContentPlan(outfit?.contentPlan),
     scores,
     aesthetic: {
       engineVersion: aestheticEvaluation.engineVersion,
@@ -64,6 +66,34 @@ function buildStylistEvidenceV1({ outfit, scene, weather, explicitProfile } = {}
     evidence,
     limitations,
     inputDigest: sha256(stableStringify(canonicalInput)),
+  };
+}
+
+function normalizeContentPlan(value) {
+  if (!value || typeof value !== 'object') return null;
+  const items = Array.isArray(value.items)
+    ? value.items
+        .map((item) => ({
+          id: readString(item?.id),
+          slot: readString(item?.slot),
+          role: readString(item?.role),
+          displayName: readString(item?.displayName),
+        }))
+        .filter((item) => item.id && item.slot && item.role && item.displayName)
+    : [];
+  const sceneIntent = readString(value.sceneIntent);
+  const primaryBenefit = readString(value.primaryBenefit);
+  if (!readString(value.version) || !sceneIntent || !primaryBenefit || items.length === 0) return null;
+  return {
+    version: readString(value.version),
+    sceneIntent,
+    items,
+    observations: uniqueStrings(value.observations).sort(),
+    primaryBenefit,
+    secondaryBenefit: readString(value.secondaryBenefit),
+    suggestion: value.suggestion && typeof value.suggestion === 'object'
+      ? { text: readString(value.suggestion.text) }
+      : null,
   };
 }
 
