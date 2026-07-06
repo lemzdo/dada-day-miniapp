@@ -155,6 +155,27 @@ export interface OutfitAiReview {
   updatedAt?: string;
 }
 
+export interface OutfitAiReviewDebug {
+  requestId?: string;
+  action?: string;
+  outfitKeyShort?: string;
+  scene?: SceneTag | string;
+  cacheDecision?: string;
+  aiAttempted?: boolean;
+  provider?: string;
+  model?: string;
+  providerConfigured?: boolean;
+  providerRequestStarted?: boolean;
+  providerRequestFinished?: boolean;
+  providerStatus?: number;
+  validatorResult?: string;
+  validatorRejectReasons?: string[];
+  fallbackUsed?: boolean;
+  fallbackReason?: string;
+  saved?: boolean;
+  errorCode?: string;
+}
+
 export interface OutfitAiReviewResponse {
   success: boolean;
   aiComment?: OutfitAiComment | null;
@@ -184,6 +205,7 @@ export interface OutfitAiReviewResponse {
   fallback?: boolean;
   errorCode?: string;
   message?: string;
+  aiReviewDebug?: OutfitAiReviewDebug;
 }
 
 export type AestheticDimensionKey =

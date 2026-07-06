@@ -747,6 +747,7 @@ export default function OutfitDetailPage() {
     try {
       const result = await generateCloudOutfitComment(outfit, { forceRegenerate });
       if (aiCommentRequestSeqRef.current !== commentRequestSeq || !isCurrentAuthContext(authContext)) return;
+      logAiReviewDebugSummary(result);
       if (result.cooldown) {
         applyAiReviewResult(result);
         showAiReviewError(result.errorCode || 'AI_REVIEW_COOLDOWN');
@@ -785,6 +786,33 @@ export default function OutfitDetailPage() {
   function showAiReviewError(errorCode: string | undefined, fallbackMessage?: string) {
     const message = getAiReviewErrorCopy(errorCode || 'AI_REVIEW_UNKNOWN') || fallbackMessage || USER_FACING_COPY.aiReview.genericRetry;
     Taro.showToast({ title: message, icon: 'none' });
+  }
+
+  function logAiReviewDebugSummary(result: OutfitAiReviewResponse) {
+    if (!shouldPrintAiReviewDebug()) return;
+    const debug = result.aiReviewDebug;
+    if (!debug) return;
+    console.info('[xiaoda-review]', {
+      requestId: debug.requestId,
+      source: result.source,
+      reviewSource: result.reviewSource,
+      enhanced: Boolean(result.success && result.aiComment && result.reviewSource !== 'rule_fallback'),
+      aiAttempted: debug.aiAttempted,
+      provider: debug.provider,
+      model: debug.model ?? result.model,
+      cacheDecision: debug.cacheDecision,
+      fallbackReason: debug.fallbackReason,
+      errorCode: debug.errorCode ?? result.errorCode,
+      validatorRejectReasons: debug.validatorRejectReasons ?? result.validatorRejectReasons,
+    });
+  }
+
+  function shouldPrintAiReviewDebug() {
+    try {
+      return Taro.getAccountInfoSync?.().miniProgram?.envVersion !== 'release';
+    } catch {
+      return false;
+    }
   }
 
   function applyAiReviewResult(

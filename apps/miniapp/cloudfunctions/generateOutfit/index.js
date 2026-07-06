@@ -13,6 +13,12 @@ const {
   isAiReviewServiceError,
   mapAiReviewErrorCode,
 } = require('./services/aiReviewErrorPolicy');
+const {
+  createAiReviewDebug,
+  logAiReviewDebug,
+  toSafeAiReviewDebug,
+  updateAiReviewDebug,
+} = require('./services/aiReviewDebug');
 const { buildStylistEvidenceV1 } = require('./services/stylistEvidence');
 const {
   COPY_POLICY_VERSION,
@@ -286,24 +292,43 @@ async function listOutfits(event) {
 
 async function getAiComment(event) {
   const context = await buildAiCommentContext(event);
+  const aiReviewDebug = createAiCommentDebug('getAiComment', context);
+  logAiReviewDebug('start', aiReviewDebug);
   const review = await readAiReview(context.reviewId);
+  updateAiReviewDebug(aiReviewDebug, {
+    cacheDecision: isReadyAiReview(review, context) ? 'hit' : review ? 'stale_or_not_ready' : 'miss',
+    aiAttempted: false,
+    saved: false,
+  });
+  logAiReviewDebug('cache', aiReviewDebug);
+  logAiReviewDebug('result', aiReviewDebug);
   return buildAiReviewResponse(context, review, {
     cacheHit: isReadyAiReview(review, context),
     saved: false,
+    aiReviewDebug,
   });
 }
 
 async function generateAiComment(event) {
   let context = null;
   let lease = null;
-  const startedAt = Date.now();
+  let aiReviewDebug = null;
 
   try {
     context = await buildAiCommentContext(event);
+    aiReviewDebug = createAiCommentDebug('aiComment', context);
+    logAiReviewDebug('start', aiReviewDebug);
     const forceRegenerate = event.forceRegenerate === true;
     lease = await acquireAiReviewLease(context, { forceRegenerate });
+    updateAiReviewDebug(aiReviewDebug, {
+      cacheDecision: getAiReviewCacheDecision(lease),
+      aiAttempted: false,
+      saved: false,
+    });
+    logAiReviewDebug('cache', aiReviewDebug);
 
     if (lease.cacheHit || lease.inProgress || lease.cooldown) {
+      logAiReviewDebug('result', aiReviewDebug);
       return buildAiReviewResponse(context, lease.review, {
         cacheHit: Boolean(lease.cacheHit),
         saved: false,
@@ -311,36 +336,72 @@ async function generateAiComment(event) {
         cooldown: Boolean(lease.cooldown),
         retryAfterMs: lease.retryAfterMs,
         errorCode: lease.inProgress ? 'AI_REVIEW_IN_PROGRESS' : lease.cooldown ? 'AI_REVIEW_COOLDOWN' : undefined,
+        aiReviewDebug,
       });
     }
 
-    const aiComment = await callAiCommentModel(context.evidenceInput);
-    const finishResult = await finishAiReviewSuccess(context, lease.generationToken, aiComment);
+    const aiComment = await callAiCommentModel(context.evidenceInput, aiReviewDebug);
+    let finishResult;
+    try {
+      finishResult = await finishAiReviewSuccess(context, lease.generationToken, aiComment);
+    } catch (error) {
+      updateAiReviewDebug(aiReviewDebug, {
+        saved: false,
+        errorCode: mapAiReviewErrorCode(error),
+      });
+      logAiReviewDebug('save', aiReviewDebug);
+      throw error;
+    }
+    updateAiReviewDebug(aiReviewDebug, {
+      fallbackUsed: aiComment.reviewSource === 'rule_fallback' || aiComment.source === 'rule_fallback',
+      fallbackReason: aiComment.fallbackReason || '',
+      saved: Boolean(finishResult.saved),
+    });
+    logAiReviewDebug('save', aiReviewDebug);
     const review = finishResult.review || await readAiReview(context.reviewId);
+    logAiReviewDebug('result', aiReviewDebug);
     return buildAiReviewResponse(context, review, {
       cacheHit: false,
       saved: finishResult.saved,
       inProgress: finishResult.superseded && review?.status === 'generating',
       superseded: finishResult.superseded,
+      aiReviewDebug,
     });
   } catch (error) {
-    console.warn('[generateOutfit] aiComment fallback', {
-      action: 'aiComment',
-      durationMs: Date.now() - startedAt,
-      reviewId: context ? shortHash(context.reviewId) : '',
-      code: getAiReviewInternalErrorCode(error),
-    });
+    const errorCode = mapAiReviewErrorCode(error);
+    if (aiReviewDebug) {
+      updateAiReviewDebug(aiReviewDebug, {
+        fallbackUsed: true,
+        fallbackReason: getAiReviewFallbackReason(error),
+        saved: false,
+        errorCode,
+      });
+      logAiReviewDebug('fallback', aiReviewDebug);
+    } else {
+      // eslint-disable-next-line no-console
+      console.warn('[xiaoda-review]', 'fallback', {
+        requestId: '',
+        action: 'aiComment',
+        cacheDecision: 'context_failed',
+        aiAttempted: false,
+        fallbackUsed: true,
+        fallbackReason: 'context_failed',
+        saved: false,
+        errorCode,
+      });
+    }
     if (context && lease?.generationToken) {
       await finishAiReviewFailure(context, lease.generationToken).catch(() => false);
     }
     const review = context ? await readAiReview(context.reviewId).catch(() => null) : null;
-    const errorCode = mapAiReviewErrorCode(error);
+    if (aiReviewDebug) logAiReviewDebug('result', aiReviewDebug);
     return {
       ...buildAiReviewResponse(context, review, {
         cacheHit: false,
         saved: false,
         fallback: true,
         errorCode,
+        aiReviewDebug,
       }),
       success: false,
       message: getSafeAiReviewMessage(errorCode),
@@ -528,41 +589,76 @@ function buildAiCommentItemFromClothing(item) {
   };
 }
 
-async function callAiCommentModel(input) {
+async function callAiCommentModel(input, aiReviewDebug) {
+  updateAiReviewDebug(aiReviewDebug, {
+    aiAttempted: true,
+    providerConfigured: isAiCommentProviderConfigured(),
+  });
   if (AI_COMMENT_PROVIDER !== 'aliyun-bailian') {
+    updateAiReviewDebug(aiReviewDebug, {
+      fallbackUsed: true,
+      fallbackReason: 'provider_not_configured',
+      errorCode: 'AI_REVIEW_PROVIDER_NOT_CONFIGURED',
+    });
     throw createAiReviewServiceError('AI_REVIEW_PROVIDER_NOT_CONFIGURED');
   }
 
   const apiKey = process.env.BAILIAN_API_KEY || process.env.DASHSCOPE_API_KEY;
-  if (!apiKey) throw createAiReviewServiceError('AI_REVIEW_PROVIDER_NOT_CONFIGURED');
+  if (!apiKey) {
+    updateAiReviewDebug(aiReviewDebug, {
+      fallbackUsed: true,
+      fallbackReason: 'provider_not_configured',
+      errorCode: 'AI_REVIEW_PROVIDER_NOT_CONFIGURED',
+    });
+    throw createAiReviewServiceError('AI_REVIEW_PROVIDER_NOT_CONFIGURED');
+  }
 
   const fetch = require('node-fetch');
   const prompt = buildStylistPromptV2(input);
-  const response = await fetch(`${BAILIAN_BASE_URL}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: AI_COMMENT_MODEL,
-      messages: [
-        { role: 'system', content: prompt.system },
-        { role: 'user', content: prompt.user },
-      ],
-      temperature: 0.3,
-      max_tokens: 700,
-      stream: false,
-      response_format: { type: 'json_object' },
-    }),
-    timeout: AI_COMMENT_TIMEOUT_MS,
+  updateAiReviewDebug(aiReviewDebug, {
+    providerRequestStarted: true,
+    providerConfigured: true,
   });
+  logAiReviewDebug('provider_start', aiReviewDebug);
+  let response;
+  try {
+    response = await fetch(`${BAILIAN_BASE_URL}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: AI_COMMENT_MODEL,
+        messages: [
+          { role: 'system', content: prompt.system },
+          { role: 'user', content: prompt.user },
+        ],
+        temperature: 0.3,
+        max_tokens: 700,
+        stream: false,
+        response_format: { type: 'json_object' },
+      }),
+      timeout: AI_COMMENT_TIMEOUT_MS,
+    });
+  } catch (error) {
+    updateAiReviewDebug(aiReviewDebug, {
+      providerRequestFinished: true,
+      providerStatus: 0,
+    });
+    logAiReviewDebug('provider_done', aiReviewDebug);
+    throw createAiReviewServiceError('AI_REVIEW_PROVIDER_UNAVAILABLE', error);
+  }
+  updateAiReviewDebug(aiReviewDebug, {
+    providerRequestFinished: true,
+    providerStatus: response.status,
+  });
+  logAiReviewDebug('provider_done', aiReviewDebug);
 
   if (!response.ok) {
-    const text = await response.text();
     throw createAiReviewServiceError(
       'AI_REVIEW_PROVIDER_UNAVAILABLE',
-      new Error(`ai_comment_api_error_${response.status}:${text.slice(0, 200)}`),
+      new Error(`ai_comment_api_error_${response.status}`),
     );
   }
 
@@ -575,8 +671,25 @@ async function callAiCommentModel(input) {
       model: AI_COMMENT_MODEL,
       generatedAt: new Date().toISOString(),
     });
+    updateAiReviewDebug(aiReviewDebug, {
+      validatorResult: 'accepted',
+      validatorRejectReasons: [],
+    });
+    logAiReviewDebug('validator', aiReviewDebug);
     return toLegacyAiComment(explanation);
   } catch (error) {
+    const validatorRejectReasons = readStringArray(error?.validatorRejectReasons);
+    const safeRejectReasons = validatorRejectReasons.length > 0
+      ? validatorRejectReasons
+      : [getValidatorRejectReason(error)];
+    updateAiReviewDebug(aiReviewDebug, {
+      validatorResult: 'rejected',
+      validatorRejectReasons: safeRejectReasons,
+      fallbackUsed: true,
+      fallbackReason: 'validator_rejected',
+    });
+    logAiReviewDebug('validator', aiReviewDebug);
+    logAiReviewDebug('fallback', aiReviewDebug);
     const fallback = buildRuleFallbackExplanationV2(input, {
       provider: AI_COMMENT_PROVIDER,
       model: AI_COMMENT_MODEL,
@@ -585,7 +698,8 @@ async function callAiCommentModel(input) {
     return {
       ...toLegacyAiComment(fallback),
       reviewSource: 'rule_fallback',
-      validatorRejectReasons: readStringArray(error?.validatorRejectReasons),
+      fallbackReason: 'validator_rejected',
+      validatorRejectReasons: safeRejectReasons,
     };
   }
 }
@@ -799,8 +913,44 @@ function sha256(value) {
   return crypto.createHash('sha256').update(String(value)).digest('hex');
 }
 
-function shortHash(value) {
-  return String(value || '').slice(0, 10);
+function createAiCommentDebug(action, context, requestId) {
+  return createAiReviewDebug({
+    requestId,
+    action,
+    outfitKey: context?.outfitKey,
+    scene: context?.scene,
+    provider: context?.provider || AI_COMMENT_PROVIDER,
+    model: context?.model || AI_COMMENT_MODEL,
+  });
+}
+
+function isAiCommentProviderConfigured() {
+  return AI_COMMENT_PROVIDER === 'aliyun-bailian'
+    && Boolean(process.env.BAILIAN_API_KEY || process.env.DASHSCOPE_API_KEY);
+}
+
+function getAiReviewCacheDecision(lease) {
+  if (lease?.cacheHit) return 'hit';
+  if (lease?.inProgress) return 'in_progress';
+  if (lease?.cooldown) return 'cooldown';
+  if (lease?.acquired) return 'generate';
+  return 'unknown';
+}
+
+function getAiReviewFallbackReason(error) {
+  const errorCode = mapAiReviewErrorCode(error);
+  if (errorCode === 'AI_REVIEW_PROVIDER_NOT_CONFIGURED') return 'provider_not_configured';
+  if (errorCode === 'AI_REVIEW_PROVIDER_UNAVAILABLE') return 'provider_request_failed';
+  if (errorCode === 'AI_REVIEW_STORAGE_UNAVAILABLE' || errorCode === 'AI_REVIEW_TRANSACTION_UNAVAILABLE') return 'save_failed';
+  if (errorCode === 'AI_REVIEW_INCOMPLETE_INPUT') return 'incomplete_input';
+  return 'unknown_error';
+}
+
+function getValidatorRejectReason(error) {
+  const message = String(error?.message || '');
+  if (/invalid_stylist_json/i.test(message)) return 'INVALID_JSON';
+  if (/invalid_stylist_explanation/i.test(message)) return 'INVALID_STYLIST_EXPLANATION';
+  return 'VALIDATOR_REJECTED';
 }
 
 async function readAiReview(reviewId) {
@@ -915,6 +1065,7 @@ function buildAiReviewResponse(context, review, options = {}) {
     cacheReuseReason: options.cacheHit ? 'ready_review_match' : options.inProgress ? 'generation_in_progress' : options.cooldown ? 'force_regenerate_cooldown' : '',
     model: context?.model || review?.model || AI_COMMENT_MODEL,
     errorCode: options.errorCode,
+    aiReviewDebug: toSafeAiReviewDebug(options.aiReviewDebug),
   };
 }
 
