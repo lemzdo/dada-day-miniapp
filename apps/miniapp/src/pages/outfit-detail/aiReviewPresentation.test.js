@@ -28,9 +28,9 @@ function v2Comment(overrides = {}) {
       confidence: 'high',
       evidenceCodes: ['COLOR_MONOCHROMATIC'],
       limitations: [],
-      source: 'rule_fallback',
-      provider: 'rule',
-      model: 'rule',
+      source: 'ai',
+      provider: 'aliyun-bailian',
+      model: 'qwen-flash',
       generatedAt: '2026-06-30T00:00:00.000Z',
       inputDigest: 'digest',
       ...explanationOverrides,
@@ -170,4 +170,48 @@ test('outfit detail UI does not render aiComment title or review tags directly',
   assert.doesNotMatch(source, /ai-comment-title/);
   assert.doesNotMatch(source, /aiReviewPresentation\.tags/);
   assert.doesNotMatch(source, /ai-comment-tags/);
+});
+
+test('rule fallback response keeps content plan presentation instead of fallback ai comment', () => {
+  const contentPlan = {
+    primaryBenefit: 'commute_polish',
+    items: [{ role: 'core', slot: 'top', displayName: '白衬衫' }],
+  };
+  const result = buildAiReviewPresentation({
+    title: '',
+    reason: '旧 fallback 不应该替换默认正文。',
+    styleTags: [],
+    tip: '旧 fallback 建议也不展示。',
+    source: 'rule_fallback',
+    reviewSource: 'rule_fallback',
+  }, contentPlan);
+
+  assert.deepEqual(result.bodyParagraphs, ['白衬衫是这套的主线，通勤场景更利落。', '这套没有靠夸张细节撑场面，主要用清楚的单品关系服务通勤状态。']);
+  assert.equal(result.advice, null);
+});
+
+test('cached ai response can still replace content plan presentation', () => {
+  const result = buildAiReviewPresentation({
+    title: '',
+    reason: '白衬衫和黑长裤让通勤线条更清楚，整体不会显得用力。',
+    styleTags: [],
+    tip: '鞋子保持简洁，主线会更稳。',
+    source: 'cached_ai',
+    reviewSource: 'cached_ai',
+  }, {
+    primaryBenefit: 'commute_polish',
+    items: [{ role: 'core', slot: 'top', displayName: '白衬衫' }],
+  });
+
+  assert.deepEqual(result.bodyParagraphs, ['白衬衫和黑长裤让通勤线条更清楚，整体不会显得用力。']);
+  assert.equal(result.advice, '鞋子保持简洁，主线会更稳。');
+});
+
+test('success false rule fallback keeps retry button and non-success toast semantics', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'index.tsx'), 'utf8');
+  assert.match(source, /isFallbackAiReviewResult/);
+  assert.match(source, /刚刚没接上话，再试一次吧。/);
+  assert.match(source, /再听小搭说说/);
+  assert.match(source, /!isFallbackAiReviewResult\(result\)/);
+  assert.doesNotMatch(source, /success && result\.aiComment\)/);
 });

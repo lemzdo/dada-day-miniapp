@@ -82,3 +82,14 @@ test('validator rejection and rule fallback keep reject reason and fallback reas
   assert.equal(debug.fallbackUsed, true);
   assert.equal(debug.fallbackReason, 'validator_rejected');
 });
+
+test('skipped fallback cache decision is included in safe debug', () => {
+  const debug = updateAiReviewDebug(baseDebug(), {
+    cacheDecision: 'skip_fallback',
+    aiAttempted: false,
+  });
+  const safe = toSafeAiReviewDebug(debug);
+
+  assert.equal(safe.cacheDecision, 'skip_fallback');
+  assert.equal(safe.aiAttempted, false);
+});

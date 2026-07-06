@@ -63,6 +63,7 @@ type EditableModalResult = Awaited<ReturnType<typeof Taro.showModal>> & {
 };
 interface AiReviewMeta {
   hasCanonical: boolean;
+  fallbackFailed?: boolean;
   reviewId?: string;
   generatedAt?: string;
   cacheHit?: boolean;
@@ -763,7 +764,12 @@ export default function OutfitDetailPage() {
         Taro.showToast({ title: result.aiComment ? '小搭多说了两句' : '让我再想想……', icon: 'none' });
         return;
       }
-      if (result.success && result.aiComment) {
+      if (isFallbackAiReviewResult(result)) {
+        applyAiReviewResult(result);
+        Taro.showToast({ title: '刚刚没接上话，再试一次吧。', icon: 'none' });
+        return;
+      }
+      if (result.success && result.aiComment && !isFallbackAiReviewResult(result)) {
         applyAiReviewResult(result);
         Taro.showToast({
           title: result.cacheHit ? '小搭多说了两句' : forceRegenerate ? '换了个角度说' : '小搭多说了两句',
@@ -786,6 +792,15 @@ export default function OutfitDetailPage() {
   function showAiReviewError(errorCode: string | undefined, fallbackMessage?: string) {
     const message = getAiReviewErrorCopy(errorCode || 'AI_REVIEW_UNKNOWN') || fallbackMessage || USER_FACING_COPY.aiReview.genericRetry;
     Taro.showToast({ title: message, icon: 'none' });
+  }
+
+  function isFallbackAiReviewResult(result: OutfitAiReviewResponse) {
+    return result.source === 'rule_fallback'
+      || result.source === 'cached_fallback'
+      || result.reviewSource === 'rule_fallback'
+      || result.reviewSource === 'cached_fallback'
+      || result.review?.source === 'rule_fallback'
+      || result.review?.source === 'cached_fallback';
   }
 
   function logAiReviewDebugSummary(result: OutfitAiReviewResponse) {
@@ -819,12 +834,14 @@ export default function OutfitDetailPage() {
     result: OutfitAiReviewResponse,
     options: { clearStaleComment?: boolean } = {},
   ) {
-    const hasReadyReview = Boolean(result.aiComment && result.review?.status === 'ready' && !result.stale);
+    const isFallbackResult = isFallbackAiReviewResult(result);
+    const hasReadyReview = Boolean(result.aiComment && result.review?.status === 'ready' && !result.stale && !isFallbackResult);
     const shouldPreserveDisplayedComment = Boolean(
-      result.aiComment && (hasReadyReview || result.inProgress || result.cooldown),
+      result.aiComment && !isFallbackResult && (hasReadyReview || result.inProgress || result.cooldown),
     );
     setAiReviewMeta({
       hasCanonical: shouldPreserveDisplayedComment,
+      fallbackFailed: isFallbackResult && result.success === false,
       reviewId: result.reviewId ?? result.review?.reviewId,
       generatedAt: result.generatedAt ?? result.review?.generatedAt,
       cacheHit: result.cacheHit,
@@ -953,7 +970,13 @@ export default function OutfitDetailPage() {
   const showCount = itemsExpanded || items.length <= 4 ? items.length : 4;
   const displayItems = items.slice(0, showCount);
   const hasCanonicalAiComment = Boolean(aiReviewMeta?.hasCanonical && outfit.aiComment);
-  const aiCommentButtonText = commentLoading ? '让我再想想……' : hasCanonicalAiComment ? '换个角度再说说' : '听小搭多说两句';
+  const aiCommentButtonText = commentLoading
+    ? '让我再想想……'
+    : aiReviewMeta?.fallbackFailed
+      ? '再听小搭说说'
+      : hasCanonicalAiComment
+        ? '换个角度再说说'
+        : '听小搭多说两句';
   const aiReviewPresentation = buildAiReviewPresentation(outfit.aiComment, outfit.contentPlan);
   const hasAiReviewContent = Boolean(
     aiReviewPresentation

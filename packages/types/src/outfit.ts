@@ -150,6 +150,8 @@ export interface OutfitAiReview {
   reviewSource?: OutfitReviewSource;
   validatorRejectReasons?: string[];
   cacheReuseReason?: string;
+  cacheable?: boolean;
+  enhanced?: boolean;
   status: OutfitAiReviewStatus;
   generatedAt?: string;
   updatedAt?: string;
@@ -202,6 +204,8 @@ export interface OutfitAiReviewResponse {
   validatorRejectReasons?: string[];
   cacheReuseReason?: string;
   model?: string;
+  cacheable?: boolean;
+  enhanced?: boolean;
   fallback?: boolean;
   errorCode?: string;
   message?: string;

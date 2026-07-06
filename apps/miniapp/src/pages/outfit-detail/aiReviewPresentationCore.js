@@ -30,6 +30,9 @@ function buildAiReviewPresentation(aiComment, contentPlan) {
   if (!aiComment || typeof aiComment !== 'object') {
     return fallback;
   }
+  if (isFallbackAiComment(aiComment)) {
+    return fallback;
+  }
 
   const explanation = aiComment.explanationV2 && typeof aiComment.explanationV2 === 'object'
     ? aiComment.explanationV2
@@ -53,6 +56,15 @@ function buildAiReviewPresentation(aiComment, contentPlan) {
 function choosePresentation(candidate, fallback, contentPlan) {
   if (!hasQualifiedContent(candidate, contentPlan, fallback)) return fallback;
   return candidate;
+}
+
+function isFallbackAiComment(aiComment) {
+  return aiComment.source === 'rule_fallback'
+    || aiComment.source === 'cached_fallback'
+    || aiComment.reviewSource === 'rule_fallback'
+    || aiComment.reviewSource === 'cached_fallback'
+    || aiComment.explanationV2?.source === 'rule_fallback'
+    || aiComment.explanationV2?.source === 'cached_fallback';
 }
 
 function hasQualifiedContent(candidate, contentPlan, fallback) {

@@ -19,6 +19,11 @@ const {
   toSafeAiReviewDebug,
   updateAiReviewDebug,
 } = require('./services/aiReviewDebug');
+const {
+  buildAiReviewCacheDecision,
+  isFallbackAiReview,
+  isReusableAiReview,
+} = require('./services/aiReviewCachePolicy');
 const { buildStylistEvidenceV1 } = require('./services/stylistEvidence');
 const {
   COPY_POLICY_VERSION,
@@ -295,15 +300,16 @@ async function getAiComment(event) {
   const aiReviewDebug = createAiCommentDebug('getAiComment', context);
   logAiReviewDebug('start', aiReviewDebug);
   const review = await readAiReview(context.reviewId);
+  const cacheDecision = buildAiReviewCacheDecision(review, context, normalizeAiComment);
   updateAiReviewDebug(aiReviewDebug, {
-    cacheDecision: isReadyAiReview(review, context) ? 'hit' : review ? 'stale_or_not_ready' : 'miss',
+    cacheDecision,
     aiAttempted: false,
     saved: false,
   });
   logAiReviewDebug('cache', aiReviewDebug);
   logAiReviewDebug('result', aiReviewDebug);
   return buildAiReviewResponse(context, review, {
-    cacheHit: isReadyAiReview(review, context),
+    cacheHit: cacheDecision === 'hit',
     saved: false,
     aiReviewDebug,
   });
@@ -738,6 +744,12 @@ function normalizeAiComment(value) {
   };
 }
 
+function isFallbackAiComment(aiComment) {
+  return ['rule_fallback', 'cached_fallback'].includes(aiComment?.source)
+    || ['rule_fallback', 'cached_fallback'].includes(aiComment?.reviewSource)
+    || ['rule_fallback', 'cached_fallback'].includes(aiComment?.explanationV2?.source);
+}
+
 function normalizeOutfitItemRoles(value) {
   return Array.isArray(value)
     ? value
@@ -931,6 +943,7 @@ function isAiCommentProviderConfigured() {
 
 function getAiReviewCacheDecision(lease) {
   if (lease?.cacheHit) return 'hit';
+  if (lease?.skippedFallback) return 'skip_fallback';
   if (lease?.inProgress) return 'in_progress';
   if (lease?.cooldown) return 'cooldown';
   if (lease?.acquired) return 'generate';
@@ -978,19 +991,7 @@ function isDocumentNotFoundError(error) {
 }
 
 function isReadyAiReview(review, context) {
-  return Boolean(
-    review
-      && review._openid === context.openid
-      && review.outfitKey === context.outfitKey
-      && review.scene === context.scene
-      && review.status === 'ready'
-      && review.inputHash === context.inputHash
-      && review.promptVersion === context.promptVersion
-      && review.reviewVersion === context.reviewVersion
-      && review.copyPolicyVersion === context.copyPolicyVersion
-      && review.voicePolicyVersion === context.voicePolicyVersion
-      && normalizeAiComment(review.aiComment),
-  );
+  return isReusableAiReview(review, context, normalizeAiComment);
 }
 
 function isAiReviewStale(review, context) {
@@ -1009,10 +1010,15 @@ function isAiReviewStale(review, context) {
 function buildAiReviewResponse(context, review, options = {}) {
   const aiComment = normalizeAiComment(review?.aiComment) || normalizeAiComment(options.fallbackAiComment) || null;
   const ready = context && isReadyAiReview(review, context);
+  const fallbackReview = isFallbackAiReview(review) || isFallbackAiComment(aiComment);
   const stale = context ? isAiReviewStale(review, context) : false;
   return {
-    success: true,
-    aiComment: ready || options.inProgress ? aiComment : options.fallbackAiComment ? normalizeAiComment(options.fallbackAiComment) : null,
+    success: !fallbackReview && !options.errorCode,
+    aiComment: !fallbackReview && (ready || options.inProgress)
+      ? aiComment
+      : !fallbackReview && options.fallbackAiComment
+        ? normalizeAiComment(options.fallbackAiComment)
+        : null,
     review: review
       ? {
           reviewId: review._id || context?.reviewId,
@@ -1036,7 +1042,9 @@ function buildAiReviewResponse(context, review, options = {}) {
           cacheReuseReason: options.cacheHit ? 'ready_review_match' : '',
           model: review.model,
           provider: review.provider,
-          aiComment,
+          cacheable: review.cacheable,
+          enhanced: review.enhanced,
+          aiComment: fallbackReview ? null : aiComment,
           status: review.status,
           generatedAt: review.generatedAt,
           updatedAt: review.updatedAt,
@@ -1064,6 +1072,8 @@ function buildAiReviewResponse(context, review, options = {}) {
     validatorRejectReasons: readStringArray(review?.validatorRejectReasons || aiComment?.validatorRejectReasons),
     cacheReuseReason: options.cacheHit ? 'ready_review_match' : options.inProgress ? 'generation_in_progress' : options.cooldown ? 'force_regenerate_cooldown' : '',
     model: context?.model || review?.model || AI_COMMENT_MODEL,
+    cacheable: review?.cacheable,
+    enhanced: fallbackReview ? false : review?.enhanced,
     errorCode: options.errorCode,
     aiReviewDebug: toSafeAiReviewDebug(options.aiReviewDebug),
   };
@@ -1076,6 +1086,8 @@ async function acquireAiReviewLease(context, { forceRegenerate }) {
   return runAiReviewTransaction(async (transaction) => {
       const ref = transaction.collection(AI_REVIEW_COLLECTION).doc(context.reviewId);
       const current = await readDocumentOrNull(ref);
+
+      const skippedFallback = buildAiReviewCacheDecision(current, context, normalizeAiComment) === 'skip_fallback';
 
       if (!forceRegenerate && isReadyAiReview(current, context)) {
         return { cacheHit: true, review: current };
@@ -1099,9 +1111,11 @@ async function acquireAiReviewLease(context, { forceRegenerate }) {
         return { cooldown: true, retryAfterMs, review: current };
       }
 
-      const previousReview = current?.status === 'ready'
+      const previousReview = current?.status === 'ready' && !isFallbackAiReview(current)
         ? buildPreviousAiReviewSnapshot(current)
-        : current?.previousReview || null;
+        : current?.previousReview && !isFallbackAiReview(current.previousReview)
+          ? current.previousReview
+          : null;
 
       const generatingData = {
         _openid: context.openid,
@@ -1138,6 +1152,7 @@ async function acquireAiReviewLease(context, { forceRegenerate }) {
 
       return {
         acquired: true,
+        skippedFallback,
         generationToken,
         review: {
           ...current,
@@ -1168,6 +1183,8 @@ async function finishAiReviewSuccess(context, generationToken, aiComment) {
         explanation,
         now,
       }),
+      cacheable: explanation.source !== 'rule_fallback',
+      enhanced: explanation.source !== 'rule_fallback',
       generationToken: null,
       generationStartedAt: null,
       previousReview: null,
