@@ -127,6 +127,29 @@ export interface StylistExplanationV2 {
 
 export type OutfitAiReviewStatus = 'ready' | 'generating' | 'failed';
 
+export interface OutfitAiReviewRawSummary {
+  providerReturned?: boolean;
+  statusCode?: number;
+  rawTextPreview?: string;
+  parsedJson?: boolean;
+  parseErrorCode?: string;
+  fields?: {
+    hasOverallComment: boolean;
+    hasAdvice: boolean;
+    overallCommentLength: number;
+    adviceLength: number;
+  };
+  overallCommentPreview?: string;
+  advicePreview?: string;
+}
+
+export interface OutfitAiReviewValidatorTraceEntry {
+  check: string;
+  pass: boolean;
+  code?: string;
+  detail?: string;
+}
+
 export interface OutfitAiReview {
   reviewId: string;
   outfitKey: string;
@@ -172,6 +195,8 @@ export interface OutfitAiReviewDebug {
   providerStatus?: number;
   validatorResult?: string;
   validatorRejectReasons?: string[];
+  validatorTrace?: OutfitAiReviewValidatorTraceEntry[];
+  aiRawSummary?: OutfitAiReviewRawSummary;
   fallbackUsed?: boolean;
   fallbackReason?: string;
   saved?: boolean;

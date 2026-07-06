@@ -26,7 +26,11 @@ test('outfit detail page reads and prints safe ai review debug fields', () => {
     'fallbackReason',
     'errorCode',
     'validatorRejectReasons',
+    'validatorTrace',
+    'aiRawSummary',
   ]) {
     assert.match(page, new RegExp(`${field}:`), field);
   }
+  assert.match(types, /validatorTrace\?: OutfitAiReviewValidatorTraceEntry\[\]/);
+  assert.match(types, /aiRawSummary\?: OutfitAiReviewRawSummary/);
 });

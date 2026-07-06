@@ -5,12 +5,15 @@ const {
 } = require('./humanCopyPolicy');
 const {
   VOICE_POLICY_VERSION,
+  MECHANICAL_VOICE_TERMS,
+  UNSUPPORTED_SENSATION_TERMS,
   findXiaodaVoicePolicyViolations,
   renderXiaodaStylistFallback,
 } = require('./xiaodaVoicePolicy');
 const {
   buildXiaodaDefaultReviewV1,
   hasQualifiedAiReviewIncrementV1,
+  normalizeXiaodaSuggestionV1,
 } = require('./xiaodaContentPlan');
 
 const STYLIST_REVIEW_VERSION = 'stylist-explanation-v4';
@@ -66,11 +69,16 @@ function parseStylistExplanationJson(content) {
 
 function validateStylistExplanationV2(rawValue, evidenceInput, meta = {}) {
   const raw = clonePlain(rawValue);
-  if (!raw || typeof raw !== 'object') throw new Error('invalid_stylist_explanation');
-  if (raw.schemaVersion === 3 || raw.overallComment || raw.advice) {
-    return validateStylistExplanationV3(raw, evidenceInput, meta);
+  try {
+    if (!raw || typeof raw !== 'object') throw new Error('invalid_stylist_explanation');
+    if (raw.schemaVersion === 3 || raw.overallComment || raw.advice) {
+      return validateStylistExplanationV3(raw, evidenceInput, meta);
+    }
+    return validateLegacyExplanation(raw, evidenceInput, meta);
+  } catch (error) {
+    attachStylistValidatorDiagnostics(error, raw, evidenceInput);
+    throw error;
   }
-  return validateLegacyExplanation(raw, evidenceInput, meta);
 }
 
 function validateStylistExplanationV3(raw, evidenceInput, meta = {}) {
@@ -357,6 +365,180 @@ function assertKnownFactsOnly(text, evidenceInput) {
   if (findHumanCopyPolicyViolations(text).length > 0) throw new Error('invalid_stylist_explanation');
 }
 
+function traceStylistExplanationValidationV2(rawValue, evidenceInput) {
+  const raw = clonePlain(rawValue);
+  const trace = [];
+  const add = (check, pass, code = '', detail = '') => {
+    trace.push({
+      check,
+      pass: Boolean(pass),
+      ...(code ? { code } : {}),
+      ...(detail ? { detail: limitText(detail, 120) } : {}),
+    });
+  };
+  if (!raw || typeof raw !== 'object') {
+    add('json_parse', false, 'SCHEMA_PARSE_FAILED', 'parsed value is not an object');
+    return trace;
+  }
+
+  const schemaMissing = [
+    raw.schemaVersion === 3 ? '' : 'schemaVersion',
+    raw.reviewVersion === STYLIST_REVIEW_VERSION ? '' : 'reviewVersion',
+    raw.promptVersion === STYLIST_PROMPT_VERSION ? '' : 'promptVersion',
+    raw.copyPolicyVersion === COPY_POLICY_VERSION ? '' : 'copyPolicyVersion',
+    raw.voicePolicyVersion === VOICE_POLICY_VERSION ? '' : 'voicePolicyVersion',
+  ].filter(Boolean);
+  add(
+    'schema_fields',
+    schemaMissing.length === 0,
+    schemaMissing.length ? 'SCHEMA_PARSE_FAILED' : '',
+    schemaMissing.length ? `missing_or_mismatched:${schemaMissing.join(',')}` : 'required version fields match',
+  );
+
+  const overallComment = normalizeTraceText(raw.overallComment, 120);
+  const advice = normalizeTraceText(raw.advice, 80);
+  add(
+    'overall_comment_present',
+    Boolean(overallComment),
+    overallComment ? '' : 'MISSING_OVERALL_COMMENT',
+    overallComment ? `length:${Array.from(overallComment).length}` : 'overallComment is empty or missing',
+  );
+  add(
+    'advice_optional',
+    true,
+    advice ? '' : 'ADVICE_OPTIONAL_EMPTY',
+    advice ? `advice length:${Array.from(advice).length}` : 'advice is empty and treated as optional',
+  );
+  add(
+    'advice_distinct',
+    !advice || !isTooSimilar(overallComment, advice, 0.7),
+    advice && isTooSimilar(overallComment, advice, 0.7) ? 'EMPTY_OR_GENERIC_ADVICE' : '',
+    advice ? 'checked advice is not just a repeat of overallComment' : 'empty advice is optional',
+  );
+
+  const combined = `${overallComment}${advice}`;
+  const mechanicalTerms = findTerms(combined, MECHANICAL_VOICE_TERMS);
+  add(
+    'mechanical_copy',
+    mechanicalTerms.length === 0,
+    mechanicalTerms.length ? 'MECHANICAL_COPY' : '',
+    mechanicalTerms.length ? `matched:${mechanicalTerms.join(',')}` : 'no mechanical wording matched',
+  );
+
+  const forbiddenTerms = findHumanCopyPolicyViolations(combined).filter((term) => !mechanicalTerms.includes(term));
+  add(
+    'forbidden_terms',
+    forbiddenTerms.length === 0,
+    forbiddenTerms.length ? 'FORBIDDEN_TERM' : '',
+    forbiddenTerms.length ? `matched:${forbiddenTerms.join(',')}` : 'no forbidden terms matched',
+  );
+
+  const sensationTerms = findTerms(combined, UNSUPPORTED_SENSATION_TERMS);
+  add(
+    'unsupported_sensation',
+    sensationTerms.length === 0,
+    sensationTerms.length ? 'UNSUPPORTED_SENSATION' : '',
+    sensationTerms.length ? `matched:${sensationTerms.join(',')}` : 'no unsupported sensation matched',
+  );
+
+  const unsupportedFacts = findUnsupportedFacts(combined, evidenceInput);
+  add(
+    'unsupported_fact',
+    unsupportedFacts.length === 0,
+    unsupportedFacts.length ? 'UNSUPPORTED_FACT' : '',
+    unsupportedFacts.length ? `matched:${unsupportedFacts.join(',')}` : 'no unsupported color material or item fact matched',
+  );
+
+  const contentPlan = evidenceInput?.contentPlan;
+  if (contentPlan) {
+    const defaultReview = buildXiaodaDefaultReviewV1(contentPlan);
+    const increment = hasQualifiedAiReviewIncrementV1(
+      { reason: overallComment, tip: advice, source: VALID_SOURCES.has(raw.source) ? raw.source : 'ai' },
+      contentPlan,
+      defaultReview,
+    );
+    add(
+      'information_gain',
+      !increment.rejectReasons.includes('no_information_gain'),
+      increment.rejectReasons.includes('no_information_gain') ? 'NO_INFORMATION_GAIN' : '',
+      increment.rejectReasons.includes('no_information_gain') ? 'too close to known default or too little new detail' : 'has information gain or no rejection from content plan',
+    );
+    add(
+      'similar_to_default',
+      !isTooSimilar(overallComment, defaultReview.reason, 0.76),
+      isTooSimilar(overallComment, defaultReview.reason, 0.76) ? 'TOO_SIMILAR_TO_DEFAULT' : '',
+      isTooSimilar(overallComment, defaultReview.reason, 0.76) ? 'overallComment is too close to default review' : 'not too similar to default review',
+    );
+    const normalizedSuggestion = advice ? normalizeXiaodaSuggestionV1(advice, contentPlan) : null;
+    add(
+      'advice_actionable',
+      !advice || Boolean(normalizedSuggestion),
+      advice && !normalizedSuggestion ? 'EMPTY_OR_GENERIC_ADVICE' : advice ? '' : 'ADVICE_OPTIONAL_EMPTY',
+      advice ? 'checked advice against grounded action rules' : 'empty advice is optional',
+    );
+    for (const reason of increment.rejectReasons) {
+      const code = mapIncrementRejectReason(reason);
+      if (code && !trace.some((entry) => entry.code === code && entry.pass === false)) {
+        add(`content_plan_${reason}`, false, code, reason);
+      }
+    }
+  } else {
+    add('information_gain', true, '', 'content plan not available');
+    add('similar_to_default', true, '', 'content plan not available');
+    add('advice_actionable', true, advice ? '' : 'ADVICE_OPTIONAL_EMPTY', advice ? 'content plan not available' : 'empty advice is optional');
+  }
+
+  return trace;
+}
+
+function attachStylistValidatorDiagnostics(error, raw, evidenceInput) {
+  const trace = traceStylistExplanationValidationV2(raw, evidenceInput);
+  const existingReasons = uniqueStrings(error?.validatorRejectReasons);
+  const traceReasons = trace
+    .filter((entry) => entry.pass === false && entry.code)
+    .map((entry) => entry.code);
+  error.validatorTrace = trace;
+  error.validatorRejectReasons = uniqueStrings([...existingReasons.map((reason) => mapIncrementRejectReason(reason) || reason), ...traceReasons])
+    .filter(Boolean);
+}
+
+function findUnsupportedFacts(text, evidenceInput) {
+  const issues = [];
+  const allowedColors = readOutfitColorNames(evidenceInput);
+  if (allowedColors.length > 0) {
+    for (const color of COLOR_WORDS) {
+      if (text.includes(color) && !allowedColors.includes(color)) issues.push(`color:${color}`);
+    }
+  }
+  const allowedMaterials = readOutfitMaterials(evidenceInput);
+  if (allowedMaterials.length > 0) {
+    for (const material of MATERIAL_WORDS) {
+      if (text.includes(material) && !allowedMaterials.includes(material)) issues.push(`material:${material}`);
+    }
+  }
+  return uniqueStrings(issues);
+}
+
+function mapIncrementRejectReason(reason) {
+  const map = {
+    missing_reason: 'MISSING_OVERALL_COMMENT',
+    empty_phrase: 'EMPTY_OR_GENERIC_ADVICE',
+    english_type_leak: 'FORBIDDEN_TERM',
+    not_grounded: 'NO_INFORMATION_GAIN',
+    no_information_gain: 'NO_INFORMATION_GAIN',
+    invalid_suggestion: 'EMPTY_OR_GENERIC_ADVICE',
+  };
+  return map[reason] || reason;
+}
+
+function findTerms(text, terms) {
+  return uniqueStrings((terms || []).filter((term) => term && text.includes(term)));
+}
+
+function normalizeTraceText(value, maxLength) {
+  return limitText(value, maxLength).replace(/\s+/g, '');
+}
+
 function normalizeLimitations(rawLimitations, evidenceInput) {
   const merged = uniqueStrings([...(Array.isArray(rawLimitations) ? rawLimitations : []), ...readLimitations(evidenceInput)]).sort();
   for (const limitation of merged) {
@@ -483,5 +665,6 @@ module.exports = {
   parseStylistExplanationJson,
   resolveStylistReviewReuse,
   toLegacyAiComment,
+  traceStylistExplanationValidationV2,
   validateStylistExplanationV2,
 };

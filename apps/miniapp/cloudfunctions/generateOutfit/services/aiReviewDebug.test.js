@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
+  createAiRawSummary,
   createAiReviewDebug,
   logAiReviewDebug,
   toSafeAiReviewDebug,
@@ -92,4 +93,45 @@ test('skipped fallback cache decision is included in safe debug', () => {
 
   assert.equal(safe.cacheDecision, 'skip_fallback');
   assert.equal(safe.aiAttempted, false);
+});
+
+test('raw provider summary records plain text parse failure without leaking sensitive values', () => {
+  const summary = createAiRawSummary({
+    providerReturned: true,
+    statusCode: 200,
+    rawText: `not json cloud://bucket/private.png https://example.com/a.jpg OPENID=o-secret sk-test-secret ${'x'.repeat(260)}`,
+    parsedJson: false,
+    parseErrorCode: 'SCHEMA_PARSE_FAILED',
+  });
+
+  assert.equal(summary.providerReturned, true);
+  assert.equal(summary.statusCode, 200);
+  assert.equal(summary.parsedJson, false);
+  assert.equal(summary.parseErrorCode, 'SCHEMA_PARSE_FAILED');
+  assert.ok(Array.from(summary.rawTextPreview).length <= 200);
+  assert.doesNotMatch(summary.rawTextPreview, /cloud:\/\/|https:\/\/|OPENID=o-secret|sk-test-secret/);
+});
+
+test('safe debug includes raw summary and validator trace with bounded details', () => {
+  const debug = updateAiReviewDebug(baseDebug(), {
+    aiRawSummary: createAiRawSummary({
+      providerReturned: true,
+      statusCode: 200,
+      rawText: JSON.stringify({ overallComment: 'safe overall', advice: 'safe advice' }),
+      parsedJson: true,
+      parsedValue: { overallComment: 'safe overall', advice: 'safe advice' },
+    }),
+    validatorTrace: [
+      { check: 'json_parse', pass: true, detail: 'ok' },
+      { check: 'information_gain', pass: false, code: 'NO_INFORMATION_GAIN', detail: `detail ${'x'.repeat(200)}` },
+    ],
+  });
+  const safe = toSafeAiReviewDebug(debug);
+  const json = JSON.stringify(safe);
+
+  assert.equal(safe.aiRawSummary.providerReturned, true);
+  assert.equal(safe.aiRawSummary.fields.hasOverallComment, true);
+  assert.equal(safe.validatorTrace[1].code, 'NO_INFORMATION_GAIN');
+  assert.ok(safe.validatorTrace[1].detail.length <= 120);
+  assert.doesNotMatch(json, /cloud:\/\/|OPENID|sk-/);
 });

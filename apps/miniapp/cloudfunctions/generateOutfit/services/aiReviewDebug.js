@@ -16,6 +16,8 @@ const DEBUG_FIELDS = [
   'providerStatus',
   'validatorResult',
   'validatorRejectReasons',
+  'validatorTrace',
+  'aiRawSummary',
   'fallbackUsed',
   'fallbackReason',
   'saved',
@@ -45,6 +47,8 @@ function createAiReviewDebug({
     providerStatus: undefined,
     validatorResult: 'not_run',
     validatorRejectReasons: [],
+    validatorTrace: [],
+    aiRawSummary: undefined,
     fallbackUsed: false,
     fallbackReason: '',
     saved: false,
@@ -87,6 +91,8 @@ function shortHash(value, length = 8) {
 
 function sanitizeField(field, value) {
   if (field === 'validatorRejectReasons') return sanitizeStringArray(value, 80);
+  if (field === 'validatorTrace') return sanitizeValidatorTrace(value);
+  if (field === 'aiRawSummary') return sanitizeAiRawSummary(value);
   if (field === 'aiAttempted' || field === 'providerConfigured' || field === 'providerRequestStarted' || field === 'providerRequestFinished' || field === 'fallbackUsed' || field === 'saved') {
     return typeof value === 'boolean' ? value : undefined;
   }
@@ -100,6 +106,70 @@ function sanitizeField(field, value) {
   return limitText(value, 80);
 }
 
+function createAiRawSummary({
+  providerReturned,
+  statusCode,
+  rawText,
+  parsedJson,
+  parseErrorCode,
+  parsedValue,
+} = {}) {
+  const overallComment = typeof parsedValue?.overallComment === 'string' ? parsedValue.overallComment : '';
+  const advice = typeof parsedValue?.advice === 'string' ? parsedValue.advice : '';
+  return sanitizeAiRawSummary({
+    providerReturned: Boolean(providerReturned),
+    statusCode,
+    rawTextPreview: sanitizePreview(rawText, 200),
+    parsedJson: Boolean(parsedJson),
+    parseErrorCode,
+    fields: {
+      hasOverallComment: Boolean(overallComment.trim()),
+      hasAdvice: Boolean(advice.trim()),
+      overallCommentLength: Array.from(overallComment.trim()).length,
+      adviceLength: Array.from(advice.trim()).length,
+    },
+    overallCommentPreview: sanitizePreview(overallComment, 120),
+    advicePreview: sanitizePreview(advice, 120),
+  });
+}
+
+function sanitizeAiRawSummary(value) {
+  if (!value || typeof value !== 'object') return undefined;
+  const fields = value.fields && typeof value.fields === 'object' ? value.fields : {};
+  const statusCode = Number(value.statusCode);
+  return {
+    providerReturned: typeof value.providerReturned === 'boolean' ? value.providerReturned : undefined,
+    statusCode: Number.isFinite(statusCode) ? statusCode : undefined,
+    rawTextPreview: sanitizePreview(value.rawTextPreview, 200),
+    parsedJson: typeof value.parsedJson === 'boolean' ? value.parsedJson : undefined,
+    parseErrorCode: limitText(value.parseErrorCode, 48),
+    fields: {
+      hasOverallComment: Boolean(fields.hasOverallComment),
+      hasAdvice: Boolean(fields.hasAdvice),
+      overallCommentLength: toSafeCount(fields.overallCommentLength),
+      adviceLength: toSafeCount(fields.adviceLength),
+    },
+    overallCommentPreview: sanitizePreview(value.overallCommentPreview, 120),
+    advicePreview: sanitizePreview(value.advicePreview, 120),
+  };
+}
+
+function sanitizeValidatorTrace(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => {
+      if (!entry || typeof entry !== 'object') return null;
+      return {
+        check: limitText(entry.check, 48),
+        pass: typeof entry.pass === 'boolean' ? entry.pass : false,
+        code: limitText(entry.code, 64),
+        detail: sanitizePreview(entry.detail, 120),
+      };
+    })
+    .filter((entry) => entry && entry.check)
+    .slice(0, 20);
+}
+
 function sanitizeStringArray(value, maxLength) {
   return Array.isArray(value)
     ? value
@@ -110,6 +180,27 @@ function sanitizeStringArray(value, maxLength) {
     : [];
 }
 
+function sanitizePreview(value, maxLength) {
+  if (typeof value !== 'string') return '';
+  return limitText(redactSensitiveText(value).replace(/\s+/g, ' '), maxLength);
+}
+
+function redactSensitiveText(value) {
+  return String(value)
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer [redacted]')
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, '[redacted-key]')
+    .replace(/\b(?:cloud|wxfile):\/\/[^\s"'，,。)）]+/gi, '[redacted-url]')
+    .replace(/\bhttps?:\/\/[^\s"'，,。)）]+/gi, '[redacted-url]')
+    .replace(/\b(?:OPENID|openid|openId|fileID|fileId|imageUrl|image_url|apiKey|api_key|prompt)\s*[:=]\s*["']?[^"',\s}]+["']?/g, '$1=[redacted]')
+    .replace(/"?(?:OPENID|openid|openId|fileID|fileId|imageUrl|image_url|apiKey|api_key|prompt)"?\s*:\s*"[^"]*"/g, '"redacted":"[redacted]"');
+}
+
+function toSafeCount(value) {
+  const count = Number(value);
+  if (!Number.isFinite(count)) return 0;
+  return Math.max(0, Math.min(1000, Math.round(count)));
+}
+
 function limitText(value, maxLength) {
   if (typeof value !== 'string') return '';
   return Array.from(value.trim()).slice(0, maxLength).join('');
@@ -117,6 +208,7 @@ function limitText(value, maxLength) {
 
 module.exports = {
   LOG_PREFIX,
+  createAiRawSummary,
   createAiReviewDebug,
   logAiReviewDebug,
   toSafeAiReviewDebug,

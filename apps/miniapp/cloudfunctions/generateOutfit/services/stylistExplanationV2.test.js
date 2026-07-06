@@ -12,8 +12,11 @@ const {
   parseStylistExplanationJson,
   resolveStylistReviewReuse,
   toLegacyAiComment,
+  traceStylistExplanationValidationV2,
   validateStylistExplanationV2,
 } = require('./stylistExplanationV2');
+const { buildXiaodaDefaultReviewV1 } = require('./xiaodaContentPlan');
+const { MECHANICAL_VOICE_TERMS } = require('./xiaodaVoicePolicy');
 
 const NOW = '2026-06-27T10:00:00.000Z';
 
@@ -241,4 +244,68 @@ test('buildStylistReviewDocument persists V3 payload without full outfit or imag
   assert.deepEqual(document.aiComment.styleTags, []);
   assert.equal(json.includes('cloud://'), false);
   assert.equal(json.includes('"outfit"'), false);
+});
+
+test('validator trace reports missing overall comment with a concrete code', () => {
+  const trace = traceStylistExplanationValidationV2({
+    schemaVersion: 3,
+    reviewVersion: STYLIST_REVIEW_VERSION,
+    promptVersion: STYLIST_PROMPT_VERSION,
+    copyPolicyVersion: COPY_POLICY_VERSION,
+    voicePolicyVersion: VOICE_POLICY_VERSION,
+    advice: 'safe optional advice',
+  }, evidenceInput());
+
+  assert.equal(trace.some((entry) => entry.check === 'schema_fields' && entry.pass), true);
+  assert.equal(trace.some((entry) => entry.code === 'MISSING_OVERALL_COMMENT'), true);
+});
+
+test('empty advice is traced as optional instead of required failure', () => {
+  const trace = traceStylistExplanationValidationV2({
+    schemaVersion: 3,
+    reviewVersion: STYLIST_REVIEW_VERSION,
+    promptVersion: STYLIST_PROMPT_VERSION,
+    copyPolicyVersion: COPY_POLICY_VERSION,
+    voicePolicyVersion: VOICE_POLICY_VERSION,
+    overallComment: 'safe overall comment with enough detail for the validator trace',
+    advice: '',
+  }, evidenceInput());
+  const adviceTrace = trace.find((entry) => entry.check === 'advice_optional');
+
+  assert.equal(adviceTrace?.pass, true);
+  assert.equal(adviceTrace?.code, 'ADVICE_OPTIONAL_EMPTY');
+  assert.equal(trace.some((entry) => entry.check === 'schema_fields' && entry.pass === false && entry.detail.includes('advice')), false);
+});
+
+test('mechanical copy and no information gain receive concrete validator codes', () => {
+  const mechanicalTrace = traceStylistExplanationValidationV2({
+    schemaVersion: 3,
+    reviewVersion: STYLIST_REVIEW_VERSION,
+    promptVersion: STYLIST_PROMPT_VERSION,
+    copyPolicyVersion: COPY_POLICY_VERSION,
+    voicePolicyVersion: VOICE_POLICY_VERSION,
+    overallComment: `safe text with ${MECHANICAL_VOICE_TERMS[0]} mechanical wording`,
+    advice: '',
+  }, evidenceInput());
+  assert.equal(mechanicalTrace.some((entry) => entry.code === 'MECHANICAL_COPY'), true);
+
+  const contentPlan = {
+    version: 'xiaoda-content-plan-v1',
+    sceneIntent: 'home:clean_daily',
+    items: [{ id: 'top-1', slot: 'top', role: 'core', displayName: 'top item' }],
+    observations: ['core:top item'],
+    primaryBenefit: 'clean_daily',
+    suggestion: null,
+  };
+  const defaultReview = buildXiaodaDefaultReviewV1(contentPlan);
+  const noGainTrace = traceStylistExplanationValidationV2({
+    schemaVersion: 3,
+    reviewVersion: STYLIST_REVIEW_VERSION,
+    promptVersion: STYLIST_PROMPT_VERSION,
+    copyPolicyVersion: COPY_POLICY_VERSION,
+    voicePolicyVersion: VOICE_POLICY_VERSION,
+    overallComment: defaultReview.reason,
+    advice: '',
+  }, evidenceInput({ contentPlan }));
+  assert.equal(noGainTrace.some((entry) => entry.code === 'NO_INFORMATION_GAIN'), true);
 });

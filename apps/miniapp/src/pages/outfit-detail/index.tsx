@@ -819,6 +819,8 @@ export default function OutfitDetailPage() {
       fallbackReason: debug.fallbackReason,
       errorCode: debug.errorCode ?? result.errorCode,
       validatorRejectReasons: debug.validatorRejectReasons ?? result.validatorRejectReasons,
+      validatorTrace: debug.validatorTrace,
+      aiRawSummary: debug.aiRawSummary,
     });
   }
 

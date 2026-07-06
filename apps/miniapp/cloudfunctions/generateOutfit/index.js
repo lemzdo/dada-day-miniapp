@@ -14,6 +14,7 @@ const {
   mapAiReviewErrorCode,
 } = require('./services/aiReviewErrorPolicy');
 const {
+  createAiRawSummary,
   createAiReviewDebug,
   logAiReviewDebug,
   toSafeAiReviewDebug,
@@ -34,6 +35,7 @@ const {
   buildStylistPromptV2,
   buildStylistReviewDocument,
   parseStylistExplanationJson,
+  traceStylistExplanationValidationV2,
   toLegacyAiComment,
   validateStylistExplanationV2,
 } = require('./services/stylistExplanationV2');
@@ -670,8 +672,52 @@ async function callAiCommentModel(input, aiReviewDebug) {
 
   const data = await response.json();
   const content = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+  let parsed;
+  const jsonParsePassTrace = { check: 'json_parse', pass: true, detail: 'provider content parsed as JSON' };
   try {
-    const parsed = parseStylistExplanationJson(content);
+    parsed = parseStylistExplanationJson(content);
+    updateAiReviewDebug(aiReviewDebug, {
+      aiRawSummary: createAiRawSummary({
+        providerReturned: content !== undefined && content !== null,
+        statusCode: response.status,
+        rawText: content,
+        parsedJson: true,
+        parsedValue: parsed,
+      }),
+      validatorTrace: [jsonParsePassTrace],
+    });
+  } catch (error) {
+    const safeRejectReasons = ['SCHEMA_PARSE_FAILED'];
+    updateAiReviewDebug(aiReviewDebug, {
+      aiRawSummary: createAiRawSummary({
+        providerReturned: content !== undefined && content !== null,
+        statusCode: response.status,
+        rawText: content,
+        parsedJson: false,
+        parseErrorCode: 'SCHEMA_PARSE_FAILED',
+      }),
+      validatorResult: 'rejected',
+      validatorRejectReasons: safeRejectReasons,
+      validatorTrace: [{ check: 'json_parse', pass: false, code: 'SCHEMA_PARSE_FAILED', detail: getValidatorRejectReason(error) }],
+      fallbackUsed: true,
+      fallbackReason: 'validator_rejected',
+    });
+    logAiReviewDebug('validator', aiReviewDebug);
+    logAiReviewDebug('fallback', aiReviewDebug);
+    const fallback = buildRuleFallbackExplanationV2(input, {
+      provider: AI_COMMENT_PROVIDER,
+      model: AI_COMMENT_MODEL,
+      generatedAt: new Date().toISOString(),
+    });
+    return {
+      ...toLegacyAiComment(fallback),
+      reviewSource: 'rule_fallback',
+      fallbackReason: 'validator_rejected',
+      validatorRejectReasons: safeRejectReasons,
+    };
+  }
+
+  try {
     const explanation = validateStylistExplanationV2(parsed, input, {
       provider: AI_COMMENT_PROVIDER,
       model: AI_COMMENT_MODEL,
@@ -680,17 +726,31 @@ async function callAiCommentModel(input, aiReviewDebug) {
     updateAiReviewDebug(aiReviewDebug, {
       validatorResult: 'accepted',
       validatorRejectReasons: [],
+      validatorTrace: [
+        jsonParsePassTrace,
+        ...traceStylistExplanationValidationV2(parsed, input),
+      ],
     });
     logAiReviewDebug('validator', aiReviewDebug);
     return toLegacyAiComment(explanation);
   } catch (error) {
     const validatorRejectReasons = readStringArray(error?.validatorRejectReasons);
+    const fallbackTrace = Array.isArray(error?.validatorTrace) ? error.validatorTrace : traceStylistExplanationValidationV2(parsed, input);
+    const traceRejectReasons = readStringArray(fallbackTrace
+      .filter((entry) => entry && entry.pass === false && entry.code)
+      .map((entry) => entry.code));
     const safeRejectReasons = validatorRejectReasons.length > 0
       ? validatorRejectReasons
+      : traceRejectReasons.length > 0
+        ? traceRejectReasons
       : [getValidatorRejectReason(error)];
     updateAiReviewDebug(aiReviewDebug, {
       validatorResult: 'rejected',
       validatorRejectReasons: safeRejectReasons,
+      validatorTrace: [
+        jsonParsePassTrace,
+        ...fallbackTrace,
+      ],
       fallbackUsed: true,
       fallbackReason: 'validator_rejected',
     });
