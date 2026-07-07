@@ -90,6 +90,15 @@ export interface XiaodaContentPlanSuggestion {
   text: string;
 }
 
+export interface XiaodaDefaultCopy {
+  todayReason: string;
+  detailExplanation: string;
+  aiExtraDefault: string;
+  usedInsightCodes: string[];
+  usedPhrases: string[];
+  angle?: string;
+}
+
 export interface XiaodaContentPlan {
   version: string;
   sceneIntent: string;
@@ -98,6 +107,9 @@ export interface XiaodaContentPlan {
   primaryBenefit: string;
   secondaryBenefit?: string;
   suggestion?: XiaodaContentPlanSuggestion | null;
+  defaultCopy?: XiaodaDefaultCopy;
+  defaultTodayReason?: string;
+  defaultDetailExplanation?: string;
 }
 
 export interface StylistExplanationPointV2 {

@@ -15,6 +15,7 @@ const {
   hasQualifiedAiReviewIncrementV1,
   normalizeXiaodaSuggestionV1,
 } = require('./xiaodaContentPlan');
+const { validateCopyAgainstFacts } = require('./validatorFactPolicy');
 
 const STYLIST_REVIEW_VERSION = 'stylist-explanation-v4';
 const STYLIST_PROMPT_VERSION = 'stylist-prompt-v4';
@@ -26,7 +27,6 @@ const VALID_LIMITATIONS = new Set([
 ]);
 const VALID_CONFIDENCE = new Set(['high', 'medium', 'low']);
 const VALID_SOURCES = new Set(['ai', 'rule_fallback']);
-const COLOR_WORDS = ['黑色', '白色', '灰色', '灰白', '浅灰', '米色', '米白', '红色', '蓝色', '绿色', '黄色', '粉色', '紫色', '金色', '银色', '卡其', '棕色'];
 const MATERIAL_WORDS = ['棉', '羊毛', '皮革', '牛仔', '丝绸', '亚麻', '针织', '雪纺'];
 
 function buildStylistPromptV2(evidenceInput) {
@@ -348,12 +348,8 @@ function normalizeVisibleCopy(value, maxLength, options = {}) {
 }
 
 function assertKnownFactsOnly(text, evidenceInput) {
-  const allowedColors = readOutfitColorNames(evidenceInput);
-  if (allowedColors.length > 0) {
-    for (const color of COLOR_WORDS) {
-      if (text.includes(color) && !allowedColors.includes(color)) throw new Error('invalid_stylist_explanation');
-    }
-  }
+  const factPolicy = validateCopyAgainstFacts(text, evidenceToCopyFactsInput(evidenceInput));
+  if (!factPolicy.ok) throw new Error('invalid_stylist_explanation');
   const allowedMaterials = readOutfitMaterials(evidenceInput);
   if (allowedMaterials.length > 0) {
     for (const material of MATERIAL_WORDS) {
@@ -447,6 +443,11 @@ function traceStylistExplanationValidationV2(rawValue, evidenceInput) {
     sensationTerms.length ? `matched:${sensationTerms.join(',')}` : 'no unsupported sensation matched',
   );
 
+  const factPolicyTrace = traceFactPolicy(combined, evidenceInput);
+  for (const entry of factPolicyTrace.filter((item) => item.pass && item.code === 'COLOR_ALIAS_ALLOWED')) {
+    add('color_alias_allowed', true, 'COLOR_ALIAS_ALLOWED', `matched:${entry.term}`);
+  }
+
   const unsupportedFacts = findUnsupportedFacts(combined, evidenceInput);
   add(
     'unsupported_fact',
@@ -509,13 +510,10 @@ function attachStylistValidatorDiagnostics(error, raw, evidenceInput) {
 }
 
 function findUnsupportedFacts(text, evidenceInput) {
-  const issues = [];
-  const allowedColors = readOutfitColorNames(evidenceInput);
-  if (allowedColors.length > 0) {
-    for (const color of COLOR_WORDS) {
-      if (text.includes(color) && !allowedColors.includes(color)) issues.push(`color:${color}`);
-    }
-  }
+  const factPolicy = validateCopyAgainstFacts(text, evidenceToCopyFactsInput(evidenceInput));
+  const issues = factPolicy.trace
+    .filter((entry) => entry.pass === false && entry.code === 'UNSUPPORTED_FACT')
+    .map((entry) => `${classifyUnsupportedTerm(entry.term)}:${entry.term}`);
   const allowedMaterials = readOutfitMaterials(evidenceInput);
   if (allowedMaterials.length > 0) {
     for (const material of MATERIAL_WORDS) {
@@ -523,6 +521,18 @@ function findUnsupportedFacts(text, evidenceInput) {
     }
   }
   return uniqueStrings(issues);
+}
+
+function classifyUnsupportedTerm(term) {
+  if (['米白色', '米白', '米色', '白色', '米色系', '白色系', '军绿色', '军绿', '绿色', '绿色系', '低饱和色', '灰色', '灰色系', '黑色', '黑色系', '紫色'].includes(term)) {
+    return 'color';
+  }
+  if (['牛仔', '皮质'].includes(term)) return 'material';
+  return 'fact';
+}
+
+function traceFactPolicy(text, evidenceInput) {
+  return validateCopyAgainstFacts(text, evidenceToCopyFactsInput(evidenceInput)).trace || [];
 }
 
 function mapIncrementRejectReason(reason) {
@@ -605,6 +615,35 @@ function evidenceToVoiceFacts(evidenceInput = {}) {
       styleTags: uniqueStrings(evidenceInput.outfit?.styleTags),
     },
     context: evidenceInput.context || {},
+  };
+}
+
+function evidenceToCopyFactsInput(evidenceInput = {}) {
+  const outfit = evidenceInput.outfit || {};
+  const colors = readOutfitColorNames(evidenceInput);
+  const items = Array.isArray(outfit.items)
+    ? outfit.items.map((entry, index) => ({
+        clothingId: entry.itemId || entry.clothingId || `item-${index}`,
+        category: entry.category || entry.slot || 'other',
+        subcategory: entry.subcategory || entry.name || entry.category || '单品',
+        color: entry.color || entry.primaryColor || colors[index] || colors[0] || '',
+        material: entry.material || '',
+        patternType: entry.patternType || '',
+        fit: entry.fit || entry.silhouette || '',
+        styleTags: uniqueStrings(entry.styleTags || outfit.styleTags),
+      }))
+    : colors.map((color, index) => ({
+        clothingId: `color-${index}`,
+        category: 'other',
+        subcategory: '单品',
+        color,
+      }));
+  return {
+    outfit: {
+      scene: evidenceInput.context?.scene,
+      weatherSnapshot: evidenceInput.context,
+      items,
+    },
   };
 }
 

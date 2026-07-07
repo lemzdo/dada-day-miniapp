@@ -5,7 +5,7 @@ const BENEFIT_LABELS = {
   commute_polish: '通勤场景更利落',
   temperature_buffer: '温差变化时更好调整',
   soft_mood: '约会时更柔和',
-  clear_highlight: '有一个清楚的亮点',
+  clear_highlight: '有一个明确的小重点',
   light_activity: '轻活动时不笨重',
   formal_training: '适合正式训练',
   hot_weather: '高温下更清爽',
@@ -23,7 +23,7 @@ const SLOT_LABELS = {
   other: '单品',
 };
 
-const EMPTY_PHRASES = ['单品和单品很日常', '想再明确一点', '整体比较完整', '场景适配度比较高'];
+const EMPTY_PHRASES = ['衣物之间太泛', '想再清楚一点', '整体比较完整', '场景适配度比较高'];
 
 function buildAiReviewPresentation(aiComment, contentPlan) {
   const fallback = buildContentPlanPresentation(contentPlan);
@@ -151,6 +151,16 @@ function emptyPresentation() {
 
 function buildContentPlanPresentation(contentPlan) {
   if (!contentPlan || typeof contentPlan !== 'object') return emptyPresentation();
+  const defaultDetailExplanation = normalizeText(contentPlan.defaultDetailExplanation, 180);
+  if (defaultDetailExplanation) {
+    return {
+      bodyParagraphs: [defaultDetailExplanation],
+      tags: [],
+      advice: normalizeText(contentPlan.defaultCopy?.aiExtraDefault, 120) === normalizeText(defaultDetailExplanation, 120)
+        ? null
+        : normalizeText(contentPlan.suggestion?.text, 120) || null,
+    };
+  }
   const items = Array.isArray(contentPlan.items) ? contentPlan.items : [];
   const core = items.filter((item) => item.role === 'core');
   const functional = items.filter((item) => item.role === 'functional');
@@ -158,7 +168,7 @@ function buildContentPlanPresentation(contentPlan) {
   const benefit = BENEFIT_LABELS[contentPlan.primaryBenefit] || '今天穿起来更省心';
   const bodyParagraphs = [];
   const coreText = joinNames(core);
-  bodyParagraphs.push(coreText ? `${coreText}是这套的主线，${benefit}。` : `这套主线比较简单，${benefit}。`);
+  bodyParagraphs.push(coreText ? `${coreText}是这套能确认的主要组合，${benefit}。` : `这套信息比较基础，${benefit}。`);
   if (functional.length > 0) {
     bodyParagraphs.push(`${joinNames(functional)}主要负责天气或场景上的需要，不是为了凑件数。`);
   } else if (optional.length > 0) {
@@ -180,8 +190,8 @@ function renderSecondObservation(contentPlan, items) {
   if (contentPlan.primaryBenefit === 'hot_weather') return '高温时这套没有额外加外套，重点放在少层次和清爽度上。';
   if (contentPlan.primaryBenefit === 'commute_polish') return '这套没有靠夸张细节撑场面，主要用清楚的单品关系服务通勤状态。';
   if (contentPlan.primaryBenefit === 'soft_mood') return '柔和感来自已有单品本身，不需要强行再加外套或配饰。';
-  if (contentPlan.primaryBenefit === 'clear_highlight') return '亮点已经落在现有单品里，其他部分保持简单会更稳。';
-  return '这套成立的关键是主线清楚，不需要为了完整感再硬加单品。';
+  if (contentPlan.primaryBenefit === 'clear_highlight') return '重点已经在现有单品里，其他部分少加复杂元素会更顺。';
+  return '这套成立的关键是已有衣物关系直接，不需要为了完整感再硬加单品。';
 }
 
 function mentionsPlanFact(text, contentPlan) {

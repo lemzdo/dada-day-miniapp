@@ -25,6 +25,8 @@ const {
   fixtures,
   graphicTeeHome,
   hotWhiteTGrayShortsHome,
+  outfitFixture,
+  clothing,
   similarGraphicTeeBatch,
 } = require('./recommendationLanguageV3.fixtures');
 
@@ -123,10 +125,10 @@ test('renderers produce the locked anonymous screenshot sample style', () => {
   const detail = renderDetailReasoningV3(plan);
   const fallback = renderStylistFallbackCopyV3(plan);
 
-  assert.equal(today, '今天温度高，白T配灰色短裤穿着更轻松，运动鞋也方便临时出门。');
-  assert.equal(detail, '白T和灰色短裤放在一起很日常，颜色不会互相抢。今天温度比较高，短袖、短裤这类单品穿起来更轻松，运动鞋也方便临时出门。');
-  assert.equal(fallback.overallComment, '白T配灰色短裤很适合今天想穿得简单一点的时候，颜色清爽，出门也不费劲。');
-  assert.equal(fallback.advice, '想再利落一点，可以让上衣或小包呼应运动鞋里的颜色。');
+  assert.equal(today, '白色短袖T恤和白色运动鞋有呼应，灰色短裤让整套不至于太淡。');
+  assert.equal(detail, '白色短袖T恤和白色运动鞋前后呼应，灰色短裤把颜色压下来一点。放在居家场景里，这套不显得刻意，临时出门也顺。');
+  assert.equal(fallback.overallComment, detail);
+  assert.equal(fallback.advice, '');
 });
 
 test('renderRecommendationCopyV3 renders Today detail and fallback from one content plan', () => {
@@ -134,7 +136,9 @@ test('renderRecommendationCopyV3 renders Today detail and fallback from one cont
   const copy = renderRecommendationCopyV3(plan);
   assert.equal(copy.reasonVersion, RECOMMENDATION_REASON_VERSION_V3);
   assert.equal(plan.contentPlan.version, 'xiaoda-content-plan-v1');
-  assert.ok(copy.reasoning.includes(copy.reason));
+  assert.notEqual(copy.reasoning, copy.reason);
+  assert.ok(copy.reason.length > 0);
+  assert.ok(copy.reasoning.length > copy.reason.length);
   assert.equal(copy.aiComment.overallComment, copy.reasoning);
   for (const text of [copy.reason, copy.reasoning, copy.aiComment.overallComment, copy.aiComment.advice].filter(Boolean)) {
     assertHumanCopy(text);
@@ -166,6 +170,31 @@ test('compileRecommendationLanguageV3 only changes display fields and preserves 
   assert.equal(result.reasonVersion, RECOMMENDATION_REASON_VERSION_V3);
   assert.equal(result.contentPlanVersion, 'xiaoda-content-plan-v1');
   assert.equal(result.reviewSource, 'rule_default');
+});
+
+test('compileRecommendationLanguageV3 uses V2 default copy for golden home outfit and old fields', () => {
+  const golden = outfitFixture('stage1-golden-home', [
+    clothing({ clothingId: 'top-1', category: 'top', subcategory: 'T恤', color: '米白色' }),
+    clothing({ clothingId: 'bottom-1', category: 'bottom', subcategory: '阔腿裤', color: '军绿色' }),
+    clothing({ clothingId: 'shoes-1', category: 'shoes', subcategory: '运动鞋', color: '白色' }),
+  ], { scene: '居家', weatherSnapshot: { temp: 22, weather: '多云' } });
+
+  const [result] = compileRecommendationLanguageV3({
+    outfits: [golden],
+    scene: '居家',
+    weather: { temp: 22, weather: '多云' },
+  });
+
+  assert.equal(result.reason, '米白 T恤和白色运动鞋有呼应，军绿色阔腿裤让整套不至于太淡。');
+  assert.equal(result.reasoning, '米白 T恤和白色运动鞋前后呼应，军绿色阔腿裤把颜色压下来一点。放在居家场景里，这套不显得刻意，临时出门也顺。');
+  assert.equal(result.aiComment.overallComment, result.reasoning);
+  assert.equal(result.contentPlan.defaultTodayReason, result.reason);
+  assert.equal(result.contentPlan.defaultDetailExplanation, result.reasoning);
+  assert.equal(result.contentPlan.defaultCopy.aiExtraDefault, result.reasoning);
+  assert.ok(result.reason);
+  assert.ok(result.reasoning);
+  assert.ok(result.contentPlan);
+  assert.ok(result.aiComment);
 });
 
 test('compileRecommendationLanguageV3 removes old V2 copy from legacy snapshots', () => {

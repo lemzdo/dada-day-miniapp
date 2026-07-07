@@ -310,6 +310,30 @@ test('unsupported fact trace includes the matched field and word', () => {
   assert.match(unsupportedFact.detail, /color:紫色/);
 });
 
+test('validator trace allows color aliases from the outfit fact policy', () => {
+  const trace = traceStylistExplanationValidationV2({
+    schemaVersion: 1,
+    reviewVersion: '1.0',
+    overallComment: '米色系上衣和绿色系下装有对比，白色系鞋子接住上衣颜色。',
+    advice: '',
+  }, evidenceInput({
+    outfit: {
+      itemCount: 3,
+      categories: ['bottom', 'shoes', 'top'],
+      colors: [{ name: '米白色' }, { name: '军绿色' }, { name: '白色' }],
+      styleTags: [],
+      items: [
+        { category: 'top', subcategory: 'T恤', color: '米白色' },
+        { category: 'bottom', subcategory: '阔腿裤', color: '军绿色' },
+        { category: 'shoes', subcategory: '运动鞋', color: '白色' },
+      ],
+    },
+  }));
+
+  assert.equal(trace.some((entry) => entry.code === 'UNSUPPORTED_FACT'), false);
+  assert.equal(trace.some((entry) => entry.code === 'COLOR_ALIAS_ALLOWED'), true);
+});
+
 test('empty advice is traced as optional instead of required failure', () => {
   const trace = traceStylistExplanationValidationV2({
     schemaVersion: 3,

@@ -176,6 +176,7 @@ test('rule fallback response keeps content plan presentation instead of fallback
   const contentPlan = {
     primaryBenefit: 'commute_polish',
     items: [{ role: 'core', slot: 'top', displayName: '白衬衫' }],
+    defaultDetailExplanation: '白衬衫和黑色长裤把通勤感说清楚，整体干净但不僵硬。',
   };
   const result = buildAiReviewPresentation({
     title: '',
@@ -186,7 +187,7 @@ test('rule fallback response keeps content plan presentation instead of fallback
     reviewSource: 'rule_fallback',
   }, contentPlan);
 
-  assert.deepEqual(result.bodyParagraphs, ['白衬衫是这套的主线，通勤场景更利落。', '这套没有靠夸张细节撑场面，主要用清楚的单品关系服务通勤状态。']);
+  assert.deepEqual(result.bodyParagraphs, ['白衬衫和黑色长裤把通勤感说清楚，整体干净但不僵硬。']);
   assert.equal(result.advice, null);
 });
 

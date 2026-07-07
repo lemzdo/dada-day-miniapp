@@ -62,9 +62,10 @@ function buildXiaodaContentPlanV1(outfit = {}, context = {}) {
 
 function buildXiaodaDefaultReviewV1(plan) {
   const rendered = renderXiaodaPlanTextV1(plan);
+  const defaultDetailExplanation = normalizeVisibleText(plan?.defaultDetailExplanation);
   return {
     source: 'rule_default',
-    reason: rendered.bodyParagraphs.join(''),
+    reason: defaultDetailExplanation || rendered.bodyParagraphs.join(''),
     tip: rendered.suggestion?.text || '',
     contentPlanVersion: plan.version,
     sceneIntent: plan.sceneIntent,
