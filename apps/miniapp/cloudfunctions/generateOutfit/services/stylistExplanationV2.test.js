@@ -69,12 +69,30 @@ test('V3 constants and prompt describe human-only JSON output', () => {
   const prompt = buildStylistPromptV2(evidenceInput());
   assert.match(prompt.system, /overallComment/);
   assert.match(prompt.system, /advice/);
+  assert.doesNotMatch(prompt.system, /字段只能是 schemaVersion/);
+  assert.doesNotMatch(prompt.system, /reviewVersion、promptVersion/);
   assert.match(prompt.system, /懂穿搭的贴心朋友/);
   assert.match(prompt.system, /不得使用机械设计词/);
   assert.match(prompt.system, /不虚构舒适、材质、透气、保暖/);
   assert.equal(prompt.user.includes('cloud://'), false);
   assert.equal(prompt.user.includes('learnedProfile'), false);
   assert.equal(prompt.user.includes('evidence'), false);
+});
+
+test('validateStylistExplanationV2 accepts old AI version fields when content is valid', () => {
+  const result = validateStylistExplanationV2({
+    schemaVersion: 1,
+    reviewVersion: '1.0',
+    overallComment: '白色上衣和灰色下装都偏日常，放在一起不用多想，今天在家或附近走走都合适。',
+    advice: '',
+  }, evidenceInput(), meta());
+
+  assert.equal(result.schemaVersion, 3);
+  assert.equal(result.reviewVersion, STYLIST_REVIEW_VERSION);
+  assert.equal(result.promptVersion, STYLIST_PROMPT_VERSION);
+  assert.equal(result.copyPolicyVersion, COPY_POLICY_VERSION);
+  assert.equal(result.voicePolicyVersion, VOICE_POLICY_VERSION);
+  assert.equal(result.overallComment, '白色上衣和灰色下装都偏日常，放在一起不用多想，今天在家或附近走走都合适。');
 });
 
 test('validateStylistExplanationV2 accepts V3 overallComment advice and overwrites metadata', () => {
@@ -256,8 +274,40 @@ test('validator trace reports missing overall comment with a concrete code', () 
     advice: 'safe optional advice',
   }, evidenceInput());
 
-  assert.equal(trace.some((entry) => entry.check === 'schema_fields' && entry.pass), true);
+  assert.equal(trace.some((entry) => entry.check === 'schema_fields' && entry.pass === false), true);
   assert.equal(trace.some((entry) => entry.code === 'MISSING_OVERALL_COMMENT'), true);
+  assert.equal(trace.some((entry) => entry.code === 'SCHEMA_PARSE_FAILED'), false);
+  assert.equal(trace.some((entry) => entry.code === 'SCHEMA_FIELDS_INVALID'), true);
+});
+
+test('valid JSON with invalid fields reports SCHEMA_FIELDS_INVALID instead of parse failure', () => {
+  const parsed = parseStylistExplanationJson(JSON.stringify({
+    schemaVersion: 1,
+    reviewVersion: '1.0',
+    advice: '想再有精神一点，可以让鞋子呼应白色或灰色。',
+  }));
+  const trace = traceStylistExplanationValidationV2(parsed, evidenceInput());
+
+  assert.equal(trace.some((entry) => entry.code === 'SCHEMA_PARSE_FAILED'), false);
+  assert.equal(trace.some((entry) => entry.code === 'SCHEMA_FIELDS_INVALID'), true);
+  assert.equal(trace.some((entry) => entry.code === 'MISSING_OVERALL_COMMENT'), true);
+});
+
+test('invalid JSON parse failure is reserved for real JSON parse errors', () => {
+  assert.throws(() => parseStylistExplanationJson('今天这套不用多想，不是 JSON'), /invalid_stylist_json/);
+});
+
+test('unsupported fact trace includes the matched field and word', () => {
+  const trace = traceStylistExplanationValidationV2({
+    schemaVersion: 1,
+    reviewVersion: '1.0',
+    overallComment: '白色上衣和紫色下装放在一起很日常，今天在家或附近走走都合适。',
+    advice: '',
+  }, evidenceInput());
+  const unsupportedFact = trace.find((entry) => entry.code === 'UNSUPPORTED_FACT');
+
+  assert.ok(unsupportedFact);
+  assert.match(unsupportedFact.detail, /color:紫色/);
 });
 
 test('empty advice is traced as optional instead of required failure', () => {

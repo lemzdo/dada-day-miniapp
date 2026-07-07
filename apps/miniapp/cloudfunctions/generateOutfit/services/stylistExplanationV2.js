@@ -40,7 +40,7 @@ function buildStylistPromptV2(evidenceInput) {
       '不得重复普通推荐理由，不得输出 title 或 styleTags 给 UI。',
       '不得使用显瘦、遮肉、显高、拉长腿等身体评价，也不得推断年龄、职业、身份。',
       '不过度卖萌，不使用宝宝、绝绝子、拿捏。',
-      '只输出严格 JSON，字段只能是 schemaVersion、reviewVersion、promptVersion、copyPolicyVersion、voicePolicyVersion、overallComment、advice。',
+      '只输出严格 JSON，字段只能是 overallComment、advice；不要输出版本字段，版本由服务端填写。',
       'overallComment 为 40 到 120 字，总结整体气质和关系。',
       'advice 为 20 到 80 字，只给一条可执行调整。',
       '数据少时只讲确定事实，不解释为什么信息有限。',
@@ -71,7 +71,7 @@ function validateStylistExplanationV2(rawValue, evidenceInput, meta = {}) {
   const raw = clonePlain(rawValue);
   try {
     if (!raw || typeof raw !== 'object') throw new Error('invalid_stylist_explanation');
-    if (raw.schemaVersion === 3 || raw.overallComment || raw.advice) {
+    if (raw.overallComment || raw.advice || raw.schemaVersion !== 2) {
       return validateStylistExplanationV3(raw, evidenceInput, meta);
     }
     return validateLegacyExplanation(raw, evidenceInput, meta);
@@ -82,15 +82,13 @@ function validateStylistExplanationV2(rawValue, evidenceInput, meta = {}) {
 }
 
 function validateStylistExplanationV3(raw, evidenceInput, meta = {}) {
-  if (raw.schemaVersion !== 3) throw new Error('invalid_stylist_explanation');
-  if (raw.reviewVersion !== STYLIST_REVIEW_VERSION) throw new Error('invalid_stylist_explanation');
-  if (raw.promptVersion !== STYLIST_PROMPT_VERSION) throw new Error('invalid_stylist_explanation');
-  if (raw.copyPolicyVersion !== COPY_POLICY_VERSION) throw new Error('invalid_stylist_explanation');
-  if (raw.voicePolicyVersion !== VOICE_POLICY_VERSION) throw new Error('invalid_stylist_explanation');
-
   const overallComment = normalizeVisibleCopy(raw.overallComment, 120);
   const advice = normalizeVisibleCopy(raw.advice, 80, { optional: true });
-  if (!overallComment) throw new Error('invalid_stylist_explanation');
+  if (!overallComment) {
+    const error = new Error('invalid_stylist_explanation');
+    error.validatorRejectReasons = ['SCHEMA_FIELDS_INVALID'];
+    throw error;
+  }
   if (advice && isTooSimilar(overallComment, advice, 0.7)) throw new Error('invalid_stylist_explanation');
   assertKnownFactsOnly(`${overallComment}${advice}`, evidenceInput);
   const contentPlan = evidenceInput?.contentPlan;
@@ -377,22 +375,30 @@ function traceStylistExplanationValidationV2(rawValue, evidenceInput) {
     });
   };
   if (!raw || typeof raw !== 'object') {
-    add('json_parse', false, 'SCHEMA_PARSE_FAILED', 'parsed value is not an object');
+    add('schema_fields', false, 'SCHEMA_FIELDS_INVALID', 'parsed JSON is not an object');
     return trace;
   }
 
-  const schemaMissing = [
-    raw.schemaVersion === 3 ? '' : 'schemaVersion',
-    raw.reviewVersion === STYLIST_REVIEW_VERSION ? '' : 'reviewVersion',
-    raw.promptVersion === STYLIST_PROMPT_VERSION ? '' : 'promptVersion',
-    raw.copyPolicyVersion === COPY_POLICY_VERSION ? '' : 'copyPolicyVersion',
-    raw.voicePolicyVersion === VOICE_POLICY_VERSION ? '' : 'voicePolicyVersion',
+  const versionFields = [
+    raw.schemaVersion === undefined || raw.schemaVersion === 3 ? '' : 'schemaVersion',
+    raw.reviewVersion === undefined || raw.reviewVersion === STYLIST_REVIEW_VERSION ? '' : 'reviewVersion',
+    raw.promptVersion === undefined || raw.promptVersion === STYLIST_PROMPT_VERSION ? '' : 'promptVersion',
+    raw.copyPolicyVersion === undefined || raw.copyPolicyVersion === COPY_POLICY_VERSION ? '' : 'copyPolicyVersion',
+    raw.voicePolicyVersion === undefined || raw.voicePolicyVersion === VOICE_POLICY_VERSION ? '' : 'voicePolicyVersion',
   ].filter(Boolean);
   add(
+    'version_fields_normalized',
+    true,
+    '',
+    versionFields.length ? `server_normalized:${versionFields.join(',')}` : 'server-owned version fields ready',
+  );
+  add(
     'schema_fields',
-    schemaMissing.length === 0,
-    schemaMissing.length ? 'SCHEMA_PARSE_FAILED' : '',
-    schemaMissing.length ? `missing_or_mismatched:${schemaMissing.join(',')}` : 'required version fields match',
+    typeof raw.overallComment === 'string' && raw.overallComment.trim().length > 0,
+    typeof raw.overallComment === 'string' && raw.overallComment.trim().length > 0 ? '' : 'SCHEMA_FIELDS_INVALID',
+    typeof raw.overallComment === 'string' && raw.overallComment.trim().length > 0
+      ? 'content fields are present'
+      : 'overallComment is required',
   );
 
   const overallComment = normalizeTraceText(raw.overallComment, 120);

@@ -18,7 +18,7 @@ const BENEFIT_LABELS = {
   commute_polish: '通勤场景更利落',
   temperature_buffer: '温差变化时更好调整',
   soft_mood: '约会时更柔和',
-  clear_highlight: '有一个清楚的亮点',
+  clear_highlight: '有一处小重点',
   light_activity: '轻活动时不笨重',
   formal_training: '适合正式训练',
   hot_weather: '高温下更清爽',
@@ -80,10 +80,16 @@ function renderXiaodaPlanTextV1(plan) {
   const coreText = joinNames(core);
   const benefit = BENEFIT_LABELS[plan?.primaryBenefit] || '今天穿起来更省心';
   const bodyParagraphs = [];
+  if (isHomeQuickOuting(plan, items)) {
+    return {
+      bodyParagraphs: [`${joinNamesWithAnd(items)}都偏日常，在家穿不费心，临时出门也不用重新换鞋。`],
+      suggestion: plan?.suggestion ? { title: '可以试试', text: plan.suggestion.text } : null,
+    };
+  }
   if (coreText) {
-    bodyParagraphs.push(`${coreText}是这套的主线，${benefit}。`);
+    bodyParagraphs.push(`${joinNamesWithAnd(core)}放在一起不用多想，${benefit}。`);
   } else {
-    bodyParagraphs.push(`这套主线比较简单，${benefit}。`);
+    bodyParagraphs.push(`这套信息不多，今天先按日常场景穿，${benefit}。`);
   }
   if (functional.length > 0) {
     bodyParagraphs.push(`${joinNames(functional)}主要负责天气或场景上的需要，不是为了凑件数。`);
@@ -100,13 +106,13 @@ function renderXiaodaPlanTextV1(plan) {
 
 function renderSecondObservation(plan, items) {
   const shoes = items.find((item) => item.slot === 'shoes');
-  if (plan.primaryBenefit === 'walkable' && shoes) return `${shoes.displayName}负责走动时的稳定感，场景价值比多加一件配饰更明确。`;
+  if (plan.primaryBenefit === 'walkable' && shoes) return `${shoes.displayName}方便临时出门，今天不用再换一双鞋。`;
   if (plan.primaryBenefit === 'formal_training' && shoes) return `${shoes.displayName}和运动单品一起承担训练用途，普通日常单品不会被当成专业装备。`;
   if (plan.primaryBenefit === 'hot_weather') return '高温时这套没有额外加外套，重点放在少层次和清爽度上。';
   if (plan.primaryBenefit === 'commute_polish') return '这套没有靠夸张细节撑场面，主要用清楚的单品关系服务通勤状态。';
   if (plan.primaryBenefit === 'soft_mood') return '柔和感来自已有单品本身，不需要强行再加外套或配饰。';
-  if (plan.primaryBenefit === 'clear_highlight') return '亮点已经落在现有单品里，其他部分保持简单会更稳。';
-  return '这套成立的关键是主线清楚，不需要为了完整感再硬加单品。';
+  if (plan.primaryBenefit === 'clear_highlight') return '有图案或颜色重点的单品已经在这套里，其他部分简单一点就好。';
+  return '现有单品已经能直接出门，不需要为了凑完整再加东西。';
 }
 
 function hasQualifiedAiReviewIncrementV1(aiComment, plan, fallbackReview) {
@@ -270,6 +276,20 @@ function normalizeVisibleText(value) {
 
 function joinNames(items) {
   return items.map((item) => item.displayName).filter(Boolean).join('、');
+}
+
+function joinNamesWithAnd(items) {
+  const names = items.map((item) => item.displayName).filter(Boolean);
+  if (names.length <= 2) return names.join('和');
+  return `${names.slice(0, -1).join('、')}和${names[names.length - 1]}`;
+}
+
+function isHomeQuickOuting(plan, items) {
+  return readString(plan?.sceneIntent).startsWith('home:')
+    && plan?.primaryBenefit === 'walkable'
+    && items.some((item) => item.slot === 'top')
+    && items.some((item) => item.slot === 'bottom' || item.slot === 'skirt')
+    && items.some((item) => item.slot === 'shoes');
 }
 
 function readString(value) {
