@@ -146,9 +146,9 @@ const fixtures = [
     detailPersonaGoal: '白T和灰色短裤让整套看起来很清爽，运动鞋加了一点活力。今天温度比较高，这样穿更轻松，待在家或临时出门都合适。',
     commentPersonaGoal: '白T配灰色短裤很适合今天想穿得简单一点的时候，颜色清爽，出门也不费劲。',
     advicePersonaGoal: '想再有精神一点，可以让上衣或小包呼应运动鞋里的颜色。',
-    forbiddenMechanicalTerms: ['克制', '稳定', '基础单品', '正式度', '视觉', '层次', '关系'],
+    forbiddenMechanicalTerms: ['克制', '稳定', '基础单品', '正式度', '视觉', '关系'],
     forbiddenUnsupportedSensations: ['透气', '不闷', '保暖', '吸汗'],
-    expectedForbiddenTermsAbsent: ['识别', '证据', '线索', '克制', '稳定', '基础单品', '正式度', '视觉', '层次', '关系', '透气', '不闷', '保暖', '吸汗'],
+    expectedForbiddenTermsAbsent: ['识别', '证据', '线索', '克制', '稳定', '基础单品', '正式度', '视觉', '关系', '透气', '不闷', '保暖', '吸汗'],
   },
   {
     id: 'graphic_tee_gray_bottom_red_white_sneakers_home',

@@ -191,6 +191,72 @@ test('rule fallback response keeps content plan presentation instead of fallback
   assert.equal(result.advice, null);
 });
 
+test('contentPlan defaultDetailExplanation wins over rule default and legacy default comments', () => {
+  const contentPlan = {
+    primaryBenefit: 'clean_daily',
+    items: [
+      { role: 'core', slot: 'top', displayName: '米白 T恤' },
+      { role: 'core', slot: 'bottom', displayName: '军绿色阔腿裤' },
+      { role: 'core', slot: 'shoes', displayName: '白色运动鞋' },
+    ],
+    defaultDetailExplanation: '米白 T恤和白色运动鞋颜色接近，军绿色阔腿裤让这套不全是浅色。居家穿不显得刻意，临时出门也不用重新换一身。',
+  };
+
+  for (const aiComment of [
+    {
+      overallComment: 'T恤、阔腿裤、运动鞋是这套能确认的主要组合。',
+      advice: '不需要强行再加外套或配饰。',
+      reviewSource: 'rule_default',
+    },
+    {
+      reason: 'T恤、阔腿裤、运动鞋是这套能确认的主要组合。',
+      tip: '不需要强行再加外套或配饰。',
+      source: 'cached_ai',
+    },
+  ]) {
+    const result = buildAiReviewPresentation(aiComment, contentPlan);
+    const visible = [...result.bodyParagraphs, result.advice].filter(Boolean).join('\n');
+
+    assert.deepEqual(result.bodyParagraphs, [contentPlan.defaultDetailExplanation]);
+    assert.doesNotMatch(visible, /能确认的主要组合|已有单品本身|不需要强行/);
+  }
+});
+
+test('successful enhanced review can replace contentPlan defaultDetailExplanation', () => {
+  const contentPlan = {
+    primaryBenefit: 'clean_daily',
+    items: [{ role: 'core', slot: 'top', displayName: '米白 T恤' }],
+    defaultDetailExplanation: '米白 T恤和白色运动鞋颜色接近，军绿色阔腿裤让这套不全是浅色。',
+  };
+  const result = buildAiReviewPresentation({
+    explanationV2: {
+      schemaVersion: 3,
+      overallComment: '米白 T恤把上半身提亮，军绿色阔腿裤让颜色不单薄，白色运动鞋也接住了上衣。',
+      advice: '居家穿可以维持这三件，临时出门不用重新换一身。',
+      source: 'ai',
+    },
+  }, contentPlan);
+
+  assert.deepEqual(result.bodyParagraphs, ['米白 T恤把上半身提亮，军绿色阔腿裤让颜色不单薄，白色运动鞋也接住了上衣。']);
+  assert.equal(result.advice, '居家穿可以维持这三件，临时出门不用重新换一身。');
+});
+
+test('contentPlan fallback stays human and scene-local when default detail is missing', () => {
+  const result = buildAiReviewPresentation(null, {
+    primaryBenefit: 'soft_mood',
+    sceneIntent: 'home:clean_daily',
+    items: [
+      { role: 'core', slot: 'top', displayName: '米白 T恤' },
+      { role: 'core', slot: 'bottom', displayName: '军绿色阔腿裤' },
+      { role: 'core', slot: 'shoes', displayName: '白色运动鞋' },
+    ],
+  });
+  const visible = [...result.bodyParagraphs, result.advice].filter(Boolean).join('\n');
+
+  assert.match(visible, /米白 T恤|军绿色阔腿裤|白色运动鞋/);
+  assert.doesNotMatch(visible, /能确认的主要组合|已有单品本身|不需要强行|约会|主线|亮点|更稳|保持简单/);
+});
+
 test('cached ai response can still replace content plan presentation', () => {
   const result = buildAiReviewPresentation({
     title: '',

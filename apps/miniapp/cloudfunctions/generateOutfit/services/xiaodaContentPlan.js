@@ -17,7 +17,7 @@ const BENEFIT_LABELS = {
   clean_daily: '日常穿着清楚省心',
   commute_polish: '通勤场景更利落',
   temperature_buffer: '温差变化时更好调整',
-  soft_mood: '约会时更柔和',
+  soft_mood: '整体更柔和',
   clear_highlight: '有一处小重点',
   light_activity: '轻活动时不笨重',
   formal_training: '适合正式训练',
@@ -88,7 +88,7 @@ function renderXiaodaPlanTextV1(plan) {
     };
   }
   if (coreText) {
-    bodyParagraphs.push(`${joinNamesWithAnd(core)}放在一起不用多想，${benefit}。`);
+    bodyParagraphs.push(`${joinNamesWithAnd(core)}组合起来不复杂，${benefit}。`);
   } else {
     bodyParagraphs.push(`这套信息不多，今天先按日常场景穿，${benefit}。`);
   }
@@ -111,7 +111,7 @@ function renderSecondObservation(plan, items) {
   if (plan.primaryBenefit === 'formal_training' && shoes) return `${shoes.displayName}和运动单品一起承担训练用途，普通日常单品不会被当成专业装备。`;
   if (plan.primaryBenefit === 'hot_weather') return '高温时这套没有额外加外套，重点放在少层次和清爽度上。';
   if (plan.primaryBenefit === 'commute_polish') return '这套没有靠夸张细节撑场面，主要用清楚的单品关系服务通勤状态。';
-  if (plan.primaryBenefit === 'soft_mood') return '柔和感来自已有单品本身，不需要强行再加外套或配饰。';
+  if (plan.primaryBenefit === 'soft_mood') return `${scenePrefix(plan)}穿会显得轻松一些，不靠额外外套或配饰撑效果。`;
   if (plan.primaryBenefit === 'clear_highlight') return '有图案或颜色重点的单品已经在这套里，其他部分简单一点就好。';
   return '现有单品已经能直接出门，不需要为了凑完整再加东西。';
 }
@@ -291,6 +291,15 @@ function isHomeQuickOuting(plan, items) {
     && items.some((item) => item.slot === 'top')
     && items.some((item) => item.slot === 'bottom' || item.slot === 'skirt')
     && items.some((item) => item.slot === 'shoes');
+}
+
+function scenePrefix(plan) {
+  const intent = readString(plan?.sceneIntent);
+  if (intent.startsWith('home:')) return '居家';
+  if (intent.startsWith('work:')) return '上班';
+  if (intent.startsWith('sport:')) return '运动';
+  if (intent.startsWith('date:')) return '约会';
+  return '日常';
 }
 
 function readString(value) {

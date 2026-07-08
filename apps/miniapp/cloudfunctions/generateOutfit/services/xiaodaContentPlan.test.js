@@ -10,7 +10,7 @@ const {
   renderXiaodaPlanTextV1,
 } = require('./xiaodaContentPlan');
 
-const MECHANICAL_COPY_PATTERN = /主线|清楚的亮点|亮点已经落在|更稳|保持简单|单品和单品|想再明确一点/;
+const MECHANICAL_COPY_PATTERN = /主线|清楚的亮点|亮点已经落在|更稳|保持简单|单品和单品|想再明确一点|能确认的主要|已有单品本身|不需要强行/;
 
 function outfit(overrides = {}) {
   return {
@@ -69,6 +69,24 @@ test('home T-shirt shorts sneakers default review is short and natural', () => {
 
   assert.equal(fallback.reason, 'T恤、短裤和运动鞋都偏日常，在家穿不费心，临时出门也不用重新换鞋。');
   assert.doesNotMatch(fallback.reason, MECHANICAL_COPY_PATTERN);
+});
+
+test('home soft mood fallback does not leak date scene language', () => {
+  const plan = buildXiaodaContentPlanV1(outfit({
+    scene: 'home',
+    sceneIntent: 'home:clean_daily',
+    primaryBenefit: 'soft_mood',
+    secondaryBenefit: '',
+    outfitItemRoles: [
+      { id: 'top', slot: 'top', role: 'core', displayName: '米白 T恤' },
+      { id: 'bottom', slot: 'bottom', role: 'core', displayName: '军绿色阔腿裤' },
+      { id: 'shoes', slot: 'shoes', role: 'core', displayName: '白色运动鞋' },
+    ],
+  }));
+  const text = visible(plan);
+
+  assert.doesNotMatch(text, /约会|能确认的主要|已有单品本身|不需要强行/);
+  assert.match(text, /居家|日常|轻松|柔和/);
 });
 
 test('suggestion is hidden when it lacks a grounded target action and object', () => {

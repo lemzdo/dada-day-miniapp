@@ -125,8 +125,8 @@ test('renderers produce the locked anonymous screenshot sample style', () => {
   const detail = renderDetailReasoningV3(plan);
   const fallback = renderStylistFallbackCopyV3(plan);
 
-  assert.equal(today, '白色短袖T恤和白色运动鞋有呼应，灰色短裤让整套不至于太淡。');
-  assert.equal(detail, '白色短袖T恤和白色运动鞋前后呼应，灰色短裤把颜色压下来一点。放在居家场景里，这套不显得刻意，临时出门也顺。');
+  assert.equal(today, '白色短袖T恤和白色运动鞋颜色接近，灰色短裤让这套多一点层次。');
+  assert.equal(detail, '白色短袖T恤和白色运动鞋颜色接近，灰色短裤让这套不全是浅色。居家穿不显得刻意，临时出门也不用重新换一身。');
   assert.equal(fallback.overallComment, detail);
   assert.equal(fallback.advice, '');
 });
@@ -185,8 +185,8 @@ test('compileRecommendationLanguageV3 uses V2 default copy for golden home outfi
     weather: { temp: 22, weather: '多云' },
   });
 
-  assert.equal(result.reason, '米白 T恤和白色运动鞋有呼应，军绿色阔腿裤让整套不至于太淡。');
-  assert.equal(result.reasoning, '米白 T恤和白色运动鞋前后呼应，军绿色阔腿裤把颜色压下来一点。放在居家场景里，这套不显得刻意，临时出门也顺。');
+  assert.equal(result.reason, '米白 T恤和白色运动鞋颜色接近，军绿色阔腿裤让这套多一点层次。');
+  assert.equal(result.reasoning, '米白 T恤和白色运动鞋颜色接近，军绿色阔腿裤让这套不全是浅色。居家穿不显得刻意，临时出门也不用重新换一身。');
   assert.equal(result.aiComment.overallComment, result.reasoning);
   assert.equal(result.contentPlan.defaultTodayReason, result.reason);
   assert.equal(result.contentPlan.defaultDetailExplanation, result.reasoning);
@@ -195,6 +195,31 @@ test('compileRecommendationLanguageV3 uses V2 default copy for golden home outfi
   assert.ok(result.reasoning);
   assert.ok(result.contentPlan);
   assert.ok(result.aiComment);
+});
+
+test('compileRecommendationLanguageV3 keeps homepage batch sentence structures varied', () => {
+  const goldenBatch = Array.from({ length: 8 }, (_, index) => outfitFixture(`stage1-golden-home-${index}`, [
+    clothing({ clothingId: `top-${index}`, category: 'top', subcategory: 'T恤', color: '米白色' }),
+    clothing({ clothingId: `bottom-${index}`, category: 'bottom', subcategory: '阔腿裤', color: index % 2 ? '深蓝色' : '军绿色' }),
+    clothing({ clothingId: `shoes-${index}`, category: 'shoes', subcategory: '运动鞋', color: '白色' }),
+  ], { scene: '居家', weatherSnapshot: { temp: 22, weather: '多云' } }));
+
+  const results = compileRecommendationLanguageV3({
+    outfits: goldenBatch,
+    scene: '居家',
+    weather: { temp: 22, weather: '多云' },
+  });
+  const text = results.map((entry) => `${entry.reason}${entry.reasoning}`).join('\n');
+  const signatures = results.map((entry) => entry.reason
+    .replace(/米白 T恤|白色运动鞋|军绿色阔腿裤|深蓝色阔腿裤/g, 'ITEM')
+    .replace(/[。！？].*$/g, ''));
+  const mostRepeatedSignature = Math.max(...Array.from(new Set(signatures)).map((entry) => signatures.filter((item) => item === entry).length));
+
+  assert.ok(mostRepeatedSignature <= 2);
+  assert.ok((text.match(/有呼应/g) || []).length <= 2);
+  assert.equal(text.includes('不至于太淡'), false);
+  assert.equal(text.includes('不会太飘'), false);
+  assert.equal(text.includes('放在一起'), false);
 });
 
 test('compileRecommendationLanguageV3 removes old V2 copy from legacy snapshots', () => {
