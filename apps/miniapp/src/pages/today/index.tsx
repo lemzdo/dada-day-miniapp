@@ -25,6 +25,7 @@ import { consumeOutfitStateSync, normalizeOutfitSnapshot, storeOutfitDetailDraft
 import { getOutfitStyleTags } from '@/utils/outfitContextText';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
 import { getRecommendationWeatherFingerprint, type RecommendationWeatherFingerprint } from '@/utils/weather';
+import { buildOutfitCardViewModel } from './cardViewModel';
 import type { OutfitStatusPatch } from '@/stores/outfitStatusStore';
 import type { Outfit, SceneTag, WeatherSnapshot } from '@starter-template/types';
 import './index.scss';
@@ -1039,10 +1040,14 @@ export default function TodayPage() {
               circular={false}
               onChange={handleSwiperChange}
             >
-              {outfits.map((outfit, index) => (
+              {outfits.map((outfit, index) => {
+                const cardViewModel = buildOutfitCardViewModel(outfit);
+                const previewItems = cardViewModel.previewItems;
+                const hiddenItemCount = cardViewModel.hiddenItemCount;
+                return (
                 <SwiperItem key={outfit.id} className="outfit-slide">
                   <View
-                    className={`outfit-card ${recommendationBatchId ? 'has-batch' : ''} ${
+                    className={`outfit-card ${cardViewModel.layoutVariant} ${recommendationBatchId ? 'has-batch' : ''} ${
                       batchLimited || batchExhausted ? 'limited' : ''
                     }`}
                     onClick={() => goToOutfitDetail(outfit.id)}
@@ -1064,9 +1069,14 @@ export default function TodayPage() {
                     )}
 
                     <View className="outfit-collage">
-                      {outfit.items?.map((item) => (
+                      {previewItems.map((item, itemIndex) => (
                         <View key={item.clothingId} className={`collage-item ${item.isDeleted ? 'deleted' : ''}`}>
                           <RecommendationImage src={item.thumbnailUrl || item.imageUrl} />
+                          {hiddenItemCount > 0 && itemIndex === previewItems.length - 1 && (
+                            <View className="collage-more">
+                              <Text className="collage-more-text">+{hiddenItemCount}</Text>
+                            </View>
+                          )}
                         </View>
                       ))}
                     </View>
@@ -1083,7 +1093,8 @@ export default function TodayPage() {
                     </View>
                   </View>
                 </SwiperItem>
-              ))}
+                );
+              })}
             </Swiper>
 
             <View className="swiper-footer">

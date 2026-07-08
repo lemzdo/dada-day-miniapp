@@ -88,7 +88,7 @@ function renderXiaodaPlanTextV1(plan) {
     };
   }
   if (coreText) {
-    bodyParagraphs.push(`${joinNamesWithAnd(core)}组合起来不复杂，${benefit}。`);
+    bodyParagraphs.push(`${joinNamesWithAnd(core)}可以直接成套穿，${benefit}。`);
   } else {
     bodyParagraphs.push(`这套信息不多，今天先按日常场景穿，${benefit}。`);
   }

@@ -1,3 +1,5 @@
+const { sanitizeCopyObject } = require('./copyQualityGate');
+
 const BANNED_DEFAULT_PHRASES = ['主线', '清楚的亮点', '亮点已经落在', '更稳', '保持简单', '单品和单品', '想再明确一点', '放在一起', '不用多想', '不费心', '有呼应', '压住一点', '压下来一点', '不至于太淡', '不会太飘', '能确认的主要'];
 
 function composePageCopy({ facts = {}, insights = [], batchIndex = 0, angle } = {}) {
@@ -19,7 +21,7 @@ function composePageCopy({ facts = {}, insights = [], batchIndex = 0, angle } = 
   } else if (codes.has('color_echo') && codes.has('color_contrast') && top && bottom && shoes) {
     usedInsightCodes.push('color_echo', 'color_contrast');
     selectedAngle = selectedAngle || '颜色关系';
-    todayReason = `${itemLabel(top)}和${itemLabel(shoes)}颜色接近，${itemLabel(bottom)}让这套多一点层次。`;
+    todayReason = `${itemLabel(top)}和${itemLabel(shoes)}颜色接近，${itemLabel(bottom)}让这套不全是浅色。`;
     detailExplanation = `${itemLabel(top)}和${itemLabel(shoes)}颜色接近，${itemLabel(bottom)}让这套不全是浅色。${sceneLead(facts)}穿不显得刻意，临时出门也不用重新换一身。`;
   } else if (codes.has('color_echo') && top && shoes) {
     usedInsightCodes.push('color_echo');
@@ -29,7 +31,7 @@ function composePageCopy({ facts = {}, insights = [], batchIndex = 0, angle } = 
   } else if (codes.has('color_contrast') && top && bottom) {
     usedInsightCodes.push('color_contrast');
     selectedAngle = selectedAngle || '颜色关系';
-    todayReason = `${itemLabel(top)}和${itemLabel(bottom)}颜色有深浅变化，这套看起来更有层次。`;
+    todayReason = `${itemLabel(top)}和${itemLabel(bottom)}颜色有深浅变化，上下分区更明确。`;
     detailExplanation = `${itemLabel(top)}在上半身提亮，${itemLabel(bottom)}让颜色落得住。${sceneSentence(facts)}`;
   } else if (codes.has('scene_fit_home')) {
     usedInsightCodes.push('scene_fit_home');
@@ -49,14 +51,14 @@ function composePageCopy({ facts = {}, insights = [], batchIndex = 0, angle } = 
 
   todayReason = cleanSentence(removeBanned(todayReason));
   detailExplanation = cleanSentence(removeBanned(detailExplanation, { allowTemporaryOuting: true }));
-  return {
+  return sanitizeCopyObject({
     todayReason,
     detailExplanation,
     aiExtraDefault: detailExplanation,
     usedInsightCodes: uniqueStrings(usedInsightCodes),
     usedPhrases: collectUsedPhrases(`${todayReason}${detailExplanation}`),
     angle: selectedAngle,
-  };
+  }, { items });
 }
 
 function itemLabel(item) {
@@ -119,8 +121,8 @@ function replacementFor(phrase) {
     '有呼应': '颜色接近',
     '压住一点': '收住一些',
     '压下来一点': '收住一些',
-    '不至于太淡': '多一点层次',
-    '不会太飘': '更有落点',
+    '不至于太淡': '不全是浅色',
+    '不会太飘': '有颜色落点',
     '能确认的主要': '',
   }[phrase] || '';
 }

@@ -1,3 +1,5 @@
+const { sanitizeCopyObject } = require('./copyQualityGate');
+
 const PHRASE_LIMITS = {
   '不用多想': 1,
   '不费心': 1,
@@ -22,19 +24,19 @@ const REPLACEMENTS = {
   '自然': ['顺眼', '不刻意', '轻松'],
   '日常': ['平时穿', '生活里', '常用'],
   '有呼应': ['颜色接近', '颜色能接上', '颜色有联系'],
-  '不至于太淡': ['多一点层次', '不全是浅色', '多一点变化'],
-  '不会太飘': ['更有落点', '不显得轻飘', '更好落在日常里'],
+  '不至于太淡': ['不全是浅色', '有深浅变化', '有颜色落点'],
+  '不会太飘': ['有颜色落点', '落在日常里', '有深色收住'],
   '压住一点': ['收住一些', '带出一点对比', '加一点分量'],
   '压下来一点': ['收住一些', '带出一点对比', '加一点分量'],
-  '放在一起': ['组合起来', '搭起来', '接在一块'],
+  '放在一起': ['搭起来', '接在一块', '一起穿'],
 };
 
 const STRUCTURE_REWRITES = [
-  ({ first, second, third }) => `${first}和${second}颜色接近，${third}让这套多一点层次。`,
+  ({ first, second, third }) => `${first}和${second}颜色接近，${third}让这套不全是浅色。`,
   ({ first, second, third }) => `${third}带出一点对比，${first}和${second}负责把颜色接上。`,
   ({ first, third }) => `${first}先把上半身提亮，${third}让整套不只停在浅色。`,
   ({ first, second, third }) => `${second}收在脚下，和${first}接得上，${third}让画面更完整。`,
-  ({ first, second, third }) => `${first}、${third}和${second}都是常用单品，今天穿起来不绕。`,
+  ({ first, second, third }) => `${first}和${second}负责前后接色，${third}把下半身收住。`,
   ({ first, second, third }) => `${first}配${third}偏轻松，${second}让临时出门更方便。`,
 ];
 
@@ -54,6 +56,7 @@ function applyBatchCopyDiversity(copies = []) {
       next.aiExtraDefault = next.detailExplanation;
     }
     next.todayReason = diversifyStructure(next.todayReason, structureCounts, index);
+    Object.assign(next, sanitizeCopyObject(next));
     next.usedPhrases = Object.keys(PHRASE_LIMITS).filter((phrase) => `${next.todayReason}${next.detailExplanation}`.includes(phrase));
     return next;
   });
@@ -126,7 +129,7 @@ function diversifyStructure(text, structureCounts, index) {
 }
 
 function sentenceSignature(text) {
-  if (/颜色接近，.+让这套多一点层次/.test(String(text || ''))) return 'color-close-layer';
+  if (/颜色接近，.+让这套(?:不全是浅色|多一点层次)/.test(String(text || ''))) return 'color-close-layer';
   return String(text || '')
     .replace(/[^，。！？]+?(T恤|运动鞋|阔腿裤|短裤|短袖|卫衣|牛仔裤|下装|上衣|鞋子)/g, 'ITEM')
     .replace(/[。！？].*$/g, '')

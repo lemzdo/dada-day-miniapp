@@ -39,6 +39,7 @@ function buildOutfitCandidatesV1({
     ...buildSeparateCandidates(groups, { temp, tempBand, scene: normalizedScene }),
   ]
     .filter((candidate) => candidate.items.length >= 2 && candidate.items.length <= 5)
+    .filter((candidate) => isSceneEligible(candidate, normalizedScene))
     .filter((candidate) => !excluded.has(signature(candidate.items.map((item) => item._id))));
 
   const scored = rawCandidates
@@ -226,6 +227,24 @@ function chooseSceneIntent(capabilities, candidate, context) {
     return '';
   }
   return 'home:clean_daily';
+}
+
+function isSceneEligible(candidate, scene) {
+  if (scene !== 'sport') return true;
+  const coreApparel = candidate.items.filter((item) =>
+    item.outfitRole === ROLE.CORE && ['top', 'bottom', 'skirt', 'onepiece'].includes(item.outfitSlot),
+  );
+  if (coreApparel.length === 0) return false;
+  return coreApparel.every((item) => hasReliableSportSignal(item) && !isExplicitlyFormalWithoutSport(item));
+}
+
+function hasReliableSportSignal(item) {
+  return /sport|sports|yoga|tennis|athletic|training|running|gym|运动|瑜伽|网球|训练|速干|跑步|健身|轻运动/i.test(itemText(item));
+}
+
+function isExplicitlyFormalWithoutSport(item) {
+  if (hasReliableSportSignal(item)) return false;
+  return /formal|office|work|blazer|suit|dress|skirt|heels|正装|正式|西装|衬衫|西裤|连衣裙|裙|高跟/i.test(itemText(item));
 }
 
 function choosePrimaryBenefit(sceneIntent, capabilities, candidate, context) {
@@ -542,4 +561,5 @@ module.exports = {
   SCENE_INTENTS,
   buildOutfitCandidatesV1,
   deriveItemCapabilitiesV1,
+  isSceneEligible,
 };

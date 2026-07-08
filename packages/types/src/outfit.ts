@@ -112,6 +112,19 @@ export interface XiaodaContentPlan {
   defaultDetailExplanation?: string;
 }
 
+export interface OutfitCardViewModel {
+  previewItems: OutfitItemSummary[];
+  hiddenItemCount: number;
+  layoutVariant: string;
+  totalItemCount?: number;
+}
+
+export interface DetailNarrativeViewModel {
+  defaultText: string;
+  source: 'content_plan' | 'ai' | 'safe_fallback' | string;
+  aiStatus: 'default' | 'success' | 'failed' | string;
+}
+
 export interface StylistExplanationPointV2 {
   text: string;
   evidenceCodes: string[];
@@ -330,6 +343,8 @@ export interface Outfit {
   outfitItemRoles?: XiaodaContentPlanItem[];
   contentPlan?: XiaodaContentPlan;
   contentPlanVersion?: string;
+  cardViewModel?: OutfitCardViewModel;
+  detailNarrativeViewModel?: DetailNarrativeViewModel;
   sceneIntent?: string;
   primaryBenefitCode?: string;
   reviewSource?: OutfitReviewSource;

@@ -125,7 +125,7 @@ test('renderers produce the locked anonymous screenshot sample style', () => {
   const detail = renderDetailReasoningV3(plan);
   const fallback = renderStylistFallbackCopyV3(plan);
 
-  assert.equal(today, '白色短袖T恤和白色运动鞋颜色接近，灰色短裤让这套多一点层次。');
+  assert.equal(today, '白色短袖T恤和白色运动鞋颜色接近，灰色短裤让这套不全是浅色。');
   assert.equal(detail, '白色短袖T恤和白色运动鞋颜色接近，灰色短裤让这套不全是浅色。居家穿不显得刻意，临时出门也不用重新换一身。');
   assert.equal(fallback.overallComment, detail);
   assert.equal(fallback.advice, '');
@@ -185,7 +185,7 @@ test('compileRecommendationLanguageV3 uses V2 default copy for golden home outfi
     weather: { temp: 22, weather: '多云' },
   });
 
-  assert.equal(result.reason, '米白 T恤和白色运动鞋颜色接近，军绿色阔腿裤让这套多一点层次。');
+  assert.equal(result.reason, '米白 T恤和白色运动鞋颜色接近，军绿色阔腿裤让这套不全是浅色。');
   assert.equal(result.reasoning, '米白 T恤和白色运动鞋颜色接近，军绿色阔腿裤让这套不全是浅色。居家穿不显得刻意，临时出门也不用重新换一身。');
   assert.equal(result.aiComment.overallComment, result.reasoning);
   assert.equal(result.contentPlan.defaultTodayReason, result.reason);
@@ -220,6 +220,8 @@ test('compileRecommendationLanguageV3 keeps homepage batch sentence structures v
   assert.equal(text.includes('不至于太淡'), false);
   assert.equal(text.includes('不会太飘'), false);
   assert.equal(text.includes('放在一起'), false);
+  assert.equal(text.includes('多一点层次'), false);
+  assert.equal(text.includes('常用单品'), false);
 });
 
 test('compileRecommendationLanguageV3 removes old V2 copy from legacy snapshots', () => {

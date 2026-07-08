@@ -49,6 +49,7 @@ import {
 } from '@/utils/outfitContextText';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
 import { buildAiReviewPresentation } from './aiReviewPresentation';
+import { getAiCommentButtonBlockReason, getAiCommentButtonState, type AiCommentButtonState } from './aiCommentButtonState';
 import type { OutfitStatusPatch } from '@/stores/outfitStatusStore';
 import type { Outfit, OutfitAiReviewResponse, OutfitItemSummary, OutfitSnapshotItem } from '@starter-template/types';
 import './index.scss';
@@ -378,6 +379,7 @@ export default function OutfitDetailPage() {
   const [favoriteOperating, setFavoriteOperating] = useState(false);
   const [wearOperating, setWearOperating] = useState(false);
   const [aiReviewMeta, setAiReviewMeta] = useState<AiReviewMeta | null>(null);
+  const [aiCommentButtonState, setAiCommentButtonState] = useState<AiCommentButtonState>('idle');
   const requestSeqRef = useRef(0);
   const aiCommentRequestSeqRef = useRef(0);
   const lastHandledRuntimeKeyRef = useRef<string | null>(null);
@@ -398,6 +400,7 @@ export default function OutfitDetailPage() {
     setFavoriteOperating(false);
     setWearOperating(false);
     setAiReviewMeta(null);
+    setAiCommentButtonState('idle');
   }, [sourceParam]);
 
   useLoad(() => {
@@ -737,39 +740,54 @@ export default function OutfitDetailPage() {
   }
 
   async function handleGenerateAiComment() {
-    if (!outfit || commentLoading) return;
-
     const authContext = captureAuthContext();
-    if (!authContext) return;
+    const blockReason = getAiCommentButtonBlockReason({ outfit, authContext, commentLoading });
+    if (blockReason) {
+      setAiCommentButtonState(blockReason.state);
+      logAiCommentButtonBlock(blockReason.debugReason);
+      Taro.showToast({ title: blockReason.toast, icon: 'none' });
+      return;
+    }
+    if (!outfit || !authContext) return;
     const commentRequestSeq = aiCommentRequestSeqRef.current + 1;
     aiCommentRequestSeqRef.current = commentRequestSeq;
     const forceRegenerate = Boolean(aiReviewMeta?.hasCanonical && outfit.aiComment);
+    setAiCommentButtonState('loading');
     setCommentLoading(true);
     try {
       const result = await generateCloudOutfitComment(outfit, { forceRegenerate });
-      if (aiCommentRequestSeqRef.current !== commentRequestSeq || !isCurrentAuthContext(authContext)) return;
+      if (aiCommentRequestSeqRef.current !== commentRequestSeq || !isCurrentAuthContext(authContext)) {
+        logAiCommentButtonBlock('stale_request');
+        Taro.showToast({ title: '这次请求已过期，请再试一次', icon: 'none' });
+        return;
+      }
       logAiReviewDebugSummary(result);
       if (result.cooldown) {
+        setAiCommentButtonState('cooldown');
         applyAiReviewResult(result);
         showAiReviewError(result.errorCode || 'AI_REVIEW_COOLDOWN');
         return;
       }
       if (result.inProgress) {
+        setAiCommentButtonState('loading');
         applyAiReviewResult(result);
         showAiReviewError(result.errorCode || 'AI_REVIEW_IN_PROGRESS');
         return;
       }
       if (result.superseded) {
+        setAiCommentButtonState(result.aiComment ? 'success' : 'idle');
         applyAiReviewResult(result);
         Taro.showToast({ title: result.aiComment ? '小搭多说了两句' : '让我再想想……', icon: 'none' });
         return;
       }
       if (isFallbackAiReviewResult(result)) {
+        setAiCommentButtonState('failed');
         applyAiReviewResult(result);
         Taro.showToast({ title: '刚刚没接上话，再试一次吧。', icon: 'none' });
         return;
       }
       if (result.success && result.aiComment && !isFallbackAiReviewResult(result)) {
+        setAiCommentButtonState('success');
         applyAiReviewResult(result);
         Taro.showToast({
           title: result.cacheHit ? '小搭多说了两句' : forceRegenerate ? '换了个角度说' : '小搭多说了两句',
@@ -777,16 +795,26 @@ export default function OutfitDetailPage() {
         });
         return;
       }
+      setAiCommentButtonState('failed');
       showAiReviewError(result.errorCode || 'AI_REVIEW_UNKNOWN', result.message);
     } catch (err) {
       console.error('Generate outfit AI comment error:', err);
-      if (aiCommentRequestSeqRef.current !== commentRequestSeq || !isCurrentAuthContext(authContext)) return;
+      if (aiCommentRequestSeqRef.current !== commentRequestSeq || !isCurrentAuthContext(authContext)) {
+        logAiCommentButtonBlock('stale_request_after_error');
+        return;
+      }
+      setAiCommentButtonState('failed');
       showAiReviewError(readCloudAiReviewErrorCode(err));
     } finally {
       if (aiCommentRequestSeqRef.current === commentRequestSeq && isCurrentAuthContext(authContext)) {
         setCommentLoading(false);
       }
     }
+  }
+
+  function logAiCommentButtonBlock(reason: string) {
+    if (!shouldPrintAiReviewDebug()) return;
+    console.info('[xiaoda-review-button]', { reason });
   }
 
   function showAiReviewError(errorCode: string | undefined, fallbackMessage?: string) {
@@ -972,6 +1000,12 @@ export default function OutfitDetailPage() {
   const showCount = itemsExpanded || items.length <= 4 ? items.length : 4;
   const displayItems = items.slice(0, showCount);
   const hasCanonicalAiComment = Boolean(aiReviewMeta?.hasCanonical && outfit.aiComment);
+  const buttonState = getAiCommentButtonState({
+    commentLoading,
+    fallbackFailed: Boolean(aiReviewMeta?.fallbackFailed || aiCommentButtonState === 'failed'),
+    cooldown: Boolean(aiReviewMeta?.cooldown || aiCommentButtonState === 'cooldown'),
+    hasCanonical: hasCanonicalAiComment,
+  });
   const aiCommentButtonText = commentLoading
     ? '让我再想想……'
     : aiReviewMeta?.fallbackFailed
@@ -979,7 +1013,13 @@ export default function OutfitDetailPage() {
       : hasCanonicalAiComment
         ? '换个角度再说说'
         : '听小搭多说两句';
-  const aiReviewPresentation = buildAiReviewPresentation(outfit.aiComment, outfit.contentPlan);
+  const narrativeContentPlan: Outfit['contentPlan'] = outfit.contentPlan && outfit.detailNarrativeViewModel?.defaultText
+    ? {
+        ...outfit.contentPlan,
+        defaultDetailExplanation: outfit.detailNarrativeViewModel.defaultText,
+      }
+    : outfit.contentPlan;
+  const aiReviewPresentation = buildAiReviewPresentation(outfit.aiComment, narrativeContentPlan);
   const hasAiReviewContent = Boolean(
     aiReviewPresentation
       && (aiReviewPresentation.bodyParagraphs.length > 0 || aiReviewPresentation.advice),
@@ -1063,7 +1103,7 @@ export default function OutfitDetailPage() {
               <Text className="ai-comment-desc">再结合今天的天气和场景，看看有没有容易忽略的小细节。</Text>
             </View>
             <View
-              className={`ai-comment-btn ${commentLoading ? 'disabled' : ''}`}
+              className={`ai-comment-btn ${buttonState.state} ${buttonState.disabled ? 'disabled' : ''}`}
               onClick={handleGenerateAiComment}
             >
               <Text className="ai-comment-btn-text">{aiCommentButtonText}</Text>

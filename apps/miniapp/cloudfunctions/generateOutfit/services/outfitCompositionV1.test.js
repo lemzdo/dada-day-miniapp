@@ -163,9 +163,9 @@ test('home can produce indoor and quick outing plans when matching shoes exist',
 test('sport training and light activity are not conflated', () => {
   const wardrobe = [
     item('training-top', 'top', { subcategory: '训练上衣', sceneTags: ['运动'], styleTags: ['运动'] }),
-    item('daily-top', 'top', { subcategory: 'T恤', sceneTags: ['日常'], styleTags: ['休闲'] }),
+    item('daily-top', 'top', { subcategory: 'light athletic top', sceneTags: ['运动'], styleTags: ['运动'] }),
     item('training-bottom', 'bottom', { subcategory: '训练裤', sceneTags: ['运动'], styleTags: ['运动'] }),
-    item('daily-bottom', 'bottom', { subcategory: '休闲裤', sceneTags: ['日常'], styleTags: ['休闲'] }),
+    item('daily-bottom', 'bottom', { subcategory: 'light athletic pants', sceneTags: ['运动'], styleTags: ['运动'] }),
     item('training-shoe', 'shoes', { subcategory: '跑步鞋', sceneTags: ['运动'] }),
     item('walking-shoe', 'shoes', { subcategory: '运动鞋', sceneTags: ['日常', '出游'] }),
   ];
@@ -179,6 +179,42 @@ test('sport training and light activity are not conflated', () => {
   assert.equal(ids(training).includes('training-shoe'), true);
   assert.equal(training.primaryBenefit, 'formal_training');
   assert.notEqual(light.primaryBenefit, 'formal_training');
+});
+
+test('sport rejects ordinary onepiece even when paired with running shoes', () => {
+  const wardrobe = [
+    item('daily-dress', 'onepiece', { subcategory: 'dress', sceneTags: ['daily'], styleTags: ['casual'] }),
+    item('running-shoe', 'shoes', { subcategory: 'running shoes', sceneTags: ['sport'], styleTags: ['sport'] }),
+  ];
+
+  const results = candidatesFor('sport', 22, wardrobe, { maxResults: 8 });
+
+  assert.equal(results.some((candidate) => ids(candidate).includes('daily-dress')), false);
+  assert.equal(results.length, 0);
+});
+
+test('sport allows onepiece only when the onepiece itself has athletic signals', () => {
+  const wardrobe = [
+    item('tennis-dress', 'onepiece', { subcategory: 'tennis athletic dress', sceneTags: ['sport'], styleTags: ['tennis', 'sport'] }),
+    item('training-shoe', 'shoes', { subcategory: 'training shoes', sceneTags: ['sport'], styleTags: ['sport'] }),
+  ];
+
+  const results = candidatesFor('sport', 22, wardrobe, { maxResults: 8 });
+
+  assert.equal(results.length > 0, true);
+  assert.equal(results.some((candidate) => ids(candidate).includes('tennis-dress')), true);
+});
+
+test('sport does not pass ordinary separates only because shoes are athletic', () => {
+  const wardrobe = [
+    item('daily-top', 'top', { subcategory: 'plain tee', sceneTags: ['daily'], styleTags: ['casual'] }),
+    item('daily-bottom', 'bottom', { subcategory: 'casual skirt', sceneTags: ['daily'], styleTags: ['casual'] }),
+    item('training-shoe', 'shoes', { subcategory: 'training shoes', sceneTags: ['sport'], styleTags: ['sport'] }),
+  ];
+
+  const results = candidatesFor('sport', 22, wardrobe, { maxResults: 8 });
+
+  assert.equal(results.length, 0);
 });
 
 test('candidate layering keeps late but suitable items instead of blind slicing', () => {

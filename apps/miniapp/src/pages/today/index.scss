@@ -189,7 +189,7 @@
 
 .outfit-swiper {
   width: 100%;
-  height: 800rpx;
+  height: 780rpx;
 }
 
 .outfit-slide {
@@ -266,13 +266,14 @@
 .outfit-collage {
   display: grid;
   grid-template-columns: 1.4fr 0.8fr;
-  grid-auto-rows: 180rpx;
+  grid-auto-rows: 168rpx;
   gap: 16rpx;
   margin-bottom: 16rpx;
   flex-shrink: 0;
 }
 
 .collage-item {
+  position: relative;
   width: 100%;
   height: 100%;
   border-radius: 28rpx;
@@ -287,6 +288,21 @@
   &.deleted {
     opacity: 0.5;
   }
+}
+
+.collage-more {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(46, 36, 29, 0.45);
+}
+
+.collage-more-text {
+  font-size: 36rpx;
+  font-weight: 700;
+  color: #FFFFFF;
 }
 
 .item-image {
@@ -359,7 +375,7 @@
 
 .outfit-reason {
   margin-bottom: 10rpx;
-  padding: 18rpx 22rpx;
+  padding: 16rpx 22rpx;
   background: rgba(250, 246, 241, 0.76);
   border-radius: 22rpx;
   box-shadow: inset 0 0 0 1rpx rgba(234, 219, 200, 0.24);
@@ -377,7 +393,7 @@
 .reason-text {
   font-size: 26rpx;
   color: #7E6A59;
-  line-height: 1.58;
+  line-height: 1.48;
   display: -webkit-box;
   overflow: hidden;
   -webkit-box-orient: vertical;
@@ -443,12 +459,12 @@
 .outfit-actions {
   display: flex;
   gap: 14rpx;
-  margin-bottom: 24rpx;
+  margin-bottom: 18rpx;
 }
 
 .action-btn {
   flex: 1;
-  height: 92rpx;
+  height: 86rpx;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -493,7 +509,7 @@
 }
 
 .refresh-btn {
-  height: 96rpx;
+  height: 90rpx;
   display: flex;
   align-items: center;
   justify-content: center;

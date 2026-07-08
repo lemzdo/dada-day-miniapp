@@ -41,6 +41,7 @@ const {
 } = require('./services/stylistExplanationV2');
 const { compileRecommendationLanguageV3 } = require('./services/recommendationLanguageV3');
 const { buildOutfitCandidatesV1 } = require('./services/outfitCompositionV1');
+const { buildOutfitCardViewModel } = require('./services/outfitCardViewModel');
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
@@ -842,17 +843,38 @@ function normalizeContentPlan(value) {
     ...(value.suggestion && typeof value.suggestion === 'object' && value.suggestion.text
       ? { suggestion: { text: limitText(value.suggestion.text, 120) } }
       : { suggestion: null }),
+    ...(value.defaultCopy && typeof value.defaultCopy === 'object'
+      ? {
+          defaultCopy: {
+            todayReason: limitText(value.defaultCopy.todayReason, 160),
+            detailExplanation: limitText(value.defaultCopy.detailExplanation, 240),
+            aiExtraDefault: limitText(value.defaultCopy.aiExtraDefault, 240),
+            usedInsightCodes: readStringArray(value.defaultCopy.usedInsightCodes).slice(0, 8),
+            usedPhrases: readStringArray(value.defaultCopy.usedPhrases).slice(0, 8),
+            ...(value.defaultCopy.angle ? { angle: limitText(value.defaultCopy.angle, 32) } : {}),
+          },
+        }
+      : {}),
+    ...(value.defaultTodayReason ? { defaultTodayReason: limitText(value.defaultTodayReason, 160) } : {}),
+    ...(value.defaultDetailExplanation ? { defaultDetailExplanation: limitText(value.defaultDetailExplanation, 240) } : {}),
   };
 }
 
 function pickOutfitStoryFields(primary, fallback) {
   const contentPlan = normalizeContentPlan(primary?.contentPlan) || normalizeContentPlan(fallback?.contentPlan);
+  const detailNarrativeViewModel = normalizeDetailNarrativeViewModel(primary?.detailNarrativeViewModel)
+    || normalizeDetailNarrativeViewModel(fallback?.detailNarrativeViewModel)
+    || buildDetailNarrativeFromContentPlan(contentPlan);
+  const cardViewModel = normalizeCardViewModel(primary?.cardViewModel)
+    || normalizeCardViewModel(fallback?.cardViewModel);
   const outfitItemRoles = normalizeOutfitItemRoles(primary?.outfitItemRoles).length
     ? normalizeOutfitItemRoles(primary.outfitItemRoles)
     : normalizeOutfitItemRoles(fallback?.outfitItemRoles);
   return {
     ...(outfitItemRoles.length ? { outfitItemRoles } : {}),
     ...(contentPlan ? { contentPlan } : {}),
+    ...(cardViewModel ? { cardViewModel } : {}),
+    ...(detailNarrativeViewModel ? { detailNarrativeViewModel } : {}),
     ...(primary?.contentPlanVersion || fallback?.contentPlanVersion ? { contentPlanVersion: primary?.contentPlanVersion || fallback?.contentPlanVersion } : {}),
     ...(primary?.sceneIntent || fallback?.sceneIntent ? { sceneIntent: primary?.sceneIntent || fallback?.sceneIntent } : {}),
     ...(primary?.primaryBenefitCode || primary?.primaryBenefit || fallback?.primaryBenefitCode || fallback?.primaryBenefit
@@ -865,6 +887,41 @@ function pickOutfitStoryFields(primary, fallback) {
       ? { validatorRejectReasons: readStringArray(primary?.validatorRejectReasons).length ? readStringArray(primary.validatorRejectReasons) : readStringArray(fallback?.validatorRejectReasons) }
       : {}),
     ...(primary?.cacheReuseReason || fallback?.cacheReuseReason ? { cacheReuseReason: primary?.cacheReuseReason || fallback?.cacheReuseReason } : {}),
+  };
+}
+
+function normalizeCardViewModel(value) {
+  if (!value || typeof value !== 'object') return undefined;
+  const previewItems = Array.isArray(value.previewItems)
+    ? value.previewItems.slice(0, 3).filter((item) => item && typeof item === 'object')
+    : [];
+  const hiddenItemCount = Math.max(0, Math.floor(Number(value.hiddenItemCount) || 0));
+  if (previewItems.length === 0 && hiddenItemCount === 0) return undefined;
+  return {
+    previewItems,
+    hiddenItemCount,
+    layoutVariant: limitText(value.layoutVariant, 32) || (hiddenItemCount > 0 ? 'preview-3-plus' : `preview-${previewItems.length}`),
+    totalItemCount: Math.max(previewItems.length + hiddenItemCount, Math.floor(Number(value.totalItemCount) || 0)),
+  };
+}
+
+function normalizeDetailNarrativeViewModel(value) {
+  if (!value || typeof value !== 'object') return undefined;
+  const defaultText = limitText(value.defaultText, 240);
+  if (!defaultText) return undefined;
+  return {
+    defaultText,
+    source: limitText(value.source, 32) || 'content_plan',
+    aiStatus: limitText(value.aiStatus, 32) || 'default',
+  };
+}
+
+function buildDetailNarrativeFromContentPlan(contentPlan) {
+  if (!contentPlan?.defaultDetailExplanation) return undefined;
+  return {
+    defaultText: contentPlan.defaultDetailExplanation,
+    source: 'content_plan',
+    aiStatus: 'default',
   };
 }
 
@@ -2243,7 +2300,11 @@ function toTempOutfit(recommendation, context) {
     updatedAt: context.now,
   };
 
-  return attachAestheticEvaluation(toOutfit(data, recommendation.items), recommendation.items);
+  const outfit = attachAestheticEvaluation(toOutfit(data, recommendation.items), recommendation.items);
+  return {
+    ...outfit,
+    cardViewModel: buildOutfitCardViewModel(outfit),
+  };
 }
 
 function generateRuleRecommendations({

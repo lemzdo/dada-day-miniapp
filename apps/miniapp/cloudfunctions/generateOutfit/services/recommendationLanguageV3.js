@@ -20,6 +20,8 @@ const { buildOutfitCopyFacts } = require('./outfitCopyFacts');
 const { buildSupportedOutfitInsights } = require('./supportedOutfitInsights');
 const { composePageCopy } = require('./pageCopyComposer');
 const { applyBatchCopyDiversity } = require('./batchCopyDiversity');
+const { sanitizeUserFacingCopy } = require('./copyQualityGate');
+const { buildOutfitCardViewModel } = require('./outfitCardViewModel');
 
 const RECOMMENDATION_REASON_VERSION_V3 = 'recommendation-reason-v3';
 const CATEGORY_ORDER = ['top', 'outerwear', 'onepiece', 'bottom', 'skirt', 'shoes', 'accessory', 'other'];
@@ -75,6 +77,12 @@ function compileRecommendationLanguageV3({ outfits = [], scene, weather } = {}) 
       reasonVersion: RECOMMENDATION_REASON_VERSION_V3,
       reason: copy.reason,
       reasoning: copy.reasoning,
+      cardViewModel: buildOutfitCardViewModel(plan.outfit),
+      detailNarrativeViewModel: {
+        defaultText: copy.reasoning,
+        source: 'content_plan',
+        aiStatus: 'default',
+      },
       reviewSource: 'rule_default',
       contentPlanVersion: plan.contentPlan.version,
       contentPlan: plan.contentPlan,
@@ -239,8 +247,8 @@ function benefitFromInsight(insightEntry, index = 0) {
 function renderRecommendationCopyV3(plan) {
   const planCopy = renderXiaodaPlanTextV1(plan.contentPlan);
   const defaultReview = buildXiaodaDefaultReviewV1(plan.contentPlan);
-  const reason = ensureCopy(plan.pageCopy?.todayReason || planCopy.bodyParagraphs[0] || defaultReview.reason, () => renderTodayReasonV3(plan));
-  const reasoning = ensureCopy(plan.pageCopy?.detailExplanation || planCopy.bodyParagraphs.join('') || defaultReview.reason, () => renderDetailReasoningV3(plan));
+  const reason = ensureCopy(plan.pageCopy?.todayReason || planCopy.bodyParagraphs[0] || defaultReview.reason, () => renderTodayReasonV3(plan), plan);
+  const reasoning = ensureCopy(plan.pageCopy?.detailExplanation || planCopy.bodyParagraphs.join('') || defaultReview.reason, () => renderDetailReasoningV3(plan), plan);
   const aiComment = {
     overallComment: reasoning,
     advice: planCopy.suggestion?.text || '',
@@ -789,10 +797,13 @@ function sanitizeAesthetic(value = {}) {
   };
 }
 
-function ensureCopy(text, fallbackFactory) {
+function ensureCopy(text, fallbackFactory, plan) {
   const candidates = [text, typeof fallbackFactory === 'function' ? fallbackFactory() : '整体偏轻松日常，适合不需要太正式的场合。'];
   for (const candidate of candidates) {
-    const clean = cleanText(candidate);
+    const clean = sanitizeUserFacingCopy(cleanText(candidate), {
+      items: plan?.contentPlan?.items || plan?.facts?.items,
+      scene: plan?.facts?.context?.scene,
+    });
     if (!clean || findHumanCopyPolicyViolations(clean).length > 0 || hasRepeatedSentenceParts(clean)) continue;
     return clean;
   }
