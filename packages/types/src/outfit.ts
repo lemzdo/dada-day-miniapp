@@ -397,6 +397,12 @@ export interface RecommendResponse {
     generatedCount: number;
     filteredCandidateCount?: number;
     excludedOutfitKeyCount?: number;
+    guardCandidateCount?: number;
+    guardAcceptedCount?: number;
+    guardRejectedCount?: number;
+    weatherRejectedCount?: number;
+    sceneRejectedCount?: number;
+    rejectReasonCounts?: Record<string, number>;
     limited?: boolean;
     exhausted?: boolean;
     batchDiagnostics?: {

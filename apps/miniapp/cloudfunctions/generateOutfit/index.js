@@ -42,6 +42,7 @@ const {
 const { compileRecommendationLanguageV3 } = require('./services/recommendationLanguageV3');
 const { buildOutfitCandidatesV1 } = require('./services/outfitCompositionV1');
 const { buildOutfitCardViewModel } = require('./services/outfitCardViewModel');
+const { applyWearabilityAndSceneEligibility } = require('./services/sceneEligibilityV3');
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
@@ -2329,15 +2330,17 @@ function generateRuleRecommendations({
     recommendationProfile,
     excludeClothingIdSets,
     excludedOutfitKeys,
-    maxResults: Math.max(Number(maxResults || 8), 1) * 4,
+    maxResults: Math.max(Number(maxResults || 8), 1) * 8,
+    returnRawCandidates: true,
   });
+  const guardResult = applyWearabilityAndSceneEligibility(candidates, { scene, weather });
   const excluded = new Set([
     ...(excludeClothingIdSets || []).filter(Array.isArray).map((ids) => signature(ids)),
     ...readStringArray(excludedOutfitKeys),
   ]);
   const limit = Math.min(Math.max(Number(maxResults || 8), 1), 8);
 
-  const scored = candidates
+  const scored = guardResult.accepted
     .map((candidate) => {
       const scoredCandidate = scoreCandidate(candidate.items, { scene, tempConfig, weather, recommendationProfile });
       return {
@@ -2351,6 +2354,9 @@ function generateRuleRecommendations({
         secondaryBenefit: candidate.secondaryBenefit,
         observationFocus: candidate.observationFocus,
         compositionRankingScore: candidate.rankingScore,
+        eligibility: candidate.eligibility,
+        riskFlags: candidate.riskFlags || [],
+        validatorRejectReasons: readStringArray(candidate.validatorRejectReasons),
       };
     })
     .map((rec) => {
@@ -2386,8 +2392,15 @@ function generateRuleRecommendations({
   }
 
   results.debug = {
-    candidateCount: scored.length,
+    candidateCount: candidates.length,
     filteredCandidateCount: available.length,
+    guardCandidateCount: guardResult.debug.guardCandidateCount,
+    guardAcceptedCount: guardResult.debug.guardAcceptedCount,
+    guardRejectedCount: guardResult.debug.guardRejectedCount,
+    weatherRejectedCount: guardResult.debug.weatherRejectedCount,
+    sceneRejectedCount: guardResult.debug.sceneRejectedCount,
+    rejectReasonCounts: guardResult.debug.rejectReasonCounts,
+    limitedReason: guardResult.debug.limitedReason || candidates.debug?.limitedReason || '',
   };
   results.limited = results.length < limit || available.length < limit;
   results.exhausted = available.length === 0 && excluded.size > 0;
@@ -2426,7 +2439,7 @@ function getRecommendationNotice(clothes, weather, recommendationCount) {
   }
 
   if (recommendationCount === 0) {
-    return '暂时没有合适搭配，换个场景或多上传几件衣服再试试。';
+    return '这个场景先没有足够稳妥的选择，换个场景再试试。';
   }
 
   return '';

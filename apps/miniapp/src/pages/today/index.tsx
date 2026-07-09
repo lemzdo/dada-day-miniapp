@@ -1059,7 +1059,7 @@ export default function TodayPage() {
 
   function getBatchNotice(notice: string | undefined, limited: boolean, exhausted: boolean) {
     if (exhausted || limited) {
-      return notice || '小搭暂时只能搭出这些啦，多上传几件衣服，我就能给你更多灵感～';
+      return notice || '小搭先挑了这几套靠谱的。';
     }
     return notice ?? '';
   }

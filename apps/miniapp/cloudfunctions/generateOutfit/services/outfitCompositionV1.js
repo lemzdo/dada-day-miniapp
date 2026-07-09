@@ -1,4 +1,5 @@
 const OUTFIT_COMPOSITION_VERSION = 'outfit-composition-v1';
+const { applyWearabilityAndSceneEligibility } = require('./sceneEligibilityV3');
 
 const ROLE = {
   CORE: 'core',
@@ -21,6 +22,8 @@ function buildOutfitCandidatesV1({
   excludedOutfitKeys = [],
   excludeClothingIdSets = [],
   recommendationProfile = {},
+  guardCandidates = true,
+  returnRawCandidates = false,
 } = {}) {
   const temp = readTemperature(weather);
   const tempBand = getTemperatureBand(temp);
@@ -39,10 +42,20 @@ function buildOutfitCandidatesV1({
     ...buildSeparateCandidates(groups, { temp, tempBand, scene: normalizedScene }),
   ]
     .filter((candidate) => candidate.items.length >= 2 && candidate.items.length <= 5)
-    .filter((candidate) => isSceneEligible(candidate, normalizedScene))
     .filter((candidate) => !excluded.has(signature(candidate.items.map((item) => item._id))));
+  rawCandidates.debug = {
+    candidateCount: rawCandidates.length,
+    filteredCandidateCount: rawCandidates.length,
+    limitedReason: rawCandidates.length === 0 ? getSceneLimitedReason(normalizedScene, rawCandidates, rawCandidates) : '',
+  };
+  if (returnRawCandidates) return rawCandidates;
 
-  const scored = rawCandidates
+  const guardResult = guardCandidates
+    ? applyWearabilityAndSceneEligibility(rawCandidates, { scene: normalizedScene, weather })
+    : { accepted: rawCandidates, rejected: [], debug: {} };
+  const eligibleCandidates = guardResult.accepted;
+
+  const scored = eligibleCandidates
     .map((candidate) => scoreCompositionCandidate(candidate, {
       scene: normalizedScene,
       temp,
@@ -58,8 +71,14 @@ function buildOutfitCandidatesV1({
   results.debug = {
     candidateCount: rawCandidates.length,
     filteredCandidateCount: scored.length,
+    guardCandidateCount: guardResult.debug.guardCandidateCount ?? rawCandidates.length,
+    guardAcceptedCount: guardResult.debug.guardAcceptedCount ?? eligibleCandidates.length,
+    guardRejectedCount: guardResult.debug.guardRejectedCount ?? 0,
+    weatherRejectedCount: guardResult.debug.weatherRejectedCount ?? 0,
+    sceneRejectedCount: guardResult.debug.sceneRejectedCount ?? 0,
+    rejectReasonCounts: guardResult.debug.rejectReasonCounts || {},
     batchDiagnostics: results.batchDiagnostics,
-    limitedReason: getSceneLimitedReason(normalizedScene, rawCandidates, scored) || results.batchDiagnostics?.limitedReason || '',
+    limitedReason: guardResult.debug.limitedReason || getSceneLimitedReason(normalizedScene, rawCandidates, scored) || results.batchDiagnostics?.limitedReason || '',
   };
   results.limited = results.length < limit || scored.length < limit;
   results.exhausted = scored.length === 0 && excluded.size > 0;
