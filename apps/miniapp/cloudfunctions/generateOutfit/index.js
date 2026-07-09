@@ -156,21 +156,23 @@ async function generate(event) {
     scene,
     weather,
   });
-  const outfits = [];
-  for (const tempOutfit of tempOutfits) {
-    const outfitRecord = await upsertOutfitByKey({
+  const outfitRecords = await Promise.all(tempOutfits.map((tempOutfit) =>
+    upsertOutfitByKey({
       openid: OPENID,
       base: tempOutfit,
       patch: {},
       now,
-    });
-    outfits.push({
+    }),
+  ));
+  const outfits = tempOutfits.map((tempOutfit, index) => {
+    const outfitRecord = outfitRecords[index];
+    return {
       ...tempOutfit,
       id: outfitRecord._id,
       outfitId: outfitRecord._id,
       outfitKind: 'recommendation',
-    });
-  }
+    };
+  });
   const hydratedOutfits = await enrichOutfitsState(outfits, {
     openid: OPENID,
     targetDate,
@@ -1794,7 +1796,7 @@ async function saveOutfitExposures({ openid, outfits, scene, batchId, shownAt })
     uniqueOutfits.push(outfitKey);
   }
 
-  for (const outfitKey of uniqueOutfits) {
+  await Promise.all(uniqueOutfits.map(async (outfitKey) => {
     try {
       await db.collection('outfit_exposures').add({
         data: {
@@ -1810,7 +1812,7 @@ async function saveOutfitExposures({ openid, outfits, scene, batchId, shownAt })
     } catch {
       // Exposure is best-effort telemetry and must not block recommendations.
     }
-  }
+  }));
 }
 
 function uniqueStrings(values) {

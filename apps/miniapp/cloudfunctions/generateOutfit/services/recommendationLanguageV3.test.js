@@ -125,8 +125,8 @@ test('renderers produce the locked anonymous screenshot sample style', () => {
   const detail = renderDetailReasoningV3(plan);
   const fallback = renderStylistFallbackCopyV3(plan);
 
-  assert.equal(today, '白色短袖T恤和白色运动鞋颜色接近，灰色短裤让这套不全是浅色。');
-  assert.equal(detail, '白色短袖T恤和白色运动鞋颜色接近，灰色短裤让这套不全是浅色。居家穿不显得刻意，临时出门也不用重新换一身。');
+  assert.equal(today, '白色短袖T恤和白色运动鞋能接上，灰色短裤让这套多一点落点。');
+  assert.equal(detail, '居家穿不需要太正式，运动鞋让这套可以从家里直接走到楼下，附近走走也不用重新换。');
   assert.equal(fallback.overallComment, detail);
   assert.equal(fallback.advice, '');
 });
@@ -185,8 +185,8 @@ test('compileRecommendationLanguageV3 uses V2 default copy for golden home outfi
     weather: { temp: 22, weather: '多云' },
   });
 
-  assert.equal(result.reason, '米白 T恤和白色运动鞋颜色接近，军绿色阔腿裤让这套不全是浅色。');
-  assert.equal(result.reasoning, '米白 T恤和白色运动鞋颜色接近，军绿色阔腿裤让这套不全是浅色。居家穿不显得刻意，临时出门也不用重新换一身。');
+  assert.equal(result.reason, '米白 T恤和白色运动鞋能接上，军绿色阔腿裤让这套多一点落点。');
+  assert.equal(result.reasoning, '居家穿不需要太正式，运动鞋让这套可以从家里直接走到楼下，附近走走也不用重新换。');
   assert.equal(result.aiComment.overallComment, result.reasoning);
   assert.equal(result.contentPlan.defaultTodayReason, result.reason);
   assert.equal(result.contentPlan.defaultDetailExplanation, result.reasoning);
@@ -212,6 +212,7 @@ test('compileRecommendationLanguageV3 keeps homepage batch sentence structures v
   const text = results.map((entry) => `${entry.reason}${entry.reasoning}`).join('\n');
   const signatures = results.map((entry) => entry.reason
     .replace(/米白 T恤|白色运动鞋|军绿色阔腿裤|深蓝色阔腿裤/g, 'ITEM')
+    .replace(/二十多度/g, 'TEMP')
     .replace(/[。！？].*$/g, ''));
   const mostRepeatedSignature = Math.max(...Array.from(new Set(signatures)).map((entry) => signatures.filter((item) => item === entry).length));
 
@@ -222,6 +223,8 @@ test('compileRecommendationLanguageV3 keeps homepage batch sentence structures v
   assert.equal(text.includes('放在一起'), false);
   assert.equal(text.includes('多一点层次'), false);
   assert.equal(text.includes('常用单品'), false);
+  assert.ok(results.filter((entry) => entry.contentPlan.defaultCopy.angle === '颜色关系').length <= 3);
+  assert.ok(new Set(results.map((entry) => entry.contentPlan.defaultCopy.angle).filter((angle) => angle !== '颜色关系')).size >= 3);
 });
 
 test('compileRecommendationLanguageV3 removes old V2 copy from legacy snapshots', () => {

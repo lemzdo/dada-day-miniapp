@@ -217,6 +217,73 @@ test('sport does not pass ordinary separates only because shoes are athletic', (
   assert.equal(results.length, 0);
 });
 
+test('work rejects pure home outfits instead of retitling the home pool', () => {
+  const wardrobe = [
+    item('home-tee', 'top', { subcategory: '宽松居家T恤', sceneTags: ['居家'], styleTags: ['休闲'] }),
+    item('home-shorts', 'bottom', { subcategory: '家居短裤', sceneTags: ['居家'], styleTags: ['休闲'] }),
+    item('red-sneaker', 'shoes', { subcategory: '红色运动鞋', sceneTags: ['日常'], styleTags: ['运动'] }),
+  ];
+
+  const results = candidatesFor('上班', 24, wardrobe, { maxResults: 8 });
+
+  assert.equal(results.length, 0);
+  assert.equal(results.limited, true);
+  assert.match(results.debug.limitedReason, /work_scene_eligible/);
+});
+
+test('date rejects ordinary tee shorts sneakers that only have color facts', () => {
+  const wardrobe = [
+    item('daily-tee', 'top', { subcategory: '白色T恤', sceneTags: ['日常'], styleTags: ['休闲'], color: '白色' }),
+    item('daily-shorts', 'bottom', { subcategory: '灰色短裤', sceneTags: ['日常'], styleTags: ['休闲'], color: '灰色' }),
+    item('daily-sneaker', 'shoes', { subcategory: '运动鞋', sceneTags: ['日常'], styleTags: ['运动'], color: '白色' }),
+  ];
+
+  const results = candidatesFor('约会', 26, wardrobe, { maxResults: 8 });
+
+  assert.equal(results.length, 0);
+  assert.equal(results.limited, true);
+  assert.match(results.debug.limitedReason, /date_scene_eligible/);
+});
+
+test('final batch caps repeated core top bottom shoes scene intent and archetype when inventory allows', () => {
+  const wardrobe = [
+    item('commute-shirt-1', 'top', { subcategory: '衬衫', sceneTags: ['上班', '通勤'], styleTags: ['通勤'] }),
+    item('commute-shirt-2', 'top', { subcategory: '利落针织上衣', sceneTags: ['上班'], styleTags: ['简约'] }),
+    item('commute-shirt-3', 'top', { subcategory: '通勤短袖', sceneTags: ['上班'], styleTags: ['通勤'] }),
+    item('commute-shirt-4', 'top', { subcategory: 'office clean top', sceneTags: ['work'], styleTags: ['简约'] }),
+    item('trouser-1', 'bottom', { subcategory: '西裤', sceneTags: ['上班'] }),
+    item('trouser-2', 'bottom', { subcategory: '直筒长裤', sceneTags: ['上班'] }),
+    item('trouser-3', 'bottom', { subcategory: '通勤长裤', sceneTags: ['上班'] }),
+    item('trouser-4', 'bottom', { subcategory: 'clean pants', sceneTags: ['work'] }),
+    item('blazer-1', 'outerwear', { subcategory: '西装外套', sceneTags: ['上班'], styleTags: ['通勤'] }),
+    item('jacket-1', 'outerwear', { subcategory: 'clean work jacket', sceneTags: ['work'], styleTags: ['简约'] }),
+    item('loafer-1', 'shoes', { subcategory: '乐福鞋', sceneTags: ['上班', '通勤'] }),
+    item('loafer-2', 'shoes', { subcategory: '通勤鞋', sceneTags: ['上班'] }),
+    item('sneaker-1', 'shoes', { subcategory: '白色通勤运动鞋', sceneTags: ['上班', '通勤'] }),
+    item('sneaker-2', 'shoes', { subcategory: '黑色通勤运动鞋', sceneTags: ['上班', '通勤'] }),
+  ];
+
+  const results = candidatesFor('上班', 24, wardrobe, { maxResults: 8 });
+  const countSlot = (slot) => {
+    const counts = {};
+    for (const candidate of results) {
+      const id = candidate.items.find((entry) => entry.outfitSlot === slot)?._id;
+      if (id) counts[id] = (counts[id] || 0) + 1;
+    }
+    return Math.max(...Object.values(counts));
+  };
+  const maxSceneIntent = Math.max(...Object.values(results.debug.batchDiagnostics.sceneIntentCounts));
+  const maxArchetype = Math.max(...Object.values(results.debug.batchDiagnostics.archetypeCounts));
+
+  assert.equal(results.length, 8);
+  assert.ok(countSlot('top') <= 3);
+  assert.ok(countSlot('bottom') <= 3);
+  assert.ok(countSlot('shoes') <= 3);
+  assert.ok(maxSceneIntent <= 3);
+  assert.ok(maxArchetype <= 4);
+  assert.equal(results.debug.batchDiagnostics.limitedReason, '');
+});
+
 test('candidate layering keeps late but suitable items instead of blind slicing', () => {
   const shoes = Array.from({ length: 7 }, (_, index) =>
     item(`casual-shoe-${index}`, 'shoes', { subcategory: '休闲鞋', sceneTags: ['日常'] }),

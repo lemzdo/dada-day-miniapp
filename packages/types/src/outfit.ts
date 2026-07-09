@@ -399,6 +399,18 @@ export interface RecommendResponse {
     excludedOutfitKeyCount?: number;
     limited?: boolean;
     exhausted?: boolean;
+    batchDiagnostics?: {
+      itemReuse?: {
+        top?: Record<string, number>;
+        bottom?: Record<string, number>;
+        shoes?: Record<string, number>;
+      };
+      archetypeCounts?: Record<string, number>;
+      angleCounts?: Record<string, number>;
+      sceneIntentCounts?: Record<string, number>;
+      limitedReason?: string;
+    };
+    limitedReason?: string;
   };
 }
 

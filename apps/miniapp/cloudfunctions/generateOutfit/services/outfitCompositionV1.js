@@ -58,6 +58,8 @@ function buildOutfitCandidatesV1({
   results.debug = {
     candidateCount: rawCandidates.length,
     filteredCandidateCount: scored.length,
+    batchDiagnostics: results.batchDiagnostics,
+    limitedReason: getSceneLimitedReason(normalizedScene, rawCandidates, scored) || results.batchDiagnostics?.limitedReason || '',
   };
   results.limited = results.length < limit || scored.length < limit;
   results.exhausted = scored.length === 0 && excluded.size > 0;
@@ -208,9 +210,9 @@ function chooseSceneIntent(capabilities, candidate, context) {
   }
   if (scene === 'work') {
     if (candidate.items.some((item) => item.outfitRole === ROLE.FUNCTIONAL)) return 'work:layered';
-    if (capabilities.has('commute') && capabilities.has('long_walk')) return 'work:walkable';
+    if (hasWorkRelaxedSignal(candidate.items) && capabilities.has('long_walk')) return 'work:walkable';
+    if (hasWorkRelaxedSignal(candidate.items)) return 'work:relaxed';
     if (capabilities.has('commute')) return 'work:polished';
-    if (capabilities.has('daily_outing')) return 'work:relaxed';
     return '';
   }
   if (scene === 'date') {
@@ -230,12 +232,43 @@ function chooseSceneIntent(capabilities, candidate, context) {
 }
 
 function isSceneEligible(candidate, scene) {
+  if (scene === 'work') return isWorkEligible(candidate);
+  if (scene === 'date') return isDateEligible(candidate);
   if (scene !== 'sport') return true;
   const coreApparel = candidate.items.filter((item) =>
     item.outfitRole === ROLE.CORE && ['top', 'bottom', 'skirt', 'onepiece'].includes(item.outfitSlot),
   );
   if (coreApparel.length === 0) return false;
   return coreApparel.every((item) => hasReliableSportSignal(item) && !isExplicitlyFormalWithoutSport(item));
+}
+
+function isWorkEligible(candidate) {
+  const text = candidate.items.map(itemText).join(' ');
+  const coreText = candidate.items
+    .filter((item) => item.outfitRole === ROLE.CORE && item.outfitSlot !== 'shoes')
+    .map(itemText)
+    .join(' ');
+  const hasPositive = /commute|formality|clean|structured|office|work|通勤|上班|衬衫|西裤|外套|利落|乐福|西装|风衣/i.test(text);
+  if (!hasPositive) return false;
+  if (/居家|家居|睡衣|拖鞋|短裤|沙滩|红色运动鞋/i.test(text) && !/衬衫|西裤|通勤|office|work|利落|structured|clean/i.test(coreText)) {
+    return false;
+  }
+  return true;
+}
+
+function isDateEligible(candidate) {
+  const text = candidate.items.map(itemText).join(' ');
+  const coreText = candidate.items
+    .filter((item) => item.outfitRole === ROLE.CORE)
+    .map(itemText)
+    .join(' ');
+  const hasPositive = /soft|highlight|clean|date|约会|完整|裙|连衣裙|半裙|针织|柔|粉|甜|优雅|单鞋|亮/i.test(text);
+  if (!hasPositive) return false;
+  const onlyPlainDaily = /T恤|tee|短袖/i.test(coreText)
+    && /短裤|shorts/i.test(coreText)
+    && /运动鞋|sneaker/i.test(coreText)
+    && !/约会|date|裙|针织|柔|粉|甜|优雅|亮|highlight|soft|clean/i.test(coreText);
+  return !onlyPlainDaily;
 }
 
 function hasReliableSportSignal(item) {
@@ -245,6 +278,12 @@ function hasReliableSportSignal(item) {
 function isExplicitlyFormalWithoutSport(item) {
   if (hasReliableSportSignal(item)) return false;
   return /formal|office|work|blazer|suit|dress|skirt|heels|正装|正式|西装|衬衫|西裤|连衣裙|裙|高跟/i.test(itemText(item));
+}
+
+function hasWorkRelaxedSignal(items) {
+  const text = items.map(itemText).join(' ');
+  return /牛仔|运动鞋|sneaker|daily|casual|休闲|日常/i.test(text)
+    && /commute|通勤|上班|office|work|clean|利落/i.test(text);
 }
 
 function choosePrimaryBenefit(sceneIntent, capabilities, candidate, context) {
@@ -298,23 +337,30 @@ function diversifyCandidates(candidates, limit) {
   const usedBenefitKeys = new Set();
   const usedShoeKeys = new Set();
   const usedAngles = new Set();
+  const counts = createBatchCounts();
   const passes = [
-    (candidate) => !usedSceneIntents.has(candidate.sceneIntent) && !isTooSimilarToUsed(candidate, usedIds),
-    (candidate) => !usedSceneIntents.has(candidate.sceneIntent),
-    (candidate) => !usedBenefitKeys.has(benefitKey(candidate)) && !isTooSimilarToUsed(candidate, usedIds),
-    (candidate) => !usedShoeKeys.has(shoeKey(candidate)) && !isTooSimilarToUsed(candidate, usedIds),
-    (candidate) => !usedAngles.has(angleKey(candidate)) && !isTooSimilarToUsed(candidate, usedIds),
-    (candidate) => !usedAngles.has(angleKey(candidate)),
-    (candidate) => !isTooSimilarToUsed(candidate, usedIds),
-    () => true,
+    { relax: 'none', test: (candidate) => !usedSceneIntents.has(candidate.sceneIntent) && !isTooSimilarToUsed(candidate, usedIds) },
+    { relax: 'none', test: (candidate) => !usedSceneIntents.has(candidate.sceneIntent) },
+    { relax: 'none', test: (candidate) => !usedBenefitKeys.has(benefitKey(candidate)) && !isTooSimilarToUsed(candidate, usedIds) },
+    { relax: 'none', test: (candidate) => !usedShoeKeys.has(shoeKey(candidate)) && !isTooSimilarToUsed(candidate, usedIds) },
+    { relax: 'none', test: (candidate) => !usedAngles.has(angleKey(candidate)) && !isTooSimilarToUsed(candidate, usedIds) },
+    { relax: 'none', test: (candidate) => !usedAngles.has(angleKey(candidate)) },
+    { relax: 'archetype', test: (candidate) => !isTooSimilarToUsed(candidate, usedIds) },
+    { relax: 'coreItems', test: (candidate) => !isTooSimilarToUsed(candidate, usedIds) },
   ];
+  let limitedReason = '';
   for (const pass of passes) {
     for (const candidate of candidates) {
       if (results.length >= limit) break;
       if (results.some((entry) => signature(entry.items.map((item) => item._id)) === signature(candidate.items.map((item) => item._id)))) continue;
-      if (!pass(candidate)) continue;
+      if (!pass.test(candidate)) continue;
+      if (!canUseWithBatchCaps(candidate, counts, pass.relax)) {
+        if (!limitedReason) limitedReason = `relaxed_${pass.relax}_diversity`;
+        continue;
+      }
       const selected = withDistinctObservationFocus(candidate, usedAngles);
       results.push(selected);
+      incrementBatchCounts(counts, selected);
       usedIds.push(selected.items.map((item) => item._id));
       usedSceneIntents.add(selected.sceneIntent);
       usedBenefitKeys.add(benefitKey(selected));
@@ -323,7 +369,86 @@ function diversifyCandidates(candidates, limit) {
     }
     if (results.length >= limit) break;
   }
+  results.batchDiagnostics = buildBatchDiagnostics(results, results.length < limit ? (limitedReason || 'limited_by_core_similarity') : '');
   return results;
+}
+
+function createBatchCounts() {
+  return {
+    top: {},
+    bottom: {},
+    shoes: {},
+    archetype: {},
+    sceneIntent: {},
+  };
+}
+
+function canUseWithBatchCaps(candidate, counts, relax) {
+  const relaxCore = relax === 'coreItems' || relax === 'all';
+  const relaxArchetype = relax === 'archetype' || relaxCore;
+  const relaxSceneIntent = false;
+  if (!relaxCore) {
+    if (wouldExceed(counts.top, slotId(candidate, 'top'), 3)) return false;
+    if (wouldExceed(counts.bottom, slotId(candidate, 'bottom') || slotId(candidate, 'skirt') || slotId(candidate, 'onepiece'), 3)) return false;
+    if (wouldExceed(counts.shoes, slotId(candidate, 'shoes'), 3)) return false;
+  }
+  if (!relaxArchetype && wouldExceed(counts.archetype, archetypeKey(candidate), 4)) return false;
+  if (!relaxSceneIntent && wouldExceed(counts.sceneIntent, candidate.sceneIntent, 3)) return false;
+  return true;
+}
+
+function incrementBatchCounts(counts, candidate) {
+  increment(counts.top, slotId(candidate, 'top'));
+  increment(counts.bottom, slotId(candidate, 'bottom') || slotId(candidate, 'skirt') || slotId(candidate, 'onepiece'));
+  increment(counts.shoes, slotId(candidate, 'shoes'));
+  increment(counts.archetype, archetypeKey(candidate));
+  increment(counts.sceneIntent, candidate.sceneIntent);
+}
+
+function buildBatchDiagnostics(results, limitedReason) {
+  const counts = createBatchCounts();
+  const angleCounts = {};
+  for (const candidate of results) {
+    incrementBatchCounts(counts, candidate);
+    increment(angleCounts, candidate.observationFocus || 'base');
+  }
+  return {
+    itemReuse: {
+      top: counts.top,
+      bottom: counts.bottom,
+      shoes: counts.shoes,
+    },
+    archetypeCounts: counts.archetype,
+    sceneIntentCounts: counts.sceneIntent,
+    angleCounts,
+    limitedReason: limitedReason || '',
+  };
+}
+
+function slotId(candidate, slot) {
+  return candidate.items.find((item) => item.outfitSlot === slot)?._id || '';
+}
+
+function archetypeKey(candidate) {
+  return [candidate.structureType, candidate.primaryBenefit].filter(Boolean).join('|') || candidate.structureType || 'outfit';
+}
+
+function wouldExceed(counts, key, limit) {
+  if (!key) return false;
+  return (counts[key] || 0) + 1 > limit;
+}
+
+function increment(counts, key) {
+  if (!key) return;
+  counts[key] = (counts[key] || 0) + 1;
+}
+
+function getSceneLimitedReason(scene, rawCandidates, scored) {
+  if (scored.length > 0) return '';
+  if (scene === 'work' && rawCandidates.length === 0) return 'work_scene_eligible_no_candidate';
+  if (scene === 'date' && rawCandidates.length === 0) return 'date_scene_eligible_no_candidate';
+  if (scene === 'sport' && rawCandidates.length === 0) return 'sport_scene_eligible_no_candidate';
+  return '';
 }
 
 function withDistinctObservationFocus(candidate, usedAngles) {
@@ -406,7 +531,9 @@ function scoreItemForScene(item, scene) {
   let score = 0;
   if (sceneTags.includes(sceneLabel(scene)) || sceneTags.includes(scene)) score += 4;
   if (scene === 'work' && /通勤|上班|西裤|衬衫|乐福|西装|风衣|blazer|office|work/i.test(text)) score += 3;
+  if (scene === 'work' && /短裤|居家|家居|睡衣|拖鞋|红色运动鞋/i.test(text)) score -= 6;
   if (scene === 'date' && /约会|半裙|连衣裙|针织|单鞋|粉|红|亮|柔|甜|优雅/i.test(text)) score += 3;
+  if (scene === 'date' && /短裤|训练|速干|跑步|gym|training/i.test(text)) score -= 5;
   if (scene === 'home' && /居家|室内|家居|休闲|宽松/i.test(text)) score += 3;
   if (scene === 'sport' && /运动|训练|跑步|瑜伽|速干|training|running|sport/i.test(text)) score += 3;
   return score;
@@ -420,6 +547,7 @@ function deriveItemCapabilitiesV1(item) {
   if (/日常|休闲|T恤|牛仔|出游|逛街|daily|casual/i.test(text)) capabilities.add('daily_outing');
   if (/运动鞋|跑步鞋|徒步|走路|通勤鞋|乐福|sneaker|walking|running/i.test(text)) capabilities.add('long_walk');
   if (/通勤|上班|衬衫|西裤|乐福|西装|风衣|blazer|office|work/i.test(text)) capabilities.add('commute');
+  if (/利落|clean|structured|直筒|挺括|简洁/i.test(text)) capabilities.add('structured');
   if (/约会|半裙|连衣裙|针织|单鞋|粉|红|甜|优雅|date/i.test(text)) capabilities.add('date');
   if (/轻运动|运动鞋|瑜伽|散步|休闲运动|light/i.test(text)) capabilities.add('light_activity');
   if (/训练|跑步|速干|健身|瑜伽裤|跑步鞋|training|running|gym/i.test(text)) capabilities.add('formal_training');

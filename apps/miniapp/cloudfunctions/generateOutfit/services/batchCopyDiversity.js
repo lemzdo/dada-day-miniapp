@@ -12,9 +12,14 @@ const PHRASE_LIMITS = {
   '压住一点': 0,
   '压下来一点': 0,
   '放在一起': 0,
+  '颜色接近': 0,
+  '深浅变化': 0,
+  '上下分区': 0,
+  '不全是浅色': 0,
+  '适合今天': 0,
 };
 
-const ANGLES = ['颜色关系', '场景适配', '天气厚薄', '单品组合', '鞋子收尾', '风格统一', '方便程度'];
+const ANGLES = ['颜色关系', '场景适配', '天气厚薄', '单品作用', '单品组合', '鞋子收尾', '风格统一', '方便程度'];
 const COLOR_ANGLES = new Set(['颜色呼应', '颜色对比', '颜色关系']);
 
 const REPLACEMENTS = {
@@ -29,6 +34,11 @@ const REPLACEMENTS = {
   '压住一点': ['收住一些', '带出一点对比', '加一点分量'],
   '压下来一点': ['收住一些', '带出一点对比', '加一点分量'],
   '放在一起': ['搭起来', '接在一块', '一起穿'],
+  '颜色接近': ['能接上', '有联系', '接在一块'],
+  '深浅变化': ['明暗关系', '颜色层次', '一点对比'],
+  '上下分区': ['上下关系', '轮廓更清楚', '比例更清楚'],
+  '不全是浅色': ['多一点落点', '多一点分量', '不那么单调'],
+  '适合今天': ['今天穿起来省事', '按现在的安排穿得住', '今天穿不会绕'],
 };
 
 const STRUCTURE_REWRITES = [
@@ -47,15 +57,25 @@ function applyBatchCopyDiversity(copies = []) {
   const structureCounts = {};
   return copies.map((copy, index) => {
     const next = { ...copy };
+    const inheritedColorDetail = normalizeAngle(copy.angle) === '颜色关系' && normalizeAngle(copy.detailAngle) === '颜色关系';
     next.angle = chooseAngle(copy.angle, usedAngles, angleCounts, index);
+    next.detailAngle = inheritedColorDetail ? chooseNonColorDetailAngle(index) : chooseDetailAngle(copy.detailAngle, next.angle, index);
     usedAngles.add(next.angle);
     angleCounts[next.angle] = (angleCounts[next.angle] || 0) + 1;
+    if (normalizeAngle(copy.angle) === '颜色关系' && next.angle !== '颜色关系') {
+      next.todayReason = fallbackTodayForAngle(next.angle, index);
+    }
     for (const phrase of Object.keys(PHRASE_LIMITS)) {
       next.todayReason = limitPhrase(next.todayReason, phrase, counts);
       next.detailExplanation = limitPhrase(next.detailExplanation, phrase, counts);
       next.aiExtraDefault = next.detailExplanation;
     }
     next.todayReason = diversifyStructure(next.todayReason, structureCounts, index);
+    if (inheritedColorDetail || (next.angle === '颜色关系' && next.detailAngle === '颜色关系')) {
+      next.detailAngle = chooseDetailAngle('', next.angle, index);
+      next.detailExplanation = fallbackDetailForAngle(next.detailAngle, index);
+      next.aiExtraDefault = next.detailExplanation;
+    }
     Object.assign(next, sanitizeCopyObject(next));
     next.usedPhrases = Object.keys(PHRASE_LIMITS).filter((phrase) => `${next.todayReason}${next.detailExplanation}`.includes(phrase));
     return next;
@@ -86,11 +106,25 @@ function nextReplacement(phrase, index) {
 function chooseAngle(angle, usedAngles, angleCounts, index) {
   const normalized = normalizeAngle(angle);
   if (normalized && canUseAngle(normalized, angleCounts) && !usedAngles.has(normalized)) return normalized;
-  const required = ['场景适配', '天气厚薄', '单品组合'].find((entry) => !usedAngles.has(entry));
+  const required = ['场景适配', '天气厚薄', '单品作用'].find((entry) => !usedAngles.has(entry));
   if (required) return required;
   return ANGLES.find((entry) => canUseAngle(entry, angleCounts) && !usedAngles.has(entry))
     || ANGLES.find((entry) => canUseAngle(entry, angleCounts))
     || ANGLES[index % ANGLES.length];
+}
+
+function chooseDetailAngle(detailAngle, todayAngle, index) {
+  const normalized = normalizeAngle(detailAngle);
+  if (normalized && normalized !== todayAngle) return normalized;
+  const pool = todayAngle === '颜色关系'
+    ? ['场景适配', '天气厚薄', '单品作用', '单品组合']
+    : ['颜色关系', '单品作用', '天气厚薄', '场景适配'];
+  return pool[Math.abs(index) % pool.length];
+}
+
+function chooseNonColorDetailAngle(index) {
+  const pool = ['场景适配', '天气厚薄', '单品作用', '单品组合'];
+  return pool[Math.abs(index) % pool.length];
 }
 
 function normalizeAngle(angle) {
@@ -104,6 +138,29 @@ function canUseAngle(angle, angleCounts) {
   if (angle === '颜色关系') return (angleCounts[angle] || 0) < 3;
   if (angle === '鞋子收尾') return (angleCounts[angle] || 0) < 2;
   return true;
+}
+
+function fallbackDetailForAngle(angle, index) {
+  const textByAngle = {
+    场景适配: '这套不需要很强的正式感，按现在的安排穿会比较轻松。',
+    天气厚薄: '如果温度在二十多度，这样穿不会太厚，也不用额外加很多层。',
+    单品作用: '鞋子把这套从家里带到楼下也接得住，不需要重新换一身。',
+    单品组合: '上衣和下装都比较直接，搭起来不挑安排。',
+  };
+  return textByAngle[angle] || ['这套穿起来比较直接。', '整体不用加太多复杂元素。'][index % 2];
+}
+
+function fallbackTodayForAngle(angle, index) {
+  const textByAngle = {
+    场景适配: '这套更偏轻松场合，不需要撑得太正式。',
+    天气厚薄: '二十多度穿这组不会太厚，活动起来也省事。',
+    单品作用: '鞋子把活动感补上，下楼或短暂外出都接得住。',
+    单品组合: '上衣和下装都很直接，整套不需要太多解释。',
+    鞋子收尾: '鞋子让这套更好走，临时出门不用再换。',
+    风格统一: '几件单品都偏清爽，放在生活里不突兀。',
+    方便程度: '这套穿脱和行动都方便，适合不想折腾的时候。',
+  };
+  return textByAngle[angle] || ['这套穿起来比较直接。', '整体不用加太多复杂元素。'][index % 2];
 }
 
 function diversifyStructure(text, structureCounts, index) {
@@ -129,7 +186,7 @@ function diversifyStructure(text, structureCounts, index) {
 }
 
 function sentenceSignature(text) {
-  if (/颜色接近，.+让这套(?:不全是浅色|多一点层次)/.test(String(text || ''))) return 'color-close-layer';
+  if (/(颜色接近|能接上|有联系|接在一块)，.+让这套(?:不全是浅色|多一点层次|多一点落点|多一点分量|不那么单调)/.test(String(text || ''))) return 'color-close-layer';
   return String(text || '')
     .replace(/[^，。！？]+?(T恤|运动鞋|阔腿裤|短裤|短袖|卫衣|牛仔裤|下装|上衣|鞋子)/g, 'ITEM')
     .replace(/[。！？].*$/g, '')

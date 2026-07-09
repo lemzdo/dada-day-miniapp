@@ -1,6 +1,6 @@
 const { sanitizeCopyObject } = require('./copyQualityGate');
 
-const BANNED_DEFAULT_PHRASES = ['主线', '清楚的亮点', '亮点已经落在', '更稳', '保持简单', '单品和单品', '想再明确一点', '放在一起', '不用多想', '不费心', '有呼应', '压住一点', '压下来一点', '不至于太淡', '不会太飘', '能确认的主要'];
+const BANNED_DEFAULT_PHRASES = ['主线', '清楚的亮点', '亮点已经落在', '更稳', '保持简单', '单品和单品', '想再明确一点', '放在一起', '不用多想', '不费心', '有呼应', '压住一点', '压下来一点', '不至于太淡', '不会太飘', '能确认的主要', '颜色接近', '深浅变化', '上下分区', '不全是浅色', '适合今天', '当前场景穿'];
 
 function composePageCopy({ facts = {}, insights = [], batchIndex = 0, angle } = {}) {
   const items = Array.isArray(facts.items) ? facts.items : [];
@@ -12,45 +12,69 @@ function composePageCopy({ facts = {}, insights = [], batchIndex = 0, angle } = 
   let todayReason = '';
   let detailExplanation = '';
   let selectedAngle = angle || '';
+  let detailAngle = '';
+  let detailNoExtraInfo = false;
 
   if (codes.has('pattern_competition')) {
     usedInsightCodes.push('pattern_competition');
     selectedAngle = selectedAngle || '单品关系';
     todayReason = `${joinItemNames([top, bottom])}都有图案，其他部分收简单一点，画面不容易乱。`;
+    detailAngle = '场景适配';
     detailExplanation = `${joinItemNames([top, bottom])}同时带图案，视线会先落在上衣和下装。${sceneSentence(facts)}`;
   } else if (codes.has('color_echo') && codes.has('color_contrast') && top && bottom && shoes) {
     usedInsightCodes.push('color_echo', 'color_contrast');
     selectedAngle = selectedAngle || '颜色关系';
-    todayReason = `${itemLabel(top)}和${itemLabel(shoes)}颜色接近，${itemLabel(bottom)}让这套不全是浅色。`;
-    detailExplanation = `${itemLabel(top)}和${itemLabel(shoes)}颜色接近，${itemLabel(bottom)}让这套不全是浅色。${sceneLead(facts)}穿不显得刻意，临时出门也不用重新换一身。`;
+    todayReason = `${itemLabel(top)}和${itemLabel(shoes)}能接上，${itemLabel(bottom)}让这套多一点落点。`;
+    const second = chooseSecondDetail({ facts, codes, top, bottom, shoes, todayAngle: selectedAngle });
+    detailAngle = second.angle;
+    detailNoExtraInfo = second.noExtraInfo;
+    detailExplanation = second.text;
   } else if (codes.has('color_echo') && top && shoes) {
     usedInsightCodes.push('color_echo');
     selectedAngle = selectedAngle || '颜色关系';
-    todayReason = `${itemLabel(top)}和${itemLabel(shoes)}颜色接近，上下看起来更连贯。`;
-    detailExplanation = `${itemLabel(top)}和${itemLabel(shoes)}把颜色接住了，其他单品少抢戏就很顺。${sceneSentence(facts)}`;
+    todayReason = `${itemLabel(top)}和${itemLabel(shoes)}能接上，整套看起来更连贯。`;
+    const second = chooseSecondDetail({ facts, codes, top, bottom, shoes, todayAngle: selectedAngle });
+    detailAngle = second.angle;
+    detailNoExtraInfo = second.noExtraInfo;
+    detailExplanation = second.text;
   } else if (codes.has('color_contrast') && top && bottom) {
     usedInsightCodes.push('color_contrast');
     selectedAngle = selectedAngle || '颜色关系';
-    todayReason = `${itemLabel(top)}和${itemLabel(bottom)}颜色有深浅变化，上下分区更明确。`;
-    detailExplanation = `${itemLabel(top)}在上半身提亮，${itemLabel(bottom)}让颜色落得住。${sceneSentence(facts)}`;
+    todayReason = `${itemLabel(top)}先把上半身提亮，${itemLabel(bottom)}把整套收住一点。`;
+    const second = chooseSecondDetail({ facts, codes, top, bottom, shoes, todayAngle: selectedAngle });
+    detailAngle = second.angle;
+    detailNoExtraInfo = second.noExtraInfo;
+    detailExplanation = second.text;
   } else if (codes.has('scene_fit_home')) {
     usedInsightCodes.push('scene_fit_home');
     selectedAngle = selectedAngle || '场景适配';
     todayReason = `${joinItemNames([top, bottom])}组合简单，居家场景里不会过分正式。`;
-    detailExplanation = `${joinItemNames([top, bottom])}都偏日常，${sceneLead(facts)}穿起来轻松，附近走走也不突兀。`;
+    detailAngle = shoes ? '单品作用' : '方便程度';
+    detailExplanation = shoes
+      ? `${plainItemLabel(shoes)}让这套可以从家里直接走到楼下，不需要重新换一身。`
+      : `${joinItemNames([top, bottom])}都偏轻便，在家活动不会累赘，坐着或走动都轻松。`;
   } else if (codes.has('weather_fit')) {
     usedInsightCodes.push('weather_fit');
     selectedAngle = selectedAngle || '天气厚薄';
     todayReason = `${weatherText(facts)}穿这套厚薄压力不大，出门前不用再大改。`;
-    detailExplanation = `${weatherText(facts)}对厚薄要求不极端，${joinItemNames([top, bottom, shoes])}可以先按当前场景穿。`;
+    detailAngle = '单品组合';
+    detailExplanation = `${joinItemNames([top, bottom, shoes])}都不是很难搭的单品，按这个温度穿比较省事。`;
   } else {
     selectedAngle = selectedAngle || fallbackAngle(batchIndex);
     todayReason = `${joinItemNames([top, bottom, shoes])}关系直接，今天穿起来不绕。`;
-    detailExplanation = `${joinItemNames([top, bottom, shoes])}组合起来比较日常。${sceneSentence(facts)}`;
+    detailAngle = selectedAngle === '场景适配' ? '单品组合' : '场景适配';
+    detailNoExtraInfo = true;
+    detailExplanation = `${joinItemNames([top, bottom, shoes])}组合起来比较轻松，先按这套穿也不容易出错。`;
   }
 
   todayReason = cleanSentence(removeBanned(todayReason));
   detailExplanation = cleanSentence(removeBanned(detailExplanation, { allowTemporaryOuting: true }));
+  if (!detailAngle || detailAngle === selectedAngle) {
+    const second = chooseSecondDetail({ facts, codes, top, bottom, shoes, todayAngle: selectedAngle });
+    detailAngle = second.angle;
+    detailNoExtraInfo = second.noExtraInfo;
+    detailExplanation = cleanSentence(removeBanned(second.text, { allowTemporaryOuting: true }));
+  }
   return sanitizeCopyObject({
     todayReason,
     detailExplanation,
@@ -58,7 +82,46 @@ function composePageCopy({ facts = {}, insights = [], batchIndex = 0, angle } = 
     usedInsightCodes: uniqueStrings(usedInsightCodes),
     usedPhrases: collectUsedPhrases(`${todayReason}${detailExplanation}`),
     angle: selectedAngle,
+    detailAngle,
+    detailNoExtraInfo,
   }, { items });
+}
+
+function chooseSecondDetail({ facts, codes, top, bottom, shoes, todayAngle }) {
+  const choices = [];
+  if (codes.has('scene_fit_home') || displayScene(facts) === '居家') {
+    choices.push({
+      angle: '场景适配',
+      text: shoes
+        ? `居家穿不需要太正式，${plainItemLabel(shoes)}让这套可以从家里直接走到楼下，附近走走也不用重新换。`
+        : `居家穿不需要太正式，${joinItemNames([top, bottom])}在家活动也不累赘，坐着或走动都轻松。`,
+    });
+  }
+  if (codes.has('light_outing') && shoes) {
+    choices.push({
+      angle: '单品作用',
+      text: `${plainItemLabel(shoes)}让这套可以从家里直接走到楼下，不需要重新换一身。`,
+    });
+  }
+  if (codes.has('weather_fit')) {
+    choices.push({
+      angle: '天气厚薄',
+      text: `${weatherText(facts)}对厚薄要求不极端，${joinItemNames([top, bottom])}这样穿不会太闷。`,
+    });
+  }
+  if (codes.has('daily_casual')) {
+    choices.push({
+      angle: '单品组合',
+      text: `${joinItemNames([top, bottom, shoes])}都是生活里常会穿到的单品，组合起来不挑安排。`,
+    });
+  }
+  const selected = choices.find((choice) => choice.angle !== todayAngle) || choices[0];
+  if (selected) return { ...selected, noExtraInfo: false };
+  return {
+    angle: todayAngle === '场景适配' ? '单品组合' : '场景适配',
+    text: `${joinItemNames([top, bottom, shoes])}组合起来比较轻松，先按这套穿也不容易出错。`,
+    noExtraInfo: true,
+  };
 }
 
 function itemLabel(item) {
@@ -69,13 +132,12 @@ function itemLabel(item) {
   return `${color}${separator}${item.name}`;
 }
 
-function shortColor(color) {
-  return color === '米白色' ? '米白' : color || '';
+function plainItemLabel(item) {
+  return item?.name || '单品';
 }
 
-function sceneLead(facts) {
-  const scene = displayScene(facts);
-  return scene ? `${scene}` : '';
+function shortColor(color) {
+  return color === '米白色' ? '米白' : color || '';
 }
 
 function sceneSentence(facts) {
@@ -121,8 +183,14 @@ function replacementFor(phrase) {
     '有呼应': '颜色接近',
     '压住一点': '收住一些',
     '压下来一点': '收住一些',
-    '不至于太淡': '不全是浅色',
+    '不至于太淡': '多一点落点',
     '不会太飘': '有颜色落点',
+    '颜色接近': '能接上',
+    '深浅变化': '明暗关系',
+    '上下分区': '上下关系',
+    '不全是浅色': '多一点落点',
+    '适合今天': '今天穿起来省事',
+    '当前场景穿': '这样穿',
     '能确认的主要': '',
   }[phrase] || '';
 }
@@ -134,7 +202,7 @@ function cleanSentence(value) {
 }
 
 function collectUsedPhrases(text) {
-  return ['不用多想', '不费心', '临时出门', '自然', '日常', '放在一起', '有呼应', '不至于太淡', '不会太飘']
+  return ['不用多想', '不费心', '临时出门', '自然', '日常', '放在一起', '有呼应', '不至于太淡', '不会太飘', '颜色接近', '深浅变化', '上下分区', '不全是浅色', '适合今天']
     .filter((phrase) => text.includes(phrase));
 }
 
