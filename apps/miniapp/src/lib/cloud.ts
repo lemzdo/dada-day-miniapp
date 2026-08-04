@@ -4,7 +4,6 @@ import type {
   ClothingCategory,
   ClothingUpdateInput,
   ClothesDraft,
-  CurrentWeather,
   Outfit,
   OutfitAiComment,
   OutfitAiReviewResponse,
@@ -29,6 +28,10 @@ import {
   isAuthContextCurrent,
   type ActiveAuthContext,
 } from '@/stores/userStore';
+import {
+  createRecommendationAuditId,
+  isRecommendationLifecycleLoggingEnabled,
+} from './recommendationDiagnostics';
 
 type CloudResult<T> = {
   code: number;
@@ -45,6 +48,7 @@ export type ClothingAttemptResult = Clothing | SupersededCloudResult;
 export class CloudFunctionError extends Error {
   code?: number;
   data?: unknown;
+  transportDiagnostics?: CloudResponseTransportDiagnostics;
   functionName: string;
 
   constructor(functionName: string, message: string, code?: number, data?: unknown) {
@@ -74,9 +78,17 @@ type ResolvedCloudCacheScope =
 
 const taroCloud = (Taro as CloudTaro).cloud;
 const cloudResponseCache = new Map<string, { expiresAt: number; data: unknown }>();
+const GENERATE_OUTFIT_CACHE_NAMESPACE = 'generateOutfit:recommendation-copy-contract-v3';
 interface CloudInflightRequest<T = unknown> {
   promise: Promise<T>;
   invalidated: boolean;
+}
+
+export interface CloudResponseTransportDiagnostics {
+  cacheStatus: 'miss' | 'hit' | 'inflight' | 'bypassed';
+  resultDataUnwrapped: boolean;
+  resultKeysBeforeUnwrap: string[];
+  dataKeysAfterUnwrap: string[];
 }
 
 export function isSupersededCloudResult(value: unknown): value is SupersededCloudResult {
@@ -93,7 +105,9 @@ interface CachedCloudFunctionOptions {
 }
 
 const cloudInflightRequests = new Map<string, CloudInflightRequest>();
+const cloudResponseTransportDiagnostics = new WeakMap<object, CloudResponseTransportDiagnostics>();
 let currentUserCloudRuntimeKey: string | null = null;
+export const CLIENT_BUILD_VERSION = 'miniapp-xiaoda-copy-v4-20260716';
 
 const CACHE_TTL = {
   wardrobe: 15 * 1000,
@@ -123,10 +137,24 @@ async function callCloudFunction<T>(name: string, data: Record<string, unknown> 
   const res = await taroCloud.callFunction<CloudResult<T>>({ name, data });
   const result = res.result;
   if (!result || result.code !== 0) {
-    throw new CloudFunctionError(name, result?.message || `${name} failed`, result?.code, result?.data);
+    const error = new CloudFunctionError(name, result?.message || `${name} failed`, result?.code, result?.data);
+    error.transportDiagnostics = {
+      cacheStatus: 'miss',
+      resultDataUnwrapped: false,
+      resultKeysBeforeUnwrap: getObjectKeys(result),
+      dataKeysAfterUnwrap: getObjectKeys(result?.data),
+    };
+    throw error;
   }
 
-  return result.data;
+  const resultData = result.data;
+  setCloudResponseTransportDiagnostics(resultData, {
+    cacheStatus: 'miss',
+    resultDataUnwrapped: true,
+    resultKeysBeforeUnwrap: getObjectKeys(result),
+    dataKeysAfterUnwrap: getObjectKeys(resultData),
+  });
+  return resultData;
 }
 
 async function callCachedCloudFunction<T>(
@@ -138,7 +166,10 @@ async function callCachedCloudFunction<T>(
 ): Promise<T> {
   const resolvedScope = resolveCloudCacheScope(scope);
   if (resolvedScope.type === 'none') {
-    return callCloudFunction<T>(name, data);
+    return callCloudFunction<T>(name, data).then((result) => {
+      setCloudResponseCacheStatus(result, 'bypassed');
+      return result;
+    });
   }
 
   const key = getCloudCacheKey(
@@ -148,10 +179,19 @@ async function callCachedCloudFunction<T>(
   );
   const now = Date.now();
   const cached = cloudResponseCache.get(key);
-  if (cached && cached.expiresAt > now) return cached.data as T;
+  if (cached && cached.expiresAt > now) {
+    const result = cached.data as T;
+    setCloudResponseCacheStatus(result, 'hit');
+    return result;
+  }
 
   const inflight = cloudInflightRequests.get(key) as CloudInflightRequest<T> | undefined;
-  if (inflight) return inflight.promise;
+  if (inflight) {
+    return inflight.promise.then((result) => {
+      setCloudResponseCacheStatus(result, 'inflight');
+      return result;
+    });
+  }
 
   const requestRecord: CloudInflightRequest<T> = {
     invalidated: false,
@@ -176,6 +216,40 @@ async function callCachedCloudFunction<T>(
   requestRecord.promise = request;
   cloudInflightRequests.set(key, requestRecord);
   return request;
+}
+
+export function getCloudResponseTransportDiagnostics(value: unknown): CloudResponseTransportDiagnostics | null {
+  if (!isObjectReference(value)) return null;
+  const diagnostics = cloudResponseTransportDiagnostics.get(value);
+  if (!diagnostics) return null;
+  return {
+    ...diagnostics,
+    resultKeysBeforeUnwrap: [...diagnostics.resultKeysBeforeUnwrap],
+    dataKeysAfterUnwrap: [...diagnostics.dataKeysAfterUnwrap],
+  };
+}
+
+function setCloudResponseTransportDiagnostics(value: unknown, diagnostics: CloudResponseTransportDiagnostics) {
+  if (!isObjectReference(value)) return;
+  cloudResponseTransportDiagnostics.set(value, diagnostics);
+}
+
+function setCloudResponseCacheStatus(
+  value: unknown,
+  cacheStatus: CloudResponseTransportDiagnostics['cacheStatus'],
+) {
+  if (!isObjectReference(value)) return;
+  const diagnostics = cloudResponseTransportDiagnostics.get(value);
+  if (!diagnostics) return;
+  cloudResponseTransportDiagnostics.set(value, { ...diagnostics, cacheStatus });
+}
+
+function getObjectKeys(value: unknown): string[] {
+  return isObjectReference(value) ? Object.keys(value) : [];
+}
+
+function isObjectReference(value: unknown): value is object {
+  return Boolean(value) && typeof value === 'object';
 }
 
 function invalidateCachedCloudFunctionNamespace(
@@ -579,21 +653,37 @@ export async function generateCloudOutfit(params: RecommendRequest = {}) {
     (Array.isArray(params.excludeClothingIdSets) && params.excludeClothingIdSets.length > 0) ||
     (Array.isArray(params.excludedOutfitKeys) && params.excludedOutfitKeys.length > 0);
   const ttl = hasExclusions ? 0 : CACHE_TTL.outfit;
-  console.log('[generateCloudOutfit] call generateOutfit', {
-    scene: params.scene,
-    date: params.date,
-    timeOfDay: params.timeOfDay,
-    weather: params.weather
-      ? {
-          temp: params.weather.temp,
-          weather: params.weather.weather,
-          humidity: params.weather.humidity,
-        }
-      : undefined,
-    excludeCount: params.excludeClothingIdSets?.length ?? 0,
-    excludedOutfitKeyCount: params.excludedOutfitKeys?.length ?? 0,
-  });
-  return callCachedCloudFunction<RecommendResponse>('generateOutfit', params as Record<string, unknown>, ttl);
+  const requestPayload: Record<string, unknown> = {
+    ...params,
+    auditId: params.auditId || createRecommendationAuditId('cloud'),
+  };
+  if (isRecommendationDiagnosticEnvironment() && !requestPayload.debugRecommendationAudit) {
+    requestPayload.debugRecommendationAudit = true;
+  }
+  const { auditId: _auditId, trigger: _trigger, ...cacheKeyData } = requestPayload;
+  return callCachedCloudFunction<RecommendResponse>(
+    'generateOutfit',
+    requestPayload,
+    ttl,
+    { type: 'user' },
+    {
+      cacheNamespace: GENERATE_OUTFIT_CACHE_NAMESPACE,
+      cacheKeyData,
+    },
+  );
+}
+
+export function isRecommendationDiagnosticEnvironment(): boolean {
+  try {
+    const taroWithAccountInfo = Taro as typeof Taro & {
+      getAccountInfoSync?: () => { miniProgram?: { envVersion?: string } };
+    };
+    const raw = taroWithAccountInfo.getAccountInfoSync?.().miniProgram?.envVersion;
+    const envVersion: string = typeof raw === 'string' ? raw : '';
+    return isRecommendationLifecycleLoggingEnabled(envVersion);
+  } catch {
+    return false;
+  }
 }
 
 export async function trackCloudOutfitBehaviorEvents(events: OutfitBehaviorEventInputV1[]) {
@@ -835,23 +925,6 @@ export function getLocalStyles(): StyleDictItem[] {
     { key: '极简', label: '极简', category: 'style' },
   ];
 }
-export function getFallbackWeather(city = '涓婃捣'): CurrentWeather {
-  return {
-    city,
-    cityCode: '',
-    temp: 22,
-    feelsLike: 20,
-    humidity: 65,
-    weather: '多云',
-    weatherIcon: 'cloudy',
-    wind: 3,
-    windDir: '东南风',
-    uv: 4,
-    visibility: 10,
-    updateTime: new Date().toISOString(),
-  };
-}
-
 export function getFallbackResolvedWeather(displayName = '当前位置'): ResolvedWeatherResponse {
   const now = new Date().toISOString();
   return {

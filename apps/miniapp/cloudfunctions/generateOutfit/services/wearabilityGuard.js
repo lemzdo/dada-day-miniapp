@@ -1,14 +1,20 @@
 const { classifyWearabilityItem } = require('./itemWearabilityFacts');
 
-function evaluateWeatherWearability({ items = [], weather = {} } = {}) {
+function evaluateWeatherWearability({ items = [], weather = {}, itemFactsContext, derivedFacts, instrumentation } = {}) {
   const temp = readTemperature(weather);
-  const facts = items.map(classifyWearabilityItem);
+  const facts = Array.isArray(derivedFacts?.weatherFacts)
+    ? derivedFacts.weatherFacts
+    : items.map((item) => itemFactsContext
+      ? itemFactsContext.resolveItemFacts(item).wearabilityClassification
+      : classifyWearabilityItem(item, { instrumentation }));
   const rejectReasons = [];
   const warningReasons = [];
   const evidence = [];
   let penalty = 0;
 
-  if (temp >= 29) {
+  if (temp === null) {
+    // Weather-disabled recommendations must not use a synthetic temperature.
+  } else if (temp >= 29) {
     for (const fact of facts) {
       if (isHotWeatherRejected(fact)) {
         addReason(rejectReasons, 'HOT_WEATHER_WARM_ITEM');
@@ -16,6 +22,12 @@ function evaluateWeatherWearability({ items = [], weather = {} } = {}) {
       }
     }
   } else if (temp >= 26 && temp <= 28) {
+    for (const fact of facts) {
+      if (isWarmWeatherTopRejected(fact)) {
+        addReason(rejectReasons, 'WARM_WEATHER_WARM_TOP');
+        evidence.push(toEvidence(fact, 'warm_weather_warm_top'));
+      }
+    }
     if (hasHeavyWarmCombo(facts)) {
       addReason(warningReasons, 'WARM_WEATHER_HEAVY_COMBO');
       penalty += 2.5;
@@ -53,6 +65,11 @@ function isHotWeatherRejected(fact) {
   return false;
 }
 
+function isWarmWeatherTopRejected(fact) {
+  if (fact.lightnessSignals.length > 0) return false;
+  return fact.isWarmTop || (fact.isSweaterLike && fact.warmthLevel >= 3);
+}
+
 function hasHeavyWarmCombo(facts) {
   const hasSweater = facts.some((fact) => fact.isSweaterLike && fact.lightnessSignals.length === 0);
   const hasHoodie = facts.some((fact) => /卫衣|hoodie/i.test(fact.evidence.join(' ')) && fact.lightnessSignals.length === 0);
@@ -73,8 +90,9 @@ function toEvidence(fact, reason) {
 }
 
 function readTemperature(weather = {}) {
+  if (['disabled', 'unavailable'].includes(weather.mode || weather.weatherMode)) return null;
   const temp = Number(weather.temp ?? weather.temperature);
-  return Number.isFinite(temp) ? temp : 22;
+  return Number.isFinite(temp) ? temp : null;
 }
 
 function addReason(reasons, reason) {

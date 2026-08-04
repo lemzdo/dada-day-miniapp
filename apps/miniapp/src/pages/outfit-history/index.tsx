@@ -15,13 +15,20 @@ import {
 } from '@/lib/userPageCache';
 import { applyOutfitStatuses, setOutfitStatuses } from '@/stores/outfitStatusStore';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
+import { getOutfitStyleTags } from '@/utils/outfitContextText';
+import { getSavedSnapshotDefaultCopy } from '@/utils/recommendationCopyContract';
 import type { OutfitStatusPatch } from '@/stores/outfitStatusStore';
 import type { Outfit } from '@starter-template/types';
 import './index.scss';
 
 const PAGE_SIZE = 100;
 const HISTORY_FIRST_PAGE_CACHE_TTL = 2 * 60 * 1000;
-const HISTORY_FIRST_PAGE_CACHE_KEY = buildPageCacheKey(['history', 'first', 'v1', PAGE_SIZE]);
+const HISTORY_FIRST_PAGE_CACHE_KEY = buildPageCacheKey([
+  'history',
+  'first',
+  'recommendation-copy-contract-v3',
+  PAGE_SIZE,
+]);
 const WEEKDAY_LABELS = ['一', '二', '三', '四', '五', '六', '日'];
 
 interface HistoryFirstPageCache {
@@ -410,19 +417,28 @@ export default function OutfitHistoryPage() {
                       {[record.scene, formatWeather(record)].filter(Boolean).join(' · ')}
                     </Text>
 
+                    <View className="record-tags">
+                      {getOutfitStyleTags(record).slice(0, 3).map((tag) => (
+                        <Text key={tag} className="record-tag">{tag}</Text>
+                      ))}
+                    </View>
+
                     <View className="record-thumbs">
                       {record.items?.slice(0, 3).map((item) => (
                         <SafeImage
                           key={item.clothingId}
                           className="record-thumb"
                           src={item.thumbnailUrl || item.imageUrl}
+                          cacheIdentity={item.clothingId}
                           mode="aspectFill"
                           lazyLoad
                         />
                       ))}
                     </View>
 
-                    <Text className="record-reason">{record.reason || record.reasoning || '已记录这次穿搭。'}</Text>
+                    {getSavedSnapshotDefaultCopy(record) ? (
+                      <Text className="record-reason">{getSavedSnapshotDefaultCopy(record)}</Text>
+                    ) : null}
                   </View>
                 ))}
 

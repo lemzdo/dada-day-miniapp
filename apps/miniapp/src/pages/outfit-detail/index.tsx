@@ -38,6 +38,7 @@ import {
 import { getUserStorageSync } from '@/lib/userStorage';
 import { applyOutfitStatus, setOutfitStatus } from '@/stores/outfitStatusStore';
 import { normalizeOutfitSnapshot, readOutfitDetailDraft, storeOutfitDetailDraft, storeOutfitStateSync } from '@/utils/outfitSnapshot';
+import { hasCurrentDefaultCopy } from '@/utils/recommendationCopyContract';
 import {
   getDateLabel,
   getItemCountText,
@@ -49,6 +50,7 @@ import {
 } from '@/utils/outfitContextText';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
 import { buildAiReviewPresentation } from './aiReviewPresentation';
+import { getAiReviewPageState } from './aiReviewPageState';
 import { getAiCommentButtonBlockReason, getAiCommentButtonState, type AiCommentButtonState } from './aiCommentButtonState';
 import type { OutfitStatusPatch } from '@/stores/outfitStatusStore';
 import type { Outfit, OutfitAiReviewResponse, OutfitItemSummary, OutfitSnapshotItem } from '@starter-template/types';
@@ -65,6 +67,10 @@ type EditableModalResult = Awaited<ReturnType<typeof Taro.showModal>> & {
 interface AiReviewMeta {
   hasCanonical: boolean;
   fallbackFailed?: boolean;
+  success?: boolean;
+  partial?: boolean;
+  retainedPrevious?: boolean;
+  failed?: boolean;
   reviewId?: string;
   generatedAt?: string;
   cacheHit?: boolean;
@@ -149,7 +155,7 @@ function buildOutfitDetailCacheKey(source: DetailSource, detailId: string | unde
   if (!detailId) return '';
   return buildPageCacheKey([
     'outfitDetail',
-    'v1',
+    'recommendation-copy-contract-v3',
     source,
     detailId,
     scene || 'unknown',
@@ -333,7 +339,7 @@ function OutfitItemRow({
       className={`outfit-item-row ${isDeleted ? 'deleted' : ''} ${isLast ? 'last' : ''}`}
       onClick={handleClick}
     >
-      <SafeImage className="item-thumb" src={image} mode="aspectFill" lazyLoad />
+      <SafeImage className="item-thumb" src={image} cacheIdentity={clothingId} mode="aspectFill" lazyLoad />
       <View className="item-info">
         <Text className="item-name-row">{name}</Text>
         <View className="item-meta">
@@ -796,6 +802,7 @@ export default function OutfitDetailPage() {
         return;
       }
       setAiCommentButtonState('failed');
+      applyAiReviewResult(result);
       showAiReviewError(result.errorCode || 'AI_REVIEW_UNKNOWN', result.message);
     } catch (err) {
       console.error('Generate outfit AI comment error:', err);
@@ -804,6 +811,12 @@ export default function OutfitDetailPage() {
         return;
       }
       setAiCommentButtonState('failed');
+      setAiReviewMeta((current) => ({
+        ...(current || { hasCanonical: Boolean(outfit.aiComment) }),
+        failed: true,
+        success: false,
+        retainedPrevious: Boolean(current?.hasCanonical && outfit.aiComment),
+      }));
       showAiReviewError(readCloudAiReviewErrorCode(err));
     } finally {
       if (aiCommentRequestSeqRef.current === commentRequestSeq && isCurrentAuthContext(authContext)) {
@@ -866,12 +879,19 @@ export default function OutfitDetailPage() {
   ) {
     const isFallbackResult = isFallbackAiReviewResult(result);
     const hasReadyReview = Boolean(result.aiComment && result.review?.status === 'ready' && !result.stale && !isFallbackResult);
+    const hasSuccessfulReview = Boolean(result.success && hasReadyReview);
+    const retainedPrevious = Boolean(result.retainedPrevious && hasReadyReview);
     const shouldPreserveDisplayedComment = Boolean(
-      result.aiComment && !isFallbackResult && (hasReadyReview || result.inProgress || result.cooldown),
+      result.aiComment && !isFallbackResult && (hasSuccessfulReview || retainedPrevious || result.inProgress || result.cooldown),
     );
+    const failed = Boolean(result.errorCode && !result.inProgress && !result.cooldown);
     setAiReviewMeta({
       hasCanonical: shouldPreserveDisplayedComment,
       fallbackFailed: isFallbackResult && result.success === false,
+      success: hasSuccessfulReview,
+      partial: Boolean(result.partial || result.review?.partial),
+      retainedPrevious,
+      failed,
       reviewId: result.reviewId ?? result.review?.reviewId,
       generatedAt: result.generatedAt ?? result.review?.generatedAt,
       cacheHit: result.cacheHit,
@@ -1000,30 +1020,46 @@ export default function OutfitDetailPage() {
   const showCount = itemsExpanded || items.length <= 4 ? items.length : 4;
   const displayItems = items.slice(0, showCount);
   const hasCanonicalAiComment = Boolean(aiReviewMeta?.hasCanonical && outfit.aiComment);
-  const buttonState = getAiCommentButtonState({
-    commentLoading,
-    fallbackFailed: Boolean(aiReviewMeta?.fallbackFailed || aiCommentButtonState === 'failed'),
-    cooldown: Boolean(aiReviewMeta?.cooldown || aiCommentButtonState === 'cooldown'),
-    hasCanonical: hasCanonicalAiComment,
-  });
-  const aiCommentButtonText = commentLoading
-    ? '让我再想想……'
-    : aiReviewMeta?.fallbackFailed
-      ? '再听小搭说说'
-      : hasCanonicalAiComment
-        ? '换个角度再说说'
-        : '听小搭多说两句';
-  const narrativeContentPlan: Outfit['contentPlan'] = outfit.contentPlan && outfit.detailNarrativeViewModel?.defaultText
+  const hasCurrentCopy = hasCurrentDefaultCopy(outfit);
+  const coreRecommendationReason = hasCurrentCopy ? outfit.copyContract?.todayReason ?? '' : '';
+  const ruleDetailExplanation = hasCurrentCopy ? outfit.copyContract?.detailExplanation ?? '' : '';
+  const narrativeContentPlan: Outfit['contentPlan'] = hasCurrentCopy
     ? {
+        version: outfit.contentPlan?.version ?? '',
+        sceneIntent: outfit.contentPlan?.sceneIntent ?? '',
+        items: outfit.contentPlan?.items ?? [],
+        observations: outfit.contentPlan?.observations ?? [],
+        primaryBenefit: outfit.contentPlan?.primaryBenefit ?? '',
         ...outfit.contentPlan,
-        defaultDetailExplanation: outfit.detailNarrativeViewModel.defaultText,
+        defaultDetailExplanation: outfit.copyContract?.detailExplanation,
       }
     : outfit.contentPlan;
-  const aiReviewPresentation = buildAiReviewPresentation(outfit.aiComment, narrativeContentPlan);
+  const aiReviewPresentation = buildAiReviewPresentation(outfit.aiComment, narrativeContentPlan, {
+    copyContractVersion: outfit.copyContractVersion,
+    reviewSource: outfit.reviewSource,
+    enhanced: outfit.enhanced,
+  });
   const hasAiReviewContent = Boolean(
     aiReviewPresentation
       && (aiReviewPresentation.bodyParagraphs.length > 0 || aiReviewPresentation.advice),
   );
+  const aiReviewPageState = getAiReviewPageState({
+    loading: commentLoading,
+    success: Boolean(aiReviewMeta?.success),
+    partial: Boolean(aiReviewMeta?.partial),
+    failed: Boolean(aiReviewMeta?.failed || aiReviewMeta?.fallbackFailed || aiCommentButtonState === 'failed'),
+    retainedPrevious: Boolean(aiReviewMeta?.retainedPrevious),
+    hasContent: hasAiReviewContent,
+  });
+  const buttonState = getAiCommentButtonState({
+    commentLoading,
+    fallbackFailed: aiReviewPageState.state === 'failed' || aiReviewPageState.state === 'failed_retained',
+    cooldown: Boolean(aiReviewMeta?.cooldown || aiCommentButtonState === 'cooldown'),
+    hasCanonical: hasCanonicalAiComment,
+  });
+  const hasRealWeather = outfit.weatherMode
+    ? ['live', 'cached'].includes(outfit.weatherMode)
+    : Boolean(outfit.weatherSnapshot);
 
   return (
     <View className="outfit-detail-page">
@@ -1056,7 +1092,13 @@ export default function OutfitDetailPage() {
           <View className="visual-collage">
             {getOutfitItems(outfit).map((item, index) => (
               <View key={getItemClothingId(item) || index} className={`visual-item ${isItemDeleted(item) ? 'deleted' : ''}`}>
-                <SafeImage className="visual-image" src={getItemDetailImage(item)} mode="aspectFit" lazyLoad />
+                <SafeImage
+                  className="visual-image"
+                  src={getItemDetailImage(item)}
+                  cacheIdentity={getItemClothingId(item)}
+                  mode="aspectFit"
+                  lazyLoad
+                />
               </View>
             ))}
           </View>
@@ -1072,13 +1114,23 @@ export default function OutfitDetailPage() {
           </View>
         )}
 
-        <View className="detail-card weather-card">
+        {coreRecommendationReason && (
+          <View className="detail-card core-reason-card">
+            <Text className="card-title">小搭推荐</Text>
+            <Text className="core-reason-text">{coreRecommendationReason}</Text>
+            {ruleDetailExplanation && ruleDetailExplanation !== coreRecommendationReason ? (
+              <Text className="core-reason-detail">{ruleDetailExplanation}</Text>
+            ) : null}
+          </View>
+        )}
+
+        {hasRealWeather && <View className="detail-card weather-card">
           <Text className="card-title">今日天气参考</Text>
           <View className="weather-summary">
             <Text className="weather-title">{weatherSummary.title}</Text>
             <Text className="weather-tip">{weatherSummary.tip}</Text>
           </View>
-        </View>
+        </View>}
 
         {scoreLabels.length > 0 && (
           <View className="detail-card">
@@ -1099,14 +1151,12 @@ export default function OutfitDetailPage() {
           <View className="ai-comment-header">
             <View className="xiaoda-review-heading">
               <Text className="card-title">小搭说衣</Text>
-              <Text className="ai-comment-invite">这套，我还想多说两句</Text>
-              <Text className="ai-comment-desc">再结合今天的天气和场景，看看有没有容易忽略的小细节。</Text>
             </View>
             <View
               className={`ai-comment-btn ${buttonState.state} ${buttonState.disabled ? 'disabled' : ''}`}
               onClick={handleGenerateAiComment}
             >
-              <Text className="ai-comment-btn-text">{aiCommentButtonText}</Text>
+              <Text className="ai-comment-btn-text">{aiReviewPageState.buttonText}</Text>
             </View>
           </View>
 
@@ -1126,6 +1176,9 @@ export default function OutfitDetailPage() {
                 </View>
               )}
             </View>
+          ) : null}
+          {aiReviewPageState.message ? (
+            <Text className="ai-comment-status">{aiReviewPageState.message}</Text>
           ) : null}
         </View>
 

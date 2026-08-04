@@ -26,6 +26,7 @@ const {
   resolveLockState,
   shouldReleaseCapacityLock,
 } = require('./services/capacityGate');
+const { deriveConfirmableSceneTags } = require('./shared/sceneEligibilityFacts');
 
 exports.main = async (event = {}) => {
   const startedAt = Date.now();
@@ -513,6 +514,22 @@ function buildClothingFromDraft(draft, openid) {
   const displayImageUrl = resolveDisplayImage(draft);
   const imageSourceType = resolveImageSourceType(draft, displayImageUrl);
   const aestheticFeatures = normalizeDraftAestheticFeatures(draft, now);
+  const sceneTags = deriveConfirmableSceneTags({
+    category: draft.type || 'other',
+    subcategory: draft.categoryName || '',
+    subCategory: draft.categoryName || '',
+    type: draft.type || 'other',
+    styleTags,
+    sceneTags: Array.isArray(draft.sceneTags) ? draft.sceneTags : [],
+    material: draft.material || '',
+    thickness: draft.thickness || '',
+    fit: draft.fit || '',
+    sleeveLength: draft.sleeveLength || '',
+    length: draft.length || '',
+    footwearType: draft.footwearType || draft.shoeType || '',
+    aestheticFeatures,
+    capabilities: draft.capabilities || [],
+  });
   return {
     _openid: openid,
     userId: openid,
@@ -551,7 +568,7 @@ function buildClothingFromDraft(draft, openid) {
     aestheticFeatures,
     styleTags,
     seasonTags: Array.isArray(draft.seasonTags) ? draft.seasonTags : [],
-    sceneTags: [],
+    sceneTags,
     material: draft.material || '',
     materialGuess: draft.material || '',
     thickness: draft.thickness || '',
@@ -785,4 +802,8 @@ function fail(error) {
 
 function getErrorMessage(error) {
   return error && error.message ? error.message : String(error || 'unknown error');
+}
+
+if (process.env.NODE_ENV === 'test') {
+  exports.__test = { buildClothingFromDraft };
 }

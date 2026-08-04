@@ -6,6 +6,7 @@ async function loadActiveWardrobe({
   openid,
   pageSize = DEFAULT_PAGE_SIZE,
   maxItems = DEFAULT_MAX_ITEMS,
+  onRead,
 }) {
   if (!database) throw new Error('database is required');
   if (!openid) throw new Error('openid is required');
@@ -23,6 +24,7 @@ async function loadActiveWardrobe({
       .skip(skip)
       .limit(limit)
       .get();
+    if (typeof onRead === 'function') onRead();
     const page = Array.isArray(res.data) ? res.data : [];
 
     for (const item of page) {

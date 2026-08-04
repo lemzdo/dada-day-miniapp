@@ -39,13 +39,15 @@ function buildXiaodaContentPlanV1(outfit = {}, context = {}) {
   const sceneIntent = readString(context.sceneIntent || outfit.sceneIntent) || inferSceneIntent(outfit.scene);
   const primaryBenefit = readString(context.primaryBenefit || outfit.primaryBenefit || outfit.primaryBenefitCode) || inferPrimaryBenefit(sceneIntent);
   const secondaryBenefit = readString(context.secondaryBenefit || outfit.secondaryBenefit);
+  const canonicalCopy = readCanonicalCopy(context.canonicalCopy || context.copyContract || outfit.copyContract);
   const observations = uniqueStrings([
     readString(context.observationFocus || outfit.observationFocus),
     primaryBenefit,
     secondaryBenefit,
     ...items.map((item) => `${item.role}:${item.displayName}`),
   ]).filter(Boolean).slice(0, 5);
-  const basePlan = {
+  const detailExplanation = readCanonicalText(canonicalCopy.detailExplanation);
+  return {
     version: XIAODA_CONTENT_PLAN_VERSION,
     sceneIntent,
     items,
@@ -53,20 +55,20 @@ function buildXiaodaContentPlanV1(outfit = {}, context = {}) {
     primaryBenefit,
     secondaryBenefit: secondaryBenefit || undefined,
     suggestion: null,
-  };
-  return {
-    ...basePlan,
-    suggestion: buildSuggestion(basePlan, outfit, context),
+    defaultCopy: canonicalCopy,
+    defaultTodayReason: readCanonicalText(canonicalCopy.todayReason),
+    defaultDetailExplanation: detailExplanation,
   };
 }
 
 function buildXiaodaDefaultReviewV1(plan) {
-  const rendered = renderXiaodaPlanTextV1(plan);
-  const defaultDetailExplanation = normalizeVisibleText(plan?.defaultDetailExplanation);
+  const defaultDetailExplanation = readCanonicalText(
+    plan?.defaultDetailExplanation ?? plan?.defaultCopy?.detailExplanation,
+  );
   return {
     source: 'rule_default',
-    reason: defaultDetailExplanation || rendered.bodyParagraphs.join(''),
-    tip: rendered.suggestion?.text || '',
+    reason: defaultDetailExplanation,
+    tip: '',
     contentPlanVersion: plan.version,
     sceneIntent: plan.sceneIntent,
     primaryBenefitCode: plan.primaryBenefit,
@@ -74,46 +76,13 @@ function buildXiaodaDefaultReviewV1(plan) {
 }
 
 function renderXiaodaPlanTextV1(plan) {
-  const items = Array.isArray(plan?.items) ? plan.items : [];
-  const core = items.filter((item) => item.role === 'core');
-  const functional = items.filter((item) => item.role === 'functional');
-  const optional = items.filter((item) => item.role === 'optional');
-  const coreText = joinNames(core);
-  const benefit = BENEFIT_LABELS[plan?.primaryBenefit] || '今天穿起来更省心';
-  const bodyParagraphs = [];
-  if (isHomeQuickOuting(plan, items)) {
-    return {
-      bodyParagraphs: [`${joinNamesWithAnd(items)}都偏日常，在家穿不费心，临时出门也不用重新换鞋。`],
-      suggestion: plan?.suggestion ? { title: '可以试试', text: plan.suggestion.text } : null,
-    };
-  }
-  if (coreText) {
-    bodyParagraphs.push(`${joinNamesWithAnd(core)}可以直接成套穿，${benefit}。`);
-  } else {
-    bodyParagraphs.push(`这套信息不多，今天先按日常场景穿，${benefit}。`);
-  }
-  if (functional.length > 0) {
-    bodyParagraphs.push(`${joinNames(functional)}主要负责天气或场景上的需要，不是为了凑件数。`);
-  } else if (optional.length > 0) {
-    bodyParagraphs.push(`${joinNames(optional)}只是加一点小细节，没有它也不影响这套成立。`);
-  } else {
-    bodyParagraphs.push(renderSecondObservation(plan, items));
-  }
+  const detailExplanation = readCanonicalText(
+    plan?.defaultDetailExplanation ?? plan?.defaultCopy?.detailExplanation,
+  );
   return {
-    bodyParagraphs,
-    suggestion: plan?.suggestion ? { title: '可以试试', text: plan.suggestion.text } : null,
+    bodyParagraphs: detailExplanation ? [detailExplanation] : [],
+    suggestion: null,
   };
-}
-
-function renderSecondObservation(plan, items) {
-  const shoes = items.find((item) => item.slot === 'shoes');
-  if (plan.primaryBenefit === 'walkable' && shoes) return `${shoes.displayName}方便临时出门，今天不用再换一双鞋。`;
-  if (plan.primaryBenefit === 'formal_training' && shoes) return `${shoes.displayName}和运动单品一起承担训练用途，普通日常单品不会被当成专业装备。`;
-  if (plan.primaryBenefit === 'hot_weather') return '高温时这套没有额外加外套，重点放在少层次和清爽度上。';
-  if (plan.primaryBenefit === 'commute_polish') return '这套没有靠夸张细节撑场面，主要用清楚的单品关系服务通勤状态。';
-  if (plan.primaryBenefit === 'soft_mood') return `${scenePrefix(plan)}穿会显得轻松一些，不靠额外外套或配饰撑效果。`;
-  if (plan.primaryBenefit === 'clear_highlight') return '有图案或颜色重点的单品已经在这套里，其他部分简单一点就好。';
-  return '现有单品已经能直接出门，不需要为了凑完整再加东西。';
 }
 
 function hasQualifiedAiReviewIncrementV1(aiComment, plan, fallbackReview) {
@@ -191,19 +160,6 @@ function normalizePlanItem(item, index) {
   };
 }
 
-function buildSuggestion(plan) {
-  if (!plan.items.length) return null;
-  const functional = plan.items.find((item) => item.role === 'functional');
-  if (functional && (plan.primaryBenefit === 'temperature_buffer' || plan.secondaryBenefit === 'temperature_buffer')) {
-    return { text: `如果进出室内温差明显，可以把${functional.displayName}拿在手边，需要时再穿。` };
-  }
-  const optional = plan.items.find((item) => item.role === 'optional');
-  if (optional && plan.primaryBenefit === 'accent') {
-    return { text: `想让重点更集中，可以只保留${optional.displayName}这一处点缀。` };
-  }
-  return null;
-}
-
 function inferSceneIntent(scene) {
   const raw = readString(scene).toLowerCase();
   if (raw === 'home' || raw === '居家') return 'home:clean_daily';
@@ -275,31 +231,13 @@ function normalizeVisibleText(value) {
   return typeof value === 'string' ? value.replace(/\s+/g, '').trim().slice(0, 180) : '';
 }
 
-function joinNames(items) {
-  return items.map((item) => item.displayName).filter(Boolean).join('、');
+function readCanonicalCopy(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return { ...value };
 }
 
-function joinNamesWithAnd(items) {
-  const names = items.map((item) => item.displayName).filter(Boolean);
-  if (names.length <= 2) return names.join('和');
-  return `${names.slice(0, -1).join('、')}和${names[names.length - 1]}`;
-}
-
-function isHomeQuickOuting(plan, items) {
-  return readString(plan?.sceneIntent).startsWith('home:')
-    && plan?.primaryBenefit === 'walkable'
-    && items.some((item) => item.slot === 'top')
-    && items.some((item) => item.slot === 'bottom' || item.slot === 'skirt')
-    && items.some((item) => item.slot === 'shoes');
-}
-
-function scenePrefix(plan) {
-  const intent = readString(plan?.sceneIntent);
-  if (intent.startsWith('home:')) return '居家';
-  if (intent.startsWith('work:')) return '上班';
-  if (intent.startsWith('sport:')) return '运动';
-  if (intent.startsWith('date:')) return '约会';
-  return '日常';
+function readCanonicalText(value) {
+  return typeof value === 'string' ? value : '';
 }
 
 function readString(value) {

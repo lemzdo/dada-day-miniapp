@@ -51,3 +51,55 @@ test('buildOutfitCopyFacts does not authorize unsupported claims when fields are
     assert.equal(facts.allowedFacts.some((fact) => fact.includes(claim)), false);
   }
 });
+
+test('work eligibility relation is derived only from existing scene eligibility provenance', () => {
+  const base = {
+    scene: 'work',
+    items: [
+      { clothingId: 'top-work', category: 'top', subcategory: '衬衫', confidence: 0.91 },
+      { clothingId: 'bottom-work', category: 'bottom', subcategory: '直筒裤', fit: '直筒', confidence: 0.92 },
+    ],
+  };
+  const absent = buildOutfitCopyFacts({ outfit: base, scene: 'work' });
+  assert.equal(absent.relationFacts.some((fact) => fact.factId === 'outfit:work_eligible'), false);
+
+  const present = buildOutfitCopyFacts({
+    outfit: {
+      ...base,
+      eligibility: {
+        scene: {
+          eligible: true,
+          hardRejected: false,
+          sceneStrength: 'strong',
+          acceptReasons: ['WORK_CORE_COMPLETE'],
+        },
+      },
+    },
+    scene: 'work',
+  });
+  const relation = present.relationFacts.find((fact) => fact.factId === 'outfit:work_eligible');
+  assert.equal(relation.source, 'scene_rule');
+  assert.equal(relation.sourceRule, 'sceneEligibilityV3');
+  assert.deepEqual(relation.sourceRuleReasons, ['WORK_CORE_COMPLETE']);
+  assert.deepEqual(relation.subjectItemIds, ['top-work', 'bottom-work']);
+  assert.equal(relation.supportingFactIds.every((id) => /^item:(top-work|bottom-work):/.test(id)), true);
+});
+
+test('color coordination is an outfit relation backed by both exact item color facts', () => {
+  const facts = buildOutfitCopyFacts({
+    outfit: {
+      scene: 'date',
+      items: [
+        { clothingId: 'top-date', category: 'top', subcategory: '上衣', color: '米白色', confidence: 0.91 },
+        { clothingId: 'bottom-date', category: 'bottom', subcategory: '长裤', color: '米白色', confidence: 0.93 },
+      ],
+    },
+    scene: 'date',
+  });
+  const relation = facts.relationFacts.find((fact) => fact.factId === 'outfit:color_coordinated');
+  assert.deepEqual(relation.subjectItemIds, ['top-date', 'bottom-date']);
+  assert.deepEqual(relation.supportingFactIds, ['item:top-date:color', 'item:bottom-date:color']);
+  assert.equal(relation.relationRule, 'same_normalized_color_group');
+  assert.equal(facts.itemFactsById['top-date'].facts.includes('color_coordinated'), false);
+  assert.equal(facts.itemFactsById['bottom-date'].facts.includes('color_coordinated'), false);
+});

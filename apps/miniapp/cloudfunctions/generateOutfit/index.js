@@ -3,10 +3,6 @@ const crypto = require('crypto');
 const { attachAestheticEvaluation } = require('./services/aestheticCompatibility');
 const { loadActiveWardrobe } = require('./services/loadActiveWardrobe');
 const {
-  logAestheticShadowTelemetry,
-  parseAestheticShadowSampleRate,
-} = require('./services/aestheticShadowTelemetry');
-const {
   createAiReviewServiceError,
   getAiReviewInternalErrorCode,
   getSafeAiReviewMessage,
@@ -31,7 +27,6 @@ const {
   STYLIST_PROMPT_VERSION,
   STYLIST_REVIEW_VERSION,
   VOICE_POLICY_VERSION,
-  buildRuleFallbackExplanationV2,
   buildStylistPromptV2,
   buildStylistReviewDocument,
   parseStylistExplanationJson,
@@ -40,9 +35,100 @@ const {
   validateStylistExplanationV2,
 } = require('./services/stylistExplanationV2');
 const { compileRecommendationLanguageV3 } = require('./services/recommendationLanguageV3');
-const { buildOutfitCandidatesV1 } = require('./services/outfitCompositionV1');
+const {
+  FINALIZATION_MODES,
+  finalizeAcceptedRecommendations,
+  hasCurrentCopyContract,
+} = require('./services/recommendationCopyFinalization');
+const {
+  getMissingRequiredFacts,
+  getMissingRequiredRoles,
+  getPartialRecommendationNotice,
+  resolveRecommendationAvailability,
+} = require('./services/recommendationAvailability');
+const {
+  normalizeDefaultCopyAtResponseBoundary,
+} = require('./services/recommendationCopyRehydration');
+const { COPY_CONTRACT_VERSION } = require('./services/recommendationCopyContract');
+const {
+  classifyLimitedReason,
+} = require('./services/xiaodaVoiceBankV2');
+const {
+  mapAiReviewAtBoundary,
+  resolveRealAiReviewSource,
+} = require('./services/recommendationReviewProvenance');
+const {
+  buildOutfitCandidatesV1,
+  createCompositionItemFacts,
+} = require('./services/outfitCompositionV1');
 const { buildOutfitCardViewModel } = require('./services/outfitCardViewModel');
-const { applyWearabilityAndSceneEligibility } = require('./services/sceneEligibilityV3');
+const { applyWearabilityAndSceneEligibility, normalizeScene } = require('./services/sceneEligibilityV3');
+const { buildItemFactsContext } = require('./services/itemFactsContext');
+const {
+  createCandidateCore,
+  hydrateCanonicalScore,
+  materializeCanonicalCandidate,
+  selectCanonicalCandidateBatch,
+} = require('./services/canonicalCandidate');
+const {
+  cloneEligibilityReason,
+  collectEligibilityReasonCandidates,
+  ELIGIBILITY_REASON_CATALOG,
+} = require('./services/recommendationEligibilityReason');
+const { selectBatchEligibilityReasons } = require('./services/batchEligibilityReasonSelection');
+const {
+  buildQaAuditSummaries,
+  fitEligibilityRejectionAuditToBudget,
+  fitQaBatchAuditToBudget,
+  QA_BATCH_AUDIT_VERSION,
+  serializedBytes,
+} = require('./services/qaBatchAudit');
+const {
+  buildCanonicalTitle,
+  assertFinalPresentation,
+  canonicalizeRecommendationBatch,
+} = require('./services/recommendationPresentation');
+const {
+  buildPresentationFactModel,
+  buildPresentationPlan,
+  readPresentationPlan,
+} = require('./services/presentationFactModel');
+const {
+  buildPresentationEvidence,
+  isPresentationEvidenceMode,
+  PRESENTATION_EVIDENCE_MAX_BYTES,
+  PRESENTATION_EVIDENCE_VERSION,
+  serializedBytes: serializedPresentationEvidenceBytes,
+} = require('./services/presentationEvidence');
+const { isRecommendationQaAuditEnabled } = require('./services/qaAuditControl');
+const {
+  AI_REVIEW_VERSION,
+  CANDIDATE_POOL_ENGINE_VERSION,
+  CLOUD_BUILD_VERSION,
+  REASON_CATALOG_VERSION,
+} = require('./services/buildVersions');
+const {
+  buildCandidatePoolIdentity,
+  getReasonSelectionDescriptor,
+  hydrateCandidateCore,
+  loadCandidatePool,
+  tryPersistCandidatePool,
+} = require('./services/candidatePool');
+const {
+  hasRealRecommendationWeather,
+  normalizeRecommendationWeather,
+  toWeatherSnapshot,
+} = require('./services/recommendationWeatherMode');
+const {
+  assertRecommendationCountContract,
+  assertReturnedCardCount,
+  buildRecommendationCountContract,
+  normalizeRequestedBatchSize,
+} = require('./shared/countContract');
+const {
+  canPersistAiReviewAsReady,
+  resolveAiReviewFailureSettlement,
+} = require('./services/aiReviewSettlement');
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
@@ -56,9 +142,18 @@ const AI_COMMENT_MODEL = process.env.AI_COMMENT_MODEL || 'qwen-flash';
 const AI_COMMENT_TIMEOUT_MS = Number(process.env.AI_COMMENT_TIMEOUT_MS || 5000);
 const AI_COMMENT_LEASE_TIMEOUT_MS = Math.max(AI_COMMENT_TIMEOUT_MS + 5000, 10000);
 const AI_COMMENT_FORCE_COOLDOWN_MS = 5 * 1000;
+const RECOMMENDATION_SCENE_LABELS = Object.freeze({
+  home: '居家',
+  work: '上班',
+  date: '约会',
+  sport: '运动',
+});
 
 exports.main = async (event = {}) => {
   const action = event.action || 'generate';
+  const recommendationDiagnostics = action === 'generate'
+    ? createRecommendationDiagnostics(event)
+    : null;
   try {
     if (action === 'detail') return ok(await getOutfitDetail(event));
     if (action === 'renameOutfit') return ok(await renameOutfit(event));
@@ -73,13 +168,26 @@ exports.main = async (event = {}) => {
     if (action === 'getAiComment') return ok(await getAiComment(event));
     if (action === 'aiComment') return ok(await generateAiComment(event));
 
-    return ok(await generate(event));
+    return ok(await generate(event, recommendationDiagnostics));
   } catch (error) {
     const isAiReviewAction = action === 'getAiComment' || action === 'aiComment';
-    console.error(
-      isAiReviewAction ? '[generateOutfit] aiReview failed' : '[generateOutfit] failed',
-      isAiReviewAction ? { code: getAiReviewInternalErrorCode(error) } : error,
-    );
+    if (recommendationDiagnostics) {
+      console.error('[RecommendationServerError]', {
+        auditId: recommendationDiagnostics.auditId,
+        stage: recommendationDiagnostics.stage,
+        errorCode: getRecommendationErrorCode(error),
+        message: getSafeRecommendationErrorMessage(error),
+        ...(error?.businessCode === 'OUTFIT_REFERENCE_WRITE_FAILED' && error.cause
+          ? { cause: error.cause }
+          : {}),
+        totalMs: Date.now() - recommendationDiagnostics.startedAt,
+      });
+    } else {
+      console.error(
+        isAiReviewAction ? '[generateOutfit] aiReview failed' : '[generateOutfit] failed',
+        isAiReviewAction ? { code: getAiReviewInternalErrorCode(error) } : error,
+      );
+    }
     if (isAiReviewAction) {
       return fail(createSafeAiReviewClientError(mapAiReviewErrorCode(error)));
     }
@@ -87,85 +195,439 @@ exports.main = async (event = {}) => {
   }
 };
 
-async function generate(event) {
+function validateCandidatePoolAvailability(recommendations, requestedCount) {
+  if (!Array.isArray(recommendations)) {
+    throw createBusinessError('CANDIDATE_POOL_AVAILABILITY_CONTRACT_INVALID', 'recommendations must be array');
+  }
+  if (typeof recommendations.limited !== 'boolean') {
+    throw createBusinessError('CANDIDATE_POOL_AVAILABILITY_CONTRACT_INVALID', 'limited must be boolean');
+  }
+  if (typeof recommendations.exhausted !== 'boolean') {
+    throw createBusinessError('CANDIDATE_POOL_AVAILABILITY_CONTRACT_INVALID', 'exhausted must be boolean');
+  }
+  if (!recommendations.debug || typeof recommendations.debug !== 'object') {
+    throw createBusinessError('CANDIDATE_POOL_AVAILABILITY_CONTRACT_INVALID', 'debug must exist and be object');
+  }
+
+  const contract = recommendations.countContract;
+  try {
+    assertRecommendationCountContract(contract);
+    assertReturnedCardCount(contract, recommendations.length);
+  } catch (error) {
+    throw createBusinessError('CANDIDATE_POOL_AVAILABILITY_CONTRACT_INVALID', error.message);
+  }
+  if (contract.requestedBatchSize !== normalizeRequestedBatchSize(requestedCount)) {
+    throw createBusinessError('CANDIDATE_POOL_AVAILABILITY_CONTRACT_INVALID', 'requestedBatchSize conflicts with count contract');
+  }
+  const limited = contract.expectedCardCount < contract.requestedBatchSize;
+  return {
+    limited,
+    limitedReason: limited ? 'DIVERSITY_EXHAUSTED' : null,
+    exhausted: contract.poolExhaustedAfterConsume,
+    countContract: contract,
+  };
+}
+
+async function generate(event, diagnostics = createRecommendationDiagnostics(event)) {
+  diagnostics.stage = 'loadWardrobe';
   const { OPENID } = cloud.getWXContext();
   const inputScene = typeof event.scene === 'string' ? event.scene.trim() : '';
   const scene = inputScene || undefined;
+  const sceneContract = createRecommendationSceneContract(inputScene);
   const targetDate = event.date || new Date().toISOString().slice(0, 10);
   const now = new Date().toISOString();
-  const recommendationBatchId = event.recommendationBatchId || createRecommendationBatchId(now);
-  const clothes = await loadActiveWardrobe({ database: db, openid: OPENID });
-  const userRes = await db.collection('users').where({ _openid: OPENID }).limit(1).get();
-  const recommendationProfile = normalizeRecommendationProfile(userRes.data[0] && userRes.data[0].styleProfile);
+  const requestedCount = normalizeRequestedBatchSize(event.maxResults || 8);
+  const requestedCandidatePoolId = readString(event.recommendationBatchId);
+  diagnostics.requestedCandidatePoolIdPresent = Boolean(requestedCandidatePoolId);
+  diagnostics.requestedCandidatePoolIdLength = requestedCandidatePoolId.length;
+  let recommendationBatchId = requestedCandidatePoolId || createRecommendationBatchId(now);
+  const dataLoadStartedAt = Date.now();
+  let wardrobeReadCount = 0;
+  const [clothes, userRes] = await Promise.all([
+    loadActiveWardrobe({
+      database: db,
+      openid: OPENID,
+      onRead: () => {
+        wardrobeReadCount += 1;
+      },
+    }),
+    db.collection('users').where({ _openid: OPENID }).limit(1).get(),
+  ]);
+  diagnostics.timings.dataLoadMs = Date.now() - dataLoadStartedAt;
+  diagnostics.databaseOps.reads += wardrobeReadCount + 1;
+  const recommendationProfile = normalizeRecommendationProfile(userRes.data?.[0]?.styleProfile);
   const exclude = Array.isArray(event.excludeClothingIdSets) ? event.excludeClothingIdSets : [];
   const excludedOutfitKeys = readStringArray(event.excludedOutfitKeys);
-  const weather = normalizeWeather(event.weather) || fallbackWeather();
-  const recommendations = generateRuleRecommendations({
+  const requestTrigger = readString(event.trigger);
+  const isRefreshRequest = requestTrigger === 'refresh'
+    || excludedOutfitKeys.length > 0
+    || exclude.length > 0
+    || Boolean(requestedCandidatePoolId);
+  const weather = normalizeRecommendationWeather(event.weather, event.weatherMode);
+  const weatherMode = weather.mode;
+  const weatherSnapshot = toWeatherSnapshot(weather);
+  const presentationEvidenceEnabled = isPresentationEvidenceMode(event.presentationEvidenceMode);
+  const debugRecommendationAudit = isRecommendationQaAuditEnabled(event.debugRecommendationAudit, process.env.RECOMMENDATION_QA_AUDIT_ENABLED);
+  const identityStartedAt = Date.now();
+  const candidatePoolIdentity = buildCandidatePoolIdentity({
+    openid: OPENID,
     clothes,
-    scene,
+    sceneKey: sceneContract.sceneKey,
     weather,
+    weatherMode,
     recommendationProfile,
-    excludeClothingIdSets: exclude,
-    excludedOutfitKeys,
-    maxResults: event.maxResults || 8,
+    timeOfDay: event.timeOfDay || 'all_day',
+    engineVersion: CANDIDATE_POOL_ENGINE_VERSION,
   });
-  const recommendationNotice = getRecommendationNotice(clothes, weather, recommendations.length);
-  const debug = {
-    inputScene,
-    matchedScene: recommendations[0]?.matchedScene || '',
-    candidateCount: recommendations.debug?.candidateCount ?? 0,
-    filteredCandidateCount: recommendations.debug?.filteredCandidateCount ?? 0,
-    excludedOutfitKeyCount: excludedOutfitKeys.length,
-    limited: Boolean(recommendations.limited),
-    exhausted: Boolean(recommendations.exhausted),
-    generatedCount: recommendations.length,
-  };
-
-  console.log('[generateOutfit] generate', {
-    inputScene,
-    scene,
-    candidateCount: debug.candidateCount,
-    generatedCount: debug.generatedCount,
-    firstOutfitId: recommendations[0] ? `recommend:${signature(recommendations[0].items.map((item) => item._id))}` : '',
-    firstItemIds: recommendations[0]?.items.map((item) => item._id) || [],
+  diagnostics.timings.identityMs = Date.now() - identityStartedAt;
+  let recommendations;
+  let executionMode = 'full_compute';
+  let candidatePoolAgeMs = 0;
+  let cacheHit = false;
+  let cacheMissReason = resolveInitialCacheMissReason({
+    isRefreshRequest,
+    requestedCandidatePoolId,
   });
+  let baseRecommendationBatchId = undefined;
 
-  if (recommendations.length === 0) {
-    return {
-      outfits: [],
-      weather,
-      recommendationNotice,
-      recommendationBatchId,
-      limited: Boolean(recommendations.limited),
-      exhausted: true,
-      debug: { ...debug, exhausted: true },
-    };
+  if (requestedCandidatePoolId) {
+    const candidatePoolLoadStartedAt = Date.now();
+    const poolResult = await loadCandidatePool({
+      database: db,
+      candidatePoolId: requestedCandidatePoolId,
+      identity: candidatePoolIdentity,
+      now: Date.now(),
+      timings: diagnostics.timings,
+    });
+    diagnostics.timings.candidatePoolLoadMs = Date.now() - candidatePoolLoadStartedAt;
+    diagnostics.databaseOps.reads += diagnostics.timings.poolDbReadCount || 0;
+    if (poolResult.hit) {
+      try {
+        recommendations = generateCandidatePoolRecommendations({
+          pool: poolResult.pool,
+          clothes,
+          scene,
+          weather,
+          weatherMode,
+          excludedOutfitKeys,
+          excludeClothingIdSets: exclude,
+          maxResults: requestedCount,
+          timings: diagnostics.timings,
+        });
+        assertCandidatePoolExclusions(recommendations, excludedOutfitKeys, exclude);
+        executionMode = 'candidate_pool_hit';
+        candidatePoolAgeMs = poolResult.ageMs;
+        cacheHit = true;
+        cacheMissReason = '';
+      } catch (error) {
+        if (error?.businessCode === 'CANDIDATE_POOL_EXCLUSION_VIOLATION') throw error;
+        cacheMissReason = 'pool_corrupt';
+        recommendationBatchId = createRecommendationBatchId(now);
+        executionMode = 'fallback_recompute';
+      }
+    } else {
+      cacheMissReason = mapCandidatePoolLoadReason(poolResult.reason);
+      recommendationBatchId = createRecommendationBatchId(now);
+      executionMode = 'fallback_recompute';
+    }
   }
 
-  const tempOutfits = compileRecommendationLanguageV3({
+  if (!recommendations) {
+    recommendations = generateRuleRecommendations({
+      clothes,
+      scene,
+      weather,
+      weatherMode,
+      recommendationProfile,
+      excludeClothingIdSets: exclude,
+      excludedOutfitKeys,
+      maxResults: requestedCount,
+      debugRecommendationAudit,
+      timings: diagnostics.timings,
+      diagnostics,
+    });
+    const candidatePoolSaveStartedAt = Date.now();
+    baseRecommendationBatchId = recommendationBatchId;
+    const poolPersist = await tryPersistCandidatePool({
+      database: db,
+      candidatePoolId: recommendationBatchId,
+      identity: candidatePoolIdentity,
+      candidates: recommendations.candidatePoolCandidates,
+      now: Date.now(),
+      auditId: diagnostics.auditId,
+      debugRecommendationAudit,
+    });
+    diagnostics.timings.candidatePoolSaveMs = Date.now() - candidatePoolSaveStartedAt;
+    diagnostics.timings.candidatePoolPlanMs = poolPersist.planBuildMs || 0;
+    diagnostics.timings.candidatePoolSerializationMs = poolPersist.serializationMs || 0;
+    diagnostics.timings.candidatePoolChunkWriteMs = poolPersist.chunkWriteMs || 0;
+    diagnostics.timings.candidatePoolValidationMs = poolPersist.validationMs || 0;
+    diagnostics.timings.candidatePoolManifestWriteMs = poolPersist.manifestWriteMs || 0;
+    diagnostics.databaseOps.reads += poolPersist.dbReadCount || 0;
+    diagnostics.databaseOps.writes += poolPersist.dbWriteCount || 0;
+    diagnostics.candidatePoolSaveStatus = poolPersist.status;
+    diagnostics.candidatePoolSaveReason = poolPersist.reason;
+    diagnostics.candidatePoolSerializedBytes = poolPersist.serializedBytes;
+    diagnostics.candidatePoolChunkCount = poolPersist.chunkCount;
+    diagnostics.candidatePoolManifestBytes = poolPersist.manifestBytes || 0;
+    diagnostics.candidatePoolChunksBytes = poolPersist.chunksBytes || 0;
+    diagnostics.candidatePoolChunkWriteTimings = poolPersist.chunkWriteTimings || [];
+    diagnostics.candidatePoolMaxActiveChunkWrites = poolPersist.maxActiveChunkWrites || 0;
+    diagnostics.candidatePoolValidationReadCount = poolPersist.validationReadCount || 0;
+    diagnostics.candidatePoolValidationMode = poolPersist.validationMode || 'local_checksum_after_awaited_set';
+    diagnostics.candidatePoolCleanupAttempted = poolPersist.cleanupAttempted === true;
+    diagnostics.candidatePoolCleanupDeletedCount = poolPersist.cleanupDeletedCount || 0;
+    diagnostics.candidatePoolCleanupFailedCount = poolPersist.cleanupFailedCount || 0;
+    diagnostics.candidatePoolPhaseTiming = poolPersist.phaseTiming
+      ? {
+          ...poolPersist.phaseTiming,
+          wrapperWallMs: diagnostics.timings.candidatePoolSaveMs,
+          wrapperDeltaMs: Math.max(
+            0,
+            diagnostics.timings.candidatePoolSaveMs - Number(poolPersist.phaseTiming.totalWallMs || 0),
+          ),
+        }
+      : null;
+    if (poolPersist.status !== 'saved') {
+      recommendationBatchId = undefined;
+      cacheMissReason = 'candidate_pool_not_saved';
+    }
+  }
+  const rawCountContract = recommendations.countContract;
+  assertRecommendationCountContract(rawCountContract);
+  assertReturnedCardCount(rawCountContract, recommendations.length);
+  const persistedCandidatePoolId = executionMode === 'candidate_pool_hit'
+    ? requestedCandidatePoolId
+    : (diagnostics.candidatePoolSaveStatus === 'saved' ? baseRecommendationBatchId : null);
+  const responseCountContract = buildRecommendationCountContract({
+    ...rawCountContract,
+    candidatePoolId: persistedCandidatePoolId,
+  });
+  recommendations.countContract = responseCountContract;
+  assertReturnedCardCount(responseCountContract, recommendations.length);
+  const recommendationBatchIdPresentAtResponse = Boolean(recommendationBatchId);
+  const recommendationBatchIdLengthAtResponse = recommendationBatchId ? recommendationBatchId.length : 0;
+  const debug = {
+    auditId: diagnostics.auditId,
+    candidateCount: recommendations.debug?.candidateCount ?? 0,
+    generatedCount: recommendations.debug?.generatedCount ?? 0,
+    acceptedCount: recommendations.debug?.guardAcceptedCount ?? 0,
+    rejectedCount: recommendations.debug?.guardRejectedCount ?? 0,
+    selectedCount: recommendations.length,
+    limitedReason: recommendations.debug?.limitedReason || '',
+    cloudBuildVersion: CLOUD_BUILD_VERSION,
+    executionMode,
+    candidatePoolIdentityHash: candidatePoolIdentity.identityHash,
+    candidatePoolAgeMs,
+    cacheHit,
+    cacheMissReason,
+    requestedExcludedCount: recommendations.debug?.requestedExcludedCount ?? getRequestedExclusionCount(excludedOutfitKeys, exclude),
+    actualExcludedCandidateCount: recommendations.debug?.actualExcludedCandidateCount ?? 0,
+    remainingCandidateCount: recommendations.debug?.remainingCandidateCount ?? 0,
+    exclusionsAppliedCount: recommendations.debug?.actualExcludedCandidateCount ?? 0,
+    timings: diagnostics.timings,
+    responseBytes: {},
+    candidatePoolSaveStatus: diagnostics.candidatePoolSaveStatus,
+    candidatePoolSaveReason: diagnostics.candidatePoolSaveReason,
+    candidatePoolSerializedBytes: diagnostics.candidatePoolSerializedBytes,
+    candidatePoolChunkCount: diagnostics.candidatePoolChunkCount,
+    candidatePoolSerializationMs: diagnostics.timings.candidatePoolSerializationMs,
+    candidatePoolManifestBytes: diagnostics.candidatePoolManifestBytes,
+    candidatePoolChunksBytes: diagnostics.candidatePoolChunksBytes,
+    candidatePoolChunkWriteTimings: diagnostics.candidatePoolChunkWriteTimings,
+    candidatePoolMaxActiveChunkWrites: diagnostics.candidatePoolMaxActiveChunkWrites,
+    candidatePoolValidationReadCount: diagnostics.candidatePoolValidationReadCount,
+    candidatePoolValidationMode: diagnostics.candidatePoolValidationMode,
+    candidatePoolCleanupAttempted: diagnostics.candidatePoolCleanupAttempted === true,
+    candidatePoolCleanupDeletedCount: diagnostics.candidatePoolCleanupDeletedCount || 0,
+    candidatePoolCleanupFailedCount: diagnostics.candidatePoolCleanupFailedCount || 0,
+    candidatePoolPhaseTiming: diagnostics.candidatePoolPhaseTiming,
+    databaseOps: { ...diagnostics.databaseOps },
+    recommendationBatchIdPresent: recommendationBatchIdPresentAtResponse,
+    recommendationBatchIdLength: recommendationBatchIdLengthAtResponse,
+    requestedCandidatePoolIdPresent: diagnostics.requestedCandidatePoolIdPresent ?? false,
+    requestedCandidatePoolIdLength: diagnostics.requestedCandidatePoolIdLength ?? 0,
+    countContract: responseCountContract,
+  };
+  const missingRoles = getMissingRequiredRoles(clothes, scene);
+  const missingFacts = getMissingRequiredFacts(clothes, scene);
+
+  if (recommendations.length === 0) {
+    let availability;
+    if (executionMode === 'candidate_pool_hit') {
+      const validated = validateCandidatePoolAvailability(recommendations, requestedCount);
+      availability = {
+        limited: validated.limited,
+        limitedReason: validated.limitedReason,
+        missingRoles: [],
+        missingFacts: [],
+        exhausted: validated.exhausted,
+        countContract: validated.countContract,
+        copyDiagnosticReason: null,
+      };
+    } else {
+      availability = resolveRecommendationAvailability({
+        requestedCount,
+        finalRecommendationCount: 0,
+        missingRoles,
+        missingFacts,
+        candidateCount: debug.candidateCount,
+        guardAcceptedCount: debug.acceptedCount,
+        weatherRejectedCount: recommendations.debug?.weatherRejectedCount ?? 0,
+        generatedCount: 0,
+        excludedOutfitKeyCount: excludedOutfitKeys.length,
+        copyHiddenCount: 0,
+      });
+    }
+    debug.selectedCount = 0;
+    debug.limitedReason = availability.limitedReason;
+    debug.missingRoles = availability.missingRoles;
+    debug.missingFacts = availability.missingFacts;
+    const qaResult = buildRecommendationQaSummaries({
+      enabled: debugRecommendationAudit,
+      auditId: diagnostics.auditId,
+      sceneKey: sceneContract.sceneKey,
+      inputScene,
+      scene,
+      weather,
+      weatherInput: event.weather,
+      weatherMode,
+      weatherSnapshot,
+      recommendations,
+      compiledOutfits: [],
+      finalOutfits: [],
+      timings: diagnostics.timings,
+      diagnostics,
+      execution: debug,
+    });
+    if (presentationEvidenceEnabled) {
+      debug.presentationEvidenceStatus = {
+        status: 'not_applicable_empty_batch',
+        countContract: rawCountContract,
+      };
+    }
+    delete recommendations.debug?._auditGuardAcceptedCandidates;
+    delete recommendations.debug?._auditGuardRejectedCandidates;
+    const emptyCountContract = buildRecommendationCountContract({
+      ...rawCountContract,
+      returnedCardCount: 0,
+      candidatePoolId: persistedCandidatePoolId,
+    });
+    debug.countContract = emptyCountContract;
+    return finalizeRecommendationResponse({
+    sceneContract,
+    diagnostics,
+    qaResult,
+    rejectionReasonCounts: recommendations.debug?.rejectReasonCounts,
+    data: {
+      outfits: [],
+      countContract: emptyCountContract,
+    ...(weatherSnapshot ? { weather: weatherSnapshot } : {}),
+    weatherMode,
+    recommendationNotice: '',
+    ...(recommendationBatchId ? { recommendationBatchId } : {}),
+    missingRoles: availability.missingRoles,
+    missingFacts: availability.missingFacts,
+    limited: availability.limited,
+    exhausted: emptyCountContract.poolExhaustedAfterConsume,
+    debug,
+    meta: {
+      auditId: diagnostics.auditId,
+      cloudBuildVersion: CLOUD_BUILD_VERSION,
+      reasonCatalogVersion: REASON_CATALOG_VERSION,
+      aiReviewVersion: AI_REVIEW_VERSION,
+    },
+    },
+  });
+  }
+
+  diagnostics.stage = 'cardCompilation';
+  const cardCompilationStartedAt = Date.now();
+  const compiledOutfits = compileRecommendationLanguageV3({
     outfits: recommendations.map((recommendation) =>
       toTempOutfit(recommendation, {
         openid: OPENID,
         scene,
         targetDate,
         timeOfDay: event.timeOfDay || 'all_day',
-        weather,
+        weather: weatherSnapshot,
+        weatherMode,
         now,
         recommendationBatchId,
       }),
     ),
     scene,
-    weather,
+    weather: weatherSnapshot,
   });
-  const outfitRecords = await Promise.all(tempOutfits.map((tempOutfit) =>
-    upsertOutfitByKey({
-      openid: OPENID,
-      base: tempOutfit,
-      patch: {},
-      now,
-    }),
-  ));
-  const outfits = tempOutfits.map((tempOutfit, index) => {
+  assertEligibilityReasons(compiledOutfits, { node: 'beforeFinalization', scene, weather });
+  const {
+    finalRecommendations,
+    acceptedCount,
+    finalRecommendationCount,
+    copyHiddenCount,
+  } = finalizeAcceptedRecommendations(compiledOutfits, {
+    mode: 'new_recommendation',
+    requestedCount,
+  });
+  diagnostics.timings.cardCompilationMs = Date.now() - cardCompilationStartedAt;
+  const canonicalRecommendations = canonicalizeRecommendationBatch(finalRecommendations, { scene });
+  let availability;
+  if (executionMode === 'candidate_pool_hit') {
+    const validated = validateCandidatePoolAvailability(recommendations, requestedCount);
+    availability = {
+      limited: validated.limited,
+      limitedReason: validated.limitedReason,
+      missingRoles: [],
+      missingFacts: [],
+      exhausted: validated.exhausted,
+      countContract: validated.countContract,
+      copyDiagnosticReason: copyHiddenCount > 0 ? 'COPY_EVIDENCE_INSUFFICIENT' : null,
+    };
+  } else {
+    availability = resolveRecommendationAvailability({
+      requestedCount,
+      finalRecommendationCount: finalRecommendations.length,
+      missingRoles,
+      missingFacts,
+      candidateCount: debug.candidateCount,
+      guardAcceptedCount: debug.acceptedCount,
+      weatherRejectedCount: recommendations.debug?.weatherRejectedCount ?? 0,
+      generatedCount: recommendations.length,
+      excludedOutfitKeyCount: excludedOutfitKeys.length,
+      copyHiddenCount,
+    });
+  }
+  const countContract = buildRecommendationCountContract({
+    requestedBatchSize: requestedCount,
+    returnedCardCount: finalRecommendations.length,
+    remainingUniqueBeforeConsume: rawCountContract.remainingUniqueBeforeConsume,
+    executionMode,
+    candidatePoolId: persistedCandidatePoolId,
+  });
+  assertReturnedCardCount(countContract, finalRecommendations.length);
+  debug.countContract = countContract;
+  availability.limited = countContract.expectedCardCount < countContract.requestedBatchSize;
+  availability.exhausted = countContract.poolExhaustedAfterConsume;
+  availability.limitedReason = availability.limited ? 'DIVERSITY_EXHAUSTED' : null;
+  const recommendationNotice = availability.limited && acceptedCount > 0
+    ? getPartialRecommendationNotice(acceptedCount)
+    : '';
+  debug.selectedCount = finalRecommendations.length;
+  debug.limitedReason = availability.limitedReason;
+  debug.missingRoles = availability.missingRoles;
+  debug.missingFacts = availability.missingFacts;
+  const snapshotUpsertStartedAt = Date.now();
+  const snapshotOps = { reads: 0, writes: 0 };
+  const outfitRecords = await upsertRecommendationOutfitsBatch({
+    openid: OPENID,
+    bases: canonicalRecommendations,
+    now,
+    operationCounts: snapshotOps,
+  });
+  diagnostics.timings.snapshotUpsertMs = Date.now() - snapshotUpsertStartedAt;
+  diagnostics.databaseOps.reads += snapshotOps.reads;
+  diagnostics.databaseOps.writes += snapshotOps.writes;
+  const outfits = canonicalRecommendations.map((tempOutfit, index) => {
     const outfitRecord = outfitRecords[index];
     return {
       ...tempOutfit,
@@ -174,12 +636,25 @@ async function generate(event) {
       outfitKind: 'recommendation',
     };
   });
+  const enrichStartedAt = Date.now();
   const hydratedOutfits = await enrichOutfitsState(outfits, {
     openid: OPENID,
     targetDate,
     generatedAt: now,
     recommendationBatchId,
+    copyMode: 'new_recommendation',
+    assetRecords: outfitRecords,
   });
+  diagnostics.databaseOps.reads += hydratedOutfits.length > 0 ? 2 : 0;
+  assertFinalPresentation(hydratedOutfits, scene);
+  diagnostics.timings.enrichMs = Date.now() - enrichStartedAt;
+  if (hydratedOutfits.length !== finalRecommendationCount
+    || !hydratedOutfits.every((item) => hasCurrentCopyContract(item)
+      && typeof item.copyContract?.todayReason === 'string'
+      && item.copyContract.todayReason.trim().length > 0)) {
+    throw new Error('final recommendation response invariant failed');
+  }
+  const exposureStartedAt = Date.now();
   await saveOutfitExposures({
     openid: OPENID,
     outfits: hydratedOutfits,
@@ -187,22 +662,444 @@ async function generate(event) {
     batchId: recommendationBatchId,
     shownAt: now,
   });
-  logAestheticShadowTelemetry({
-    sampleRate: parseAestheticShadowSampleRate(process.env.AESTHETIC_SHADOW_LOG_SAMPLE_RATE),
-    seed: recommendationBatchId,
-    outfits: hydratedOutfits,
+  diagnostics.databaseOps.writes += hydratedOutfits.length;
+  diagnostics.timings.exposureMs = Date.now() - exposureStartedAt;
+  const qaResult = buildRecommendationQaSummaries({
+    enabled: debugRecommendationAudit,
+    auditId: diagnostics.auditId,
+    sceneKey: sceneContract.sceneKey,
+    inputScene,
     scene,
+    weather,
+    weatherInput: event.weather,
+    weatherMode,
+    weatherSnapshot,
+    recommendations,
+    compiledOutfits,
+    finalOutfits: hydratedOutfits,
+    timings: diagnostics.timings,
+    diagnostics,
+    execution: debug,
+  });
+  if (presentationEvidenceEnabled) {
+    attachPresentationEvidenceDebug(debug, {
+      auditId: diagnostics.auditId,
+      scene: sceneContract.sceneKey,
+      selectedCandidates: recommendations,
+      presentationPlans: compiledOutfits,
+      canonicalCards: canonicalRecommendations,
+      finalCards: hydratedOutfits,
+        countContract,
+    });
+  }
+  delete recommendations.debug?._auditGuardAcceptedCandidates;
+  delete recommendations.debug?._auditGuardRejectedCandidates;
+  debug.databaseOps = { ...diagnostics.databaseOps };
+
+  if (baseRecommendationBatchId !== undefined) {
+    const finalizeResult = finalizeFullComputeAfterPoolPersist({
+      diagnostics,
+      baseRecommendationBatchId,
+      cacheMissReason,
+      sceneContract,
+      qaResult,
+      rejectionReasonCounts: recommendations.debug?.rejectReasonCounts,
+      outfits: hydratedOutfits,
+      weatherSnapshot,
+      weatherMode,
+      recommendationNotice,
+      missingRoles,
+      missingFacts,
+      limited: countContract.expectedCardCount < countContract.requestedBatchSize,
+      exhausted: countContract.poolExhaustedAfterConsume,
+      countContract,
+      debug,
+      meta: {
+        auditId: diagnostics.auditId,
+        cloudBuildVersion: CLOUD_BUILD_VERSION,
+        reasonCatalogVersion: REASON_CATALOG_VERSION,
+        aiReviewVersion: AI_REVIEW_VERSION,
+      },
+    });
+    return finalizeResult.response;
+  }
+
+  return finalizeRecommendationResponse({
+    sceneContract,
+    diagnostics,
+    qaResult,
+    rejectionReasonCounts: recommendations.debug?.rejectReasonCounts,
+    data: {
+    outfits: hydratedOutfits,
+    ...(weatherSnapshot ? { weather: weatherSnapshot } : {}),
+    weatherMode,
+    recommendationNotice,
+    ...(recommendationBatchId ? { recommendationBatchId } : {}),
+    missingRoles,
+    missingFacts,
+    limited: countContract.expectedCardCount < countContract.requestedBatchSize,
+    exhausted: countContract.poolExhaustedAfterConsume,
+      countContract,
+    debug,
+    meta: {
+      auditId: diagnostics.auditId,
+      cloudBuildVersion: CLOUD_BUILD_VERSION,
+      reasonCatalogVersion: REASON_CATALOG_VERSION,
+      aiReviewVersion: AI_REVIEW_VERSION,
+    },
+    },
+  });
+}
+
+function createRecommendationSceneContract(inputScene) {
+  const normalizedSceneKey = normalizeScene(inputScene || 'home');
+  const sceneKey = Object.hasOwn(RECOMMENDATION_SCENE_LABELS, normalizedSceneKey)
+    ? normalizedSceneKey
+    : 'home';
+  return {
+    sceneKey,
+    scene: RECOMMENDATION_SCENE_LABELS[sceneKey],
+  };
+}
+
+function buildRecommendationResponseData(sceneContract, data) {
+  return {
+    ...data,
+    outfits: data.outfits,
+    sceneKey: sceneContract.sceneKey,
+    scene: sceneContract.scene,
+  };
+}
+
+function createRecommendationDiagnostics(event = {}) {
+  return {
+    auditId: readAuditId(event.auditId),
+    stage: 'received',
+    startedAt: Date.now(),
+    timings: {
+      dataLoadMs: 0,
+      identityMs: 0,
+      candidatePoolLoadMs: 0,
+      candidatePoolSaveMs: 0,
+      candidatePoolPlanMs: 0,
+      candidatePoolSerializationMs: 0,
+      candidatePoolChunkWriteMs: 0,
+      candidatePoolValidationMs: 0,
+      candidatePoolManifestWriteMs: 0,
+      exclusionMs: 0,
+      compositionMs: 0,
+      canonicalizeMs: 0,
+      eligibilityMs: 0,
+      scoringMs: 0,
+      batchSelectionMs: 0,
+      cardCompilationMs: 0,
+      qaAuditMs: 0,
+      poolManifestLoadMs: 0,
+      poolChunksLoadMs: 0,
+      poolHydrateMs: 0,
+      poolDbReadCount: 0,
+      materializationMs: 0,
+      snapshotUpsertMs: 0,
+      enrichMs: 0,
+      exposureMs: 0,
+      presentationEvidenceMs: 0,
+      serializationMs: 0,
+      totalMs: 0,
+    },
+    candidatePoolManifestBytes: 0,
+    candidatePoolChunksBytes: 0,
+    candidatePoolChunkWriteTimings: [],
+    candidatePoolMaxActiveChunkWrites: 0,
+    candidatePoolValidationReadCount: 0,
+    candidatePoolValidationMode: 'local_checksum_after_awaited_set',
+    candidatePoolCleanupAttempted: false,
+    candidatePoolCleanupDeletedCount: 0,
+    candidatePoolCleanupFailedCount: 0,
+    candidatePoolPhaseTiming: null,
+    databaseOps: {
+      reads: 0,
+      writes: 0,
+    },
+  };
+}
+
+function readAuditId(value) {
+  if (typeof value === 'string' && value.trim()) return value.trim().slice(0, 80);
+  return `rec_srv_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`;
+}
+
+function getRecommendationErrorCode(error) {
+  const value = error?.businessCode || error?.code || error?.name;
+  return typeof value === 'string' || typeof value === 'number' ? String(value).slice(0, 80) : 'UNKNOWN';
+}
+
+function getSafeRecommendationErrorMessage(error) {
+  return typeof error?.message === 'string' ? error.message.slice(0, 240) : 'unknown error';
+}
+
+function attachPresentationEvidenceDebug(debug, input) {
+  const startedAt = Date.now();
+  const evidence = buildPresentationEvidence({
+    ...input,
+    qaVersion: QA_BATCH_AUDIT_VERSION,
+  });
+  const actualBytes = serializedPresentationEvidenceBytes(evidence);
+  if (actualBytes >= PRESENTATION_EVIDENCE_MAX_BYTES) {
+    delete debug.presentationEvidence;
+    debug.presentationEvidenceStatus = {
+      status: 'omitted_over_budget',
+      version: PRESENTATION_EVIDENCE_VERSION,
+      actualBytes,
+      limitBytes: PRESENTATION_EVIDENCE_MAX_BYTES,
+    };
+    if (debug.timings) debug.timings.presentationEvidenceMs = Date.now() - startedAt;
+    return null;
+  }
+  delete debug.presentationEvidenceStatus;
+  debug.presentationEvidence = evidence;
+  if (debug.timings) debug.timings.presentationEvidenceMs = Date.now() - startedAt;
+  return evidence;
+}
+
+function buildRecommendationQaSummaries({
+  enabled,
+  auditId,
+  sceneKey,
+  inputScene,
+  scene,
+  weather,
+  weatherInput,
+  weatherMode,
+  weatherSnapshot,
+  recommendations,
+  compiledOutfits,
+  finalOutfits,
+  timings,
+  diagnostics,
+  execution,
+}) {
+  if (!enabled) return null;
+  if (diagnostics) diagnostics.stage = 'qaAudit';
+  const startedAt = Date.now();
+  const result = buildQaAuditSummaries({
+    auditId,
+    sceneKey,
+    eligibilityRejectionAuditEnabled: enabled,
+    requestScene: inputScene,
+    responseScene: scene || '',
+    weatherMode,
+    weather: weatherInput || weather,
+    hasUsableWeather: Boolean(recommendations.debug?.hasUsableWeather),
+    weatherSnapshotPresent: Boolean(weatherSnapshot),
+    temperatureBandApplied: Boolean(recommendations.debug?.temperatureBandApplied),
+    cloudBuild: CLOUD_BUILD_VERSION,
+    guardAcceptedCandidates: recommendations.debug?._auditGuardAcceptedCandidates || [],
+    guardRejectedCandidates: recommendations.debug?._auditGuardRejectedCandidates || [],
+    acceptedCandidates: recommendations.debug?._auditAcceptedCandidates || [],
+    counts: {
+      candidate: recommendations.debug?.candidateCount ?? 0,
+      generated: recommendations.debug?.generatedCount ?? 0,
+      accepted: recommendations.debug?.guardAcceptedCount ?? 0,
+      rejected: recommendations.debug?.guardRejectedCount ?? 0,
+      selected: recommendations.length,
+    },
+    rejectionReasonCounts: recommendations.debug?.rejectReasonCounts || {},
+    selectedOutfits: recommendations,
+    compiledOutfits,
+    finalOutfits,
+    timings,
+    execution: {
+      ...execution,
+      guardCandidateCount: recommendations.debug?.guardCandidateCount ?? execution?.guardCandidateCount,
+      guardAcceptedCount: recommendations.debug?.guardAcceptedCount ?? execution?.guardAcceptedCount,
+      guardRejectedCount: recommendations.debug?.guardRejectedCount ?? execution?.guardRejectedCount,
+    },
+  });
+  timings.qaAuditMs = Date.now() - startedAt;
+  return result;
+}
+
+function finalizeFullComputeAfterPoolPersist({
+  diagnostics,
+  baseRecommendationBatchId,
+  cacheMissReason,
+  sceneContract,
+  qaResult,
+  rejectionReasonCounts,
+  outfits,
+  weatherSnapshot,
+  weatherMode,
+  recommendationNotice,
+  missingRoles,
+  missingFacts,
+  limited,
+  exhausted,
+  countContract,
+  debug,
+  meta,
+}) {
+  const poolSaveStatus = diagnostics.candidatePoolSaveStatus;
+  let recommendationBatchId;
+  let finalCacheMissReason = cacheMissReason;
+
+  if (poolSaveStatus === 'saved') {
+    recommendationBatchId = baseRecommendationBatchId;
+  } else {
+    recommendationBatchId = undefined;
+    finalCacheMissReason = 'candidate_pool_not_saved';
+  }
+
+  const recommendationBatchIdPresent = Boolean(recommendationBatchId);
+  const recommendationBatchIdLength = recommendationBatchId ? recommendationBatchId.length : 0;
+  const finalDebug = {
+    ...debug,
+    candidatePoolSaveStatus: diagnostics.candidatePoolSaveStatus,
+    candidatePoolSaveReason: diagnostics.candidatePoolSaveReason,
+    candidatePoolSerializedBytes: diagnostics.candidatePoolSerializedBytes,
+    candidatePoolChunkCount: diagnostics.candidatePoolChunkCount,
+    candidatePoolSerializationMs: diagnostics.timings.candidatePoolSerializationMs,
+    candidatePoolManifestBytes: diagnostics.candidatePoolManifestBytes,
+    candidatePoolChunksBytes: diagnostics.candidatePoolChunksBytes,
+    candidatePoolChunkWriteTimings: diagnostics.candidatePoolChunkWriteTimings,
+    candidatePoolMaxActiveChunkWrites: diagnostics.candidatePoolMaxActiveChunkWrites,
+    candidatePoolValidationReadCount: diagnostics.candidatePoolValidationReadCount,
+    candidatePoolValidationMode: diagnostics.candidatePoolValidationMode,
+    candidatePoolCleanupAttempted: diagnostics.candidatePoolCleanupAttempted === true,
+    candidatePoolCleanupDeletedCount: diagnostics.candidatePoolCleanupDeletedCount || 0,
+    candidatePoolCleanupFailedCount: diagnostics.candidatePoolCleanupFailedCount || 0,
+    candidatePoolPhaseTiming: diagnostics.candidatePoolPhaseTiming,
+    recommendationBatchIdPresent,
+    recommendationBatchIdLength,
+    requestedCandidatePoolIdPresent: diagnostics.requestedCandidatePoolIdPresent ?? false,
+    requestedCandidatePoolIdLength: diagnostics.requestedCandidatePoolIdLength ?? 0,
+    cacheMissReason: finalCacheMissReason || debug.cacheMissReason,
+  };
+
+  const response = finalizeRecommendationResponse({
+    sceneContract,
+    diagnostics,
+    qaResult,
+    rejectionReasonCounts,
+    data: {
+      outfits,
+      ...(weatherSnapshot ? { weather: weatherSnapshot } : {}),
+      weatherMode,
+      recommendationNotice,
+      ...(recommendationBatchId ? { recommendationBatchId } : {}),
+      missingRoles,
+      missingFacts,
+      limited,
+      exhausted,
+      countContract,
+      debug: finalDebug,
+      meta,
+    },
   });
 
   return {
-    outfits: hydratedOutfits,
-    weather,
-    recommendationNotice,
+    response,
     recommendationBatchId,
-    limited: Boolean(recommendations.limited),
-    exhausted: Boolean(recommendations.exhausted),
-    debug,
+    cacheMissReason: finalCacheMissReason,
   };
+}
+
+function finalizeRecommendationResponse({
+  sceneContract,
+  diagnostics,
+  qaResult,
+  rejectionReasonCounts,
+  data,
+}) {
+  diagnostics.stage = 'serialization';
+  const serializationStartedAt = Date.now();
+  const responseData = buildRecommendationResponseData(sceneContract, {
+    ...data,
+    ...(qaResult?.clientAudit ? { qaBatchAudit: qaResult.clientAudit } : {}),
+  });
+  let budget = measureRecommendationResponse(responseData);
+  syncRecommendationResponseDiagnostics(responseData, diagnostics.timings, budget, qaResult?.clientAudit);
+  if (qaResult?.clientAudit) fitQaBatchAuditToBudget(qaResult.clientAudit);
+  budget = measureRecommendationResponse(responseData);
+  if (qaResult?.clientAudit && budget.totalDataBytes >= 768 * 1024) {
+    truncateQaForResponseBudget(qaResult.clientAudit);
+    budget = measureRecommendationResponse(responseData);
+  }
+  diagnostics.timings.serializationMs = Date.now() - serializationStartedAt;
+  diagnostics.timings.totalMs = Date.now() - diagnostics.startedAt;
+  syncRecommendationResponseDiagnostics(responseData, diagnostics.timings, budget, qaResult?.clientAudit);
+  budget = measureRecommendationResponse(responseData);
+  syncRecommendationResponseDiagnostics(responseData, diagnostics.timings, budget, qaResult?.clientAudit);
+  emitRecommendationServerDone({
+    auditId: diagnostics.auditId,
+    scene: responseData.scene,
+    debug: responseData.debug,
+    budget,
+    rejectionReasonCounts,
+  });
+  if (qaResult?.serverSummary) {
+    qaResult.serverSummary.timings = { ...diagnostics.timings };
+    qaResult.serverSummary.responseBytes = { ...budget };
+    console.info('[RecommendationQA_SERVER]', qaResult.serverSummary);
+  }
+  return responseData;
+}
+
+function syncRecommendationResponseDiagnostics(data, timings, budget, qaBatchAudit) {
+  data.debug.timings = { ...timings };
+  data.debug.responseBytes = { ...budget };
+  data.debug.qaTruncated = Boolean(qaBatchAudit?.qaTruncated);
+  if (!qaBatchAudit) return;
+  qaBatchAudit.timings = { ...timings };
+  qaBatchAudit.responseBytes = { ...budget };
+}
+
+function measureRecommendationResponse(data) {
+  const eligibilityRejectionAuditBytes = data.qaBatchAudit?.eligibilityRejectionAudit?.serializedBytes;
+  return {
+    outfitsBytes: serializedBytes(data.outfits || []),
+    debugBytes: serializedBytes(data.debug || {}),
+    qaBytes: serializedBytes(data.qaBatchAudit || {}),
+    totalDataBytes: serializedBytes(data),
+    ...(Number.isFinite(eligibilityRejectionAuditBytes)
+      ? { eligibilityRejectionAuditBytes }
+      : {}),
+  };
+}
+
+function truncateQaForResponseBudget(audit) {
+  audit.qaTruncated = true;
+  if (audit.qaGateSummary) audit.qaGateSummary.qaTruncated = true;
+  if (audit.eligibilityRejectionAudit) {
+    fitEligibilityRejectionAuditToBudget(audit.eligibilityRejectionAudit);
+  }
+  delete audit.alternativeCandidates;
+  delete audit.rejectionSamples;
+  audit.rejectionReasonHistogram = (audit.rejectionReasonHistogram || []).slice(0, 4);
+  audit.archetypeHistogram = (audit.archetypeHistogram || []).slice(0, 3);
+}
+
+function emitRecommendationServerDone({ auditId, scene, debug, budget, rejectionReasonCounts }) {
+  console.log('[RecommendationServerDone]', {
+    auditId,
+    scene,
+    candidate: debug.candidateCount,
+    accepted: debug.acceptedCount,
+    rejected: debug.rejectedCount,
+    selected: debug.selectedCount,
+    topRejectionReasons: topRejectionReasons(rejectionReasonCounts),
+    totalMs: debug.timings.totalMs,
+    responseBytes: budget.totalDataBytes,
+    qaBytes: budget.qaBytes,
+    buildVersion: CLOUD_BUILD_VERSION,
+  });
+}
+
+function topRejectionReasons(counts) {
+  return Object.entries(counts || {})
+    .filter(([, count]) => Number.isFinite(Number(count)) && Number(count) > 0)
+    .map(([reason, count]) => ({ reason: String(reason).slice(0, 80), count: Number(count) }))
+    .sort((left, right) => right.count - left.count || left.reason.localeCompare(right.reason))
+    .slice(0, 8);
 }
 
 async function getOutfitDetail(event) {
@@ -402,16 +1299,17 @@ async function generateAiComment(event) {
         errorCode,
       });
     }
-    if (context && lease?.generationToken) {
-      await finishAiReviewFailure(context, lease.generationToken).catch(() => false);
-    }
-    const review = context ? await readAiReview(context.reviewId).catch(() => null) : null;
+    const failureResult = context && lease?.generationToken
+      ? await finishAiReviewFailure(context, lease.generationToken).catch(() => null)
+      : null;
+    const review = failureResult?.review || (context ? await readAiReview(context.reviewId).catch(() => null) : null);
     if (aiReviewDebug) logAiReviewDebug('result', aiReviewDebug);
     return {
       ...buildAiReviewResponse(context, review, {
         cacheHit: false,
         saved: false,
         fallback: true,
+        retainedPrevious: Boolean(failureResult?.restored),
         errorCode,
         aiReviewDebug,
       }),
@@ -439,7 +1337,7 @@ async function buildAiCommentContext(event) {
   if (!lookupOutfitKey) throw new Error('outfit identity is required');
 
   const assetSource = await findAuthoritativeAiCommentAsset(OPENID, event, payload, lookupOutfitKey, requestedScene);
-  const source = assetSource
+  const loadedSource = assetSource
     ? await buildAiCommentSourceFromOutfitAsset(OPENID, assetSource.asset, requestedScene, {
         useSnapshotItems: assetSource.kind === 'favorite' || assetSource.kind === 'history',
       })
@@ -451,6 +1349,7 @@ async function buildAiCommentContext(event) {
         aestheticEvaluation: event.aestheticEvaluation,
         reason: event.reason,
       });
+  const source = canonicalizeAiCommentSource(loadedSource);
   if (!source.aestheticEvaluation && payload?.aestheticEvaluation) {
     source.aestheticEvaluation = payload.aestheticEvaluation;
   }
@@ -518,6 +1417,24 @@ async function buildAiCommentSourceFromOutfitAsset(openid, asset, requestedScene
     aestheticEvaluation: asset.aestheticEvaluation,
     ...pickOutfitStoryFields(asset),
     reason: normalizeAiCommentReason(asset.reasoning || asset.reason),
+  };
+}
+
+function canonicalizeAiCommentSource(source) {
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return source;
+  const canonical = normalizeDefaultCopyAtResponseBoundary({
+    ...source,
+    weatherSnapshot: source.weatherSnapshot || source.weather,
+  }, {
+    scene: source.scene,
+    weather: source.weatherSnapshot || source.weather,
+    mode: 'saved_snapshot',
+  });
+  return {
+    ...source,
+    copyContract: canonical.copyContract,
+    ...pickRecommendationCopyContractFields(canonical),
+    ...pickOutfitStoryFields(canonical, source),
   };
 }
 
@@ -708,17 +1625,9 @@ async function callAiCommentModel(input, aiReviewDebug) {
     });
     logAiReviewDebug('validator', aiReviewDebug);
     logAiReviewDebug('fallback', aiReviewDebug);
-    const fallback = buildRuleFallbackExplanationV2(input, {
-      provider: AI_COMMENT_PROVIDER,
-      model: AI_COMMENT_MODEL,
-      generatedAt: new Date().toISOString(),
-    });
-    return {
-      ...toLegacyAiComment(fallback),
-      reviewSource: 'rule_fallback',
-      fallbackReason: 'validator_rejected',
-      validatorRejectReasons: safeRejectReasons,
-    };
+    const serviceError = createAiReviewServiceError('AI_REVIEW_UNKNOWN', error);
+    serviceError.validatorRejectReasons = safeRejectReasons;
+    throw serviceError;
   }
 
   try {
@@ -728,8 +1637,8 @@ async function callAiCommentModel(input, aiReviewDebug) {
       generatedAt: new Date().toISOString(),
     });
     updateAiReviewDebug(aiReviewDebug, {
-      validatorResult: 'accepted',
-      validatorRejectReasons: [],
+      validatorResult: explanation.partial ? 'accepted_partial' : 'accepted',
+      validatorRejectReasons: explanation.partial ? explanation.adviceRejectReasons : [],
       validatorTrace: [
         jsonParsePassTrace,
         ...traceStylistExplanationValidationV2(parsed, input),
@@ -760,17 +1669,9 @@ async function callAiCommentModel(input, aiReviewDebug) {
     });
     logAiReviewDebug('validator', aiReviewDebug);
     logAiReviewDebug('fallback', aiReviewDebug);
-    const fallback = buildRuleFallbackExplanationV2(input, {
-      provider: AI_COMMENT_PROVIDER,
-      model: AI_COMMENT_MODEL,
-      generatedAt: new Date().toISOString(),
-    });
-    return {
-      ...toLegacyAiComment(fallback),
-      reviewSource: 'rule_fallback',
-      fallbackReason: 'validator_rejected',
-      validatorRejectReasons: safeRejectReasons,
-    };
+    const serviceError = createAiReviewServiceError('AI_REVIEW_UNKNOWN', error);
+    serviceError.validatorRejectReasons = safeRejectReasons;
+    throw serviceError;
   }
 }
 
@@ -805,6 +1706,8 @@ function normalizeAiComment(value) {
     ...(value.primaryBenefitCode ? { primaryBenefitCode: limitText(value.primaryBenefitCode, 64) } : {}),
     ...(value.reviewSource ? { reviewSource: limitText(value.reviewSource, 32) } : {}),
     ...(Array.isArray(value.validatorRejectReasons) ? { validatorRejectReasons: readStringArray(value.validatorRejectReasons) } : {}),
+    partial: Boolean(value.partial),
+    adviceRejectReasons: readStringArray(value.adviceRejectReasons),
   };
 }
 
@@ -812,6 +1715,18 @@ function isFallbackAiComment(aiComment) {
   return ['rule_fallback', 'cached_fallback'].includes(aiComment?.source)
     || ['rule_fallback', 'cached_fallback'].includes(aiComment?.reviewSource)
     || ['rule_fallback', 'cached_fallback'].includes(aiComment?.explanationV2?.source);
+}
+
+function isCurrentCanonicalRuleDefaultAiComment(value, outfit) {
+  return outfit?.copyContractVersion === COPY_CONTRACT_VERSION
+    && outfit?.reviewSource === 'rule_default'
+    && value?.reviewSource === 'rule_default'
+    && value?.overallComment === outfit?.copyContract?.detailExplanation
+    && value?.advice === '';
+}
+
+function normalizeRecommendationAiComment(value, outfit) {
+  return isCurrentCanonicalRuleDefaultAiComment(value, outfit) ? value : normalizeAiComment(value);
 }
 
 function normalizeOutfitItemRoles(value) {
@@ -842,6 +1757,8 @@ function normalizeContentPlan(value) {
     items,
     observations: readStringArray(value.observations).slice(0, 8),
     primaryBenefit,
+    ...(value.primaryRelationCode ? { primaryRelationCode: limitText(value.primaryRelationCode, 96) } : {}),
+    ...(value.presentationFactSignature ? { presentationFactSignature: limitText(value.presentationFactSignature, 4096) } : {}),
     ...(value.secondaryBenefit ? { secondaryBenefit: limitText(value.secondaryBenefit, 64) } : {}),
     ...(value.suggestion && typeof value.suggestion === 'object' && value.suggestion.text
       ? { suggestion: { text: limitText(value.suggestion.text, 120) } }
@@ -850,7 +1767,9 @@ function normalizeContentPlan(value) {
       ? {
           defaultCopy: {
             todayReason: limitText(value.defaultCopy.todayReason, 160),
-            detailExplanation: limitText(value.defaultCopy.detailExplanation, 240),
+            ...(value.defaultCopy.detailExplanation
+              ? { detailExplanation: limitText(value.defaultCopy.detailExplanation, 240) }
+              : {}),
             aiExtraDefault: limitText(value.defaultCopy.aiExtraDefault, 240),
             usedInsightCodes: readStringArray(value.defaultCopy.usedInsightCodes).slice(0, 8),
             usedPhrases: readStringArray(value.defaultCopy.usedPhrases).slice(0, 8),
@@ -891,6 +1810,61 @@ function pickOutfitStoryFields(primary, fallback) {
       : {}),
     ...(primary?.cacheReuseReason || fallback?.cacheReuseReason ? { cacheReuseReason: primary?.cacheReuseReason || fallback?.cacheReuseReason } : {}),
   };
+}
+
+const COPY_CONTRACT_FIELDS = [
+  'copyContract',
+  'copyContractVersion',
+  'voiceBankVersion',
+  'todayClaim',
+  'todayClaimId',
+  'todayAction',
+  'todayDimension',
+  'todayEvidenceIds',
+  'todayRequiredFactIds',
+  'todayEvidenceSources',
+  'todaySentenceClusterId',
+  'todaySubjectItemId',
+  'todaySubjectItemIds',
+  'todaySlotBindings',
+  'todayReasonSource',
+  'coreEligibilityReason',
+  'coreEligibilityReasonCode',
+  'coreEligibilityEvidence',
+  'coreEligibilitySubjectItemIds',
+  'coreEligibilitySupportingFactIds',
+  'coreEligibilityRelationFactIds',
+  'coreEligibilitySourceRule',
+  'coreEligibilitySourceRuleReasons',
+  'enhancedReason',
+  'enhancementRejectReasons',
+  'detailClaim',
+  'detailClaimId',
+  'detailAction',
+  'detailDimension',
+  'detailEvidenceIds',
+  'detailRequiredFactIds',
+  'detailEvidenceSources',
+  'detailSentenceClusterId',
+  'detailSubjectItemId',
+  'detailSubjectItemIds',
+  'detailSlotBindings',
+  'riskFlags',
+  'copyGateResult',
+  'copyRiskFlags',
+  'copyDisplay',
+  'defaultCopyHidden',
+  'copyFinalizationMode',
+  'qualification',
+];
+
+function pickRecommendationCopyContractFields(primary, fallback) {
+  const fields = {};
+  for (const field of COPY_CONTRACT_FIELDS) {
+    const value = primary?.[field] !== undefined ? primary[field] : fallback?.[field];
+    if (value !== undefined) fields[field] = value;
+  }
+  return fields;
 }
 
 function normalizeCardViewModel(value) {
@@ -1133,7 +2107,7 @@ function buildAiReviewResponse(context, review, options = {}) {
   const fallbackReview = isFallbackAiReview(review) || isFallbackAiComment(aiComment);
   const stale = context ? isAiReviewStale(review, context) : false;
   return {
-    success: !fallbackReview && !options.errorCode,
+    success: !fallbackReview && !options.errorCode && Boolean(ready),
     aiComment: !fallbackReview && (ready || options.inProgress)
       ? aiComment
       : !fallbackReview && options.fallbackAiComment
@@ -1159,6 +2133,8 @@ function buildAiReviewResponse(context, review, options = {}) {
           sceneIntent: context?.sceneIntent || review.sceneIntent || aiComment?.sceneIntent,
           primaryBenefitCode: context?.primaryBenefitCode || review.primaryBenefitCode || aiComment?.primaryBenefitCode,
           validatorRejectReasons: readStringArray(review.validatorRejectReasons || aiComment?.validatorRejectReasons),
+          partial: Boolean(review.partial || aiComment?.partial),
+          adviceRejectReasons: readStringArray(review.adviceRejectReasons || aiComment?.adviceRejectReasons),
           cacheReuseReason: options.cacheHit ? 'ready_review_match' : '',
           model: review.model,
           provider: review.provider,
@@ -1179,6 +2155,10 @@ function buildAiReviewResponse(context, review, options = {}) {
     superseded: Boolean(options.superseded),
     cooldown: Boolean(options.cooldown),
     retryAfterMs: options.retryAfterMs,
+    aiReviewVersion: AI_REVIEW_VERSION,
+    partial: Boolean(review?.partial || aiComment?.partial),
+    adviceRejectReasons: readStringArray(review?.adviceRejectReasons || aiComment?.adviceRejectReasons),
+    retainedPrevious: Boolean(options.retainedPrevious),
     promptVersion: context?.promptVersion || review?.promptVersion || AI_COMMENT_PROMPT_VERSION,
     reviewVersion: context?.reviewVersion || review?.reviewVersion,
     copyPolicyVersion: context?.copyPolicyVersion || review?.copyPolicyVersion,
@@ -1292,19 +2272,18 @@ async function finishAiReviewSuccess(context, generationToken, aiComment) {
       return { saved: false, superseded: true, review: current };
     }
 
-    const explanation = aiComment.explanationV2 || buildRuleFallbackExplanationV2(context.evidenceInput, {
-      provider: context.provider,
-      model: context.model,
-      generatedAt: aiComment.generatedAt || now,
-    });
+    const explanation = aiComment.explanationV2;
+    if (!canPersistAiReviewAsReady(aiComment)) {
+      throw createAiReviewServiceError('AI_REVIEW_UNKNOWN');
+    }
     const readyData = {
       ...buildStylistReviewDocument({
         context,
         explanation,
         now,
       }),
-      cacheable: explanation.source !== 'rule_fallback',
-      enhanced: explanation.source !== 'rule_fallback',
+      cacheable: true,
+      enhanced: true,
       generationToken: null,
       generationStartedAt: null,
       previousReview: null,
@@ -1323,39 +2302,15 @@ async function finishAiReviewFailure(context, generationToken) {
       return { restored: false, superseded: true, review: current };
     }
 
-    const previous = current.previousReview;
-    const failureData = previous && normalizeAiComment(previous.aiComment)
-      ? {
-          status: 'ready',
-          aiComment: previous.aiComment,
-          inputHash: previous.inputHash,
-          inputDigest: previous.inputDigest,
-          schemaVersion: previous.schemaVersion,
-          reviewVersion: previous.reviewVersion,
-          promptVersion: previous.promptVersion,
-          copyPolicyVersion: previous.copyPolicyVersion,
-          evidenceVersion: previous.evidenceVersion,
-          source: previous.source,
-          explanationV2: previous.explanationV2,
-          provider: previous.provider,
-          model: previous.model,
-          generatedAt: previous.generatedAt,
-          updatedAt: previous.updatedAt || now,
-        }
-      : {
-          status: 'failed',
-          aiComment: null,
-          generatedAt: null,
-          updatedAt: now,
-        };
+    const settlement = resolveAiReviewFailureSettlement(current.previousReview, normalizeAiComment, now);
     const settledData = {
-      ...failureData,
+      ...settlement.data,
       generationToken: null,
       generationStartedAt: null,
       previousReview: null,
     };
     await ref.update({ data: settledData });
-    return { restored: Boolean(previous), superseded: false, review: { ...current, ...settledData } };
+    return { restored: settlement.restored, superseded: false, review: { ...current, ...settledData } };
   });
 }
 
@@ -1371,6 +2326,9 @@ function buildPreviousAiReviewSnapshot(review) {
     evidenceVersion: review.evidenceVersion,
     source: review.source,
     explanationV2: review.explanationV2,
+    voicePolicyVersion: review.voicePolicyVersion,
+    partial: Boolean(review.partial || review.aiComment?.partial),
+    adviceRejectReasons: readStringArray(review.adviceRejectReasons || review.aiComment?.adviceRejectReasons),
     provider: review.provider,
     model: review.model,
     generatedAt: review.generatedAt,
@@ -1470,8 +2428,33 @@ async function runOutfitReferenceTransaction(callback) {
     return await db.runTransaction(callback, 3);
   } catch (error) {
     if (error && error.businessCode) throw error;
-    throw createBusinessError('OUTFIT_REFERENCE_WRITE_FAILED', '操作暂时失败，请稍后再试');
+    const wrapped = createBusinessError('OUTFIT_REFERENCE_WRITE_FAILED', '操作暂时失败，请稍后再试');
+    wrapped.cause = serializeOutfitReferenceCause(error, {
+      stage: error?.outfitReferenceStage || 'transaction_start_or_commit',
+    });
+    throw wrapped;
   }
+}
+
+function serializeOutfitReferenceCause(error, fallback = {}) {
+  const source = error && typeof error === 'object' ? error : { message: String(error || '') };
+  return {
+    errCode: source.errCode ?? source.code ?? null,
+    errMsg: source.errMsg || source.message || '',
+    stack: typeof source.stack === 'string' ? source.stack.slice(0, 4000) : '',
+    stage: source.outfitReferenceStage || fallback.stage || '',
+    documentId: source.outfitReferenceDocumentId || '',
+    outfitKey: source.outfitReferenceKey || '',
+  };
+}
+
+function annotateOutfitReferenceCause(error, details = {}) {
+  if (error && typeof error === 'object') {
+    if (details.stage) error.outfitReferenceStage = details.stage;
+    if (details.documentId) error.outfitReferenceDocumentId = details.documentId;
+    if (details.outfitKey) error.outfitReferenceKey = details.outfitKey;
+  }
+  return error;
 }
 
 async function saveFavoriteOutfit(id, outfitPayload, aiCommentPayload) {
@@ -1677,13 +2660,21 @@ function createRecommendationBatchId(now) {
   return `batch:${now}:${Math.random().toString(36).slice(2, 10)}`;
 }
 
-async function enrichOutfitsState(outfits, { openid, targetDate, generatedAt, recommendationBatchId }) {
+async function enrichOutfitsState(outfits, {
+  openid,
+  targetDate,
+  generatedAt,
+  recommendationBatchId,
+  copyMode = 'saved_snapshot',
+  assetRecords,
+}) {
   const keys = uniqueStrings(outfits.map((outfit) => outfit.outfitKey || getOutfitKey(outfit.clothingIds || [])));
-  const [favoriteMap, historyMap, assetMap] = await Promise.all([
+  const [favoriteMap, historyMap, loadedAssetMap] = await Promise.all([
     findFavoritesByKeys(openid, keys),
     findTodayHistoryByKeys(openid, keys, targetDate),
-    findOutfitsByKeys(openid, keys),
+    Array.isArray(assetRecords) ? Promise.resolve(null) : findOutfitsByKeys(openid, keys),
   ]);
+  const assetMap = loadedAssetMap || buildOutfitRecordMap(assetRecords);
 
   return outfits.map((outfit) => {
     const clothingIds = outfit.clothingIds || [];
@@ -1691,10 +2682,8 @@ async function enrichOutfitsState(outfits, { openid, targetDate, generatedAt, re
     const favorite = favoriteMap.get(outfitKey);
     const history = historyMap.get(outfitKey);
     const asset = assetMap.get(outfitKey);
-    const title = outfit.title || asset?.title;
-    const userTitle = readTitle(outfit.userTitle) || readTitle(asset?.userTitle) || undefined;
-    const displayTitle = getDisplayTitle({ userTitle, title: title || outfit.displayTitle }, `${outfit.scene || asset?.scene || '今日'}搭配`);
-    return {
+    const { title, userTitle, displayTitle } = resolveEnrichedTitleState(outfit, asset, copyMode);
+    const enriched = {
       ...outfit,
       outfitId: outfit.outfitId || asset?._id || (outfit.outfitKind === 'recommendation' ? outfit.id : undefined),
       outfitKey,
@@ -1713,7 +2702,41 @@ async function enrichOutfitsState(outfits, { openid, targetDate, generatedAt, re
       recommendationBatchId: outfit.recommendationBatchId || recommendationBatchId,
       generatedAt: outfit.generatedAt || generatedAt,
     };
+    return normalizeDefaultCopyAtResponseBoundary(enriched, {
+      scene: enriched.scene,
+      weather: enriched.weatherSnapshot || enriched.weather,
+      mode: copyMode,
+    });
   });
+}
+
+function resolveEnrichedTitleState(outfit, asset, copyMode) {
+  const userTitle = readTitle(outfit?.userTitle) || readTitle(asset?.userTitle) || undefined;
+  if (copyMode === FINALIZATION_MODES.NEW_RECOMMENDATION) {
+    const canonicalTitle = readTitle(outfit?.title);
+    return {
+      title: canonicalTitle,
+      userTitle,
+      displayTitle: canonicalTitle,
+    };
+  }
+  const title = readTitle(outfit?.title) || readTitle(asset?.title);
+  return {
+    title,
+    userTitle,
+    displayTitle: getDisplayTitle(
+      { userTitle, title: title || outfit?.displayTitle },
+      `${outfit?.scene || asset?.scene || '今日'}搭配`,
+    ),
+  };
+}
+
+function buildOutfitRecordMap(records) {
+  const map = new Map();
+  for (const item of Array.isArray(records) ? records : []) {
+    if (item?.outfitKey) map.set(item.outfitKey, item);
+  }
+  return map;
 }
 
 async function enrichSingleOutfitState(outfit, { openid, targetDate }) {
@@ -1849,7 +2872,20 @@ function buildSnapshotRecordData(base, { aiComment, outfitKey, now, source }) {
   const itemsSnapshot = buildDetailedSnapshotItems(clothingIds, base);
   const reason = base.reason || base.reasoning || '';
   const reasoning = base.reasoning || base.reason || '';
-  const normalizedAiComment = normalizeAiComment(aiComment);
+  const reviewCandidate = { ...base, aiComment };
+  const realAiReviewSource = resolveRealAiReviewSource(reviewCandidate);
+  const reviewFields = mapAiReviewAtBoundary(
+    reviewCandidate,
+    (value) => normalizeRecommendationAiComment(value, reviewCandidate),
+  );
+  if (
+    reviewFields.aiComment
+    && !realAiReviewSource
+    && !isCurrentCanonicalRuleDefaultAiComment(reviewFields.aiComment, reviewCandidate)
+    && !reviewFields.aiComment.generatedAt
+  ) {
+    reviewFields.aiComment = { ...reviewFields.aiComment, generatedAt: now };
+  }
   const aestheticEvaluation = normalizeAestheticEvaluationForStorage(base.aestheticEvaluation);
   const fallbackTitle = `${base.scene || '今日'}搭配`;
 
@@ -1870,12 +2906,20 @@ function buildSnapshotRecordData(base, { aiComment, outfitKey, now, source }) {
       displayImageUrl: item.displayImageUrl || item.imageUrl || item.thumbnailUrl || '',
       thumbnailUrl: item.thumbnailUrl || item.displayImageUrl || item.imageUrl || '',
       isDeleted: Boolean(item.deletedAt),
+      ...pickCopyEvidenceSnapshotFields(item),
     })),
     scene: base.scene,
     targetDate: base.targetDate,
     timeOfDay: base.timeOfDay || 'all_day',
-    weather: base.weatherSnapshot || base.weather || fallbackWeather(),
-    weatherSnapshot: base.weatherSnapshot || base.weather || fallbackWeather(),
+    ...((base.weatherSnapshot || base.weather)
+      ? {
+          weather: base.weatherSnapshot || base.weather,
+          weatherSnapshot: base.weatherSnapshot || base.weather,
+        }
+      : {}),
+    weatherMode: base.weatherMode || ((base.weatherSnapshot || base.weather) ? 'live' : 'unavailable'),
+    eligibility: base.eligibility,
+    eligibilityReason: cloneEligibilityReason(base.eligibilityReason),
     scores: sanitizeScores(base.scores || {}),
     ...(aestheticEvaluation ? { aestheticEvaluation } : {}),
     scoreExplanations: Array.isArray(base.scoreExplanations) ? base.scoreExplanations : [],
@@ -1884,8 +2928,9 @@ function buildSnapshotRecordData(base, { aiComment, outfitKey, now, source }) {
     reason,
     reasoning,
     ...(base.reasonVersion ? { reasonVersion: base.reasonVersion } : {}),
+    ...pickRecommendationCopyContractFields(base),
     ...pickOutfitStoryFields(base),
-    ...(normalizedAiComment ? { aiComment: normalizedAiComment.generatedAt ? normalizedAiComment : { ...normalizedAiComment, generatedAt: now } } : {}),
+    ...reviewFields,
   };
 }
 
@@ -1913,6 +2958,7 @@ function buildDetailedSnapshotItems(clothingIds, base) {
       thumbnailUrl: snapshot?.thumbnailUrl || snapshot?.displayImageUrl || snapshot?.imageUrl || '',
       name: snapshot?.name || snapshot?.category || '衣服',
       deletedAt: snapshot?.deletedAt || null,
+      ...pickCopyEvidenceSnapshotFields(snapshot),
     };
   });
 }
@@ -1937,6 +2983,7 @@ function normalizeDetailedSnapshotItems(value) {
             thumbnailUrl: item.thumbnailUrl || item.displayImageUrl || item.imageUrl || '',
             name: item.name || item.subcategory || item.category || '衣服',
             deletedAt: item.deletedAt || (item.isDeleted ? new Date().toISOString() : null),
+            ...pickCopyEvidenceSnapshotFields(item),
           };
         })
         .filter(Boolean)
@@ -1961,6 +3008,7 @@ function normalizeDetailedPayloadItems(value) {
           thumbnailUrl: item.thumbnailUrl || item.displayImageUrl || item.imageUrl || '',
           name: item.name || item.subcategory || item.category || '衣服',
           deletedAt: item.deletedAt || (item.isDeleted ? new Date().toISOString() : null),
+          ...pickCopyEvidenceSnapshotFields(item),
         }))
     : [];
 }
@@ -1980,6 +3028,7 @@ function toSnapshotOutfit(item, kind) {
     displayImageUrl: snapshot.displayImageUrl || snapshot.imageUrl || snapshot.thumbnailUrl || '',
     thumbnailUrl: snapshot.thumbnailUrl || snapshot.displayImageUrl || snapshot.imageUrl || '',
     isDeleted: Boolean(snapshot.deletedAt),
+    ...pickCopyEvidenceSnapshotFields(snapshot),
   }));
   const deletedItemCount = itemsSnapshot.filter((snapshot) => snapshot.deletedAt).length;
 
@@ -2006,11 +3055,13 @@ function toSnapshotOutfit(item, kind) {
       thumbnailUrl: snapshot.thumbnailUrl || snapshot.displayImageUrl || snapshot.imageUrl || '',
       colorPalette: snapshot.color ? [{ name: snapshot.color, hex: '' }] : [],
       isDeleted: Boolean(snapshot.deletedAt),
+      ...pickCopyEvidenceSnapshotFields(snapshot),
     })),
     scene: item.scene,
     targetDate: item.targetDate,
     timeOfDay: item.timeOfDay,
     weatherSnapshot: item.weatherSnapshot || item.weather,
+    weatherMode: item.weatherMode || ((item.weatherSnapshot || item.weather) ? 'live' : 'unavailable'),
     scores: sanitizeScores(item.scores || {}),
     aestheticEvaluation: normalizeAestheticEvaluationForStorage(item.aestheticEvaluation),
     scoreExplanations: item.scoreExplanations || [],
@@ -2035,8 +3086,11 @@ function toSnapshotOutfit(item, kind) {
     reason: item.reason || item.reasoning,
     reasoning: item.reasoning || item.reason,
     reasonVersion: item.reasonVersion,
+    ...pickRecommendationCopyContractFields(item),
+    eligibility: item.eligibility,
+    eligibilityReason: cloneEligibilityReason(item.eligibilityReason),
     ...pickOutfitStoryFields(item),
-    aiComment: normalizeAiComment(item.aiComment) || undefined,
+    ...mapAiReviewAtBoundary(item, (value) => normalizeRecommendationAiComment(value, item)),
   };
 }
 
@@ -2072,13 +3126,22 @@ async function upsertOutfitByKey({ openid, existing, base, patch, now }) {
 }
 
 function buildOutfitSaveData(base, { outfitKey, now, patch, current }) {
-  const weather = base.weatherSnapshot || base.weather || current?.weatherSnapshot || current?.weather || fallbackWeather();
+  const weather = base.weatherSnapshot || base.weather || current?.weatherSnapshot || current?.weather;
   const reason = base.reason || base.reasoning || current?.reason || current?.reasoning || '';
   const reasoning = base.reasoning || base.reason || current?.reasoning || current?.reason || '';
   const clothingIds = readBaseClothingIds(base);
   const snapshotItems = buildSnapshotItems(clothingIds, base, current);
   const incomplete = snapshotItems.some((item) => item.isDeleted) || Boolean(current?.incomplete);
-  const aiComment = normalizeAiComment(base.aiComment || current?.aiComment);
+  const reviewCandidate = {
+    aiComment: base.aiComment || current?.aiComment,
+    reviewSource: base.reviewSource || current?.reviewSource,
+    enhanced: base.enhanced === true || current?.enhanced === true,
+    ...pickRecommendationCopyContractFields(base, current),
+  };
+  const reviewFields = mapAiReviewAtBoundary(
+    reviewCandidate,
+    (value) => normalizeRecommendationAiComment(value, reviewCandidate),
+  );
   const title = base.title || current?.title || `${base.scene || current?.scene || '今日'}搭配`;
   const userTitle = readTitle(current?.userTitle) || readTitle(base.userTitle);
   const aestheticEvaluation = normalizeAestheticEvaluationForStorage(base.aestheticEvaluation || current?.aestheticEvaluation);
@@ -2095,8 +3158,10 @@ function buildOutfitSaveData(base, { outfitKey, now, patch, current }) {
     scene: base.scene || current?.scene,
     targetDate: base.targetDate || current?.targetDate,
     timeOfDay: base.timeOfDay || current?.timeOfDay || 'all_day',
-    weather,
-    weatherSnapshot: weather,
+    ...(weather ? { weather, weatherSnapshot: weather } : {}),
+    weatherMode: base.weatherMode || current?.weatherMode || (weather ? 'live' : 'unavailable'),
+    eligibility: base.eligibility || current?.eligibility,
+    eligibilityReason: cloneEligibilityReason(base.eligibilityReason || current?.eligibilityReason),
     scores: sanitizeScores(base.scores || current?.scores || {}),
     ...(aestheticEvaluation ? { aestheticEvaluation } : {}),
     scoreExplanations: Array.isArray(base.scoreExplanations) ? base.scoreExplanations : current?.scoreExplanations || [],
@@ -2109,14 +3174,96 @@ function buildOutfitSaveData(base, { outfitKey, now, patch, current }) {
     isWornToday: patch.isWornToday ?? Boolean(current?.isWornToday),
     recommendationBatchId: base.recommendationBatchId || current?.recommendationBatchId,
     generatedAt: base.generatedAt || current?.generatedAt,
-    styleTags: readStringArray(base.styleTags).length ? readStringArray(base.styleTags) : readSnapshotStyleTags(snapshotItems),
+    styleTags: readStringArray(base.styleTags).length
+      ? readStringArray(base.styleTags)
+      : readStringArray(current?.styleTags),
     reason,
     reasoning,
     reasonVersion: base.reasonVersion || current?.reasonVersion,
+    ...pickRecommendationCopyContractFields(base, current),
     ...pickOutfitStoryFields(base, current),
-    ...(aiComment ? { aiComment } : {}),
+    ...reviewFields,
     updatedAt: now,
   };
+}
+
+async function upsertRecommendationOutfitsBatch({
+  openid,
+  bases,
+  now,
+  operationCounts,
+}) {
+  const records = Array.isArray(bases) ? bases : [];
+  if (records.length === 0) return [];
+  const clothingIds = uniqueStrings(records.flatMap((base) => readBaseClothingIds(base)));
+  const outfitKeys = records.map((base) => getOutfitKey(readBaseClothingIds(base)));
+
+  return runOutfitReferenceTransaction(async (transaction) => {
+    if (operationCounts) operationCounts.reads += 1;
+    try {
+      await assertOutfitClothesAvailable(openid, clothingIds, transaction);
+    } catch (error) {
+      throw annotateOutfitReferenceCause(error, { stage: 'clothes_validation_read' });
+    }
+
+    if (operationCounts) operationCounts.reads += 1;
+    let existingResponse;
+    try {
+      existingResponse = await transaction.collection('outfits')
+        .where({ _openid: openid, outfitKey: db.command.in(uniqueStrings(outfitKeys)) })
+        .limit(100)
+        .get();
+    } catch (error) {
+      throw annotateOutfitReferenceCause(error, { stage: 'outfit_existing_read' });
+    }
+    const existingByKey = buildOutfitRecordMap(existingResponse.data);
+
+    const saved = [];
+    for (let index = 0; index < records.length; index += 1) {
+      const base = records[index];
+      const outfitKey = outfitKeys[index];
+      const current = existingByKey.get(outfitKey);
+      const data = buildOutfitSaveData(base, {
+        outfitKey,
+        now,
+        patch: {},
+        current,
+      });
+      if (operationCounts) operationCounts.writes += 1;
+      if (current) {
+        try {
+          await transaction.collection('outfits').doc(current._id).update({ data });
+        } catch (error) {
+          throw annotateOutfitReferenceCause(error, {
+            stage: 'outfit_update',
+            documentId: current._id,
+            outfitKey,
+          });
+        }
+        const updated = { ...current, ...data };
+        existingByKey.set(outfitKey, updated);
+        saved.push(updated);
+        continue;
+      }
+      const addData = {
+        _openid: openid,
+        ...data,
+        createdAt: now,
+      };
+      try {
+        const addRes = await transaction.collection('outfits').add({ data: addData });
+        const added = { ...addData, _id: addRes._id };
+        existingByKey.set(outfitKey, added);
+        saved.push(added);
+      } catch (error) {
+        throw annotateOutfitReferenceCause(error, {
+          stage: 'outfit_add',
+          outfitKey,
+        });
+      }
+    }
+    return saved;
+  });
 }
 
 async function findOutfitByKey(openid, outfitKey, database = db) {
@@ -2147,6 +3294,7 @@ function buildSnapshotItems(clothingIds, base, current) {
       displayImageUrl: snapshot?.displayImageUrl || snapshot?.imageUrl || snapshot?.thumbnailUrl || '',
       thumbnailUrl: snapshot?.thumbnailUrl || snapshot?.displayImageUrl || snapshot?.imageUrl || '',
       isDeleted: Boolean(snapshot?.isDeleted),
+      ...pickCopyEvidenceSnapshotFields(snapshot),
     };
   });
 }
@@ -2164,6 +3312,7 @@ function normalizeSnapshotItems(value) {
           displayImageUrl: item.displayImageUrl || item.imageUrl || item.thumbnailUrl || '',
           thumbnailUrl: item.thumbnailUrl || item.displayImageUrl || item.imageUrl || '',
           isDeleted: Boolean(item.isDeleted),
+          ...pickCopyEvidenceSnapshotFields(item),
         }))
     : [];
 }
@@ -2181,6 +3330,7 @@ function normalizePayloadItems(value) {
           displayImageUrl: item.displayImageUrl || item.imageUrl || item.thumbnailUrl || '',
           thumbnailUrl: item.thumbnailUrl || item.displayImageUrl || item.imageUrl || '',
           isDeleted: Boolean(item.isDeleted),
+          ...pickCopyEvidenceSnapshotFields(item),
         }))
     : [];
 }
@@ -2197,7 +3347,40 @@ function snapshotFromClothing(item, fallback, itemId) {
     displayImageUrl,
     thumbnailUrl,
     isDeleted: Boolean(item?.status === DELETED_STATUS || fallback?.isDeleted),
+    ...pickCopyEvidenceSnapshotFields(item, fallback),
   };
+}
+
+function pickCopyEvidenceSnapshotFields(primary, fallback) {
+  const source = primary && typeof primary === 'object' ? primary : {};
+  const backup = fallback && typeof fallback === 'object' ? fallback : {};
+  const result = {};
+  for (const field of [
+    'confidence', 'recognitionConfidence', 'aiConfidence', 'factConfidence', 'factSource',
+    'fit', 'silhouette', 'shoulderFit', 'shoulderLine', 'sleeveLength', 'sleeve', 'pantsLength',
+    'patternType', 'styleComplexity', 'neckline', 'collar', 'closure', 'shoeClosure',
+    'shoeType',
+    'thickness', 'material', 'materialGuess', 'userEdited', 'fieldSource',
+  ]) {
+    const value = source[field] !== undefined ? source[field] : backup[field];
+    if (value !== undefined && value !== null && value !== '') result[field] = value;
+  }
+  for (const field of [
+    'contractFacts', 'userFacts', 'careLabelFacts', 'productFacts', 'structuredAiFacts',
+    'visualFacts', 'styleTags', 'sceneTags',
+  ]) {
+    const value = Array.isArray(source[field]) ? source[field] : backup[field];
+    if (Array.isArray(value) && value.length > 0) result[field] = value.slice();
+  }
+  for (const field of ['factEvidence', 'factRecords', 'factsWithSource']) {
+    const value = Array.isArray(source[field]) ? source[field] : backup[field];
+    if (Array.isArray(value) && value.length > 0) result[field] = value.map((entry) => ({ ...entry }));
+  }
+  for (const field of ['factSources', 'factConfidences', 'aestheticFeatures', 'functionalFeatures']) {
+    const value = source[field] && typeof source[field] === 'object' ? source[field] : backup[field];
+    if (value && typeof value === 'object' && !Array.isArray(value)) result[field] = { ...value };
+  }
+  return result;
 }
 
 function getOutfitKey(clothingIds) {
@@ -2218,6 +3401,9 @@ function normalizeOutfitPayload(payload) {
     timeOfDay: payload.timeOfDay,
     weatherSnapshot: payload.weatherSnapshot,
     weather: payload.weather,
+    weatherMode: payload.weatherMode,
+    eligibility: payload.eligibility,
+    eligibilityReason: cloneEligibilityReason(payload.eligibilityReason),
     scores: payload.scores,
     aestheticEvaluation: payload.aestheticEvaluation,
     scoreExplanations: payload.scoreExplanations,
@@ -2237,8 +3423,6 @@ function normalizeOutfitPayload(payload) {
     recommendationBatchId: payload.recommendationBatchId,
     generatedAt: payload.generatedAt,
     styleTags: readStringArray(payload.styleTags),
-    aiComment: normalizeAiComment(payload.aiComment),
-    reasonVersion: payload.reasonVersion,
     outfitItemRoles: normalizeOutfitItemRoles(payload.outfitItemRoles),
     contentPlan: normalizeContentPlan(payload.contentPlan),
     contentPlanVersion: payload.contentPlanVersion,
@@ -2250,6 +3434,8 @@ function normalizeOutfitPayload(payload) {
     reviewSource: payload.reviewSource,
     validatorRejectReasons: readStringArray(payload.validatorRejectReasons),
     cacheReuseReason: payload.cacheReuseReason,
+    ...pickRecommendationCopyContractFields(payload),
+    ...mapAiReviewAtBoundary(payload, (value) => normalizeRecommendationAiComment(value, payload)),
   };
 }
 
@@ -2261,19 +3447,27 @@ function toTempOutfit(recommendation, context) {
   const clothingIds = recommendation.items.map((item) => item._id);
   const itemMap = new Map(recommendation.items.map((item) => [item._id, item]));
   const snapshotItems = clothingIds.map((id) => snapshotFromClothing(itemMap.get(id), null, id));
+  const existingPresentationPlan = readPresentationPlan(recommendation);
+  const presentationFactModel = existingPresentationPlan?.factModel || buildPresentationFactModel({
+    ...recommendation,
+    scene: context.scene,
+  });
+  const presentationPlan = existingPresentationPlan || buildPresentationPlan(presentationFactModel);
+  recordInstrumentationMetric(context.instrumentation, 'buildSnapshotItems');
   const data = {
-    _id: `recommend:${signature(clothingIds)}`,
+    _id: `recommend:${recommendation.outfitKey || signature(clothingIds)}`,
     _openid: context.openid,
     title: recommendation.title,
     clothingIds,
-    outfitKey: getOutfitKey(clothingIds),
+    outfitKey: recommendation.outfitKey || getOutfitKey(clothingIds),
     snapshotItems,
     incomplete: false,
     deletedItemCount: 0,
     scene: context.scene,
     targetDate: context.targetDate,
     timeOfDay: context.timeOfDay,
-    weatherSnapshot: context.weather,
+    ...(context.weather ? { weatherSnapshot: context.weather } : {}),
+    weatherMode: context.weatherMode,
     scores: recommendation.scores,
     scoreExplanations: recommendation.scoreExplanations,
     outfitItemRoles: normalizeOutfitItemRoles(recommendation.outfitItemRoles),
@@ -2284,6 +3478,8 @@ function toTempOutfit(recommendation, context) {
     primaryBenefitCode: recommendation.primaryBenefitCode || recommendation.primaryBenefit,
     secondaryBenefit: recommendation.secondaryBenefit,
     observationFocus: recommendation.observationFocus,
+    eligibility: recommendation.eligibility,
+    eligibilityReason: cloneEligibilityReason(recommendation.eligibilityReason),
     reviewSource: recommendation.reviewSource || 'rule_default',
     validatorRejectReasons: readStringArray(recommendation.validatorRejectReasons),
     cacheReuseReason: recommendation.cacheReuseReason || '',
@@ -2306,105 +3502,562 @@ function toTempOutfit(recommendation, context) {
   const outfit = attachAestheticEvaluation(toOutfit(data, recommendation.items), recommendation.items);
   return {
     ...outfit,
+    presentationPlan,
     cardViewModel: buildOutfitCardViewModel(outfit),
   };
+}
+
+function resolveCandidateSourceItems(candidate, itemFactsContext, sourceItemById) {
+  const refs = Array.isArray(candidate?.itemFactRefs) ? candidate.itemFactRefs : [];
+  return refs.map((ref) => {
+    const facts = itemFactsContext?.resolveItemFacts?.({ _id: ref.itemId });
+    const item = facts?.sourceItem || sourceItemById.get(ref.itemId);
+    if (!item) throw new Error(`candidate source item is missing: ${ref.itemId}`);
+    return item;
+  });
+}
+
+function materializeSelectedCandidate(candidate, {
+  scene,
+  weather,
+  tempConfig,
+  hasRealWeather,
+  itemFactsContext,
+  sourceItemById,
+  instrumentation,
+} = {}) {
+  const materialized = materializeCanonicalCandidate(candidate, {
+    scene,
+    weather,
+    itemFactsContext,
+    sourceItemById,
+    instrumentation,
+  });
+  attachSemanticOptionalItem(materialized, {
+    scene,
+    weather,
+    hasRealWeather,
+    sourceItemById,
+  });
+  const scores = materialized.scores || {};
+  const presentationFactModel = buildPresentationFactModel({ ...materialized, scene });
+  const presentationPlan = buildPresentationPlan(presentationFactModel);
+  materialized.presentationPlan = presentationPlan;
+  materialized.title = presentationPlan.titleConcept;
+  materialized.scoreExplanations = buildScoreExplanations(scores, tempConfig, scene)
+    .filter((entry) => hasRealWeather || entry.dimension !== 'weatherAdaptation');
+  materialized.reasoning = hasRealWeather
+    ? buildFriendlyReasoning(scene, materialized.items, scores, tempConfig)
+    : '';
+  recordInstrumentationMetric(instrumentation, 'materializeCandidateTitle');
+  return materialized;
+}
+
+function attachSemanticOptionalItem(materialized, {
+  scene,
+  weather,
+  hasRealWeather,
+  sourceItemById,
+} = {}) {
+  if (!(sourceItemById instanceof Map)) return materialized;
+  const selectedIds = new Set(materialized.itemIds || []);
+  const sceneKey = normalizeScene(scene);
+  const temperature = Number(weather?.temp ?? weather?.temperature);
+  const sourceItems = [...sourceItemById.values()].filter((item) => item?._id && !selectedIds.has(item._id));
+  const needsLayer = hasRealWeather && Number.isFinite(temperature)
+    && (temperature <= 20 || (sceneKey === 'work' && temperature <= 24));
+  const outerwear = needsLayer
+    ? selectUsefulOptional(sourceItems, 'outerwear', sceneKey, materialized.items)
+    : null;
+  const accessory = !outerwear && !['home', 'sport'].includes(sceneKey)
+    ? selectUsefulOptional(sourceItems, 'accessory', sceneKey, materialized.items)
+    : null;
+  const selected = outerwear || accessory;
+  if (!selected) return materialized;
+
+  const slot = outerwear ? 'outerwear' : 'accessory';
+  const role = outerwear ? 'functional' : 'optional';
+  const item = { ...selected, outfitSlot: slot, outfitRole: role };
+  materialized.items.push(item);
+  materialized.itemIds.push(selected._id);
+  materialized.itemFactRefs.push({ itemId: selected._id, slot, role });
+  materialized.outfitItemRoles.push({
+    id: selected._id,
+    slot,
+    role,
+    displayName: selected.customName || selected.subCategory || selected.subcategory || selected.category || '单品',
+  });
+  if (slot === 'outerwear') {
+    materialized.roleItemIds.outerwear = selected._id;
+    materialized.itemsByRole.outerwear = item;
+  }
+  return materialized;
+}
+
+function selectUsefulOptional(items, kind, sceneKey, coreItems) {
+  const coreColors = new Set(coreItems.flatMap((item) => normalizeColors(item).map((color) => color?.name).filter(Boolean)));
+  return (Array.isArray(items) ? items : [])
+    .filter((item) => kind === 'outerwear' ? isUsefulOuterwear(item) : isUsefulAccessory(item))
+    .filter((item) => kind !== 'accessory' || accessoryAddsValue(item, coreColors, sceneKey))
+    .map((item) => ({ item, score: scoreOptionalItem(item, kind, sceneKey, coreColors) }))
+    .sort((left, right) => right.score - left.score || String(left.item._id).localeCompare(String(right.item._id)))
+    .map((entry) => entry.item)[0] || null;
+}
+
+function isUsefulOuterwear(item) {
+  const text = [item.category, item.subcategory, item.subCategory, item.customName, ...(readArray(item.styleTags)), ...(readArray(item.sceneTags))]
+    .filter(Boolean).join(' ').toLowerCase();
+  return item.category === 'outerwear' || /外套|夹克|西装|风衣|开衫|coat|jacket|blazer|cardigan/.test(text);
+}
+
+function isUsefulAccessory(item) {
+  const text = [item.category, item.subcategory, item.subCategory, item.customName, ...(readArray(item.styleTags)), ...(readArray(item.sceneTags))]
+    .filter(Boolean).join(' ').toLowerCase();
+  return item.category === 'accessory' || /包|帽|围巾|项链|耳环|腰带|配饰|bag|hat|scarf|necklace|belt/.test(text);
+}
+
+function accessoryAddsValue(item, coreColors, sceneKey) {
+  const colors = normalizeColors(item).map((color) => color?.name).filter(Boolean);
+  if (colors.some((color) => !coreColors.has(color))) return true;
+  const text = [item.subcategory, item.subCategory, item.customName, ...(readArray(item.sceneTags))].filter(Boolean).join(' ').toLowerCase();
+  return sceneKey === 'date' ? /约会|亮|重点|date|accent/.test(text) : /通勤|简约|work|office/.test(text);
+}
+
+function scoreOptionalItem(item, kind, sceneKey, coreColors) {
+  const text = [item.subcategory, item.subCategory, item.customName, ...(readArray(item.sceneTags)), ...(readArray(item.styleTags))]
+    .filter(Boolean).join(' ').toLowerCase();
+  let score = kind === 'outerwear' ? 3 : 1;
+  if (sceneKey === 'work' && /通勤|上班|西装|work|office|blazer/.test(text)) score += 3;
+  if (sceneKey === 'date' && /约会|优雅|亮|date|accent/.test(text)) score += 3;
+  if (normalizeColors(item).some((color) => color?.name && !coreColors.has(color.name))) score += 1;
+  return score;
+}
+
+function recordInstrumentationMetric(instrumentation, name) {
+  if (!instrumentation || typeof instrumentation !== 'object') return;
+  const counters = instrumentation.counters && typeof instrumentation.counters === 'object'
+    ? instrumentation.counters
+    : instrumentation;
+  counters[name] = (Number(counters[name]) || 0) + 1;
+}
+
+function recordInstrumentationTiming(instrumentation, name, duration) {
+  if (!instrumentation || typeof instrumentation !== 'object') return;
+  const timings = instrumentation.timings && typeof instrumentation.timings === 'object'
+    ? instrumentation.timings
+    : (instrumentation.timings = {});
+  timings[name] = Math.max(0, Number(duration) || 0);
 }
 
 function generateRuleRecommendations({
   clothes,
   scene,
   weather,
+  weatherMode,
   recommendationProfile,
   excludeClothingIdSets,
   excludedOutfitKeys,
   maxResults,
+  debugRecommendationAudit = false,
+  timings = createRecommendationDiagnostics().timings,
+  diagnostics,
+  testInstrumentation,
+  disableItemFactsContext = false,
+  disableCandidateDerivedFactsForTest = false,
+  eagerCandidateMaterializationForTest = false,
 }) {
-  const tempConfig = getTemperatureConfig(Number(weather.temp || weather.temperature || 22));
+  const normalizedWeather = normalizeRecommendationWeather(weather, weatherMode);
+  const hasRealWeather = hasRealRecommendationWeather(normalizedWeather);
+  const tempConfig = hasRealWeather
+    ? getTemperatureConfig(Number(normalizedWeather.temp ?? normalizedWeather.temperature))
+    : getWeatherIndependentTemperatureConfig();
+  if (diagnostics) diagnostics.stage = 'composition';
+  const compositionStartedAt = Date.now();
   const filtered = clothes
     .filter((item) => item && item._id)
-    .filter((item) => matchesSeason(item, tempConfig));
-  const candidates = buildOutfitCandidatesV1({
+    .filter((item) => !hasRealWeather || matchesSeason(item, tempConfig));
+  const sourceItemById = new Map(filtered.map((item) => [item._id, item]));
+  const itemFactsContext = disableItemFactsContext
+    ? null
+    : buildItemFactsContext({
+        items: filtered,
+        createCompositionFacts: createCompositionItemFacts,
+        instrumentation: testInstrumentation,
+      });
+  const compositionCandidates = buildOutfitCandidatesV1({
     clothes: filtered,
     scene,
-    weather,
+    weather: normalizedWeather,
+    weatherMode: normalizedWeather.mode,
     recommendationProfile,
     excludeClothingIdSets,
     excludedOutfitKeys,
     maxResults: Math.max(Number(maxResults || 8), 1) * 8,
     returnRawCandidates: true,
+    itemFactsContext,
+    compactCandidates: true,
   });
-  const guardResult = applyWearabilityAndSceneEligibility(candidates, { scene, weather });
+  timings.compositionMs = Date.now() - compositionStartedAt;
+  if (diagnostics) diagnostics.stage = 'canonicalize';
+  const candidateCoreStartedAt = Date.now();
+  let candidates = compositionCandidates.map((candidate) => createCandidateCore(candidate, {
+    scene,
+    weather: normalizedWeather,
+    itemFactsContext,
+    sourceItemById,
+    instrumentation: testInstrumentation,
+    useCandidateDerivedFacts: !disableCandidateDerivedFactsForTest,
+  }));
+  if (eagerCandidateMaterializationForTest) {
+    candidates = candidates.map((candidate) => materializeCanonicalCandidate(candidate, {
+      scene,
+      weather: normalizedWeather,
+      itemFactsContext,
+      sourceItemById,
+      instrumentation: testInstrumentation,
+    }));
+  }
+  candidates.debug = compositionCandidates.debug;
+  timings.canonicalizeMs = Date.now() - candidateCoreStartedAt;
+  if (diagnostics) diagnostics.stage = 'eligibility';
+  const eligibilityStartedAt = Date.now();
+  const guardResult = applyWearabilityAndSceneEligibility(candidates, {
+    scene,
+    weather: normalizedWeather,
+    itemFactsContext,
+    sourceItemById,
+    instrumentation: testInstrumentation,
+  });
+  assertEligibilityReasons(guardResult.accepted, { node: 'afterGuard', scene, weather: normalizedWeather });
+  timings.eligibilityMs = Date.now() - eligibilityStartedAt;
+  const exclusionStartedAt = Date.now();
   const excluded = new Set([
     ...(excludeClothingIdSets || []).filter(Array.isArray).map((ids) => signature(ids)),
     ...readStringArray(excludedOutfitKeys),
   ]);
   const limit = Math.min(Math.max(Number(maxResults || 8), 1), 8);
 
-  const scored = guardResult.accepted
-    .map((candidate) => {
-      const scoredCandidate = scoreCandidate(candidate.items, { scene, tempConfig, weather, recommendationProfile });
-      return {
-        ...scoredCandidate,
-        outfitItemRoles: candidate.outfitItemRoles,
-        compositionVersion: candidate.compositionVersion,
-        structureType: candidate.structureType,
-        sceneIntent: candidate.sceneIntent,
-        primaryBenefit: candidate.primaryBenefit,
-        primaryBenefitCode: candidate.primaryBenefit,
-        secondaryBenefit: candidate.secondaryBenefit,
-        observationFocus: candidate.observationFocus,
-        compositionRankingScore: candidate.rankingScore,
-        eligibility: candidate.eligibility,
-        riskFlags: candidate.riskFlags || [],
-        validatorRejectReasons: readStringArray(candidate.validatorRejectReasons),
-      };
-    })
-    .map((rec) => {
-      const outfitKey = signature(rec.items.map((item) => item._id));
-      return {
-        ...rec,
-        outfitKey,
-        rankingScore: buildRankingScore(rec),
-      };
-    });
-  const available = scored.filter((rec) => !excluded.has(rec.outfitKey));
-  const sortedAvailable = available.slice().sort((a, b) => b.rankingScore - a.rankingScore);
-
-  const results = [];
-  const used = [];
-  for (const rec of sortedAvailable) {
-    if (results.length >= limit) break;
-    const ids = rec.items.map((item) => item._id);
-    const tooSimilar = used.some((existingIds) => overlapRatio(existingIds, ids) > 0.5);
-    if (!tooSimilar) {
-      results.push(rec);
-      used.push(ids);
-    }
-  }
-
-  if (results.length < limit) {
-    for (const rec of sortedAvailable) {
-      if (results.length >= limit) break;
-      if (!results.some((item) => item.outfitKey === rec.outfitKey)) {
-        results.push(rec);
+  if (diagnostics) diagnostics.stage = 'scoring';
+  const scoringStartedAt = Date.now();
+  const scored = guardResult.accepted;
+  for (const candidate of scored) {
+      const scoreInput = candidate.derivedFacts || resolveCandidateSourceItems(candidate, itemFactsContext, sourceItemById);
+      const scoredCandidate = scoreCandidate(scoreInput, {
+        scene,
+        tempConfig,
+        weather: normalizedWeather,
+        recommendationProfile,
+        instrumentation: testInstrumentation,
+      }, { includePresentation: false });
+      const weatherSafeCandidate = hasRealWeather
+        ? scoredCandidate
+        : removeWeatherInfluence(scoredCandidate);
+      hydrateCanonicalScore(candidate, weatherSafeCandidate);
+      candidate.primaryBenefitCode = candidate.primaryBenefit;
+      candidate.compositionRankingScore = candidate.rankingScore;
+      const outfitKey = candidate.derivedFacts?.itemSignature || candidate.selectionSignatures.itemSignature || signature(candidate.itemIds);
+      if (!candidate.derivedFacts?.itemSignature && !candidate.selectionSignatures.itemSignature) {
+        recordInstrumentationMetric(testInstrumentation, 'scoreCandidateItemSignature');
       }
-    }
+      candidate.outfitKey = outfitKey;
+      candidate.rankingScore = buildRankingScore(candidate);
+      candidate.selectionSignatures.itemSignature = outfitKey;
+  }
+  timings.scoringMs = Date.now() - scoringStartedAt;
+  if (diagnostics) diagnostics.stage = 'batchSelection';
+  const batchSelectionStartedAt = Date.now();
+  const available = scored.filter((rec) => !excluded.has(rec.outfitKey));
+  const sortedAvailable = sortCandidatesStable(available);
+  timings.exclusionMs = Date.now() - exclusionStartedAt;
+  const selectedCandidateCores = selectCanonicalCandidateBatch(sortedAvailable, limit);
+
+  const reasonSelections = selectBatchEligibilityReasons(selectedCandidateCores.map((candidate) => ({
+    outfitKey: candidate.outfitKey,
+    reasonCandidates: candidate.eligibilityReasonCandidates,
+  })));
+  for (let index = 0; index < selectedCandidateCores.length; index += 1) {
+    selectedCandidateCores[index].eligibilityReason = cloneEligibilityReason(reasonSelections[index].selectedReason);
   }
 
+  assertEligibilityReasons(selectedCandidateCores, { node: 'afterSelection', scene, weather: normalizedWeather });
+  timings.batchSelectionMs = Date.now() - batchSelectionStartedAt;
+  const materializationStartedAt = Date.now();
+  const results = selectedCandidateCores.map((candidate) => materializeSelectedCandidate(candidate, {
+    scene,
+    weather: normalizedWeather,
+    tempConfig,
+    hasRealWeather,
+    itemFactsContext,
+    sourceItemById,
+    instrumentation: testInstrumentation,
+  }));
+  timings.materializationMs = Date.now() - materializationStartedAt;
+  recordInstrumentationTiming(testInstrumentation, 'materializationMs', timings.materializationMs);
+
+  const exclusionStats = getExclusionStats(scored, excludedOutfitKeys, excludeClothingIdSets);
   results.debug = {
     candidateCount: candidates.length,
-    filteredCandidateCount: available.length,
+    generatedCount: candidates.length,
     guardCandidateCount: guardResult.debug.guardCandidateCount,
     guardAcceptedCount: guardResult.debug.guardAcceptedCount,
     guardRejectedCount: guardResult.debug.guardRejectedCount,
     weatherRejectedCount: guardResult.debug.weatherRejectedCount,
     sceneRejectedCount: guardResult.debug.sceneRejectedCount,
+    weatherMode: candidates.debug?.weatherMode || normalizedWeather.mode,
+    hasUsableWeather: candidates.debug?.hasUsableWeather ?? hasRealWeather,
+    temperatureBandApplied: candidates.debug?.temperatureBandApplied ?? hasRealWeather,
+    temperatureFilterSkippedReason: candidates.debug?.temperatureFilterSkippedReason || '',
+    candidateCountBeforeTemperatureFilter: candidates.debug?.candidateCountBeforeTemperatureFilter ?? candidates.length,
+    candidateCountAfterTemperatureFilter: candidates.debug?.candidateCountAfterTemperatureFilter ?? candidates.length,
     rejectReasonCounts: guardResult.debug.rejectReasonCounts,
-    limitedReason: guardResult.debug.limitedReason || candidates.debug?.limitedReason || '',
+    requestedExcludedCount: exclusionStats.requestedExcludedCount,
+    actualExcludedCandidateCount: exclusionStats.actualExcludedCandidateCount,
+    remainingCandidateCount: available.length,
+    timings,
+    limitedReason: (guardResult.debug.limitedReason || candidates.debug?.limitedReason || results.length < limit)
+      ? classifyLimitedReason(
+        guardResult.debug.limitedReason || candidates.debug?.limitedReason || '',
+        'DIVERSITY_EXHAUSTED',
+      )
+      : '',
   };
-  results.limited = results.length < limit || available.length < limit;
-  results.exhausted = available.length === 0 && excluded.size > 0;
+  if (debugRecommendationAudit) {
+    results.debug._auditGuardAcceptedCandidates = scored;
+    results.debug._auditGuardRejectedCandidates = guardResult.rejected;
+  }
+  results.debug._auditAcceptedCandidates = scored;
+  results.countContract = buildRecommendationCountContract({
+    requestedBatchSize: limit,
+    returnedCardCount: results.length,
+    remainingUniqueBeforeConsume: available.length,
+    executionMode: 'full_compute',
+  });
+  results.limited = results.countContract.expectedCardCount < results.countContract.requestedBatchSize;
+  results.exhausted = results.countContract.poolExhaustedAfterConsume;
+  Object.defineProperty(results, 'candidatePoolCandidates', {
+    value: scored,
+    enumerable: false,
+    configurable: false,
+  });
   return results;
+}
+
+function generateCandidatePoolRecommendations({
+  pool,
+  clothes,
+  scene,
+  weather,
+  weatherMode,
+  excludedOutfitKeys,
+  excludeClothingIdSets,
+  maxResults,
+  timings = createRecommendationDiagnostics().timings,
+} = {}) {
+  const hasRealWeather = hasRealRecommendationWeather(weather);
+  const tempConfig = hasRealWeather
+    ? getTemperatureConfig(Number(weather?.temp ?? weather?.temperature))
+    : getWeatherIndependentTemperatureConfig();
+  const hydrateStartedAt = Date.now();
+  const candidateCores = (Array.isArray(pool?.candidates) ? pool.candidates : []).map((entry) => hydrateCandidateCore(entry, {
+    reasonDescriptorForCode: (code) => getReasonSelectionDescriptor(code, ELIGIBILITY_REASON_CATALOG),
+  }));
+  timings.poolHydrateMs = Date.now() - hydrateStartedAt;
+  const sourceItemById = new Map((Array.isArray(clothes) ? clothes : [])
+    .filter((item) => item?._id)
+    .map((item) => [item._id, item]));
+  const poolItemIds = [...new Set(candidateCores.flatMap((candidate) => candidate.itemIds))].sort();
+  const poolItems = poolItemIds.map((id) => {
+    const item = sourceItemById.get(id);
+    if (!item) throw new Error(`candidate pool item is missing: ${id}`);
+    return item;
+  });
+  const itemFactsContext = buildItemFactsContext({
+    items: poolItems,
+    createCompositionFacts: createCompositionItemFacts,
+  });
+  const exclusionStartedAt = Date.now();
+  const excluded = new Set([
+    ...(excludeClothingIdSets || []).filter(Array.isArray).map((ids) => signature(ids)),
+    ...readStringArray(excludedOutfitKeys),
+  ]);
+  const limit = Math.min(Math.max(Number(maxResults || 8), 1), 8);
+  const available = sortCandidatesStable(candidateCores.filter((candidate) => !excluded.has(candidate.outfitKey)));
+  timings.exclusionMs = Date.now() - exclusionStartedAt;
+  const batchSelectionStartedAt = Date.now();
+  const selectedCandidateCores = selectCanonicalCandidateBatch(available, limit);
+  timings.batchSelectionMs = Date.now() - batchSelectionStartedAt;
+  const selectedCanonicalCandidates = selectedCandidateCores.map((candidate) => materializeCanonicalCandidate(candidate, {
+    scene,
+    weather,
+    itemFactsContext,
+    sourceItemById,
+  }));
+  for (const candidate of selectedCanonicalCandidates) {
+    const allowedCodes = new Set((candidate.eligibilityReasonCandidates || []).map((reason) => reason.code));
+    const rehydratedReasons = collectEligibilityReasonCandidates({
+      scene,
+      weather,
+      visibleFacts: candidate.visibleFacts,
+      sceneResult: candidate.sceneEligibility,
+    }).filter((reason) => allowedCodes.has(reason.code));
+    if (rehydratedReasons.length === 0) throw new Error('candidate pool reason rehydration failed');
+    candidate.eligibilityReasonCandidates = rehydratedReasons;
+  }
+  const reasonSelections = selectBatchEligibilityReasons(selectedCanonicalCandidates.map((candidate) => ({
+    outfitKey: candidate.outfitKey,
+    reasonCandidates: candidate.eligibilityReasonCandidates,
+  })));
+  for (let index = 0; index < selectedCanonicalCandidates.length; index += 1) {
+    selectedCanonicalCandidates[index].eligibilityReason = cloneEligibilityReason(reasonSelections[index].selectedReason);
+  }
+  assertEligibilityReasons(selectedCanonicalCandidates, { node: 'candidatePoolSelection', scene, weather });
+  const materializationStartedAt = Date.now();
+  const results = selectedCanonicalCandidates.map((candidate) => materializeSelectedCandidate(candidate, {
+    scene,
+    weather,
+    tempConfig,
+    hasRealWeather,
+    itemFactsContext,
+    sourceItemById,
+  }));
+  const materializationMs = Date.now() - materializationStartedAt;
+  timings.materializationMs = materializationMs;
+  const exclusionStats = getExclusionStats(candidateCores, excludedOutfitKeys, excludeClothingIdSets);
+  results.debug = {
+    candidateCount: candidateCores.length,
+    generatedCount: 0,
+    guardCandidateCount: candidateCores.length,
+    guardAcceptedCount: candidateCores.length,
+    guardRejectedCount: 0,
+    weatherRejectedCount: 0,
+    sceneRejectedCount: 0,
+    weatherMode,
+    hasUsableWeather: hasRealWeather,
+    temperatureBandApplied: hasRealWeather,
+    temperatureFilterSkippedReason: hasRealWeather ? '' : weatherMode,
+    candidateCountBeforeTemperatureFilter: candidateCores.length,
+    candidateCountAfterTemperatureFilter: candidateCores.length,
+    rejectReasonCounts: {},
+    requestedExcludedCount: exclusionStats.requestedExcludedCount,
+    actualExcludedCandidateCount: exclusionStats.actualExcludedCandidateCount,
+    remainingCandidateCount: available.length,
+    timings,
+    materializationMs,
+    limitedReason: results.length < limit ? 'DIVERSITY_EXHAUSTED' : '',
+  };
+  results.debug._auditAcceptedCandidates = candidateCores;
+  results.countContract = buildRecommendationCountContract({
+    requestedBatchSize: limit,
+    returnedCardCount: results.length,
+    remainingUniqueBeforeConsume: available.length,
+    executionMode: 'candidate_pool_hit',
+  });
+  results.limited = results.countContract.expectedCardCount < results.countContract.requestedBatchSize;
+  results.exhausted = results.countContract.poolExhaustedAfterConsume;
+  return results;
+}
+
+function assertCandidatePoolExclusions(recommendations, excludedOutfitKeys, excludeClothingIdSets = []) {
+  const excluded = new Set([
+    ...readStringArray(excludedOutfitKeys),
+    ...(excludeClothingIdSets || []).filter(Array.isArray).map((ids) => signature(ids)),
+  ]);
+  const repeated = (Array.isArray(recommendations) ? recommendations : [])
+    .map((candidate) => readString(candidate?.outfitKey))
+    .filter((outfitKey) => outfitKey && excluded.has(outfitKey));
+  if (repeated.length > 0) {
+    const error = new Error('candidate pool returned an excluded outfit key');
+    error.businessCode = 'CANDIDATE_POOL_EXCLUSION_VIOLATION';
+    throw error;
+  }
+}
+
+function getExclusionStats(candidates, excludedOutfitKeys = [], excludeClothingIdSets = []) {
+  const excluded = new Set([
+    ...readStringArray(excludedOutfitKeys),
+    ...(excludeClothingIdSets || []).filter(Array.isArray).map((ids) => signature(ids)),
+  ]);
+  const candidateList = Array.isArray(candidates) ? candidates : [];
+  return {
+    requestedExcludedCount: excluded.size,
+    actualExcludedCandidateCount: candidateList.filter((candidate) => excluded.has(readString(candidate?.outfitKey))).length,
+  };
+}
+
+function getRequestedExclusionCount(excludedOutfitKeys = [], excludeClothingIdSets = []) {
+  return getExclusionStats([], excludedOutfitKeys, excludeClothingIdSets).requestedExcludedCount;
+}
+
+function sortCandidatesStable(candidates = []) {
+  return (Array.isArray(candidates) ? candidates : []).slice().sort((left, right) => (
+    (Number(right.rankingScore) || 0) - (Number(left.rankingScore) || 0)
+    || (Number(right.totalScore) || 0) - (Number(left.totalScore) || 0)
+    || String(right.outfitKey || right.selectionSignatures?.itemSignature || '')
+      .localeCompare(String(left.outfitKey || left.selectionSignatures?.itemSignature || ''))
+  ));
+}
+
+function getWeatherIndependentTemperatureConfig() {
+  return {
+    range: 'unavailable',
+    seasons: [],
+    targetThickness: 2,
+    advice: '',
+  };
+}
+
+function removeWeatherInfluence(candidate) {
+  const scores = { ...(candidate.scores || {}) };
+  delete scores.weatherAdaptation;
+  scores.total = round1(
+    Number(scores.colorHarmony || 0) * 0.2
+    + Number(scores.styleUnity || 0) * 0.2
+    + Number(scores.sceneMatch || 0) * 0.4
+    + Number(scores.freshness || 0) * 0.13
+    + Number(scores.preference || 0) * 0.07,
+  );
+  scores.comfort = round1((Number(scores.warmth || 0) + Number(scores.coolness || 0)) / 2);
+  return {
+    ...candidate,
+    scores,
+    scoreExplanations: (candidate.scoreExplanations || []).filter((entry) => entry.dimension !== 'weatherAdaptation'),
+    reasoning: '',
+  };
+}
+
+function assertEligibilityReasons(candidates, { node, scene, weather } = {}) {
+  const values = Array.isArray(candidates) ? candidates : [];
+  const valid = values.every((candidate) => {
+    const reason = candidate?.eligibilityReason;
+    return Boolean(reason?.code)
+      && Array.isArray(reason.subjectItemIds) && reason.subjectItemIds.length > 0
+      && Array.isArray(reason.supportingFactIds) && reason.supportingFactIds.length > 0
+      && Array.isArray(reason.sourceRuleReasons) && reason.sourceRuleReasons.length > 0
+      && Boolean(reason.sourceRule);
+  });
+  if (!valid) throw new Error(`${node || 'recommendation'} eligibility reason invariant failed`);
+  return true;
+}
+
+function toEligibilityReasonDiagnostic(candidate) {
+  const reason = candidate?.eligibilityReason || {};
+  return {
+    outfitKey: candidate?.outfitKey || candidate?.id || '',
+    selectedOutfitItemIds: readSelectedOutfitItemIds(candidate),
+    eligibilityReasonCode: reason.code || '',
+    subjectItemIds: Array.isArray(reason.subjectItemIds) ? reason.subjectItemIds.slice() : [],
+    supportingFactIds: Array.isArray(reason.supportingFactIds) ? reason.supportingFactIds.slice() : [],
+    relationFactIds: Array.isArray(reason.relationFactIds) ? reason.relationFactIds.slice() : [],
+    sourceRule: reason.sourceRule || '',
+    sourceRuleReasons: Array.isArray(reason.sourceRuleReasons) ? reason.sourceRuleReasons.slice() : [],
+  };
+}
+
+function readSelectedOutfitItemIds(candidate) {
+  if (Array.isArray(candidate?.clothingIds)) return uniqueStrings(candidate.clothingIds);
+  if (Array.isArray(candidate?.itemIds)) return uniqueStrings(candidate.itemIds);
+  if (!Array.isArray(candidate?.items)) return [];
+  return uniqueStrings(candidate.items.map((item) => item?._id || item?.clothingId || item?.itemId));
 }
 
 function buildRankingScore(rec) {
@@ -2413,36 +4066,18 @@ function buildRankingScore(rec) {
   const scene = Number(scores.sceneMatch || 0);
   const total = Number(scores.total || 0);
   const base = weather * 0.38 + scene * 0.32 + total * 0.3;
-  const jitter = (Math.random() - 0.5) * 0.45;
+  const identity = String(rec.outfitKey || rec.selectionSignatures?.itemSignature || signature(rec.itemIds || []));
+  const jitter = (stableRankHash(identity) / 0xffffffff - 0.5) * 0.45;
   return base + jitter;
 }
 
-function getRecommendationNotice(clothes, weather, recommendationCount) {
-  const activeClothes = clothes.filter((item) => item && item._id);
-  if (activeClothes.length < 3) {
-    return '衣柜单品还不够，先上传几件衣服，我再帮你搭配。';
+function stableRankHash(value) {
+  let hash = 2166136261;
+  for (const character of String(value)) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
   }
-
-  const tempConfig = getTemperatureConfig(Number(weather.temp || weather.temperature || 22));
-  const groups = groupClothes(activeClothes);
-  const missing = [];
-  const hasUpperChoice = groups.top.length > 0 || groups.onepiece.length > 0;
-  const hasBottomChoice = groups.bottom.length > 0 || groups.skirt.length > 0 || groups.onepiece.length > 0;
-
-  if (!hasUpperChoice) missing.push('上衣');
-  if (!hasBottomChoice) missing.push('下装');
-  if (groups.shoes.length === 0) missing.push('鞋子');
-  if (tempConfig.targetThickness >= 2 && groups.outerwear.length === 0) missing.push('外套');
-
-  if (missing.length > 0) {
-    return `还缺少${missing.join('、')}，推荐结果可能不完整。`;
-  }
-
-  if (recommendationCount === 0) {
-    return '这个场景先没有足够稳妥的选择，换个场景再试试。';
-  }
-
-  return '';
+  return hash >>> 0;
 }
 
 function getTemperatureConfig(temp) {
@@ -2560,7 +4195,15 @@ function generateCandidateCombos(groups) {
   return combos.slice(0, 100);
 }
 
-function scoreCandidate(items, context) {
+function scoreCandidate(itemsOrDerivedFacts, context, { includePresentation = true } = {}) {
+  recordInstrumentationMetric(context.instrumentation, 'scoreCandidate');
+  if (isCandidateDerivedFacts(itemsOrDerivedFacts)) {
+    return scoreCandidateDerivedFacts(itemsOrDerivedFacts, context);
+  }
+
+  const items = Array.isArray(itemsOrDerivedFacts) ? itemsOrDerivedFacts : [];
+  recordInstrumentationMetric(context.instrumentation, 'scoreCandidateSourceItemFlatMap');
+  recordInstrumentationMetric(context.instrumentation, 'scoreCandidateNormalizeColors');
   const colors = items.flatMap((item) => normalizeColors(item));
   const styles = items.flatMap((item) => readArray(item.styleTags));
   const scenes = items.flatMap((item) => readArray(item.sceneTags));
@@ -2597,14 +4240,64 @@ function scoreCandidate(items, context) {
     colorHarmony,
   });
 
-  return {
-    items,
+  const result = {
     matchedScene: sceneMatchInfo.matchedScene,
-    title: buildTitle(items, context.scene),
     scores,
+  };
+  if (!includePresentation) return result;
+  return {
+    ...result,
+    title: buildCanonicalTitle(items, context.scene),
     scoreExplanations: buildScoreExplanations(scores, context.tempConfig, context.scene),
     reasoning: buildFriendlyReasoning(context.scene, items, scores, context.tempConfig),
   };
+}
+
+function scoreCandidateDerivedFacts(derivedFacts, context) {
+  const colors = derivedFacts.normalizedColors;
+  const styles = derivedFacts.styles;
+  const scenes = derivedFacts.scenes;
+  const weatherAdaptation = scoreWeatherFromDerivedFacts(derivedFacts, context.tempConfig);
+  const colorHarmony = scoreColorHarmony(colors, context.recommendationProfile.colorPreference);
+  const styleUnity = scoreStyleUnity(styles, context.recommendationProfile.styleTags);
+  const sceneMatchInfo = getSceneMatchInfo(scenes, context.scene);
+  const sceneMatch = sceneMatchInfo.score;
+  const freshness = scoreFreshnessFromDerivedFacts(derivedFacts);
+  const preference = scorePreferenceFromDerivedFacts(derivedFacts, context.recommendationProfile);
+  const warmth = derivedFacts.warmth;
+  const coolness = derivedFacts.coolness;
+  const fashion = round1((styleUnity * 0.7) + (avg(derivedFacts.fashionScores.filter(Boolean)) || 7) * 0.3);
+  const comfort = round1((weatherAdaptation * 0.7) + (coolness * 0.15) + (warmth * 0.15));
+  const total = round1(
+    weatherAdaptation * 0.25 +
+    colorHarmony * 0.15 +
+    styleUnity * 0.15 +
+    sceneMatch * 0.3 +
+    freshness * 0.1 +
+    preference * 0.05,
+  );
+  const scores = sanitizeScores({
+    total,
+    weatherAdaptation,
+    styleUnity,
+    freshness,
+    preference,
+    fashion,
+    comfort,
+    warmth,
+    coolness,
+    sceneMatch,
+    colorHarmony,
+  });
+
+  return {
+    matchedScene: sceneMatchInfo.matchedScene,
+    scores,
+  };
+}
+
+function isCandidateDerivedFacts(value) {
+  return value?.version === 'candidate-derived-facts-v1';
 }
 
 function scoreWeather(items, tempConfig) {
@@ -2614,6 +4307,17 @@ function scoreWeather(items, tempConfig) {
   const thicknessDiff = Math.abs(avg(items.map(getThicknessValue)) - tempConfig.targetThickness);
   const thicknessScore = Math.max(2, round1(10 - thicknessDiff * 2.5));
   const warmthOrCoolness = tempConfig.targetThickness >= 2 ? scoreWarmth(items) : scoreCoolness(items);
+  return round1(seasonScore * 0.35 + thicknessScore * 0.35 + warmthOrCoolness * 0.3);
+}
+
+function scoreWeatherFromDerivedFacts(derivedFacts, tempConfig) {
+  const seasons = derivedFacts.seasons;
+  const seasonScore = seasons.every((tags) => tags.length === 0)
+    ? 7
+    : round1((seasons.filter((tags) => tags.some((season) => tempConfig.seasons.includes(season))).length / Math.max(seasons.length, 1)) * 10);
+  const thicknessDiff = Math.abs(avg(derivedFacts.thicknesses) - tempConfig.targetThickness);
+  const thicknessScore = Math.max(2, round1(10 - thicknessDiff * 2.5));
+  const warmthOrCoolness = tempConfig.targetThickness >= 2 ? derivedFacts.warmth : derivedFacts.coolness;
   return round1(seasonScore * 0.35 + thicknessScore * 0.35 + warmthOrCoolness * 0.3);
 }
 
@@ -2665,6 +4369,13 @@ function scoreFreshness(items) {
   return Math.max(3, round1(9 - usagePenalty - recentPenalty));
 }
 
+function scoreFreshnessFromDerivedFacts(derivedFacts) {
+  const usagePenalty = avg(derivedFacts.freshnessUsagePenalties);
+  const recentPenalty = derivedFacts.lastWornAtValues
+    .filter((value) => value && isWithinDays(value, 7)).length * 1.2;
+  return Math.max(3, round1(9 - usagePenalty - recentPenalty));
+}
+
 function scorePreference(items, styles, profile) {
   const text = items
     .flatMap((item) => [
@@ -2681,6 +4392,14 @@ function scorePreference(items, styles, profile) {
     .filter(Boolean)
     .join(' ');
   const styleMatches = styles.filter((style) => profile.styleTags.includes(style)).length;
+  const colorMatches = profile.colorPreference.filter((color) => text.includes(color)).length;
+  const avoidMatches = profile.avoidTags.filter((tag) => text.includes(tag)).length;
+  return Math.max(1, Math.min(10, round1(6 + styleMatches * 1.2 + colorMatches * 0.8 - avoidMatches * 1.5)));
+}
+
+function scorePreferenceFromDerivedFacts(derivedFacts, profile) {
+  const text = derivedFacts.preferenceText;
+  const styleMatches = derivedFacts.styles.filter((style) => profile.styleTags.includes(style)).length;
   const colorMatches = profile.colorPreference.filter((color) => text.includes(color)).length;
   const avoidMatches = profile.avoidTags.filter((tag) => text.includes(tag)).length;
   return Math.max(1, Math.min(10, round1(6 + styleMatches * 1.2 + colorMatches * 0.8 - avoidMatches * 1.5)));
@@ -2720,10 +4439,57 @@ function getThicknessValue(item) {
 }
 
 function buildTitle(items, scene) {
+  const label = scene || '今日';
   const hasDress = items.some((item) => normalizeCategory(item) === 'onepiece');
-  const style = getMainStyle(items);
-  if (hasDress) return `${scene || '今日'}连衣裙搭配`;
-  return `${scene || '今日'}${style}搭配`;
+  const hasTop = items.some((item) => normalizeCategory(item) === 'top');
+  const hasBottom = items.some((item) => normalizeCategory(item) === 'bottom');
+  const hasShoe = items.some((item) => normalizeCategory(item) === 'shoes');
+  const isSport = label === '运动' || label === 'sport';
+  const isHome = label === '居家' || label === 'home';
+  const isWork = label === '上班' || label === 'work';
+  const isDate = label === '约会' || label === 'date';
+  const visibleFact = buildTitleVisibleFact(items);
+
+  if (visibleFact) {
+    if (isSport && hasTop && hasBottom && hasShoe) return `轻运动${visibleFact}组合`;
+    if (isHome && hasDress) return hasShoe ? `居家${visibleFact}临时出门组合` : `居家${visibleFact}舒适组合`;
+    if (isHome && hasTop && hasBottom) return hasShoe ? `居家${visibleFact}临时出门组合` : `居家${visibleFact}舒适组合`;
+    if (isWork && hasDress) return `通勤${visibleFact}连衣裙组合`;
+    if (isWork && hasTop && hasBottom) return `通勤${visibleFact}长裤组合`;
+    if (isDate && hasDress) return `约会${visibleFact}连衣裙组合`;
+    if (isDate && hasTop && hasBottom) return `约会${visibleFact}关系组合`;
+  }
+
+  if (isSport && hasTop && hasBottom && hasShoe) return '轻运动上衣下装组合';
+  if (isHome && hasDress) return hasShoe ? '居家连衣裙外出备选' : '居家舒适连衣裙';
+  if (isHome && hasTop && hasBottom) return hasShoe ? '居家兼临时出门组合' : '居家舒适上衣下装';
+  if (isWork && hasDress) return '通勤连衣裙鞋型组合';
+  if (isWork && hasTop && hasBottom) return '通勤上衣长裤组合';
+  if (isDate && hasDress) return '约会连衣裙视觉焦点';
+  if (isDate && hasTop && hasBottom) return '约会上衣下装呼应';
+  if (hasDress) return `${label}连衣裙结构搭配`;
+  if (hasTop && hasBottom) return `${label}上衣下装组合`;
+  return `${label}完整搭配`;
+}
+
+function buildTitleVisibleFact(items) {
+  const source = Array.isArray(items) ? items : [];
+  const patterned = source.find((item) => /stripe|plaid|floral|print|条纹|格纹|碎花|印花/.test([
+    item.patternType, item.subcategory, item.subCategory, item.customName,
+  ].filter(Boolean).join(' ').toLowerCase()));
+  if (patterned) return '图案焦点';
+  const top = source.find((item) => normalizeCategory(item) === 'top');
+  const dress = source.find((item) => normalizeCategory(item) === 'onepiece');
+  const primary = top || dress;
+  const text = primary ? [primary.subcategory, primary.subCategory, primary.customName, primary.category]
+    .filter(Boolean).join(' ').toLowerCase() : '';
+  if (/衬衫|shirt/.test(text)) return '衬衫';
+  if (/针织|毛衣|knit|sweater/.test(text)) return '针织';
+  if (/t恤|t-shirt|tee/.test(text)) return 'T恤';
+  if (/背心|vest/.test(text)) return '背心';
+  if (dress) return '连衣裙';
+  const color = normalizeColors(primary || {}).map((entry) => entry?.name).find(Boolean);
+  return color ? `${String(color).slice(0, 8)}配色` : '';
 }
 
 function buildScoreExplanations(scores, tempConfig, scene) {
@@ -2785,15 +4551,8 @@ function buildFriendlyReasoning(scene, items, scores, tempConfig) {
 
 function normalizeWeather(weather) {
   if (!weather || typeof weather !== 'object') return null;
-  const temp = Number(weather.temp ?? weather.temperature);
-  if (Number.isNaN(temp)) return null;
-  return {
-    temp,
-    humidity: Number(weather.humidity || 65),
-    weather: weather.weather || weather.condition || '多云',
-    wind: Number(weather.wind || 3),
-    uv: Number(weather.uv || 4),
-  };
+  const normalized = normalizeRecommendationWeather(weather, weather.mode || weather.weatherMode);
+  return hasRealRecommendationWeather(normalized) ? toWeatherSnapshot(normalized) : null;
 }
 
 function normalizeCategory(item) {
@@ -2867,6 +4626,25 @@ function readSnapshotStyleTags(items) {
 
 function readStringArray(value) {
   return Array.isArray(value) ? value.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim()) : [];
+}
+
+function readString(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function resolveInitialCacheMissReason({ isRefreshRequest, requestedCandidatePoolId }) {
+  if (isRefreshRequest) {
+    return requestedCandidatePoolId ? '' : 'refresh_without_pool_id';
+  }
+  return 'initial_request';
+}
+
+function mapCandidatePoolLoadReason(reason) {
+  const value = readString(reason);
+  if (value === 'not_found') return 'candidate_pool_missing';
+  if (value === 'expired' || value === 'ttl_invalid') return 'candidate_pool_expired';
+  if (value === 'user_mismatch' || value === 'identity_changed') return 'candidate_pool_identity_mismatch';
+  return value || 'pool_corrupt';
 }
 
 function sameIdSet(a, b) {
@@ -3026,11 +4804,6 @@ function readEnum(value, allowed, fallback) {
   return allowed.includes(value) ? value : fallback;
 }
 
-function buildReasoning(scene, items) {
-  const names = items.map((item) => item.customName || item.subcategory || item.category).join('、');
-  return `${names} 组合干净实用，适合${scene}场景。`;
-}
-
 function toOutfit(item, clothes) {
   const today = new Date().toISOString().slice(0, 10);
   const clothingIds = item.clothingIds || [];
@@ -3065,12 +4838,16 @@ function toOutfit(item, clothes) {
         thumbnailUrl,
         colorPalette: clothing?.colorPalette || [],
         isDeleted: Boolean(snapshot.isDeleted || !clothing),
+        ...pickCopyEvidenceSnapshotFields(clothing, snapshot),
       };
     }),
     scene: item.scene,
     targetDate: item.targetDate,
     timeOfDay: item.timeOfDay,
     weatherSnapshot: item.weatherSnapshot || item.weather,
+    weatherMode: item.weatherMode || ((item.weatherSnapshot || item.weather) ? 'live' : 'unavailable'),
+    eligibility: item.eligibility,
+    eligibilityReason: cloneEligibilityReason(item.eligibilityReason),
     scores: sanitizeScores(item.scores || {}),
     aestheticEvaluation: normalizeAestheticEvaluationForStorage(item.aestheticEvaluation),
     scoreExplanations: item.scoreExplanations || [],
@@ -3088,14 +4865,15 @@ function toOutfit(item, clothes) {
     lastWornAt: item.lastWornAt || item.wornAt || undefined,
     recommendationBatchId: item.recommendationBatchId || undefined,
     generatedAt: item.generatedAt || undefined,
-    styleTags: readSnapshotStyleTags(snapshotItems),
+    styleTags: readStringArray(item.styleTags).length ? readStringArray(item.styleTags) : [],
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
     reason: item.reason || item.reasoning,
     reasoning: item.reasoning || item.reason,
     reasonVersion: item.reasonVersion,
+    ...pickRecommendationCopyContractFields(item),
     ...pickOutfitStoryFields(item),
-    aiComment: normalizeAiComment(item.aiComment) || undefined,
+    ...mapAiReviewAtBoundary(item, (value) => normalizeRecommendationAiComment(value, item)),
   };
 }
 
@@ -3116,19 +4894,6 @@ function readTitle(value) {
 
 function getDisplayTitle(outfit, fallback) {
   return readTitle(outfit?.displayTitle) || readTitle(outfit?.userTitle) || readTitle(outfit?.title) || fallback;
-}
-
-function fallbackWeather() {
-  return {
-    city: '上海',
-    temp: 22,
-    feelsLike: 20,
-    humidity: 65,
-    weather: '多云',
-    wind: 3,
-    windDir: '东南风',
-    uv: 4,
-  };
 }
 
 function resolveCategoryValues(category) {
@@ -3177,4 +4942,36 @@ function createBusinessError(code, message) {
   const error = new Error(message);
   error.businessCode = code;
   return error;
+}
+
+if (process.env.NODE_ENV === 'test') {
+  exports.__test = {
+    buildRecommendationResponseData,
+    buildSnapshotRecordData,
+    canonicalizeAiCommentSource,
+    createRecommendationSceneContract,
+    createRecommendationDiagnostics,
+    finalizeRecommendationResponse,
+    finalizeFullComputeAfterPoolPersist,
+    attachPresentationEvidenceDebug,
+    buildPresentationEvidence,
+    generateCandidatePoolRecommendations,
+    upsertRecommendationOutfitsBatch,
+    measureRecommendationResponse,
+    normalizeOutfitPayload,
+    generateRuleRecommendations,
+    assertEligibilityReasons,
+    toEligibilityReasonDiagnostic,
+    toTempOutfit,
+    toOutfit,
+    toSnapshotOutfit,
+    runOutfitReferenceTransaction,
+    serializeOutfitReferenceCause,
+    ok,
+    isQaAuditEnabled: isRecommendationQaAuditEnabled,
+    validateCandidatePoolAvailability,
+    resolveInitialCacheMissReason,
+    mapCandidatePoolLoadReason,
+    resolveEnrichedTitleState,
+  };
 }

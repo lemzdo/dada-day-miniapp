@@ -3,7 +3,7 @@ import Taro from '@tarojs/taro';
 import { useEffect, useRef, useState } from 'react';
 import { getCloudWeather, getFallbackResolvedWeather, WEATHER_CACHE_KEY } from '@/lib/cloud';
 import { toWeatherSnapshot } from '@/utils/weather';
-import type { ResolvedWeatherResponse, WeatherSnapshot } from '@starter-template/types';
+import type { ResolvedWeatherResponse, WeatherMode, WeatherSnapshot } from '@starter-template/types';
 import './index.scss';
 
 export type WeatherRecommendationRefreshResult = 'unchanged' | 'refreshed' | 'failed';
@@ -11,8 +11,8 @@ export type WeatherRecommendationRefreshResult = 'unchanged' | 'refreshed' | 'fa
 interface WeatherCardProps {
   city?: string;
   onWeatherChange?: (
-    weather: WeatherSnapshot,
-    options?: { forceRefresh?: boolean },
+    weather: WeatherSnapshot | undefined,
+    options: { forceRefresh?: boolean; weatherMode: WeatherMode },
   ) => WeatherRecommendationRefreshResult | void | Promise<WeatherRecommendationRefreshResult | void>;
 }
 
@@ -27,6 +27,7 @@ type WeatherStatus =
   | 'failed';
 
 type LocationPermission = 'unknown' | 'authorized' | 'denied';
+type WeatherFailureReason = 'permission_denied' | 'location_unavailable' | 'service_unavailable' | null;
 
 interface LocationAuthSetting {
   'scope.userLocation'?: boolean;
@@ -41,6 +42,7 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
   const [weather, setWeather] = useState<ResolvedWeatherResponse>(() => readCachedWeather() ?? getFallbackResolvedWeather(city));
   const [status, setStatus] = useState<WeatherStatus>('checkingAuth');
   const [permission, setPermission] = useState<LocationPermission>('unknown');
+  const [failureReason, setFailureReason] = useState<WeatherFailureReason>(null);
   const [refreshing, setRefreshing] = useState(false);
   const busyRef = useRef(false);
   const mountedRef = useRef(true);
@@ -57,7 +59,7 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
     const nextWeather = cached ?? getFallbackResolvedWeather(city);
     setWeather(nextWeather);
     if (cached) {
-      void notifyWeatherChange(cached, { forceRefresh: false });
+      void notifyWeatherChange(cached, { forceRefresh: false, weatherMode: 'cached' });
     }
 
     checkAuthAndMaybeFetch(nextWeather);
@@ -79,15 +81,20 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
       }
 
       if (nextPermission === 'denied') {
+        setFailureReason('permission_denied');
         setStatus('denied');
+        await notifyWeatherModeChange('disabled');
         return;
       }
 
-      setStatus(currentHasUsableWeather ? 'ready' : 'needPermission');
+      setFailureReason('service_unavailable');
+      setStatus(currentHasUsableWeather ? 'fallback' : 'needPermission');
+      if (!currentHasUsableWeather) await notifyWeatherModeChange('disabled');
     } catch (error) {
       if (!mountedRef.current) return;
       console.warn('[WeatherCard] getSetting failed', error);
       setStatus(currentHasUsableWeather ? 'ready' : 'needPermission');
+      if (!currentHasUsableWeather) await notifyWeatherModeChange('unavailable');
     }
   }
 
@@ -118,11 +125,15 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
       }
 
       setStatus('denied');
+      setFailureReason('permission_denied');
+      await notifyWeatherModeChange('disabled');
       Taro.showToast({ title: '没关系，先按当前推荐搭～', icon: 'none' });
     } catch (error) {
       if (!mountedRef.current) return;
       console.warn('[WeatherCard] openSetting failed', error);
       setStatus('denied');
+      setFailureReason('permission_denied');
+      await notifyWeatherModeChange('disabled');
       Taro.showToast({ title: '没关系，先按当前推荐搭～', icon: 'none' });
     } finally {
       busyRef.current = false;
@@ -145,6 +156,7 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
 
     const previousWeather = weather;
     const hadUsableWeather = Boolean(toWeatherSnapshot(previousWeather));
+    let failureStage: 'location' | 'service' = 'location';
 
     try {
       busyRef.current = true;
@@ -163,6 +175,7 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
 
       setPermission('authorized');
       setStatus('loadingWeather');
+      failureStage = 'service';
 
       const data = await withTimeout(
         getCloudWeather(
@@ -178,8 +191,12 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
       if (!mountedRef.current) return;
 
       setWeather(data);
+      setFailureReason(null);
       setStatus('ready');
-      const notifyResult = await notifyWeatherChange(data, { forceRefresh });
+      const notifyResult = await notifyWeatherChange(data, {
+        forceRefresh,
+        weatherMode: data.source === 'cache' ? 'cached' : 'live',
+      });
 
       if (source === 'manual') {
         showManualWeatherSuccessToast(notifyResult);
@@ -192,7 +209,9 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
 
       if (isPermissionDeniedError(message)) {
         setPermission('denied');
+        setFailureReason('permission_denied');
         setStatus('denied');
+        await notifyWeatherModeChange('disabled');
         if (source === 'manual') {
           Taro.showToast({ title: '没关系，先按当前推荐搭～', icon: 'none' });
         }
@@ -202,8 +221,9 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
       const cached = readCachedWeather();
       if (cached) {
         setWeather(cached);
-        setStatus('ready');
-        void notifyWeatherChange(cached, { forceRefresh: false });
+        setFailureReason(failureStage === 'location' ? 'location_unavailable' : 'service_unavailable');
+        setStatus('fallback');
+        void notifyWeatherChange(cached, { forceRefresh: false, weatherMode: 'cached' });
         if (source === 'manual') {
           Taro.showToast({ title: '天气没刷新成功，先按刚才的推荐搭～', icon: 'none' });
         }
@@ -212,7 +232,8 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
 
       if (hadUsableWeather) {
         setWeather(previousWeather);
-        setStatus('ready');
+        setFailureReason(failureStage === 'location' ? 'location_unavailable' : 'service_unavailable');
+        setStatus('fallback');
         if (source === 'manual') {
           Taro.showToast({ title: '天气没刷新成功，先按刚才的推荐搭～', icon: 'none' });
         }
@@ -220,7 +241,9 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
       }
 
       setWeather(getFallbackResolvedWeather(city));
+      setFailureReason(failureStage === 'location' ? 'location_unavailable' : 'service_unavailable');
       setStatus('failed');
+      await notifyWeatherModeChange('unavailable');
       if (source === 'manual') {
         Taro.showToast({ title: '天气暂时没同步，先按当前推荐搭～', icon: 'none' });
       }
@@ -232,7 +255,10 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
     }
   }
 
-  async function notifyWeatherChange(value: ResolvedWeatherResponse, options?: { forceRefresh?: boolean }) {
+  async function notifyWeatherChange(
+    value: ResolvedWeatherResponse,
+    options: { forceRefresh?: boolean; weatherMode: 'live' | 'cached' },
+  ) {
     const snapshot = toWeatherSnapshot(value);
     if (!snapshot) return false;
 
@@ -246,7 +272,18 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
     return result;
   }
 
-  async function callWeatherChange(snapshot: WeatherSnapshot, options?: { forceRefresh?: boolean }) {
+  async function notifyWeatherModeChange(weatherMode: 'disabled' | 'unavailable') {
+    const notifyKey = `${weatherMode}|none`;
+    if (notifyKey === lastNotifiedKeyRef.current) return 'unchanged';
+    const result = await callWeatherChange(undefined, { weatherMode });
+    if (result !== 'failed') lastNotifiedKeyRef.current = notifyKey;
+    return result;
+  }
+
+  async function callWeatherChange(
+    snapshot: WeatherSnapshot | undefined,
+    options: { forceRefresh?: boolean; weatherMode: WeatherMode },
+  ) {
     try {
       return (await onWeatherChange?.(snapshot, options)) ?? 'unchanged';
     } catch (error) {
@@ -271,7 +308,7 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
     Taro.showToast({ title: '天气已更新', icon: 'none' });
   }
 
-  const text = getWeatherCapsuleText({ status, permission, refreshing, weather });
+  const text = getWeatherCapsuleText({ status, permission, refreshing, weather, failureReason });
   const statusClass = `weather-card ${status}`;
 
   return (
@@ -286,6 +323,8 @@ function readCachedWeather(): ResolvedWeatherResponse | null {
     const cached = Taro.getStorageSync(WEATHER_CACHE_KEY) as ResolvedWeatherResponse | '';
     if (!cached || typeof cached !== 'object') return null;
     if (cached.source === 'fallback' || !cached.weather?.weather) return null;
+    const cachedAt = Date.parse(cached.fetchedAt || cached.updatedAt || cached.observedAt || '');
+    if (!Number.isFinite(cachedAt) || Date.now() - cachedAt > 10 * 60 * 1000) return null;
     return { ...cached, source: 'cache', cacheHit: true };
   } catch {
     return null;
@@ -319,17 +358,23 @@ function getWeatherCapsuleText({
   permission,
   refreshing,
   weather,
+  failureReason,
 }: {
   status: WeatherStatus;
   permission: LocationPermission;
   refreshing: boolean;
   weather: ResolvedWeatherResponse;
+  failureReason: WeatherFailureReason;
 }) {
   const snapshot = toWeatherSnapshot(weather);
   const isBusy = refreshing || status === 'locating' || status === 'loadingWeather';
 
   if (isBusy) return '同步中…';
-  if (permission === 'denied' || status === 'denied') return '去开启';
+  if (permission === 'denied' || status === 'denied') return '未获定位权限，去开启';
+  if (status === 'fallback' && failureReason === 'location_unavailable') return '定位不可用，使用上次天气';
+  if (status === 'fallback' && failureReason === 'service_unavailable') return '天气服务不可用，使用上次天气';
+  if (status === 'failed' && failureReason === 'location_unavailable') return '定位不可用，再试试';
+  if (status === 'failed' && failureReason === 'service_unavailable') return '天气服务不可用，再试试';
   if (snapshot && status !== 'failed') return `${getWeatherIcon(snapshot.weather)} ${snapshot.temp}° ${snapshot.weather} ↻`;
   if (status === 'failed') return '再试试';
 

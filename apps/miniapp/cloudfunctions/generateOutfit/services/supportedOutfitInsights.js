@@ -14,6 +14,7 @@ function buildSupportedOutfitInsights(facts = {}) {
       text: `${patterned.map(displayItem).join('和')}都有图案`,
       requiredFacts: patterned.map((item) => `pattern:${item.patternType}`),
       subjectItemIds: patterned.map((item) => item.id),
+      evidenceFactIds: evidenceForItems(patterned, 'pattern_detail'),
       strength: 2,
     }));
   }
@@ -24,6 +25,7 @@ function buildSupportedOutfitInsights(facts = {}) {
       text: `${displayItem(top)}和${displayItem(shoes)}颜色有呼应`,
       requiredFacts: [`color:${top.rawColor}`, `color:${shoes.rawColor}`],
       subjectItemIds: [top.id, shoes.id],
+      evidenceFactIds: evidenceForItems([top, shoes], 'color'),
       strength: 3,
     }));
   }
@@ -34,6 +36,7 @@ function buildSupportedOutfitInsights(facts = {}) {
       text: `${displayItem(contrastItem)}提供颜色对比`,
       requiredFacts: [`color:${contrastItem.rawColor}`, `color:${top.rawColor}`],
       subjectItemIds: [contrastItem.id, top.id],
+      evidenceFactIds: evidenceForItems([contrastItem, top], 'color'),
       strength: 2,
     }));
   }
@@ -44,16 +47,20 @@ function buildSupportedOutfitInsights(facts = {}) {
       text: '组合适合居家场景',
       requiredFacts: ['scene:居家'],
       subjectItemIds: items.map((item) => item.id),
+      evidenceFactIds: ['scene:home'],
       strength: 2,
     }));
   }
 
-  if ((facts.scene?.normalized === '居家' || facts.scene?.raw === '居家') && shoes) {
+  if ((facts.scene?.normalized === '居家' || facts.scene?.raw === '居家')
+    && shoes
+    && hasItemFact(shoes, 'qualified_shoes')) {
     insights.push(insight({
       code: 'light_outing',
       text: `${displayItem(shoes)}让临时出门也顺`,
-      requiredFacts: ['scene:居家', `item:${shoes.id}:${shoes.name}`],
+      requiredFacts: [`scene:${facts.scene.raw}`, `item:${shoes.id}:qualified_shoes`],
       subjectItemIds: [shoes.id],
+      evidenceFactIds: [`item:${shoes.id}:qualified_shoes`, 'scene:home'],
       strength: 1,
     }));
   }
@@ -65,6 +72,7 @@ function buildSupportedOutfitInsights(facts = {}) {
       text: '当前天气厚薄压力不大',
       requiredFacts: [`weather:${facts.weather.text}`],
       subjectItemIds: items.map((item) => item.id),
+      evidenceFactIds: [`weather:temp:${facts.weather.temp}`],
       strength: 1,
     }));
   }
@@ -75,6 +83,7 @@ function buildSupportedOutfitInsights(facts = {}) {
       text: 'T恤、裤子或运动鞋偏日常',
       requiredFacts: items.filter(isDailyCasualItem).map((item) => `item:${item.id}:${item.name}`),
       subjectItemIds: items.filter(isDailyCasualItem).map((item) => item.id),
+      evidenceFactIds: items.filter(isDailyCasualItem).map((item) => `item:${item.id}:category`),
       strength: 1,
     }));
   }
@@ -82,15 +91,26 @@ function buildSupportedOutfitInsights(facts = {}) {
   return dedupe(insights);
 }
 
-function insight({ code, text, requiredFacts, subjectItemIds, strength }) {
+function insight({ code, text, requiredFacts, subjectItemIds, evidenceFactIds, strength }) {
   return {
     code,
     text,
     requiredFacts: uniqueStrings(requiredFacts),
     subjectItemIds: uniqueStrings(subjectItemIds),
+    evidenceFactIds: uniqueStrings(evidenceFactIds),
     strength: Math.max(1, Math.min(3, Math.round(Number(strength) || 1))),
     pageSuitability: ['today', 'detail'],
   };
+}
+
+function evidenceForItems(items, fact) {
+  return items
+    .filter((item) => hasItemFact(item, fact))
+    .map((item) => `item:${item.id}:${fact}`);
+}
+
+function hasItemFact(item, fact) {
+  return Array.isArray(item?.facts) && item.facts.includes(fact);
 }
 
 function hasColorRelation(left, right) {

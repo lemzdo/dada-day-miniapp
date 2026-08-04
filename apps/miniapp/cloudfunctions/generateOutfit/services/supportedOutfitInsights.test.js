@@ -12,7 +12,10 @@ function facts(overrides = {}) {
       items: [
         { clothingId: 'top-1', category: 'top', subcategory: 'T恤', color: '米白色' },
         { clothingId: 'bottom-1', category: 'bottom', subcategory: '阔腿裤', color: '军绿色' },
-        { clothingId: 'shoes-1', category: 'shoes', subcategory: '运动鞋', color: '白色' },
+        {
+          clothingId: 'shoes-1', category: 'shoes', subcategory: '运动鞋', color: '白色',
+          contractFacts: ['qualified_shoes'],
+        },
       ],
       ...overrides,
     },
@@ -32,6 +35,7 @@ test('buildSupportedOutfitInsights produces grounded golden insights', () => {
 
   const echo = insights.find((entry) => entry.code === 'color_echo');
   assert.deepEqual(echo.subjectItemIds, ['top-1', 'shoes-1']);
+  assert.ok(echo.evidenceFactIds.every((id) => /^item:[^:]+:[^:]+$/.test(id)));
   assert.deepEqual(echo.pageSuitability, ['today', 'detail']);
   assert.ok(echo.requiredFacts.includes('color:米白色'));
   assert.ok(echo.text.includes('米白色'));

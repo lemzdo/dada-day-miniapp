@@ -1,4 +1,9 @@
-import type { ClothingCategory, Outfit, OutfitSnapshotItem } from '@starter-template/types';
+import type {
+  ClothingCategory,
+  Outfit,
+  OutfitSnapshotItem,
+  RecommendationCopyEvidenceCarrier,
+} from '@starter-template/types';
 import {
   buildUserStorageBusinessKey,
   getUserStorageSync,
@@ -7,10 +12,11 @@ import {
   type ActiveAuthContext,
 } from '@/lib/userStorage';
 import { getOutfitDisplayTitle } from './outfitTitle';
+import { stripStaleDefaultCopy } from './recommendationCopyContract';
 
-const DETAIL_DRAFT_KEY = 'outfitDetailDraft';
+const DETAIL_DRAFT_KEY = 'outfitDetailDraft:recommendation-copy-contract-v3';
 const OUTFIT_STATE_SYNC_KEY = 'outfitStateSync';
-const TODAY_RESTORE_SNAPSHOT_KEY = 'today:outfitReturnSnapshot';
+const TODAY_RESTORE_SNAPSHOT_KEY = 'today:outfitReturnSnapshot:recommendation-copy-contract-v3';
 
 interface OutfitSnapshotStorageOptions {
   authContext?: ActiveAuthContext | null;
@@ -21,16 +27,22 @@ interface TodayRestoreSnapshotStorage {
 }
 
 export function normalizeOutfitSnapshot(outfit: Outfit): Outfit {
-  const clothingIds = outfit.clothingIds ?? [];
-  const snapshots = buildSnapshots(outfit);
-  const snapshotMap = new Map(snapshots.map((item) => [item.clothingId ?? item.itemId, item]));
+  const safeOutfit = stripStaleDefaultCopy(outfit);
+  const clothingIds = safeOutfit.clothingIds ?? [];
+  const snapshots = buildSnapshots(safeOutfit);
+  const snapshotMap = new Map<string, OutfitSnapshotItem>();
+  for (const item of snapshots) {
+    const itemId = item.clothingId ?? item.itemId;
+    const existing = snapshotMap.get(itemId);
+    snapshotMap.set(itemId, existing ? { ...existing, ...item } : item);
+  }
   const itemsSnapshot = clothingIds.map((id) => normalizeSnapshotItem(snapshotMap.get(id), id));
 
   return {
-    ...outfit,
+    ...safeOutfit,
     clothingIds,
     outfitKey: outfit.outfitKey ?? getOutfitKey(clothingIds),
-    displayTitle: getOutfitDisplayTitle(outfit),
+    displayTitle: getOutfitDisplayTitle(safeOutfit),
     itemsSnapshot,
     snapshotItems: itemsSnapshot,
     items: itemsSnapshot.map((item) => ({
@@ -42,6 +54,7 @@ export function normalizeOutfitSnapshot(outfit: Outfit): Outfit {
       thumbnailUrl: item.thumbnailUrl || item.displayImageUrl || item.imageUrl || '',
       colorPalette: item.color ? [{ name: item.color, hex: '' }] : [],
       isDeleted: Boolean(item.deletedAt || item.isDeleted),
+      ...pickCopyEvidenceFields(item),
     })),
   };
 }
@@ -169,6 +182,7 @@ function buildSnapshots(outfit: Outfit): OutfitSnapshotItem[] {
         thumbnailUrl: imageItem.thumbnailUrl || imageItem.displayImageUrl || item.imageUrl || '',
         isDeleted: Boolean(item.isDeleted),
         deletedAt: item.isDeleted ? new Date().toISOString() : null,
+        ...pickCopyEvidenceFields(item),
       };
     }),
   ];
@@ -193,5 +207,64 @@ function normalizeSnapshotItem(item: OutfitSnapshotItem | undefined, clothingId:
     thumbnailUrl,
     deletedAt: item?.deletedAt ?? (item?.isDeleted ? new Date().toISOString() : null),
     isDeleted: Boolean(item?.isDeleted || item?.deletedAt),
+    ...pickCopyEvidenceFields(item),
   };
+}
+
+function pickCopyEvidenceFields(
+  item: RecommendationCopyEvidenceCarrier | null | undefined,
+): RecommendationCopyEvidenceCarrier {
+  if (!item) return {};
+  const fields: RecommendationCopyEvidenceCarrier = {
+    confidence: item.confidence,
+    recognitionConfidence: item.recognitionConfidence,
+    aiConfidence: item.aiConfidence,
+    factConfidence: item.factConfidence,
+    factSource: item.factSource,
+    factSources: item.factSources ? { ...item.factSources } : undefined,
+    factConfidences: item.factConfidences ? { ...item.factConfidences } : undefined,
+    factEvidence: cloneEvidence(item.factEvidence),
+    factRecords: cloneEvidence(item.factRecords),
+    factsWithSource: cloneEvidence(item.factsWithSource),
+    contractFacts: cloneStrings(item.contractFacts),
+    userFacts: cloneStrings(item.userFacts),
+    careLabelFacts: cloneStrings(item.careLabelFacts),
+    productFacts: cloneStrings(item.productFacts),
+    structuredAiFacts: cloneStrings(item.structuredAiFacts),
+    visualFacts: cloneStrings(item.visualFacts),
+    fit: item.fit,
+    silhouette: item.silhouette,
+    shoulderFit: item.shoulderFit,
+    shoulderLine: item.shoulderLine,
+    sleeveLength: item.sleeveLength,
+    sleeve: item.sleeve,
+    pantsLength: item.pantsLength,
+    patternType: item.patternType,
+    styleComplexity: item.styleComplexity,
+    thickness: item.thickness,
+    material: item.material,
+    neckline: item.neckline,
+    collar: item.collar,
+    closure: item.closure,
+    shoeClosure: item.shoeClosure,
+    shoeType: item.shoeType,
+    materialGuess: item.materialGuess,
+    userEdited: item.userEdited,
+    fieldSource: item.fieldSource,
+    styleTags: cloneStrings(item.styleTags),
+    sceneTags: cloneStrings(item.sceneTags),
+    aestheticFeatures: item.aestheticFeatures ? { ...item.aestheticFeatures } : undefined,
+    functionalFeatures: item.functionalFeatures ? { ...item.functionalFeatures } : undefined,
+  };
+  return Object.fromEntries(
+    Object.entries(fields).filter(([, value]) => value !== undefined),
+  ) as RecommendationCopyEvidenceCarrier;
+}
+
+function cloneEvidence<T extends object>(values: T[] | undefined): T[] | undefined {
+  return values?.map((entry) => ({ ...entry }));
+}
+
+function cloneStrings(values: string[] | undefined): string[] | undefined {
+  return values?.slice();
 }

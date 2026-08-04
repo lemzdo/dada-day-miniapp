@@ -84,16 +84,16 @@ test('first tradeoff becomes advice when tip is missing and no empty advice bloc
   assert.equal(withoutAdvice.advice, null);
 });
 
-test('legacy V1 presentation uses reason and tip without title or tags', () => {
+test('ambiguous legacy V1 aliases are rejected', () => {
   const result = buildAiReviewPresentation({
     title: '旧标题不展示',
     reason: '这套整体更清爽，适合日常通勤。',
     styleTags: ['清爽', '通勤', '清爽'],
     tip: '可以加一件薄外套。',
   });
-  assert.deepEqual(result.bodyParagraphs, ['这套整体更清爽，适合日常通勤。']);
+  assert.deepEqual(result.bodyParagraphs, []);
   assert.deepEqual(result.tags, []);
-  assert.equal(result.advice, '可以加一件薄外套。');
+  assert.equal(result.advice, null);
   assert.doesNotMatch([...result.bodyParagraphs, ...result.tags, result.advice].join('\n'), /旧标题/);
 });
 
@@ -112,6 +112,7 @@ test('V3 presentation uses overallComment and advice without title or tags', () 
       advice: '想让整体更清爽，可以让配饰只延续一个主色。',
       title: '模型标题不展示',
       styleTags: ['休闲'],
+      source: 'ai',
     },
   });
   assert.deepEqual(result.bodyParagraphs, ['这套整体偏轻松活泼，有重点但不会太满。']);
@@ -172,11 +173,11 @@ test('outfit detail UI does not render aiComment title or review tags directly',
   assert.doesNotMatch(source, /ai-comment-tags/);
 });
 
-test('rule fallback response keeps content plan presentation instead of fallback ai comment', () => {
+test('rule fallback response stays empty in the AI-only presentation', () => {
   const contentPlan = {
     primaryBenefit: 'commute_polish',
     items: [{ role: 'core', slot: 'top', displayName: '白衬衫' }],
-    defaultDetailExplanation: '白衬衫和黑色长裤把通勤感说清楚，整体干净但不僵硬。',
+    defaultDetailExplanation: '这条裤子弹性不错，坐着办公久一点也不容易勒。',
   };
   const result = buildAiReviewPresentation({
     title: '',
@@ -185,13 +186,13 @@ test('rule fallback response keeps content plan presentation instead of fallback
     tip: '旧 fallback 建议也不展示。',
     source: 'rule_fallback',
     reviewSource: 'rule_fallback',
-  }, contentPlan);
+  }, contentPlan, { copyContractVersion: 'recommendation-copy-contract-v3' });
 
-  assert.deepEqual(result.bodyParagraphs, ['白衬衫和黑色长裤把通勤感说清楚，整体干净但不僵硬。']);
+  assert.deepEqual(result.bodyParagraphs, []);
   assert.equal(result.advice, null);
 });
 
-test('contentPlan defaultDetailExplanation wins over rule default and legacy default comments', () => {
+test('rule default and legacy comments never enter the AI-only presentation', () => {
   const contentPlan = {
     primaryBenefit: 'clean_daily',
     items: [
@@ -199,7 +200,7 @@ test('contentPlan defaultDetailExplanation wins over rule default and legacy def
       { role: 'core', slot: 'bottom', displayName: '军绿色阔腿裤' },
       { role: 'core', slot: 'shoes', displayName: '白色运动鞋' },
     ],
-    defaultDetailExplanation: '米白 T恤和白色运动鞋颜色接近，军绿色阔腿裤让这套不全是浅色。居家穿不显得刻意，临时出门也不用重新换一身。',
+    defaultDetailExplanation: '这条裤子弹性不错，宅家坐久了也不容易勒得慌。',
   };
 
   for (const aiComment of [
@@ -211,13 +212,15 @@ test('contentPlan defaultDetailExplanation wins over rule default and legacy def
     {
       reason: 'T恤、阔腿裤、运动鞋是这套能确认的主要组合。',
       tip: '不需要强行再加外套或配饰。',
-      source: 'cached_ai',
+      source: 'legacy',
     },
   ]) {
-    const result = buildAiReviewPresentation(aiComment, contentPlan);
+    const result = buildAiReviewPresentation(aiComment, contentPlan, {
+      copyContractVersion: 'recommendation-copy-contract-v3',
+    });
     const visible = [...result.bodyParagraphs, result.advice].filter(Boolean).join('\n');
 
-    assert.deepEqual(result.bodyParagraphs, [contentPlan.defaultDetailExplanation]);
+    assert.deepEqual(result.bodyParagraphs, []);
     assert.doesNotMatch(visible, /能确认的主要组合|已有单品本身|不需要强行/);
   }
 });
@@ -226,7 +229,7 @@ test('successful enhanced review can replace contentPlan defaultDetailExplanatio
   const contentPlan = {
     primaryBenefit: 'clean_daily',
     items: [{ role: 'core', slot: 'top', displayName: '米白 T恤' }],
-    defaultDetailExplanation: '米白 T恤和白色运动鞋颜色接近，军绿色阔腿裤让这套不全是浅色。',
+    defaultDetailExplanation: '这条裤子弹性不错，宅家坐久了也不容易勒得慌。',
   };
   const result = buildAiReviewPresentation({
     explanationV2: {
@@ -241,7 +244,7 @@ test('successful enhanced review can replace contentPlan defaultDetailExplanatio
   assert.equal(result.advice, '居家穿可以维持这三件，临时出门不用重新换一身。');
 });
 
-test('contentPlan fallback stays human and scene-local when default detail is missing', () => {
+test('contentPlan without canonical detail stays empty instead of joining item names', () => {
   const result = buildAiReviewPresentation(null, {
     primaryBenefit: 'soft_mood',
     sceneIntent: 'home:clean_daily',
@@ -253,8 +256,7 @@ test('contentPlan fallback stays human and scene-local when default detail is mi
   });
   const visible = [...result.bodyParagraphs, result.advice].filter(Boolean).join('\n');
 
-  assert.match(visible, /米白 T恤|军绿色阔腿裤|白色运动鞋/);
-  assert.doesNotMatch(visible, /能确认的主要组合|已有单品本身|不需要强行|约会|主线|亮点|更稳|保持简单/);
+  assert.equal(visible, '');
 });
 
 test('cached ai response can still replace content plan presentation', () => {
@@ -276,9 +278,73 @@ test('cached ai response can still replace content plan presentation', () => {
 
 test('success false rule fallback keeps retry button and non-success toast semantics', () => {
   const source = fs.readFileSync(path.join(__dirname, 'index.tsx'), 'utf8');
+  const stateSource = fs.readFileSync(path.join(__dirname, 'aiReviewPageState.js'), 'utf8');
   assert.match(source, /isFallbackAiReviewResult/);
   assert.match(source, /刚刚没接上话，再试一次吧。/);
-  assert.match(source, /再听小搭说说/);
+  assert.match(stateSource, /再听小搭说说/);
   assert.match(source, /!isFallbackAiReviewResult\(result\)/);
   assert.doesNotMatch(source, /success && result\.aiComment\)/);
+});
+
+test('canonical rule detail is excluded from the AI-only presentation', () => {
+  const currentContext = { copyContractVersion: 'recommendation-copy-contract-v3' };
+  const contentPlan = {
+    defaultDetailExplanation: '这条裤子弹性不错，坐着办公久一点也不容易勒。',
+    suggestion: { text: '不应混入默认正文的建议。' },
+    items: [{ role: 'core', slot: 'top', displayName: '白衬衫' }],
+    primaryBenefit: 'commute_polish',
+  };
+
+  assert.deepEqual(buildAiReviewPresentation(null, contentPlan, currentContext), {
+    bodyParagraphs: [],
+    tags: [],
+    advice: null,
+  });
+  assert.deepEqual(buildAiReviewPresentation(null, contentPlan, { copyContractVersion: 'old' }), {
+    bodyParagraphs: [],
+    tags: [],
+    advice: null,
+  });
+});
+
+test('stale structural plans cannot create prose from item names, benefits, scene intent, or suggestions', () => {
+  const result = buildAiReviewPresentation(null, {
+    sceneIntent: 'work:commute',
+    primaryBenefit: 'commute_polish',
+    suggestion: { text: '建议加一件外套。' },
+    items: [
+      { role: 'core', slot: 'top', displayName: '白衬衫' },
+      { role: 'functional', slot: 'shoes', displayName: '黑色皮鞋' },
+    ],
+  }, { copyContractVersion: 'old' });
+
+  assert.deepEqual(result, { bodyParagraphs: [], tags: [], advice: null });
+});
+
+test('real ai remains independent of stale default copy but fallback-first conflicts cannot escape', () => {
+  const realAi = v2Comment({ source: 'cached_ai', reviewSource: 'cached_ai' });
+  const realResult = buildAiReviewPresentation(realAi, {
+    defaultDetailExplanation: '旧默认文案',
+  }, {
+    copyContractVersion: 'old',
+    reviewSource: 'cached_ai',
+    enhanced: true,
+  });
+  assert.deepEqual(realResult.bodyParagraphs, [
+    '这套是清爽利落的通勤感，配色和轮廓都比较收束。',
+    '黑白配色让视觉重点更清楚。',
+    '短上衣和长裤的比例层次明确。',
+  ]);
+
+  const conflict = buildAiReviewPresentation({
+    ...realAi,
+    source: 'cached_fallback',
+  }, {
+    defaultDetailExplanation: '这条裤子弹性不错，坐着办公久一点也不容易勒。',
+  }, {
+    copyContractVersion: 'recommendation-copy-contract-v3',
+    reviewSource: 'ai',
+    enhanced: true,
+  });
+  assert.deepEqual(conflict, { bodyParagraphs: [], tags: [], advice: null });
 });

@@ -27,7 +27,7 @@ test('card view model caps four and five item homepage cards at three previews',
   assert.equal(five.layoutVariant, 'preview-3-plus');
 });
 
-test('today page renders previewItems and keeps a legacy fallback for old outfits', () => {
+test('today page renders previewItems without owning recommendation fallback copy', () => {
   const source = fs.readFileSync(path.join(__dirname, 'index.tsx'), 'utf8');
   const helper = fs.readFileSync(path.join(__dirname, 'cardViewModel.js'), 'utf8');
 

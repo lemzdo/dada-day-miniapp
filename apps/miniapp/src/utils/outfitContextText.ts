@@ -65,15 +65,9 @@ export function getTimeLabel(outfit: Outfit) {
 }
 
 export function getOutfitStyleTags(outfit: Outfit, _index = 0) {
-  const explicitTags = normalizeTags(outfit.styleTags ?? []);
-  const structuredTags = unique([
-    ...explicitTags.filter((tag) => STYLE_TAG_ALLOWLIST.includes(tag)),
-    ...getPatternTags(outfit),
-    ...getFitTags(outfit),
-    getSceneStructuredTag(outfit),
-  ].filter(isNonEmptyString));
-
-  return structuredTags.slice(0, 3);
+  // V6 presentation is a saved recommendation snapshot. Do not infer new tags
+  // from live wardrobe items on a detail, favorite, or history read.
+  return normalizeTags(outfit.styleTags ?? []);
 }
 
 export function getOutfitHighlight(outfit: Outfit, index = 0) {

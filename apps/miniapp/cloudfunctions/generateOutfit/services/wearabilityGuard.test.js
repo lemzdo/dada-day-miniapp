@@ -55,7 +55,7 @@ test('passes thin summer sun-protection knit at 29C', () => {
   assert.equal(result.rejectReasons.length, 0);
 });
 
-test('penalizes obvious heavy combinations at 26 to 28C', () => {
+test('rejects a warm long-sleeve knit at 27C without explicit lightness evidence', () => {
   const result = evaluateWeatherWearability({
     items: [
       item('sweater', 'top', { subcategory: '毛衣', material: '羊毛' }),
@@ -65,9 +65,24 @@ test('penalizes obvious heavy combinations at 26 to 28C', () => {
     weather: { temp: 27, weather: '多云' },
   });
 
-  assert.equal(result.pass, true);
+  assert.equal(result.pass, false);
+  assert.ok(result.rejectReasons.includes('WARM_WEATHER_WARM_TOP'));
   assert.ok(result.penalty > 0);
   assert.ok(result.warningReasons.includes('WARM_WEATHER_HEAVY_COMBO'));
+});
+
+test('allows a warm-weather knit at 27C only when lightness is explicit', () => {
+  const result = evaluateWeatherWearability({
+    items: [
+      item('thin-knit', 'top', { subcategory: 'thin knit', material: 'breathable', thickness: 'lightweight' }),
+      item('shorts', 'bottom', { subcategory: 'shorts' }),
+      item('shoes', 'shoes', { subcategory: 'sneaker' }),
+    ],
+    weather: { temp: 27, weather: 'cloudy' },
+  });
+
+  assert.equal(result.pass, true);
+  assert.equal(result.rejectReasons.includes('WARM_WEATHER_WARM_TOP'), false);
 });
 
 test('rejects down coat below hot weather even in 22 to 25C band', () => {

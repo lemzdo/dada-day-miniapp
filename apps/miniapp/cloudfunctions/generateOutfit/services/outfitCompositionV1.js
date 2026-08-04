@@ -18,40 +18,73 @@ function buildOutfitCandidatesV1({
   clothes = [],
   scene,
   weather = {},
+  weatherMode,
   maxResults = 8,
   excludedOutfitKeys = [],
   excludeClothingIdSets = [],
   recommendationProfile = {},
   guardCandidates = true,
   returnRawCandidates = false,
+  itemFactsContext,
+  compactCandidates = false,
 } = {}) {
-  const temp = readTemperature(weather);
-  const tempBand = getTemperatureBand(temp);
+  const weatherContext = normalizeCompositionWeather(weather, weatherMode);
+  const {
+    hasUsableWeather,
+    temperature: temp,
+    temperatureBand: tempBand,
+  } = weatherContext;
   const normalizedScene = normalizeScene(scene);
   const excluded = new Set([
     ...(Array.isArray(excludeClothingIdSets) ? excludeClothingIdSets : []).filter(Array.isArray).map(signature),
     ...readStringArray(excludedOutfitKeys),
   ]);
-  const groups = groupClothesByCapability(
-    (Array.isArray(clothes) ? clothes : [])
-      .filter((item) => item && item._id)
-      .filter((item) => matchesTemperature(item, tempBand)),
+  const validClothes = (Array.isArray(clothes) ? clothes : [])
+    .filter((item) => item && item._id);
+  const candidateContext = {
+    hasUsableWeather,
+    temp,
+    tempBand,
+    scene: normalizedScene,
+    itemFactsContext,
+    compactCandidates,
+  };
+  const candidatesBeforeTemperatureFilter = buildRawCandidates(
+    groupClothesByCapability(validClothes, candidateContext),
+    candidateContext,
+    normalizedScene,
+    excluded,
   );
-  const rawCandidates = [
-    ...buildOnepieceCandidates(groups, { temp, tempBand, scene: normalizedScene }),
-    ...buildSeparateCandidates(groups, { temp, tempBand, scene: normalizedScene }),
-  ]
-    .filter((candidate) => candidate.items.length >= 2 && candidate.items.length <= 5)
-    .filter((candidate) => !excluded.has(signature(candidate.items.map((item) => item._id))));
+  const temperatureFilteredClothes = hasUsableWeather
+    ? validClothes.filter((item) => matchesTemperature(item, tempBand, candidateContext))
+    : validClothes;
+  const rawCandidates = temperatureFilteredClothes.length === validClothes.length
+    ? candidatesBeforeTemperatureFilter
+    : buildRawCandidates(
+        groupClothesByCapability(temperatureFilteredClothes, candidateContext),
+        candidateContext,
+        normalizedScene,
+        excluded,
+      );
   rawCandidates.debug = {
     candidateCount: rawCandidates.length,
     filteredCandidateCount: rawCandidates.length,
+    weatherMode: weatherContext.weatherMode,
+    hasUsableWeather,
+    temperatureBandApplied: hasUsableWeather,
+    temperatureFilterSkippedReason: hasUsableWeather ? '' : 'NO_USABLE_WEATHER',
+    candidateCountBeforeTemperatureFilter: candidatesBeforeTemperatureFilter.length,
+    candidateCountAfterTemperatureFilter: rawCandidates.length,
     limitedReason: rawCandidates.length === 0 ? getSceneLimitedReason(normalizedScene, rawCandidates, rawCandidates) : '',
   };
   if (returnRawCandidates) return rawCandidates;
 
   const guardResult = guardCandidates
-    ? applyWearabilityAndSceneEligibility(rawCandidates, { scene: normalizedScene, weather })
+    ? applyWearabilityAndSceneEligibility(rawCandidates, {
+        scene: normalizedScene,
+        weather: weatherContext.weather,
+        itemFactsContext,
+      })
     : { accepted: rawCandidates, rejected: [], debug: {} };
   const eligibleCandidates = guardResult.accepted;
 
@@ -60,8 +93,10 @@ function buildOutfitCandidatesV1({
       scene: normalizedScene,
       temp,
       tempBand,
-      weather,
-      recommendationProfile,
+      hasUsableWeather,
+      weather: weatherContext.weather,
+        recommendationProfile,
+        itemFactsContext,
     }))
     .filter((candidate) => candidate.sceneIntent)
     .sort(compareCandidates);
@@ -76,7 +111,15 @@ function buildOutfitCandidatesV1({
     guardRejectedCount: guardResult.debug.guardRejectedCount ?? 0,
     weatherRejectedCount: guardResult.debug.weatherRejectedCount ?? 0,
     sceneRejectedCount: guardResult.debug.sceneRejectedCount ?? 0,
+    weatherMode: weatherContext.weatherMode,
+    hasUsableWeather,
+    temperatureBandApplied: hasUsableWeather,
+    temperatureFilterSkippedReason: hasUsableWeather ? '' : 'NO_USABLE_WEATHER',
+    candidateCountBeforeTemperatureFilter: candidatesBeforeTemperatureFilter.length,
+    candidateCountAfterTemperatureFilter: rawCandidates.length,
+    eligibilityReasonCoverageGapCount: guardResult.debug.eligibilityReasonCoverageGapCount ?? 0,
     rejectReasonCounts: guardResult.debug.rejectReasonCounts || {},
+    unmappedEligibilityPaths: guardResult.debug.unmappedEligibilityPaths || [],
     batchDiagnostics: results.batchDiagnostics,
     limitedReason: guardResult.debug.limitedReason || getSceneLimitedReason(normalizedScene, rawCandidates, scored) || results.batchDiagnostics?.limitedReason || '',
   };
@@ -85,26 +128,25 @@ function buildOutfitCandidatesV1({
   return results;
 }
 
+function buildRawCandidates(groups, context, scene, excluded) {
+  return [
+    ...buildOnepieceCandidates(groups, context),
+    ...buildSeparateCandidates(groups, context),
+  ]
+    .filter((candidate) => candidate.items.length >= (scene === 'home' ? 1 : 2) && candidate.items.length <= 5)
+    .filter((candidate) => !excluded.has(signature(candidate.items.map((item) => item._id))));
+}
+
 function buildOnepieceCandidates(groups, context) {
   const candidates = [];
   for (const dress of groups.onepiece) {
-    for (const shoe of groups.shoes) {
-      const base = withRoles([dress, shoe], { [dress._id]: ROLE.CORE, [shoe._id]: ROLE.CORE });
+    if (context.scene === 'home') {
+      const indoorBase = withRoles([dress], { [dress._id]: ROLE.CORE }, context);
+      candidates.push(createCandidate(indoorBase, 'onepiece_indoor'));
+    }
+    for (const shoe of coreShoesForScene(groups.shoes, context)) {
+      const base = withRoles([dress, shoe], { [dress._id]: ROLE.CORE, [shoe._id]: ROLE.CORE }, context);
       candidates.push(createCandidate(base, 'onepiece_shoes'));
-      for (const coat of chooseOuterwear(groups.outerwear, base, context)) {
-        candidates.push(createCandidate(withRoles([dress, coat, shoe], {
-          [dress._id]: ROLE.CORE,
-          [coat._id]: ROLE.FUNCTIONAL,
-          [shoe._id]: ROLE.CORE,
-        }), 'onepiece_shoes_layered'));
-      }
-      for (const accessory of chooseAccessories(groups.accessory, base, context)) {
-        candidates.push(createCandidate(withRoles([dress, shoe, accessory], {
-          [dress._id]: ROLE.CORE,
-          [shoe._id]: ROLE.CORE,
-          [accessory._id]: ROLE.OPTIONAL,
-        }), 'onepiece_shoes_accessory'));
-      }
     }
   }
   return candidates;
@@ -115,41 +157,45 @@ function buildSeparateCandidates(groups, context) {
   const bottoms = [...groups.bottom, ...groups.skirt];
   for (const top of groups.top) {
     for (const bottom of bottoms) {
-      for (const shoe of groups.shoes) {
+      if (context.scene === 'home') {
+        const indoorBase = withRoles([top, bottom], {
+          [top._id]: ROLE.CORE,
+          [bottom._id]: ROLE.CORE,
+        }, context);
+        candidates.push(createCandidate(indoorBase, 'separates_indoor'));
+      }
+      for (const shoe of coreShoesForScene(groups.shoes, context)) {
         const base = withRoles([top, bottom, shoe], {
           [top._id]: ROLE.CORE,
           [bottom._id]: ROLE.CORE,
           [shoe._id]: ROLE.CORE,
-        });
+        }, context);
         candidates.push(createCandidate(base, 'separates_shoes'));
-        for (const coat of chooseOuterwear(groups.outerwear, base, context)) {
-          candidates.push(createCandidate(withRoles([top, bottom, coat, shoe], {
-            [top._id]: ROLE.CORE,
-            [bottom._id]: ROLE.CORE,
-            [coat._id]: ROLE.FUNCTIONAL,
-            [shoe._id]: ROLE.CORE,
-          }), 'separates_shoes_layered'));
-        }
-        for (const accessory of chooseAccessories(groups.accessory, base, context)) {
-          candidates.push(createCandidate(withRoles([top, bottom, shoe, accessory], {
-            [top._id]: ROLE.CORE,
-            [bottom._id]: ROLE.CORE,
-            [shoe._id]: ROLE.CORE,
-            [accessory._id]: ROLE.OPTIONAL,
-          }), 'separates_shoes_accessory'));
-        }
       }
     }
   }
   return candidates;
 }
 
+function coreShoesForScene(shoes, context) {
+  const source = Array.isArray(shoes) ? shoes : [];
+  if (context.scene !== 'home') return source;
+  return source.filter((item) => isHomeQuickOutingShoe(item, context));
+}
+
+function isHomeQuickOutingShoe(item, context) {
+  const text = getItemText(item, context).toLowerCase();
+  if (/拖鞋|洞洞鞋|长靴|靴|高跟|slipper|crocs|boot|heel/.test(text)) return false;
+  return /运动鞋|跑步鞋|休闲鞋|乐福|sneaker|running|trainer|loafer|walking/.test(text);
+}
+
 function createCandidate(items, structureType) {
+  const compact = items.every((item) => item?._candidateRef === true);
   return {
     compositionVersion: OUTFIT_COMPOSITION_VERSION,
     structureType,
     items,
-    outfitItemRoles: items.map((item) => ({
+    outfitItemRoles: compact ? [] : items.map((item) => ({
       id: item._id,
       slot: item.outfitSlot,
       role: item.outfitRole,
@@ -158,52 +204,37 @@ function createCandidate(items, structureType) {
   };
 }
 
-function withRoles(items, roleById) {
-  return items.map((item) => ({
-    ...item,
-    outfitSlot: normalizeCategory(item),
-    outfitRole: roleById[item._id] || ROLE.CORE,
-    capabilities: deriveItemCapabilitiesV1(item),
-  }));
-}
-
-function chooseOuterwear(outerwear, baseItems, context) {
-  if (context.tempBand === 'hot' || context.tempBand === 'warm') return [];
-  const needsLayer = context.temp <= 20
-    || (context.scene === 'work' && context.temp <= 24)
-    || baseItems.some((item) => deriveItemCapabilitiesV1(item).includes('layering'));
-  if (!needsLayer) return [];
-  return outerwear
-    .filter((item) => deriveItemCapabilitiesV1(item).includes('layering') || deriveItemCapabilitiesV1(item).includes('cold_weather') || context.scene === 'work')
-    .sort((a, b) => scoreItemForScene(b, context.scene) - scoreItemForScene(a, context.scene))
-    .slice(0, 6);
-}
-
-function chooseAccessories(accessories, baseItems, context) {
-  const baseColors = new Set(baseItems.flatMap((item) => normalizeColors(item).map((color) => color.name)));
-  return accessories
-    .filter((item) => isReliable(item))
-    .filter((item) => {
-      const capabilities = deriveItemCapabilitiesV1(item);
-      if (!capabilities.includes('accent')) return false;
-      if (context.scene === 'home' || context.scene === 'sport') return false;
-      const colors = normalizeColors(item).map((color) => color.name).filter(Boolean);
-      return colors.some((color) => !baseColors.has(color)) || scoreItemForScene(item, context.scene) > 0;
-    })
-    .sort((a, b) => scoreItemForScene(b, context.scene) - scoreItemForScene(a, context.scene))
-    .slice(0, 4);
+function withRoles(items, roleById, context) {
+  return items.map((item) => {
+    const outfitSlot = getNormalizedCategory(item, context);
+    const outfitRole = roleById[item._id] || ROLE.CORE;
+    if (context?.compactCandidates) {
+      return {
+        _id: item._id,
+        outfitSlot,
+        outfitRole,
+        _candidateRef: true,
+      };
+    }
+    return {
+      ...item,
+      outfitSlot,
+      outfitRole,
+      capabilities: getItemCapabilities(item, context),
+    };
+  });
 }
 
 function scoreCompositionCandidate(candidate, context) {
-  const capabilities = new Set(candidate.items.flatMap((item) => deriveItemCapabilitiesV1(item)));
+  const capabilities = new Set(candidate.items.flatMap((item) => getItemCapabilities(item, context)));
   const sceneIntent = chooseSceneIntent(capabilities, candidate, context);
   const primaryBenefit = choosePrimaryBenefit(sceneIntent, capabilities, candidate, context);
   const shoe = candidate.items.find((item) => item.outfitSlot === 'shoes');
-  const shoePurpose = chooseShoePurpose(shoe, capabilities, context.scene);
+  const shoePurpose = chooseShoePurpose(shoe, capabilities, context.scene, context);
   const observationFocus = chooseObservationFocus(candidate, context, shoePurpose);
   const score = scoreSceneIntent(sceneIntent, context.scene)
     + scoreWeatherFit(candidate, context)
-    + candidate.items.reduce((sum, item) => sum + scoreItemForScene(item, context.scene), 0)
+    + candidate.items.reduce((sum, item) => sum + scoreItemForScene(item, context.scene, context), 0)
     + scoreBenefit(primaryBenefit)
     + (candidate.items.some((item) => item.outfitRole === ROLE.OPTIONAL) ? 0.35 : 0);
 
@@ -222,21 +253,22 @@ function chooseSceneIntent(capabilities, candidate, context) {
   const scene = context.scene;
   if (scene === 'home') {
     const shoe = candidate.items.find((item) => item.outfitSlot === 'shoes');
-    const shoeCapabilities = shoe ? deriveItemCapabilitiesV1(shoe) : [];
+    if (!shoe) return 'home:indoor_relax';
+    const shoeCapabilities = shoe ? getItemCapabilities(shoe, context) : [];
     if (shoeCapabilities.includes('indoor')) return 'home:indoor_relax';
     if (capabilities.has('daily_outing') || capabilities.has('long_walk')) return 'home:quick_outing';
     return 'home:clean_daily';
   }
   if (scene === 'work') {
     if (candidate.items.some((item) => item.outfitRole === ROLE.FUNCTIONAL)) return 'work:layered';
-    if (hasWorkRelaxedSignal(candidate.items) && capabilities.has('long_walk')) return 'work:walkable';
-    if (hasWorkRelaxedSignal(candidate.items)) return 'work:relaxed';
+    if (hasWorkRelaxedSignal(candidate.items, context) && capabilities.has('long_walk')) return 'work:walkable';
+    if (hasWorkRelaxedSignal(candidate.items, context)) return 'work:relaxed';
     if (capabilities.has('commute')) return 'work:polished';
     return '';
   }
   if (scene === 'date') {
-    if (hasHighlightSignal(candidate.items)) return 'date:highlight';
-    if (hasSoftSignal(candidate.items)) return 'date:soft';
+    if (hasHighlightSignal(candidate.items, context)) return 'date:highlight';
+    if (hasSoftSignal(candidate.items, context)) return 'date:soft';
     if (capabilities.has('daily_outing')) return 'date:casual';
     return '';
   }
@@ -299,8 +331,8 @@ function isExplicitlyFormalWithoutSport(item) {
   return /formal|office|work|blazer|suit|dress|skirt|heels|正装|正式|西装|衬衫|西裤|连衣裙|裙|高跟/i.test(itemText(item));
 }
 
-function hasWorkRelaxedSignal(items) {
-  const text = items.map(itemText).join(' ');
+function hasWorkRelaxedSignal(items, context) {
+  const text = items.map((item) => getItemText(item, context)).join(' ');
   return /牛仔|运动鞋|sneaker|daily|casual|休闲|日常/i.test(text)
     && /commute|通勤|上班|office|work|clean|利落/i.test(text);
 }
@@ -321,15 +353,15 @@ function choosePrimaryBenefit(sceneIntent, capabilities, candidate, context) {
 }
 
 function chooseSecondaryBenefit(primaryBenefit, capabilities, context) {
-  if (primaryBenefit !== 'temperature_buffer' && context.temp <= 20 && capabilities.has('layering')) return 'temperature_buffer';
+  if (context.hasUsableWeather && primaryBenefit !== 'temperature_buffer' && context.temp <= 20 && capabilities.has('layering')) return 'temperature_buffer';
   if (primaryBenefit !== 'walkable' && capabilities.has('long_walk')) return 'walkable';
   if (primaryBenefit !== 'hot_weather' && context.tempBand === 'hot') return 'hot_weather';
   return '';
 }
 
-function chooseShoePurpose(shoe, capabilities, scene) {
+function chooseShoePurpose(shoe, capabilities, scene, context) {
   if (!shoe) return '';
-  const shoeCaps = deriveItemCapabilitiesV1(shoe);
+  const shoeCaps = getItemCapabilities(shoe, context);
   if (shoeCaps.includes('indoor')) return 'indoor';
   if (shoeCaps.includes('formal_training')) return 'training';
   if (shoeCaps.includes('long_walk')) return 'walkable';
@@ -343,8 +375,8 @@ function chooseObservationFocus(candidate, context, shoePurpose = '') {
   if (candidate.items.some((item) => item.outfitRole === ROLE.OPTIONAL)) return 'accent';
   if (candidate.items.some((item) => item.outfitRole === ROLE.FUNCTIONAL)) return 'layering';
   if (context.tempBand === 'hot') return 'temperature';
-  if (hasHighlightSignal(candidate.items)) return 'highlight';
-  if (hasSoftSignal(candidate.items)) return 'softness';
+  if (hasHighlightSignal(candidate.items, context)) return 'highlight';
+  if (hasSoftSignal(candidate.items, context)) return 'softness';
   if (shoePurpose === 'walkable') return 'walkability';
   return candidate.structureType.includes('onepiece') ? 'onepiece' : 'base';
 }
@@ -412,6 +444,7 @@ function canUseWithBatchCaps(candidate, counts, relax) {
     if (wouldExceed(counts.shoes, slotId(candidate, 'shoes'), 3)) return false;
   }
   if (!relaxArchetype && wouldExceed(counts.archetype, archetypeKey(candidate), 4)) return false;
+  if (candidate.sceneIntent === 'home:quick_outing' && wouldExceed(counts.sceneIntent, candidate.sceneIntent, 2)) return false;
   if (!relaxSceneIntent && wouldExceed(counts.sceneIntent, candidate.sceneIntent, 3)) return false;
   return true;
 }
@@ -521,6 +554,7 @@ function scoreSceneIntent(sceneIntent, scene) {
 }
 
 function scoreWeatherFit(candidate, context) {
+  if (!context.hasUsableWeather) return 0;
   const hasOuterwear = candidate.items.some((item) => item.outfitSlot === 'outerwear');
   if ((context.tempBand === 'hot' || context.tempBand === 'warm') && hasOuterwear) return -20;
   if ((context.tempBand === 'cold' || context.tempBand === 'cool') && hasOuterwear) return 3;
@@ -532,8 +566,8 @@ function scoreBenefit(benefit) {
     formal_training: 4,
     commute_polish: 3,
     temperature_buffer: 3,
-    walkable: 2.6,
-    indoor_relax: 2.4,
+    walkable: 1.8,
+    indoor_relax: 3.2,
     soft_mood: 2.2,
     clear_highlight: 2.1,
     light_activity: 2,
@@ -544,9 +578,9 @@ function scoreBenefit(benefit) {
   return scores[benefit] || 0;
 }
 
-function scoreItemForScene(item, scene) {
+function scoreItemForScene(item, scene, context) {
   const sceneTags = readStringArray(item.sceneTags);
-  const text = itemText(item);
+  const text = getItemText(item, context);
   let score = 0;
   if (sceneTags.includes(sceneLabel(scene)) || sceneTags.includes(scene)) score += 4;
   if (scene === 'work' && /通勤|上班|西裤|衬衫|乐福|西装|风衣|blazer|office|work/i.test(text)) score += 3;
@@ -558,9 +592,9 @@ function scoreItemForScene(item, scene) {
   return score;
 }
 
-function deriveItemCapabilitiesV1(item) {
-  const text = itemText(item);
-  const category = normalizeCategory(item);
+function deriveItemCapabilitiesV1(item, precomputed = {}) {
+  const text = typeof precomputed.itemText === 'string' ? precomputed.itemText : itemText(item);
+  const category = precomputed.normalizedCategory || normalizeCategory(item, text);
   const capabilities = new Set();
   if (/室内|居家|家居|home|indoor/i.test(text)) capabilities.add('indoor');
   if (/日常|休闲|T恤|牛仔|出游|逛街|daily|casual/i.test(text)) capabilities.add('daily_outing');
@@ -569,6 +603,8 @@ function deriveItemCapabilitiesV1(item) {
   if (/利落|clean|structured|直筒|挺括|简洁/i.test(text)) capabilities.add('structured');
   if (/约会|半裙|连衣裙|针织|单鞋|粉|红|甜|优雅|date/i.test(text)) capabilities.add('date');
   if (/轻运动|运动鞋|瑜伽|散步|休闲运动|light/i.test(text)) capabilities.add('light_activity');
+  if (category === 'top' && /t恤|t-shirt|tee|背心|vest|卫衣|hoodie|sweatshirt/i.test(text)) capabilities.add('light_activity');
+  if (category === 'bottom' && /束脚|jogger|运动裤|卫裤|sweatpants|training|sport|跑步|训练/i.test(text)) capabilities.add('light_activity');
   if (/训练|跑步|速干|健身|瑜伽裤|跑步鞋|training|running|gym/i.test(text)) capabilities.add('formal_training');
   if (/短袖|短裤|背心|凉感|薄|棉|麻|透气|summer|hot/i.test(text)) capabilities.add('hot_weather');
   if (/厚|羊毛|羽绒|毛呢|保暖|冷|winter|coat|down/i.test(text)) capabilities.add('cold_weather');
@@ -579,10 +615,11 @@ function deriveItemCapabilitiesV1(item) {
   return Array.from(capabilities).sort();
 }
 
-function groupClothesByCapability(clothes) {
+function groupClothesByCapability(clothes, context) {
   const groups = { top: [], outerwear: [], bottom: [], skirt: [], onepiece: [], shoes: [], accessory: [], other: [] };
   for (const item of clothes) {
-    const category = normalizeCategory(item);
+    const category = getNormalizedCategory(item, context);
+    if (!isHardValidCoreItem(item, category, context)) continue;
     if (groups[category]) groups[category].push(item);
     else groups.other.push(item);
   }
@@ -592,8 +629,34 @@ function groupClothesByCapability(clothes) {
   return groups;
 }
 
-function normalizeCategory(item) {
-  const text = itemText(item).toLowerCase();
+function isHardValidCoreItem(item, category, context) {
+  const text = getItemText(item, context).toLowerCase();
+  const invalidOutdoorHomeShoe = category === 'shoes'
+    && /长靴|靴|高跟|boot|heel/.test(text);
+  if (context.scene === 'home' && invalidOutdoorHomeShoe) return false;
+
+  if ((context.scene === 'work' || context.scene === 'date') && category === 'shoes'
+    && /拖鞋|洞洞鞋|slipper|crocs/.test(text)) return false;
+
+  if (context.scene === 'sport') {
+    if (category === 'shoes') {
+      return /运动鞋|跑步鞋|训练鞋|休闲运动鞋|sneaker|running|training|trainer/.test(text)
+        && !/拖鞋|洞洞鞋|高跟|长靴|靴|slipper|crocs|heel|boot/.test(text);
+    }
+    if (category === 'top') {
+      return /t恤|t-shirt|tee|背心|vest|卫衣|hoodie|sweatshirt|运动|训练|跑步|瑜伽|网球|sport|training|running|athletic|yoga|tennis/.test(text);
+    }
+    if (category === 'bottom') {
+      return /短裤|shorts|束脚|jogger|运动裤|卫裤|sweatpants|training|sport|跑步|训练/.test(text);
+    }
+    if (category === 'onepiece') return /网球|运动|tennis|athletic/.test(text);
+    if (category === 'skirt') return false;
+  }
+  return true;
+}
+
+function normalizeCategory(item, precomputedText = '') {
+  const text = (typeof precomputedText === 'string' && precomputedText ? precomputedText : itemText(item)).toLowerCase();
   const raw = readString(item?.category).toLowerCase();
   if (raw === 'onepiece' || /连衣裙|连体|onepiece|dress|jumpsuit/.test(text)) return 'onepiece';
   if (raw === 'shoes' || /鞋|靴|sneaker|loafer|shoe|boots/.test(text)) return 'shoes';
@@ -606,24 +669,61 @@ function normalizeCategory(item) {
   return raw || 'other';
 }
 
-function matchesTemperature(item, tempBand) {
-  const capabilities = deriveItemCapabilitiesV1(item);
-  if ((tempBand === 'hot' || tempBand === 'warm') && capabilities.includes('cold_weather') && normalizeCategory(item) === 'outerwear') return false;
+function createCompositionItemFacts(item, instrumentation) {
+  recordMetric(instrumentation, 'compositionItemText');
+  const text = itemText(item);
+  const normalizedCategory = normalizeCategory(item, text);
+  return {
+    itemText: text,
+    normalizedCategory,
+    capabilities: deriveItemCapabilitiesV1(item, { itemText: text, normalizedCategory }),
+  };
+}
+
+function recordMetric(instrumentation, name) {
+  if (!instrumentation || typeof instrumentation !== 'object') return;
+  const counters = instrumentation.counters && typeof instrumentation.counters === 'object'
+    ? instrumentation.counters
+    : instrumentation;
+  counters[name] = (Number(counters[name]) || 0) + 1;
+}
+
+function getContextItemFacts(item, context) {
+  const resolver = context?.itemFactsContext?.resolveItemFacts;
+  return typeof resolver === 'function' ? resolver.call(context.itemFactsContext, item) : null;
+}
+
+function getItemCapabilities(item, context) {
+  const facts = getContextItemFacts(item, context);
+  return Array.isArray(facts?.capabilities) ? facts.capabilities : deriveItemCapabilitiesV1(item);
+}
+
+function getNormalizedCategory(item, context) {
+  const facts = getContextItemFacts(item, context);
+  return facts?.compositionFacts?.normalizedCategory || normalizeCategory(item);
+}
+
+function getItemText(item, context) {
+  const facts = getContextItemFacts(item, context);
+  return typeof facts?.compositionFacts?.itemText === 'string' ? facts.compositionFacts.itemText : itemText(item);
+}
+
+function matchesTemperature(item, tempBand, context) {
+  const capabilities = getItemCapabilities(item, context);
+  const category = getNormalizedCategory(item, context);
+  if ((tempBand === 'hot' || tempBand === 'warm') && capabilities.includes('cold_weather') && category === 'outerwear') return false;
+  if (Number(context?.temp) >= 26 && capabilities.includes('cold_weather') && !capabilities.includes('hot_weather')
+    && ['top', 'bottom', 'onepiece', 'outerwear'].includes(category)) return false;
   if ((tempBand === 'cold' || tempBand === 'cool') && capabilities.includes('hot_weather') && !capabilities.includes('layering')) return false;
   return true;
 }
 
-function hasSoftSignal(items) {
-  return items.some((item) => /粉|白|米|针织|半裙|柔|甜|优雅|soft/i.test(itemText(item)));
+function hasSoftSignal(items, context) {
+  return items.some((item) => /粉|白|米|针织|半裙|柔|甜|优雅|soft/i.test(getItemText(item, context)));
 }
 
-function hasHighlightSignal(items) {
-  return items.some((item) => /红|亮|印花|图案|金|银|highlight|print/i.test(itemText(item)));
-}
-
-function isReliable(item) {
-  const confidence = normalizeConfidence(item.confidence ?? item.aiConfidence ?? item.recognitionConfidence);
-  return confidence === null || confidence >= 0.55;
+function hasHighlightSignal(items, context) {
+  return items.some((item) => /红|亮|印花|图案|金|银|highlight|print/i.test(getItemText(item, context)));
 }
 
 function normalizeConfidence(value) {
@@ -636,9 +736,40 @@ function normalizeConfidence(value) {
   return number > 1 ? number / 100 : number;
 }
 
-function readTemperature(weather) {
-  const temp = Number(weather?.temp ?? weather?.temperature);
-  return Number.isFinite(temp) ? temp : 22;
+function normalizeCompositionWeather(weather, rawWeatherMode) {
+  const source = weather && typeof weather === 'object' && !Array.isArray(weather) ? weather : {};
+  const suppliedTemperature = source.temp ?? source.temperature;
+  const temperature = Number.isFinite(suppliedTemperature) ? suppliedTemperature : null;
+  const explicitMode = readString(rawWeatherMode || source.mode || source.weatherMode).toLowerCase();
+  let weatherMode = ['live', 'cached', 'disabled', 'unavailable'].includes(explicitMode)
+    ? explicitMode
+    : temperature === null ? 'unavailable' : 'live';
+  if (['live', 'cached'].includes(weatherMode) && temperature === null) weatherMode = 'unavailable';
+  const hasUsableWeather = ['live', 'cached'].includes(weatherMode)
+    && Number.isFinite(temperature);
+  return {
+    weatherMode,
+    hasUsableWeather,
+    temperature: hasUsableWeather ? temperature : null,
+    temperatureBand: hasUsableWeather ? getTemperatureBand(temperature) : '',
+    weather: hasUsableWeather
+      ? {
+          ...source,
+          mode: weatherMode,
+          weatherMode,
+          temp: temperature,
+          temperature,
+        }
+      : {
+          mode: weatherMode,
+          weatherMode,
+          temp: null,
+          temperature: null,
+          humidity: null,
+          weather: null,
+          condition: null,
+        },
+  };
 }
 
 function getTemperatureBand(temp) {
@@ -707,6 +838,7 @@ module.exports = {
   OUTFIT_COMPOSITION_VERSION,
   SCENE_INTENTS,
   buildOutfitCandidatesV1,
+  createCompositionItemFacts,
   deriveItemCapabilitiesV1,
   isSceneEligible,
 };

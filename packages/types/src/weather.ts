@@ -1,5 +1,7 @@
 ﻿// ── 天气数据类型 ──
 
+export type WeatherMode = 'live' | 'cached' | 'disabled' | 'unavailable';
+
 /** 实时天气 */
 export interface CurrentWeather {
   city: string;

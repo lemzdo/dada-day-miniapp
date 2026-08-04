@@ -1,27 +1,19 @@
 const {
-  assertHumanCopy,
-  findHumanCopyPolicyViolations,
-  hasRepeatedSentenceParts,
-  isTooSimilar,
-} = require('./humanCopyPolicy');
-const {
-  deriveUserBenefitsV1,
-  renderXiaodaDetailCopy,
-  renderXiaodaStylistFallback,
-  renderXiaodaTodayCopy,
-} = require('./xiaodaVoicePolicy');
-const {
   XIAODA_CONTENT_PLAN_VERSION,
   buildXiaodaContentPlanV1,
-  buildXiaodaDefaultReviewV1,
-  renderXiaodaPlanTextV1,
 } = require('./xiaodaContentPlan');
 const { buildOutfitCopyFacts } = require('./outfitCopyFacts');
 const { buildSupportedOutfitInsights } = require('./supportedOutfitInsights');
-const { composePageCopy } = require('./pageCopyComposer');
-const { applyBatchCopyDiversity } = require('./batchCopyDiversity');
-const { sanitizeUserFacingCopy } = require('./copyQualityGate');
+const { planRecommendationNarrative } = require('./recommendationNarrativePlanner');
+const { buildRecommendationCopyContract } = require('./recommendationCopyContract');
+const { buildRecommendationCopyInput } = require('./pageCopyComposer');
+const {
+  appendBatchCopySelection,
+  createBatchCopyConstraints,
+} = require('./batchCopyDiversity');
 const { buildOutfitCardViewModel } = require('./outfitCardViewModel');
+const { resolveRealAiReviewSource } = require('./recommendationReviewProvenance');
+const { applyPresentationPlan, readPresentationPlan } = require('./presentationFactModel');
 
 const RECOMMENDATION_REASON_VERSION_V3 = 'recommendation-reason-v3';
 const CATEGORY_ORDER = ['top', 'outerwear', 'onepiece', 'bottom', 'skirt', 'shoes', 'accessory', 'other'];
@@ -67,48 +59,115 @@ const SCENE_LABELS = {
   sports: '运动',
 };
 
-function compileRecommendationLanguageV3({ outfits = [], scene, weather } = {}) {
+function compileRecommendationLanguageV3(input = {}) {
+  const source = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  const { outfits = [], scene, weather, seed, batchContext, instrumentation } = source;
   if (!Array.isArray(outfits) || outfits.length === 0) return [];
-  const plans = planBatchCopyV3(outfits.map((outfit) => ({ outfit, scene, weather })));
-  return plans.map((plan) => {
-    const copy = renderRecommendationCopyV3(plan);
-    return stripNonFinite({
-      ...plan.outfit,
-      reasonVersion: RECOMMENDATION_REASON_VERSION_V3,
-      reason: copy.reason,
-      reasoning: copy.reasoning,
-      cardViewModel: buildOutfitCardViewModel(plan.outfit),
-      detailNarrativeViewModel: {
-        defaultText: copy.reasoning,
-        source: 'content_plan',
-        aiStatus: 'default',
-      },
-      reviewSource: 'rule_default',
-      contentPlanVersion: plan.contentPlan.version,
-      contentPlan: plan.contentPlan,
-      sceneIntent: plan.contentPlan.sceneIntent,
-      primaryBenefitCode: plan.contentPlan.primaryBenefit,
-      validatorRejectReasons: [],
-      cacheReuseReason: '',
-      primaryDimension: plan.primaryInsight.dimension,
-      primaryInsightCode: plan.primaryInsight.code,
-      evidenceCodes: plan.detailInsights.map((insight) => insight.code),
-      styleTags: deriveDisplayTagsV3(plan.facts),
-      aiComment: {
-        ...(plan.outfit.aiComment && typeof plan.outfit.aiComment === 'object' ? plan.outfit.aiComment : {}),
-        overallComment: copy.aiComment.overallComment,
-        advice: copy.aiComment.advice,
+  for (let index = 0; index < outfits.length; index += 1) {
+    recordMetric(instrumentation, 'compileCandidateTags');
+    recordMetric(instrumentation, 'compileTodayReason');
+    recordMetric(instrumentation, 'compileCopyContract');
+  }
+  const plans = planBatchCopyV3(outfits.map((value) => {
+    const outfit = isPlainObject(value) ? value : {};
+    return {
+      outfit,
+      scene: scene ?? outfit.scene,
+      weather: weather ?? outfit.weatherSnapshot ?? outfit.weather,
+      seed,
+      batchContext,
+    };
+  }));
+  return plans.map(buildCompiledOutfitV3);
+}
+
+function buildCompiledOutfitV3(plan) {
+  const canonical = plan.copyContract;
+  const outfit = { ...plan.outfit };
+  delete outfit._canonicalCandidate;
+  const aiReviewSource = resolveRealAiReviewSource(outfit);
+  const preserveAiReview = Boolean(aiReviewSource);
+  const aiComment = preserveAiReview
+    ? outfit.aiComment
+    : {
+        overallComment: canonical.detailExplanation,
+        advice: '',
         contentPlanVersion: plan.contentPlan.version,
         sceneIntent: plan.contentPlan.sceneIntent,
         primaryBenefitCode: plan.contentPlan.primaryBenefit,
         reviewSource: 'rule_default',
-        reviewVersion: 'stylist-explanation-v4',
-        promptVersion: 'stylist-prompt-v4',
-        copyPolicyVersion: 'human-copy-v1',
-        voicePolicyVersion: 'xiaoda-voice-v1',
-      },
-    });
-  });
+      };
+
+  return {
+    ...outfit,
+    ...(plan.presentationPlan?.titleConcept
+      ? { title: plan.presentationPlan.titleConcept, displayTitle: plan.presentationPlan.titleConcept }
+      : {}),
+    eligibilityReason: plan.narrativePlan.eligibilityReason,
+    reasonVersion: RECOMMENDATION_REASON_VERSION_V3,
+    copyContract: canonical,
+    copyContractVersion: canonical.copyContractVersion,
+    voiceBankVersion: canonical.voiceBankVersion,
+    reason: canonical.todayReason,
+    reasoning: canonical.detailExplanation,
+    todayClaim: canonical.todayClaim,
+    todayClaimId: canonical.todayClaimId,
+    todayAction: canonical.todayAction,
+    todayDimension: canonical.todayDimension,
+    todayEvidenceIds: canonical.todayEvidenceIds,
+    todayRequiredFactIds: canonical.todayRequiredFactIds,
+    todayEvidenceSources: canonical.todayEvidenceSources,
+    todaySentenceClusterId: canonical.todaySentenceClusterId,
+    todaySubjectItemId: canonical.todaySubjectItemId,
+    todaySubjectItemIds: canonical.todaySubjectItemIds,
+    todaySlotBindings: canonical.todaySlotBindings,
+    todayReasonSource: canonical.todayReasonSource,
+    coreEligibilityReason: canonical.coreEligibilityReason,
+    coreEligibilityReasonCode: canonical.coreEligibilityReasonCode,
+    coreEligibilityEvidence: canonical.coreEligibilityEvidence,
+    coreEligibilitySubjectItemIds: canonical.coreEligibilitySubjectItemIds,
+    coreEligibilitySupportingFactIds: canonical.coreEligibilitySupportingFactIds,
+    coreEligibilityRelationFactIds: canonical.coreEligibilityRelationFactIds,
+    coreEligibilitySourceRule: canonical.coreEligibilitySourceRule,
+    coreEligibilitySourceRuleReasons: canonical.coreEligibilitySourceRuleReasons,
+    enhancedReason: canonical.enhancedReason,
+    enhancementRejectReasons: canonical.enhancementRejectReasons,
+    detailClaim: canonical.detailClaim,
+    detailClaimId: canonical.detailClaimId,
+    detailAction: canonical.detailAction,
+    detailDimension: canonical.detailDimension,
+    detailEvidenceIds: canonical.detailEvidenceIds,
+    detailRequiredFactIds: canonical.detailRequiredFactIds,
+    detailEvidenceSources: canonical.detailEvidenceSources,
+    detailSentenceClusterId: canonical.detailSentenceClusterId,
+    detailSubjectItemId: canonical.detailSubjectItemId,
+    detailSubjectItemIds: canonical.detailSubjectItemIds,
+    detailSlotBindings: canonical.detailSlotBindings,
+    riskFlags: canonical.riskFlags,
+    qualification: canonical.qualification,
+    cardViewModel: buildOutfitCardViewModel(outfit),
+    detailNarrativeViewModel: {
+      defaultText: canonical.detailExplanation,
+      source: 'copy_contract',
+      aiStatus: 'default',
+    },
+    reviewSource: preserveAiReview ? aiReviewSource : 'rule_default',
+    contentPlanVersion: plan.contentPlan.version,
+    contentPlan: plan.contentPlan,
+    presentationPlan: plan.presentationPlan || outfit.presentationPlan,
+    sceneIntent: plan.contentPlan.sceneIntent,
+    primaryBenefitCode: plan.contentPlan.primaryBenefit,
+    validatorRejectReasons: canonical.riskFlags,
+    cacheReuseReason: '',
+    primaryDimension: canonical.todayDimension,
+    primaryInsightCode: plan.supportedCopyInsights[0]?.code || '',
+    evidenceCodes: uniqueStrings([
+      ...canonical.todayEvidenceIds,
+      ...canonical.detailEvidenceIds,
+    ]),
+    styleTags: deriveDisplayTagsV3(plan.facts),
+    aiComment,
+  };
 }
 
 function extractOutfitFactsV3(input = {}, context = {}) {
@@ -155,240 +214,299 @@ function deriveOutfitInsightsV3(facts = {}) {
 }
 
 function planBatchCopyV3(outfitPlans = []) {
-  const usedCodes = new Set();
-  const usedDimensions = new Set();
-  const usedFamilies = new Set();
-  const usedReasons = new Set();
-  let weatherPrimaryCount = 0;
-  let scenePrimaryCount = 0;
-
-  const plans = outfitPlans.map((entry, index) => {
-    const outfit = entry.outfit || entry;
-    const facts = extractOutfitFactsV3(outfit, { scene: entry.scene, weather: entry.weather });
-    const insights = deriveOutfitInsightsV3(facts);
-    const benefits = deriveUserBenefitsV1(facts, insights, { scene: entry.scene, weather: entry.weather });
-    const primaryInsight = choosePrimaryInsight(insights, {
-      usedCodes,
-      usedDimensions,
-      weatherPrimaryCount,
-      scenePrimaryCount,
-    }) || buildFallbackInsight(facts);
-    const detailInsights = chooseDetailInsights(insights, primaryInsight);
-    const family = chooseSentenceFamily(primaryInsight, usedFamilies, index);
-    let plan = {
+  const plans = [];
+  let batchConstraints = createBatchCopyConstraints();
+  for (let index = 0; index < outfitPlans.length; index += 1) {
+    const entry = outfitPlans[index] || {};
+    const candidate = Object.prototype.hasOwnProperty.call(entry, 'outfit') ? entry.outfit : entry;
+    const outfit = isPlainObject(candidate) ? candidate : {};
+    const scene = entry.scene ?? outfit.scene;
+    const weather = entry.weather ?? outfit.weatherSnapshot ?? outfit.weather;
+    const canonicalCandidate = outfit._canonicalCandidate;
+    const facts = canonicalCandidate?.displayFacts || extractOutfitFactsV3(outfit, { scene, weather });
+    const explicitContractFacts = collectExplicitContractFacts(outfit);
+    const copyFacts = canonicalCandidate?.copyFacts || buildOutfitCopyFacts({
       outfit,
-      facts,
-      insights,
-      benefits,
-      primaryInsight,
-      detailInsights,
-      sentenceFamily: family,
-      batchIndex: index,
-    };
-    plan = ensureUniquePlanReason(plan, usedReasons);
-    const copyFacts = buildOutfitCopyFacts({ outfit, scene: entry.scene, weather: entry.weather });
+      scene,
+      weather,
+      contractFacts: explicitContractFacts,
+    });
     const supportedCopyInsights = buildSupportedOutfitInsights(copyFacts);
-    const pageCopy = composePageCopy({
+    normalizeSceneGroundingForContract(copyFacts, supportedCopyInsights, scene);
+    const plannerInput = {
       facts: copyFacts,
       insights: supportedCopyInsights,
-      batchIndex: index,
-    });
-    plan.copyFacts = copyFacts;
-    plan.supportedCopyInsights = supportedCopyInsights;
-    plan.pageCopy = pageCopy;
-    plan.contentPlan = buildXiaodaContentPlanV1(outfit, {
-      sceneIntent: outfit.sceneIntent,
-      primaryBenefit: outfit.primaryBenefit || benefitFromInsight(plan.primaryInsight, index),
-      secondaryBenefit: outfit.secondaryBenefit,
-      observationFocus: outfit.observationFocus || plan.primaryInsight.dimension,
-    });
-    plan.contentPlan.defaultCopy = pageCopy;
-    plan.contentPlan.defaultTodayReason = pageCopy.todayReason;
-    plan.contentPlan.defaultDetailExplanation = pageCopy.detailExplanation;
-    usedCodes.add(primaryInsight.code);
-    usedDimensions.add(primaryInsight.dimension);
-    usedFamilies.add(plan.sentenceFamily);
-    usedReasons.add(renderTodayReasonV3(plan));
-    if (primaryInsight.dimension === 'weather') weatherPrimaryCount += 1;
-    if (primaryInsight.dimension === 'scene') scenePrimaryCount += 1;
-    return plan;
-  });
-  const diversified = applyBatchCopyDiversity(plans.map((plan) => plan.pageCopy));
-  return plans.map((plan, index) => {
-    const pageCopy = diversified[index] || plan.pageCopy;
-    return {
-      ...plan,
-      pageCopy,
-      contentPlan: {
-        ...plan.contentPlan,
-        defaultCopy: pageCopy,
-        defaultTodayReason: pageCopy.todayReason,
-        defaultDetailExplanation: pageCopy.detailExplanation,
-      },
+      scene,
+      weather,
+      wearabilityFacts: outfit.wearabilityFacts || outfit.eligibility?.weather,
+      eligibilityReason: outfit.eligibilityReason || outfit.eligibility?.scene?.eligibilityReason,
+      eligibilityEvaluated: Boolean(outfit.eligibility?.scene),
     };
+    const contractSeed = buildStableContractSeed(entry, outfit, index);
+    const attempts = [];
+    const retryBatchContext = mergePlannerBatchContext(entry.batchContext, batchConstraints);
+    let narrativePlan = null;
+    let contractInput = null;
+    let copyContract = null;
+    for (let attempt = 0; attempt < 1; attempt += 1) {
+      narrativePlan = planRecommendationNarrative({ ...plannerInput, batchContext: retryBatchContext });
+      const compiledAttempt = compilePlannedContract({
+        copyFacts,
+        supportedCopyInsights,
+        scene,
+        weather,
+        narrativePlan,
+        eligibilityReason: narrativePlan.eligibilityReason,
+        batchConstraints,
+        contractSeed: `${contractSeed}:attempt:${attempt}`,
+        batchIndex: index,
+      });
+      contractInput = compiledAttempt.contractInput;
+      copyContract = compiledAttempt.copyContract;
+      attempts.push({
+        todayAction: narrativePlan.todayAction,
+        detailAction: narrativePlan.detailAction,
+        riskFlags: copyContract.riskFlags.slice(),
+      });
+      break;
+    }
+    let contentPlan = buildXiaodaContentPlanV1(outfit, {
+      sceneIntent: outfit.sceneIntent,
+      primaryBenefit: outfit.primaryBenefit,
+      secondaryBenefit: outfit.secondaryBenefit,
+      observationFocus: outfit.observationFocus,
+      canonicalCopy: copyContract,
+    });
+    const presentationPlan = readPresentationPlan(outfit);
+    if (presentationPlan) {
+      const semanticPresentation = {
+        ...outfit,
+        copyContract,
+        contentPlan,
+      };
+      applyPresentationPlan(semanticPresentation, presentationPlan.factModel, presentationPlan);
+      copyContract = semanticPresentation.copyContract;
+      contentPlan = semanticPresentation.contentPlan;
+    }
+    plans.push({
+      outfit,
+      facts,
+      copyFacts,
+      supportedCopyInsights,
+      narrativePlan,
+      contractInput,
+      copyContract,
+      contentPlan,
+      presentationPlan,
+      batchConstraints,
+      batchIndex: index,
+      copyPlanAttempts: attempts,
+    });
+    if (copyContract.riskFlags.length === 0) {
+      batchConstraints = appendAcceptedContractSelection(batchConstraints, copyContract);
+    }
+  }
+  return plans;
+}
+
+function compilePlannedContract({
+  copyFacts,
+  supportedCopyInsights,
+  scene,
+  weather,
+  narrativePlan,
+  eligibilityReason,
+  batchConstraints,
+  contractSeed,
+  batchIndex,
+}) {
+  const structuralInput = buildRecommendationCopyInput({
+    facts: copyFacts,
+    insights: supportedCopyInsights,
+    scene,
+    weather,
+    narrativePlan,
+    batchConstraints,
+    seed: contractSeed,
+    diagnostics: { batchIndex },
+  });
+  const contractInput = structuralInput
+    ? { ...structuralInput, narrativePlan: structuralInput.plan, eligibilityReason }
+    : { facts: {}, insights: [], scene, weather, narrativePlan, eligibilityReason, batchConstraints, seed: contractSeed };
+  return {
+    contractInput,
+    copyContract: buildRecommendationCopyContract(contractInput),
+  };
+}
+
+function appendAcceptedContractSelection(constraints, canonical) {
+  const withToday = appendBatchCopySelection(constraints, {
+    claimId: canonical.todayClaimId,
+  });
+  return appendBatchCopySelection(withToday, {
+    claimId: canonical.detailClaimId,
   });
 }
 
-function benefitFromInsight(insightEntry, index = 0) {
-  const code = insightEntry?.code || '';
-  if (code.includes('WEATHER') || insightEntry?.dimension === 'weather') return 'temperature_buffer';
-  if (code.includes('FORMALITY') || insightEntry?.dimension === 'formality') return 'commute_polish';
-  if (code.includes('COLOR') && index % 2 === 0) return 'clear_highlight';
-  if (code.includes('COLOR')) return 'soft_mood';
-  if (code.includes('PATTERN') || code.includes('DETAIL')) return 'clear_highlight';
-  if (code.includes('SILHOUETTE') || code.includes('PROPORTION')) return 'clean_daily';
-  if (code.includes('SCENE_HOME')) return 'indoor_relax';
-  if (code.includes('SCENE_SPORT')) return 'light_activity';
-  if (code.includes('SCENE_DATE')) return 'soft_mood';
-  if (code.includes('SCENE_WORK')) return 'commute_polish';
-  return ['clean_daily', 'walkable', 'clear_highlight', 'soft_mood'][index % 4];
+function mergePlannerBatchContext(input, constraints) {
+  const source = isPlainObject(input) ? input : {};
+  return {
+    ...source,
+    usedClaimIds: uniqueStrings([
+      ...(Array.isArray(source.usedClaimIds) ? source.usedClaimIds : []),
+      ...constraints.usedClaimIds,
+    ]),
+    blockedClaimKeys: uniqueStrings(source.blockedClaimKeys),
+  };
+}
+
+function normalizeSceneGroundingForContract(facts, insights, scene) {
+  const canonicalScene = normalizeContractScene(scene || facts.scene?.raw || facts.scene?.normalized);
+  if (!canonicalScene) return;
+  facts.allowedFacts = uniqueStrings((facts.allowedFacts || []).map((fact) => (
+    fact.startsWith('scene:') ? `scene:${canonicalScene}` : fact
+  )));
+  for (const insightEntry of insights) {
+    if (!Array.isArray(insightEntry.requiredFacts)) continue;
+    insightEntry.requiredFacts = uniqueStrings(insightEntry.requiredFacts.map((fact) => (
+      fact.startsWith('scene:') ? `scene:${canonicalScene}` : fact
+    )));
+  }
+}
+
+function normalizeContractScene(value) {
+  const scene = readString(value).toLowerCase();
+  if (['home', '居家', '家庭'].includes(scene)) return 'home';
+  if (['work', 'office', '工作', '上班', '通勤'].includes(scene)) return 'work';
+  if (['date', '约会'].includes(scene)) return 'date';
+  if (['sport', 'sports', '运动'].includes(scene)) return 'sport';
+  if (['outing', '出行', '出门', '休闲'].includes(scene)) return 'outing';
+  return '';
+}
+
+function collectExplicitContractFacts(outfit = {}) {
+  const sources = [
+    outfit,
+    outfit.wearabilityFacts,
+    outfit.sceneEligibilityFacts,
+    outfit.eligibility?.weather,
+    outfit.eligibility?.scene,
+  ];
+  const facts = [];
+  for (const source of sources) {
+    if (!source || typeof source !== 'object') continue;
+    facts.push(...readStringArray(source.contractFacts));
+    facts.push(...readStringArray(source.availableFacts));
+  }
+  const acceptReasons = readStringArray(outfit.eligibility?.scene?.acceptReasons);
+  if (acceptReasons.includes('WORK_POLISHED_SIGNAL')) facts.push('formality');
+  if (acceptReasons.includes('SPORT_APPAREL')) facts.push('movement');
+  return uniqueStrings(facts);
+}
+
+function readStringArray(value) {
+  return Array.isArray(value) ? value.filter((entry) => typeof entry === 'string') : [];
+}
+
+function buildStableContractSeed(entry, outfit, index) {
+  const identity = outfit.id
+    || outfit._id
+    || outfit.outfitKey
+    || (Array.isArray(outfit.clothingIds) ? outfit.clothingIds.join('|') : '')
+    || `batch-index:${index}`;
+  return stableSerialize({
+    requestSeed: entry.seed ?? '',
+    batchContext: entry.batchContext ?? '',
+    outfitIdentity: identity,
+  });
+}
+
+function stableSerialize(value) {
+  if (Array.isArray(value)) return `[${value.map(stableSerialize).join(',')}]`;
+  if (!value || typeof value !== 'object') return JSON.stringify(value);
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableSerialize(value[key])}`).join(',')}}`;
 }
 
 function renderRecommendationCopyV3(plan) {
-  const planCopy = renderXiaodaPlanTextV1(plan.contentPlan);
-  const defaultReview = buildXiaodaDefaultReviewV1(plan.contentPlan);
-  const reason = ensureCopy(plan.pageCopy?.todayReason || planCopy.bodyParagraphs[0] || defaultReview.reason, () => renderTodayReasonV3(plan), plan);
-  const reasoning = ensureCopy(plan.pageCopy?.detailExplanation || planCopy.bodyParagraphs.join('') || defaultReview.reason, () => renderDetailReasoningV3(plan), plan);
-  const aiComment = {
-    overallComment: reasoning,
-    advice: planCopy.suggestion?.text || '',
-  };
-  assertHumanCopy(reason);
-  assertHumanCopy(reasoning);
-  assertHumanCopy(aiComment.overallComment);
-  if (aiComment.advice) assertHumanCopy(aiComment.advice, { compareWith: aiComment.overallComment });
-  if (isTooSimilar(aiComment.overallComment, reasoning)) {
-    return {
-      reasonVersion: RECOMMENDATION_REASON_VERSION_V3,
-      reason,
-      reasoning,
-      aiComment,
-    };
-  }
+  const canonical = readCanonicalContract(plan);
   return {
     reasonVersion: RECOMMENDATION_REASON_VERSION_V3,
-    reason,
-    reasoning,
-    aiComment,
+    reason: canonical.todayReason,
+    reasoning: canonical.detailExplanation,
+    aiComment: {
+      overallComment: canonical.detailExplanation,
+      advice: '',
+    },
   };
 }
 
 function renderTodayReasonV3(plan) {
-  if (plan?.pageCopy?.todayReason) return ensureCopy(plan.pageCopy.todayReason, () => renderFallbackToday(plan.facts, plan.batchIndex));
-  const xiaodaText = renderXiaodaTodayCopy({
-    facts: plan.facts,
-    insights: [plan.primaryInsight, ...plan.detailInsights].filter(Boolean),
-    benefits: plan.benefits,
-    batchIndex: plan.batchIndex,
-  });
-  if (xiaodaText) return ensureCopy(xiaodaText, () => renderFallbackToday(plan.facts, plan.batchIndex));
-  const text = renderTodayByInsight(plan, plan.primaryInsight, plan.sentenceFamily);
-  return ensureCopy(text, () => renderFallbackToday(plan.facts, plan.batchIndex));
+  return readCanonicalContract(plan).todayReason;
 }
 
 function renderDetailReasoningV3(plan) {
-  if (plan?.pageCopy?.detailExplanation) return ensureCopy(plan.pageCopy.detailExplanation, () => renderFallbackDetail(plan.facts));
-  const insights = [plan.primaryInsight, ...plan.detailInsights]
-    .filter(Boolean)
-    .filter((insight, index, array) => array.findIndex((entry) => entry.code === insight.code) === index)
-    .slice(0, 3);
-  const text = renderXiaodaDetailCopy({
-    facts: plan.facts,
-    insights,
-    benefits: plan.benefits,
-  }) || renderDetailByInsights(plan.facts, insights);
-  const today = renderTodayReasonV3(plan);
-  if (text.includes(today) || isTooSimilar(today, text, 0.82)) {
-    const alternate = renderAlternateDetail(plan.facts, insights);
-    return ensureCopy(alternate, () => renderFallbackDetail(plan.facts));
-  }
-  return ensureCopy(text, () => renderFallbackDetail(plan.facts));
+  return readCanonicalContract(plan).detailExplanation;
 }
 
-function renderStylistFallbackCopyV3(planOrFacts, options = {}) {
-  const plan = planOrFacts && planOrFacts.facts ? planOrFacts : {
-    facts: planOrFacts,
-    primaryInsight: buildFallbackInsight(planOrFacts),
-    detailInsights: [],
-    batchIndex: 0,
+function renderStylistFallbackCopyV3(plan) {
+  const canonical = readCanonicalContract(plan);
+  return {
+    overallComment: canonical.detailExplanation,
+    advice: '',
   };
-  if (plan.pageCopy?.detailExplanation) {
-    return {
-      overallComment: ensureCopy(plan.pageCopy.detailExplanation, () => renderBasicStylistCopy(plan.facts, plan.primaryInsight).overallComment),
-      advice: '',
-      reviewVersion: 'stylist-explanation-v4',
-      promptVersion: 'stylist-prompt-v4',
-      copyPolicyVersion: 'human-copy-v1',
-      voicePolicyVersion: 'xiaoda-voice-v1',
-    };
-  }
-  const facts = plan.facts;
-  const xiaodaCopy = renderXiaodaStylistFallback({
-    facts,
-    insights: [plan.primaryInsight, ...plan.detailInsights].filter(Boolean),
-    benefits: plan.benefits || deriveUserBenefitsV1(facts, [plan.primaryInsight, ...plan.detailInsights].filter(Boolean)),
-    batchIndex: plan.batchIndex || 0,
-  });
-  if (xiaodaCopy?.overallComment && xiaodaCopy?.advice) return xiaodaCopy;
-  const pattern = findInsight([plan.primaryInsight, ...plan.detailInsights], 'PATTERN_FOCUS_WITH_SIMPLE_BOTTOM');
-  if (pattern) {
-    return {
-      overallComment: ensureCopy('这套整体偏轻松活泼。上衣和运动鞋都有一点存在感，浅色下装把它们稳住了，所以看起来有重点但不会太满。', () => renderBasicStylistCopy(facts, plan.primaryInsight).overallComment),
-      advice: ensureCopy('想让整体更清爽，可以让鞋子或配饰只保留一个明显的色彩重点。', () => renderBasicStylistCopy(facts, plan.primaryInsight).advice),
-      reviewVersion: 'stylist-explanation-v4',
-      promptVersion: 'stylist-prompt-v4',
-      copyPolicyVersion: 'human-copy-v1',
-      voicePolicyVersion: 'xiaoda-voice-v1',
-    };
-  }
-  const copy = renderBasicStylistCopy(facts, plan.primaryInsight);
-  if (options.reasoning && isTooSimilar(copy.overallComment, options.reasoning)) {
-    return {
-      overallComment: ensureCopy(`${itemLabel(findSlot(facts.items, 'top') || facts.items[0])}和${itemLabel(findSlot(facts.items, 'bottom') || findSlot(facts.items, 'skirt') || facts.items[1])}组合起来很日常，今天不用花太多心思。`, () => '这套适合今天想穿得简单一点的时候。'),
-      advice: copy.advice,
-      reviewVersion: 'stylist-explanation-v4',
-      promptVersion: 'stylist-prompt-v4',
-      copyPolicyVersion: 'human-copy-v1',
-      voicePolicyVersion: 'xiaoda-voice-v1',
-    };
+}
+
+function readCanonicalContract(plan) {
+  const canonical = plan?.copyContract;
+  if (!canonical || typeof canonical !== 'object' || Array.isArray(canonical)) {
+    return { todayReason: '', detailExplanation: '' };
   }
   return {
-    ...copy,
-    reviewVersion: 'stylist-explanation-v4',
-    promptVersion: 'stylist-prompt-v4',
-    copyPolicyVersion: 'human-copy-v1',
-    voicePolicyVersion: 'xiaoda-voice-v1',
+    todayReason: typeof canonical.todayReason === 'string' ? canonical.todayReason : '',
+    detailExplanation: typeof canonical.detailExplanation === 'string' ? canonical.detailExplanation : '',
   };
 }
 
 function deriveDisplayTagsV3(facts = {}) {
-  const tags = [];
+  const tags = [scenePrimaryTag(facts.context?.scene)];
   const items = Array.isArray(facts.items) ? facts.items : [];
-  for (const tag of uniqueStrings(items.flatMap((item) => item.styleTags))) {
-    if (STYLE_ALLOWLIST.includes(tag)) tags.push(tag);
-  }
+  const styleCounts = new Map();
   for (const item of items) {
-    const patternTag = PATTERN_TAGS[String(item.patternType || '').toLowerCase()];
-    if (patternTag) tags.push(patternTag);
+    for (const tag of uniqueStrings(item.styleTags)) {
+      styleCounts.set(tag, (styleCounts.get(tag) || 0) + 1);
+    }
   }
-  for (const item of items) {
-    const fitTag = FIT_TAGS[String(item.fit || item.silhouette || '').toLowerCase()];
-    if (fitTag) tags.push(fitTag);
-  }
-  const scene = facts.context?.scene;
-  if (scene === '上班') tags.push('通勤');
-  if (scene === '运动') tags.push('运动');
-  return uniqueStrings(tags).filter((tag) => [
-    ...STYLE_ALLOWLIST,
-    '印花',
-    '纯色',
-    '条纹',
-    '格纹',
-    '宽松',
-    '利落',
-    '修身',
-    '层次',
-  ].includes(tag)).slice(0, 3);
+  const supportedStyles = [...styleCounts.entries()]
+    .filter(([tag, count]) => STYLE_ALLOWLIST.includes(tag) && count >= 2)
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .map(([tag]) => tag);
+  tags.push(...supportedStyles);
+
+  const patterned = items.filter((item) => PATTERN_TAGS[String(item.patternType || '').toLowerCase()]);
+  const hasPatternRelation = patterned.length === 1
+    && items.some((item) => item.id !== patterned[0]?.id && isSimplePattern(item.patternType));
+  if (hasPatternRelation) tags.push(PATTERN_TAGS[String(patterned[0]?.patternType || '').toLowerCase()]);
+
+  const top = findSlot(items, 'top');
+  const bottom = findSlot(items, 'bottom') || findSlot(items, 'skirt');
+  const fitTag = top && bottom
+    && FIT_TAGS[String(top.fit || top.silhouette || '').toLowerCase()]
+    && FIT_TAGS[String(top.fit || top.silhouette || '').toLowerCase()]
+      === FIT_TAGS[String(bottom.fit || bottom.silhouette || '').toLowerCase()]
+    ? FIT_TAGS[String(top.fit || top.silhouette || '').toLowerCase()]
+    : '';
+  if (fitTag) tags.push(fitTag);
+
+  return uniqueStrings(tags).filter(Boolean).slice(0, 3);
+}
+
+function scenePrimaryTag(scene) {
+  const normalized = readString(scene);
+  if (normalized === '居家') return '居家';
+  if (normalized === '上班') return '通勤';
+  if (normalized === '约会') return '约会';
+  if (normalized === '运动') return '运动';
+  return '';
 }
 
 function addPatternInsights(insights, items) {
@@ -503,205 +621,6 @@ function addWeatherInsights(insights, facts, items) {
   if (['cool', 'cold'].includes(band) && weatherItems.length > 0) insights.push(insight('WEATHER_LAYERING_MATCH', 'weather', 1, weatherItems.map((item) => item.slot), { band }));
 }
 
-function renderTodayByInsight(plan, insightEntry, family) {
-  const facts = plan.facts;
-  const top = findSlot(facts.items, 'top') || facts.items[0];
-  const bottom = findSlot(facts.items, 'bottom') || findSlot(facts.items, 'skirt');
-  const shoes = findSlot(facts.items, 'shoes');
-  const colors = uniqueStrings(facts.items.flatMap((item) => item.colors));
-  const code = insightEntry.code;
-  if (code === 'PATTERN_FOCUS_WITH_SIMPLE_BOTTOM') {
-    const support = [bottom && lightItemLabel(bottom), shoes && itemKind(shoes)].filter(Boolean).join('和');
-    return family === 'focus'
-      ? `${patternTopLabel(top)}做主角，${support || '其他单品'}在旁边简单一点，穿起来更轻松。`
-      : `${patternTopLabel(top)}先抓住视线，${support || '其他单品'}不用太复杂。`;
-  }
-  if (code === 'PATTERN_COMPETITION') return `${itemKind(top)}和${itemKind(bottom)}都很醒目，搭在一起时视觉重点会比较多。`;
-  if (code === 'COLOR_NEUTRAL_BALANCES_ACCENT') return `${neutralColorName(colors)}${itemKind(top)}把${accentColorName(colors)}${itemKind(shoes || bottom)}稳住，亮色有存在感但不会抢得太满。`;
-  if (code === 'COLOR_SOFT_HARMONY') return `${colors.slice(0, 2).join('和')}组合起来很柔和，整体显得轻快又干净。`;
-  if (code === 'COLOR_LIGHT_NEUTRAL_BALANCE') return `${itemLabel(top)}和${itemLabel(bottom)}颜色都比较轻，组合起来很顺眼。`;
-  if (code === 'COLOR_CLEAR_LIGHT_DARK_CONTRAST') return `${colors.find(isLightColor) || '浅色'}和${colors.find(isDarkColor) || '深色'}分区明确，整体层次直接不含糊。`;
-  if (code === 'SILHOUETTE_TOP_RELAXED_BOTTOM_CLEAN') return `${itemLabel(top)}配${itemLabel(bottom)}，上半身轻松，下半身把线条收住。`;
-  if (code === 'PROPORTION_SHORT_TOP_LONG_BOTTOM') return `${itemLabel(top)}和${itemLabel(bottom)}形成清楚的长短关系，整体比例更有秩序。`;
-  if (code === 'FORMALITY_SOFTENED_BY_CASUAL_ITEM') return `${itemLabel(top)}偏正式，${itemKind(shoes)}把整体拉回更轻松的日常感。`;
-  if (code === 'FORMALITY_ALIGNED') return `${itemLabel(top)}和${itemLabel(bottom)}都偏利落，${scenePhrase(facts)}看起来不费劲。`;
-  if (code === 'DETAIL_SINGLE_FOCUS') return `${itemLabel(top)}带来细节重点，${itemLabel(bottom)}让整体保持安静。`;
-  if (code === 'STYLE_COHERENT') return `${itemLabel(top)}和${itemLabel(bottom)}风格接近，今天穿起来不用反复想。`;
-  if (code === 'STYLE_CASUAL_EASY') return `${itemLabel(top)}配${itemLabel(bottom)}，整体是很直接的轻松日常感。`;
-  if (code === 'SCENE_HOME_EASY') return `${itemLabel(top)}和${itemLabel(bottom)}组合简单，居家场景里不会显得过分正式。`;
-  if (code === 'SCENE_WORK_CLEAN') return `${itemLabel(top)}和${itemLabel(bottom)}组合起来，通勤时更干净利落。`;
-  if (code === 'SCENE_DATE_SOFT') return `${colors.slice(0, 2).join('和') || '柔和颜色'}组合起来，约会场景里看起来温和自然。`;
-  if (code === 'SCENE_SPORT_ACTIVE') return `${itemLabel(top)}和${itemLabel(bottom)}风格一致，整体就是轻松好活动的方向。`;
-  if (code === 'WEATHER_MILD_COMFORT') return `${itemLabel(top)}和${itemLabel(bottom)}厚薄不重，二十多度穿起来更轻松。`;
-  return renderFallbackToday(facts, plan.batchIndex);
-}
-
-function renderDetailByInsights(facts, insights) {
-  const codes = insights.map((entry) => entry.code);
-  const top = findSlot(facts.items, 'top') || facts.items[0];
-  const bottom = findSlot(facts.items, 'bottom') || findSlot(facts.items, 'skirt');
-  const shoes = findSlot(facts.items, 'shoes');
-  const colors = uniqueStrings(facts.items.flatMap((item) => item.colors));
-  if (codes.includes('PATTERN_FOCUS_WITH_SIMPLE_BOTTOM')) {
-    return `${patternTopLabel(top)}是整套最明显的视觉重点，${lightItemLabel(bottom)}没有再增加复杂元素，所以层次比较清楚。${shoes ? `${itemKind(shoes)}延续了休闲感，` : ''}${facts.context.scene === '居家' ? '居家穿或临时出门都比较自然。' : '日常穿也比较自然。'}`;
-  }
-  if (codes.includes('PATTERN_COMPETITION')) {
-    return `${itemLabel(top)}和${itemLabel(bottom)}都带图案，两个重点同时出现时会更热闹。颜色保持在${colors.slice(0, 2).join('和') || '相近范围'}内，能稍微减轻这种复杂感。`;
-  }
-  if (codes.includes('SILHOUETTE_TOP_RELAXED_BOTTOM_CLEAN')) {
-    return `${itemLabel(top)}带来放松感，${itemLabel(bottom)}把下半身线条整理得更清楚，所以整体不会显得松散。${primaryColor(bottom) || '下装'}也能压住上衣的轻快感。`;
-  }
-  if (codes.includes('PROPORTION_SHORT_TOP_LONG_BOTTOM')) {
-    return `${itemLabel(top)}把上半身留得轻一些，${itemLabel(bottom)}负责拉出主要纵向线条，两件组合起来比例关系很直接。${colors.slice(0, 2).join('和') || '上下颜色'}也让分区更明确。`;
-  }
-  if (codes.includes('FORMALITY_SOFTENED_BY_CASUAL_ITEM')) {
-    return `${itemLabel(top)}本身更利落，${itemLabel(shoes)}降低了整套的正式感，所以不会太严肃。${colors.slice(0, 2).join('和') || '基础配色'}也比较基础，能让这种混搭更顺。`;
-  }
-  if (codes.includes('FORMALITY_ALIGNED') || codes.includes('STYLE_COHERENT')) {
-    return `${itemLabel(top)}和${itemLabel(bottom)}都偏同一个方向，组合起来很容易成立。${colors.length ? `${colors.slice(0, 2).join('和')}不跳，` : ''}${scenePhrase(facts)}也自然。`;
-  }
-  if (codes.includes('COLOR_SOFT_HARMONY')) {
-    return `${itemLabel(top)}和${itemLabel(bottom)}都属于浅色，视觉重量接近，组合起来会比较柔和。两件单品也没有复杂图案，整体层次安静清楚。`;
-  }
-  if (codes.includes('COLOR_NEUTRAL_BALANCES_ACCENT')) {
-    return `${neutralColorName(colors)}${itemKind(top)}可以承接${accentColorName(colors)}${itemKind(shoes || bottom)}的亮点，让色彩重点更集中。两件都没有复杂图案，整体不会显得杂乱。`;
-  }
-  if (codes.includes('DETAIL_SINGLE_FOCUS')) {
-    return `${itemLabel(top)}有小面积细节，${itemLabel(bottom)}没有再增加复杂元素，所以重点集中。${codes.includes('PROPORTION_SHORT_TOP_LONG_BOTTOM') ? '短上衣和长下装也形成长短层次，整体关系比较清楚。' : '其它单品少加复杂元素，整体关系比较清楚。'}`;
-  }
-  if (codes.includes('SCENE_HOME_EASY') || codes.includes('STYLE_CASUAL_EASY')) {
-    return `${itemLabel(top)}和${itemLabel(bottom)}都是日常好穿的单品，搭在一起不用太费心。${colors.length ? `颜色以${colors.slice(0, 2).join('和')}为主，` : ''}适合不需要太正式的场合。`;
-  }
-  return renderFallbackDetail(facts);
-}
-
-function renderAlternateDetail(facts, insights) {
-  const withoutPrimary = insights.slice(1);
-  if (withoutPrimary.length > 0) {
-    return renderDetailByInsights(facts, withoutPrimary);
-  }
-  return renderFallbackDetail(facts);
-}
-
-function renderBasicStylistCopy(facts, primaryInsight) {
-  const top = findSlot(facts.items, 'top') || facts.items[0];
-  const bottom = findSlot(facts.items, 'bottom') || findSlot(facts.items, 'skirt');
-  const code = primaryInsight?.code || '';
-  if (code.includes('FORMALITY')) {
-    return {
-      overallComment: ensureCopy(`${itemLabel(top)}和${itemLabel(bottom)}都偏利落，${facts.context?.scene === '上班' ? '上班穿很直接' : '日常穿也不费劲'}。`, () => '这套适合今天想穿得简单一点的时候。'),
-      advice: ensureCopy('想更轻松，可以把鞋包换成更简洁的浅色款式。', () => '想再利落一点，可以让鞋子或小包呼应其中一个主色。'),
-    };
-  }
-  if (code.includes('COLOR')) {
-    return {
-      overallComment: ensureCopy('这套有清楚的颜色重点，其他颜色简单一点，日常穿更好驾驭。', () => '这套适合今天想穿得简单一点的时候。'),
-      advice: ensureCopy('想再利落一点，可以让包或配饰呼应其中一个主色。', () => '想再利落一点，可以让鞋子或小包呼应其中一个主色。'),
-    };
-  }
-  if (code.includes('SILHOUETTE') || code.includes('PROPORTION')) {
-    return {
-      overallComment: ensureCopy(`整体比较有秩序，${itemKind(top)}和${itemKind(bottom)}的关系是主要特点。`, () => '整体偏轻松日常，适合不需要太正式的场合。'),
-      advice: ensureCopy('想保持这种感觉，可以让外层不要打乱上下单品的分界。', () => '想再利落一点，可以让鞋子或小包呼应其中一个主色。'),
-    };
-  }
-  return {
-    overallComment: ensureCopy(`${itemLabel(top)}和${itemLabel(bottom)}组合起来很日常，今天不用花太多心思。`, () => '这套适合今天想穿得简单一点的时候。'),
-    advice: ensureCopy('想再利落一点，可以让鞋子或小包呼应其中一个主色。', () => '想再利落一点，可以让鞋子或小包呼应其中一个主色。'),
-  };
-}
-
-function choosePrimaryInsight(insights, state) {
-  return insights.find((item) => item.dimension !== 'weather' && item.dimension !== 'scene' && !state.usedCodes.has(item.code))
-    || insights.find((item) => item.dimension !== 'weather' && item.dimension !== 'scene' && !state.usedDimensions.has(item.dimension))
-    || insights.find((item) => item.dimension === 'scene' && state.scenePrimaryCount < 1 && !state.usedCodes.has(item.code))
-    || insights.find((item) => item.dimension === 'weather' && state.weatherPrimaryCount < 1 && !state.usedCodes.has(item.code))
-    || insights.find((item) => item.dimension !== 'weather' && item.dimension !== 'scene')
-    || insights[0]
-    || null;
-}
-
-function chooseDetailInsights(insights, primary) {
-  const selected = [];
-  for (const item of insights) {
-    if (selected.length >= 2) break;
-    if (item.code === primary.code || item.dimension === primary.dimension) continue;
-    selected.push(item);
-  }
-  for (const item of insights) {
-    if (selected.length >= 2) break;
-    if (item.code === primary.code || selected.some((entry) => entry.code === item.code)) continue;
-    selected.push(item);
-  }
-  return selected;
-}
-
-function ensureUniquePlanReason(plan, usedReasons) {
-  const families = ['focus', 'balance', 'shape', 'color', 'item', 'scene', 'plain', 'soft', 'clean', 'easy'];
-  for (const family of families) {
-    const candidate = { ...plan, sentenceFamily: family };
-    const reason = renderTodayReasonV3(candidate);
-    if (!usedReasons.has(reason)) return candidate;
-  }
-  for (const insightEntry of plan.insights) {
-    const candidate = { ...plan, primaryInsight: insightEntry, sentenceFamily: 'item' };
-    const reason = renderTodayReasonV3(candidate);
-    if (!usedReasons.has(reason)) return candidate;
-  }
-  return {
-    ...plan,
-    sentenceFamily: 'plain',
-    primaryInsight: buildIndexedFallbackInsight(plan.facts, plan.batchIndex),
-  };
-}
-
-function chooseSentenceFamily(insightEntry, usedFamilies, index) {
-  const familiesByDimension = {
-    pattern: ['focus', 'balance', 'item'],
-    color: ['color', 'soft', 'clean'],
-    silhouette: ['shape', 'clean', 'balance'],
-    proportion: ['shape', 'balance', 'clean'],
-    formality: ['clean', 'easy', 'balance'],
-    style: ['easy', 'plain', 'item'],
-    scene: ['scene', 'easy', 'plain'],
-    weather: ['plain', 'easy', 'scene'],
-    detail: ['focus', 'item', 'clean'],
-  };
-  const families = familiesByDimension[insightEntry.dimension] || ['plain'];
-  return families.find((family) => !usedFamilies.has(family)) || families[index % families.length] || 'plain';
-}
-
-function buildFallbackInsight(facts = {}) {
-  return insight('STYLE_CASUAL_EASY', 'style', 1, (facts.items || []).map((item) => item.slot), {});
-}
-
-function buildIndexedFallbackInsight(facts = {}, index = 0) {
-  const items = facts.items || [];
-  const item = items[index % Math.max(items.length, 1)] || {};
-  return insight(`ITEM_FACT_${item.slot || 'outfit'}_${index}`, 'style', 1, [item.slot || 'other'], { item: toFactRef(item) });
-}
-
-function renderFallbackToday(facts, index = 0) {
-  const items = facts.items || [];
-  const item = items[index % Math.max(items.length, 1)] || items[0] || {};
-  const top = findSlot(items, 'top') || item;
-  const bottom = findSlot(items, 'bottom') || findSlot(items, 'skirt');
-  const templates = [
-    `${itemLabel(top)}配${itemLabel(bottom)}，整体是很直接的轻松日常感。`,
-    `${itemLabel(item)}是这组里最明确的单品，整体少加复杂元素会更日常。`,
-    `${itemLabel(top)}和${itemLabel(bottom)}组合简单，日常穿不会太复杂。`,
-  ];
-  return templates[index % templates.length];
-}
-
-function renderFallbackDetail(facts) {
-  const items = facts.items || [];
-  const top = findSlot(items, 'top') || items[0];
-  const bottom = findSlot(items, 'bottom') || findSlot(items, 'skirt') || items[1];
-  if (!top || !bottom) return '这组单品信息比较基础，能确认的是组合本身偏日常。整体适合不需要太正式的场合。';
-  return `${itemLabel(top)}和${itemLabel(bottom)}都是日常好穿的单品，搭在一起不用太费心。${facts.context?.scene ? `${facts.context.scene}场景里，` : ''}会更适合轻松一点的安排。`;
-}
-
 function insight(code, dimension, strength, subjectSlots, facts) {
   return {
     code,
@@ -797,25 +716,6 @@ function sanitizeAesthetic(value = {}) {
   };
 }
 
-function ensureCopy(text, fallbackFactory, plan) {
-  const candidates = [text, typeof fallbackFactory === 'function' ? fallbackFactory() : '整体偏轻松日常，适合不需要太正式的场合。'];
-  for (const candidate of candidates) {
-    const clean = sanitizeUserFacingCopy(cleanText(candidate), {
-      items: plan?.contentPlan?.items || plan?.facts?.items,
-      scene: plan?.facts?.context?.scene,
-    });
-    if (!clean || findHumanCopyPolicyViolations(clean).length > 0 || hasRepeatedSentenceParts(clean)) continue;
-    return clean;
-  }
-  return '整体偏轻松日常，适合不需要太正式的场合。';
-}
-
-function cleanText(value) {
-  const text = readString(value).replace(/\s+/g, ' ');
-  if (!text) return '';
-  return /[。！？]$/.test(text) ? text : `${text}。`;
-}
-
 function compareInsights(a, b) {
   const priorityDiff = (DIMENSION_PRIORITY[a.dimension] ?? 99) - (DIMENSION_PRIORITY[b.dimension] ?? 99);
   if (priorityDiff !== 0) return priorityDiff;
@@ -835,10 +735,6 @@ function uniqueInsights(values) {
   return result;
 }
 
-function findInsight(insights, code) {
-  return insights.find((entry) => entry && entry.code === code);
-}
-
 function findSlot(items, slot) {
   return (items || []).find((item) => item.slot === slot);
 }
@@ -850,57 +746,6 @@ function toFactRef(item) {
     colors: item.colors,
     patternType: item.patternType,
   } : {};
-}
-
-function itemLabel(item) {
-  return item?.name || defaultItemName(item?.slot);
-}
-
-function itemKind(item) {
-  if (!item) return '单品';
-  if (item.slot === 'top') return /T恤|衬衫|卫衣|针织|上衣/.test(item.name) ? item.name : '上衣';
-  if (item.slot === 'bottom') return /裤|裙|下装/.test(item.name) ? item.name : '下装';
-  if (item.slot === 'shoes') return /运动鞋/.test(item.name) ? '运动鞋' : /鞋/.test(item.name) ? item.name : '鞋子';
-  return item.name || defaultItemName(item.slot);
-}
-
-function patternTopLabel(item) {
-  if (!item) return '印花上衣';
-  if (/印花|图案|T恤|上衣/.test(item.name)) return item.name.replace('T恤', '上衣');
-  return '印花上衣';
-}
-
-function lightItemLabel(item) {
-  if (!item) return '浅色单品';
-  if (item.colors.some(isLightColor)) return item.slot === 'bottom' ? '浅色下装' : `${primaryLightName(item)}${itemKind(item)}`;
-  return itemLabel(item);
-}
-
-function primaryLightName(item) {
-  const color = item.colors.find(isLightColor) || item.primaryColor || '';
-  if (/灰白|浅灰|白|米/.test(color)) return '浅色';
-  return color;
-}
-
-function primaryColor(item) {
-  return item?.primaryColor || item?.colors?.[0] || '';
-}
-
-function neutralColorName(colors) {
-  return colors.find(isNeutralColor) || '中性色';
-}
-
-function accentColorName(colors) {
-  return colors.find((color) => !isNeutralColor(color)) || colors[0] || '';
-}
-
-function scenePhrase(facts) {
-  const scene = facts.context?.scene;
-  if (scene === '上班') return '通勤时';
-  if (scene === '居家') return '居家时';
-  if (scene === '运动') return '运动时';
-  if (scene === '约会') return '约会时';
-  return '日常穿';
 }
 
 function defaultItemName(slot) {
@@ -1028,10 +873,24 @@ function readString(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+function isPlainObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
 function toArray(value) {
   if (Array.isArray(value)) return value;
   if (typeof value === 'string') return value.split(/[,/，、\s]+/);
   return [];
+}
+
+function recordMetric(instrumentation, name) {
+  if (!instrumentation || typeof instrumentation !== 'object') return;
+  const counters = instrumentation.counters && typeof instrumentation.counters === 'object'
+    ? instrumentation.counters
+    : instrumentation;
+  counters[name] = (Number(counters[name]) || 0) + 1;
 }
 
 function uniqueStrings(values) {

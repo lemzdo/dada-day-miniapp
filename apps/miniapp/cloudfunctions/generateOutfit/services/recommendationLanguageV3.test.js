@@ -1,326 +1,195 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
 
 const {
-  RECOMMENDATION_REASON_VERSION_V3,
   compileRecommendationLanguageV3,
   deriveOutfitInsightsV3,
   extractOutfitFactsV3,
   planBatchCopyV3,
-  renderDetailReasoningV3,
-  renderRecommendationCopyV3,
-  renderStylistFallbackCopyV3,
-  renderTodayReasonV3,
 } = require('./recommendationLanguageV3');
-const {
-  assertHumanCopy,
-  hasRepeatedSentenceParts,
-  isTooSimilar,
-} = require('./humanCopyPolicy');
-const {
-  deriveUserBenefitsV1,
-  findXiaodaVoicePolicyViolations,
-} = require('./xiaodaVoicePolicy');
-const {
-  fixtures,
-  graphicTeeHome,
-  hotWhiteTGrayShortsHome,
-  outfitFixture,
-  clothing,
-  similarGraphicTeeBatch,
-} = require('./recommendationLanguageV3.fixtures');
+const { CLAIM_CATALOG } = require('./xiaodaVoiceBankV2');
+const { ELIGIBILITY_REASON_CATALOG } = require('./recommendationEligibilityReason');
+const { evaluateSceneEligibilityV3 } = require('./sceneEligibilityV3');
+const { buildPresentationFactModel, buildPresentationPlan } = require('./presentationFactModel');
 
-function clone(value) {
-  return JSON.parse(JSON.stringify(value));
+function item(id, category, subcategory, extra = {}) {
+  return { clothingId: id, category, subcategory, confidence: 0.95, ...extra };
 }
 
-function visibleText(result) {
-  return [
-    result.reason,
-    result.reasoning,
-    result.aiComment?.overallComment,
-    result.aiComment?.advice,
-  ].filter(Boolean).join('\n');
-}
-
-test('extractOutfitFactsV3 keeps only structured safe facts and is serializable', () => {
-  const source = clone(graphicTeeHome);
-  source.items[0].imageUrl = 'cloud://secret';
-  source.items[0].fileID = 'cloud://file';
-  source.items[0].OPENID = 'openid';
-  source.nickname = 'user';
-  source.recommendationBatchId = 'batch-secret';
-  const before = clone(source);
-
-  const facts = extractOutfitFactsV3(source, { scene: 'home', weather: { temp: 22, weather: '多云' } });
-  const json = JSON.stringify(facts);
-
-  assert.deepEqual(source, before);
-  assert.deepEqual(facts.outfit.categories, ['bottom', 'shoes', 'top']);
-  assert.equal(facts.items[0].slot, 'top');
-  assert.equal(facts.items[0].patternType, 'graphic');
-  assert.equal(facts.items[0].primaryColor, '白色');
-  assert.equal(json.includes('cloud://'), false);
-  assert.equal(json.includes('openid'), false);
-  assert.equal(json.includes('nickname'), false);
-  assert.equal(json.includes('batch-secret'), false);
-  assert.doesNotMatch(json, /NaN|Infinity/);
-  assert.deepEqual(JSON.parse(json), facts);
-});
-
-test('extractOutfitFactsV3 ignores low confidence advanced fields and unknown values', () => {
-  const source = clone(graphicTeeHome);
-  source.items[0].confidence = 0.2;
-  source.items[0].aestheticFeatures = {
-    fit: 'unknown',
-    length: 'short',
-    silhouette: 'wide',
-    patternType: 'graphic',
-    designElements: ['印花'],
-    formalityLevel: 5,
+function outfit(scene, index = 1, extra = {}) {
+  const weatherSnapshot = extra.weatherSnapshot || { temp: 22, weather: '晴' };
+  const base = {
+    id: `${scene}-${index}`,
+    scene,
+    weatherSnapshot,
+    items: [
+      item(`top-${index}`, 'top', scene === 'sport' ? '运动训练上衣' : '衬衫', {
+        fit: '宽松', shoulderFit: '宽松', styleComplexity: '简洁',
+        patternType: scene === 'date' ? '印花' : '纯色',
+        styleTags: scene === 'sport' ? ['运动'] : [],
+        sceneTags: scene === 'sport' ? ['运动'] : [scene],
+        productFacts: ['soft_material', 'movement', 'shoulder_mobility'],
+      }),
+      item(`bottom-${index}`, 'bottom', scene === 'sport' ? '运动直筒裤' : '直筒裤', {
+        fit: '直筒宽松', patternType: '纯色', styleComplexity: '简洁',
+        pantsLength: 'long',
+        styleTags: scene === 'sport' ? ['运动'] : [],
+        sceneTags: scene === 'sport' ? ['运动'] : [scene],
+        productFacts: ['flexible_fit', 'movement'],
+      }),
+      item(`shoes-${index}`, 'shoes', scene === 'sport' ? '运动鞋' : '乐福鞋', {
+        styleComplexity: '简洁', styleTags: scene === 'sport' ? ['运动'] : [],
+        sceneTags: scene === 'sport' ? ['运动'] : [scene], productFacts: ['secure_fit'],
+      }),
+    ],
+    clothingIds: [`top-${index}`, `bottom-${index}`, `shoes-${index}`],
+    title: `title-${scene}`,
+    createdAt: '2026-07-01T00:00:00.000Z',
+    updatedAt: '2026-07-01T00:00:00.000Z',
   };
-  const facts = extractOutfitFactsV3(source);
-  const top = facts.items.find((item) => item.slot === 'top');
-  assert.equal(top.patternType, '');
-  assert.equal(top.fit, '');
-  assert.equal(top.length, '');
-  assert.equal(top.formalityLevel, null);
-});
-
-test('extractOutfitFactsV3 is stable when item order changes', () => {
-  const first = extractOutfitFactsV3(graphicTeeHome);
-  const reversed = clone(graphicTeeHome);
-  reversed.items = reversed.items.slice().reverse();
-  assert.deepEqual(extractOutfitFactsV3(reversed), first);
-});
-
-test('deriveOutfitInsightsV3 produces allowlisted structured relations without free copy', () => {
-  const facts = extractOutfitFactsV3(graphicTeeHome, { scene: 'home', weather: { temp: 22, weather: '多云' } });
-  const insights = deriveOutfitInsightsV3(facts);
-  const codes = insights.map((entry) => entry.code);
-  assert.ok(codes.includes('PATTERN_FOCUS_WITH_SIMPLE_BOTTOM'));
-  assert.ok(codes.includes('STYLE_CASUAL_EASY'));
-  assert.ok(codes.includes('SCENE_HOME_EASY'));
-  assert.equal(insights.every((entry) => entry.strength >= 1 && entry.strength <= 3), true);
-  assert.equal(JSON.stringify(insights).includes('证据'), false);
-  assert.equal(JSON.stringify(insights).includes('线索'), false);
-});
-
-test('deriveOutfitInsightsV3 covers golden fixture expected codes', () => {
-  for (const fixture of fixtures) {
-    const facts = extractOutfitFactsV3(fixture.outfit, {
-      scene: fixture.outfit.scene,
-      weather: fixture.outfit.weatherSnapshot,
-    });
-    const codes = deriveOutfitInsightsV3(facts).map((entry) => entry.code);
-    for (const code of fixture.expectedInsightCodes) {
-      assert.ok(codes.includes(code), `${fixture.id} should include ${code}`);
-    }
-  }
-});
-
-test('renderers produce the locked anonymous screenshot sample style', () => {
-  const [plan] = planBatchCopyV3([{ outfit: hotWhiteTGrayShortsHome }]);
-  const today = renderTodayReasonV3(plan);
-  const detail = renderDetailReasoningV3(plan);
-  const fallback = renderStylistFallbackCopyV3(plan);
-
-  assert.equal(today, '白色短袖T恤和白色运动鞋能接上，灰色短裤让这套多一点落点。');
-  assert.equal(detail, '居家穿不需要太正式，运动鞋让这套可以从家里直接走到楼下，附近走走也不用重新换。');
-  assert.equal(fallback.overallComment, detail);
-  assert.equal(fallback.advice, '');
-});
-
-test('renderRecommendationCopyV3 renders Today detail and fallback from one content plan', () => {
-  const [plan] = planBatchCopyV3([{ outfit: graphicTeeHome }]);
-  const copy = renderRecommendationCopyV3(plan);
-  assert.equal(copy.reasonVersion, RECOMMENDATION_REASON_VERSION_V3);
-  assert.equal(plan.contentPlan.version, 'xiaoda-content-plan-v1');
-  assert.notEqual(copy.reasoning, copy.reason);
-  assert.ok(copy.reason.length > 0);
-  assert.ok(copy.reasoning.length > copy.reason.length);
-  assert.equal(copy.aiComment.overallComment, copy.reasoning);
-  for (const text of [copy.reason, copy.reasoning, copy.aiComment.overallComment, copy.aiComment.advice].filter(Boolean)) {
-    assertHumanCopy(text);
-    assert.equal(hasRepeatedSentenceParts(text), false, text);
-  }
-});
-
-test('compileRecommendationLanguageV3 only changes display fields and preserves recommendation business data', () => {
-  const source = [
-    {
-      ...clone(graphicTeeHome),
-      isFavorite: true,
-      isWornToday: true,
-      scores: { total: 9, weatherAdaptation: 8, styleUnity: 7, freshness: 6, preference: 5 },
-      aestheticEvaluation: { score: 81, coverage: 0.5, evidence: [{ code: 'SAFE' }] },
+  const resolved = { ...base, ...extra };
+  return {
+    ...resolved,
+    eligibility: resolved.eligibility || {
+      weather: { pass: true, hardRejected: false },
+      scene: evaluateSceneEligibilityV3({ scene, items: resolved.items, weather: resolved.weatherSnapshot }),
     },
-  ];
-  const before = clone(source);
-  const [result] = compileRecommendationLanguageV3({ outfits: source, scene: 'home', weather: { temp: 22, weather: '多云' } });
+  };
+}
 
-  assert.deepEqual(source, before);
-  assert.equal(result.id, source[0].id);
-  assert.equal(result.outfitKey, source[0].outfitKey);
-  assert.equal(result.recommendationBatchId, source[0].recommendationBatchId);
-  assert.equal(result.isFavorite, true);
-  assert.equal(result.isWornToday, true);
-  assert.deepEqual(result.scores, before[0].scores);
-  assert.deepEqual(result.aestheticEvaluation, before[0].aestheticEvaluation);
-  assert.equal(result.reasonVersion, RECOMMENDATION_REASON_VERSION_V3);
-  assert.equal(result.contentPlanVersion, 'xiaoda-content-plan-v1');
-  assert.equal(result.reviewSource, 'rule_default');
+test('structured extraction remains deterministic and non-mutating', () => {
+  const source = outfit('work');
+  const before = JSON.stringify(source);
+  const first = extractOutfitFactsV3(source, { scene: 'work', weather: source.weatherSnapshot });
+  const second = extractOutfitFactsV3(source, { scene: 'work', weather: source.weatherSnapshot });
+  assert.deepEqual(second, first);
+  assert.equal(JSON.stringify(source), before);
+  assert.equal(Array.isArray(deriveOutfitInsightsV3(first)), true);
 });
 
-test('compileRecommendationLanguageV3 uses V2 default copy for golden home outfit and old fields', () => {
-  const golden = outfitFixture('stage1-golden-home', [
-    clothing({ clothingId: 'top-1', category: 'top', subcategory: 'T恤', color: '米白色' }),
-    clothing({ clothingId: 'bottom-1', category: 'bottom', subcategory: '阔腿裤', color: '军绿色' }),
-    clothing({ clothingId: 'shoes-1', category: 'shoes', subcategory: '运动鞋', color: '白色' }),
-  ], { scene: '居家', weatherSnapshot: { temp: 22, weather: '多云' } });
+test('compiler maps canonical Contract fields without local fallback', () => {
+  const source = outfit('work');
+  const [result] = compileRecommendationLanguageV3({ outfits: [source], scene: 'work', weather: source.weatherSnapshot });
+  const canonical = result.copyContract;
+  assert.equal(canonical.gateResult, 'PASS');
+  assert.equal(result.reason, canonical.todayReason);
+  assert.equal(result.reasoning, canonical.detailExplanation);
+  assert.equal(result.todayClaimId, canonical.todayClaimId);
+  assert.equal(result.detailClaimId, canonical.detailClaimId);
+  assert.deepEqual(result.riskFlags, []);
+});
 
+test('compiler keeps title, copy Contract, content plan, and response plan bound to one semantic plan', () => {
+  const source = outfit('sport', 21, {
+    items: [
+      item('top-21', 'top', '短袖T恤', {
+        color: '粉色',
+        factRecords: [{ fact: 'color', value: '粉色', authorized: true }],
+      }),
+      item('bottom-21', 'bottom', '短裤', {
+        color: '灰色',
+        factRecords: [{ fact: 'color', value: '灰色', authorized: true }],
+      }),
+      item('shoes-21', 'shoes', '运动鞋', {
+        color: '白色',
+        factRecords: [{ fact: 'color', value: '白色', authorized: true }],
+      }),
+    ],
+    clothingIds: ['top-21', 'bottom-21', 'shoes-21'],
+  });
+  const factModel = buildPresentationFactModel(source);
+  const presentationPlan = buildPresentationPlan(factModel);
   const [result] = compileRecommendationLanguageV3({
-    outfits: [golden],
-    scene: '居家',
-    weather: { temp: 22, weather: '多云' },
+    outfits: [{ ...source, presentationPlan }],
+    scene: 'sport',
+    weather: source.weatherSnapshot,
   });
 
-  assert.equal(result.reason, '米白 T恤和白色运动鞋能接上，军绿色阔腿裤让这套多一点落点。');
-  assert.equal(result.reasoning, '居家穿不需要太正式，运动鞋让这套可以从家里直接走到楼下，附近走走也不用重新换。');
-  assert.equal(result.aiComment.overallComment, result.reasoning);
-  assert.equal(result.contentPlan.defaultTodayReason, result.reason);
-  assert.equal(result.contentPlan.defaultDetailExplanation, result.reasoning);
-  assert.equal(result.contentPlan.defaultCopy.aiExtraDefault, result.reasoning);
-  assert.ok(result.reason);
-  assert.ok(result.reasoning);
-  assert.ok(result.contentPlan);
-  assert.ok(result.aiComment);
+  assert.equal(result.presentationPlan, presentationPlan);
+  assert.equal(result.title, presentationPlan.titleConcept);
+  assert.equal(result.reason, presentationPlan.reasonClaim.text);
+  assert.equal(result.copyContract.todayReason, presentationPlan.reasonClaim.text);
+  assert.equal(result.copyContract.primaryRelationCode, presentationPlan.primaryRelation.relationCode);
+  assert.equal(result.copyContract.presentationFactSignature, presentationPlan.presentationFactSignature);
+  assert.equal(result.contentPlan.primaryRelationCode, presentationPlan.primaryRelation.relationCode);
+  assert.equal(result.contentPlan.presentationFactSignature, presentationPlan.presentationFactSignature);
 });
 
-test('compileRecommendationLanguageV3 keeps homepage batch sentence structures varied', () => {
-  const goldenBatch = Array.from({ length: 8 }, (_, index) => outfitFixture(`stage1-golden-home-${index}`, [
-    clothing({ clothingId: `top-${index}`, category: 'top', subcategory: 'T恤', color: '米白色' }),
-    clothing({ clothingId: `bottom-${index}`, category: 'bottom', subcategory: '阔腿裤', color: index % 2 ? '深蓝色' : '军绿色' }),
-    clothing({ clothingId: `shoes-${index}`, category: 'shoes', subcategory: '运动鞋', color: '白色' }),
-  ], { scene: '居家', weatherSnapshot: { temp: 22, weather: '多云' } }));
+test('four scenes compile only fixed Catalog strings and allow missing detail', () => {
+  const approved = new Set([
+    ...CLAIM_CATALOG.map((entry) => entry.text),
+    ...ELIGIBILITY_REASON_CATALOG.map((entry) => entry.text),
+  ]);
+  for (const scene of ['home', 'work', 'date', 'sport']) {
+    const source = outfit(scene);
+    const [result] = compileRecommendationLanguageV3({ outfits: [source], scene, weather: source.weatherSnapshot });
+    assert.equal(result.copyContract.gateResult, 'PASS', scene);
+    assert.ok(approved.has(result.reason), scene);
+    if (result.reasoning) assert.ok(approved.has(result.reasoning), scene);
+  }
 
-  const results = compileRecommendationLanguageV3({
-    outfits: goldenBatch,
-    scene: '居家',
-    weather: { temp: 22, weather: '多云' },
+  const home = outfit('home', 9, {
+    weatherSnapshot: { temp: 31, weather: '晴' },
+    items: [
+      item('top-9', 'top', '无袖上衣', { sleeveLength: 'sleeveless' }),
+      item('bottom-9', 'bottom', '短裤', { pantsLength: 'short' }),
+    ],
+    clothingIds: ['top-9', 'bottom-9'],
   });
-  const text = results.map((entry) => `${entry.reason}${entry.reasoning}`).join('\n');
-  const signatures = results.map((entry) => entry.reason
-    .replace(/米白 T恤|白色运动鞋|军绿色阔腿裤|深蓝色阔腿裤/g, 'ITEM')
-    .replace(/二十多度/g, 'TEMP')
-    .replace(/[。！？].*$/g, ''));
-  const mostRepeatedSignature = Math.max(...Array.from(new Set(signatures)).map((entry) => signatures.filter((item) => item === entry).length));
-
-  assert.ok(mostRepeatedSignature <= 2);
-  assert.ok((text.match(/有呼应/g) || []).length <= 2);
-  assert.equal(text.includes('不至于太淡'), false);
-  assert.equal(text.includes('不会太飘'), false);
-  assert.equal(text.includes('放在一起'), false);
-  assert.equal(text.includes('多一点层次'), false);
-  assert.equal(text.includes('常用单品'), false);
-  assert.ok(results.filter((entry) => entry.contentPlan.defaultCopy.angle === '颜色关系').length <= 3);
-  assert.ok(new Set(results.map((entry) => entry.contentPlan.defaultCopy.angle).filter((angle) => angle !== '颜色关系')).size >= 3);
+  const [result] = compileRecommendationLanguageV3({ outfits: [home], scene: 'home', weather: home.weatherSnapshot });
+  assert.equal(result.copyContract.gateResult, 'PASS');
+  assert.equal(result.reasoning, undefined);
+  assert.equal(result.detailNarrativeViewModel.defaultText, undefined);
 });
 
-test('compileRecommendationLanguageV3 removes old V2 copy from legacy snapshots', () => {
-  const fixture = fixtures.find((entry) => entry.id === 'legacy_v2_snapshot');
-  const [result] = compileRecommendationLanguageV3({ outfits: [fixture.outfit], scene: 'home' });
-  assert.equal(result.reasonVersion, RECOMMENDATION_REASON_VERSION_V3);
-  assert.doesNotMatch(visibleText(result), /识别|证据|线索|卡片|详情|重点更清楚|更容易读出来/);
+test('sparse unsupported input stays versioned rejected and empty', () => {
+  const [result] = compileRecommendationLanguageV3({ outfits: [{ id: 'sparse' }], scene: 'work' });
+  assert.equal(result.copyContractVersion, 'recommendation-copy-contract-v3');
+  assert.equal(result.copyContract.gateResult, 'REJECT');
+  assert.equal(result.reason, '');
+  assert.equal(result.reasoning, undefined);
+  assert.ok(result.riskFlags.length > 0);
 });
 
-test('batch planner avoids exact duplicate reasons, numeric suffixes and weather-heavy batches', () => {
-  const source = similarGraphicTeeBatch(10);
-  const results = compileRecommendationLanguageV3({ outfits: source, scene: 'home', weather: { temp: 22, weather: '多云' } });
-  assert.deepEqual(results.map((entry) => entry.id), source.map((entry) => entry.id));
-  assert.ok(new Set(results.map((entry) => entry.contentPlan.primaryBenefit)).size > 1);
-  assert.ok(new Set(results.map((entry) => entry.contentPlan.observations.join('|'))).size > 1);
-  assert.equal(results.some((entry) => /\d+$/.test(entry.reason)), false);
-  assert.equal(results.some((entry) => /这组线索更突出|整体重点更清楚|识别|证据|线索/.test(visibleText(entry))), false);
-  assert.ok(results.filter((entry) => entry.primaryDimension === 'weather').length <= 1);
-  assert.ok(new Set(results.map((entry) => entry.primaryInsightCode)).size > 3);
+test('correct duplicate Claims remain accepted and batch diversity is only structural metadata', () => {
+  const sources = [outfit('home', 1), outfit('home', 2), outfit('home', 3)];
+  const plans = planBatchCopyV3(sources.map((entry) => ({
+    outfit: entry, scene: 'home', weather: entry.weatherSnapshot,
+  })));
+  assert.equal(plans.every((plan) => plan.copyContract.gateResult === 'PASS'), true);
+  assert.deepEqual(plans.map((plan) => plan.copyContract.todayClaimId), ['H01-01', 'H01-01', 'H01-01']);
+  assert.equal(plans[2].batchConstraints.claimUsage['H01-01'], 2);
 });
 
-test('golden fixtures remain human readable and pass copy policy', () => {
-  for (const fixture of fixtures) {
-    const [result] = compileRecommendationLanguageV3({
-      outfits: [fixture.outfit],
-      scene: fixture.outfit.scene,
-      weather: fixture.outfit.weatherSnapshot,
-    });
-    assert.equal(result.reasonVersion, RECOMMENDATION_REASON_VERSION_V3);
-    for (const forbidden of fixture.expectedForbiddenTermsAbsent) {
-      assert.equal(visibleText(result).includes(forbidden), false, `${fixture.id} contains ${forbidden}`);
-    }
-    for (const text of [result.reason, result.reasoning, result.aiComment.overallComment, result.aiComment.advice].filter(Boolean)) {
-      assertHumanCopy(text);
-      assert.equal(hasRepeatedSentenceParts(text), false, `${fixture.id}: ${text}`);
-    }
-  }
+test('batch duplicate text is preserved without synthetic sequence suffixes', () => {
+  const sources = [outfit('work', 1), outfit('work', 2), outfit('work', 3)];
+  const first = planBatchCopyV3(sources.map((entry) => ({
+    outfit: entry, scene: 'work', weather: entry.weatherSnapshot,
+  })));
+  const second = planBatchCopyV3(sources.map((entry) => ({
+    outfit: entry, scene: 'work', weather: entry.weatherSnapshot,
+  })));
+  const reasons = first.map((plan) => plan.copyContract.todayReason);
+
+  assert.equal(new Set(reasons).size, 1);
+  assert.deepEqual(second.map((plan) => plan.copyContract.todayReason), reasons);
 });
 
-test('persona fixtures cover Xiaoda V1 scenarios with grounded benefits and quality gates', () => {
-  const personaFixtures = fixtures.filter((fixture) => fixture.todayPersonaGoal);
-  assert.ok(personaFixtures.length >= 16);
-  const ids = new Set(personaFixtures.map((fixture) => fixture.id));
-  for (const id of [
-    'white_t_gray_shorts_sneakers_hot_home',
-    'graphic_tee_gray_bottom_red_white_sneakers_home',
-    'neutral_with_accent',
-    'all_light_colors',
-    'home_relaxed',
-    'hot_commute',
-    'cold_commute',
-    'date_soft_colors',
-    'sport_set',
-    'two_patterns_compete',
-    'category_only',
-    'missing_color_palette',
-    'missing_fit',
-    'full_aesthetic_fields',
-    'aesthetic_low_coverage',
-    'similar_batch_base',
-  ]) {
-    assert.ok(ids.has(id), `${id} persona fixture missing`);
-  }
+test('real AI review remains independent from default-copy compilation', () => {
+  const aiComment = { overallComment: '真实 AI 原文', advice: '真实 AI 建议', source: 'cached_ai' };
+  const source = outfit('work', 1, { aiComment, reviewSource: 'cached_ai' });
+  const [result] = compileRecommendationLanguageV3({ outfits: [source], scene: 'work', weather: source.weatherSnapshot });
+  assert.deepEqual(result.aiComment, aiComment);
+  assert.equal(result.reviewSource, 'cached_ai');
+  assert.notEqual(result.reason, aiComment.overallComment);
+});
 
-  for (const fixture of personaFixtures) {
-    const facts = extractOutfitFactsV3(fixture.outfit, {
-      scene: fixture.outfit.scene,
-      weather: fixture.outfit.weatherSnapshot,
-    });
-    const insights = deriveOutfitInsightsV3(facts);
-    const benefitCodes = deriveUserBenefitsV1(facts, insights, {
-      scene: fixture.outfit.scene,
-      weather: fixture.outfit.weatherSnapshot,
-    }).map((benefit) => benefit.code);
-    for (const code of fixture.expectedBenefitCodes) {
-      assert.ok(benefitCodes.includes(code), `${fixture.id} should include benefit ${code}`);
-    }
-
-    const [result] = compileRecommendationLanguageV3({
-      outfits: [fixture.outfit],
-      scene: fixture.outfit.scene,
-      weather: fixture.outfit.weatherSnapshot,
-    });
-    const text = visibleText(result);
-    assert.equal(findXiaodaVoicePolicyViolations(text).length, 0, `${fixture.id}: ${text}`);
-    assert.doesNotMatch(text, /灰色灰色|白色白色|黑色黑色/);
-    assert.ok(result.reason.length > 0, fixture.id);
-    assert.ok(result.reasoning.length > result.reason.length, fixture.id);
-    assert.equal(result.aiComment.overallComment, result.reasoning, fixture.id);
-    if (result.aiComment.advice) assert.equal(isTooSimilar(result.aiComment.overallComment, result.aiComment.advice), false, fixture.id);
-    if (fixture.id === 'two_patterns_compete') {
-      assert.doesNotMatch(text, /不乱|不会显得太乱|没有冲突|明显冲突/);
-      assert.match(text, /醒目|热闹|图案|简单/);
-    }
-    if (fixture.id === 'category_only' || fixture.id === 'missing_color_palette') {
-      assert.doesNotMatch(text, /颜色不会互相抢|小面积颜色|颜色方向|灰色|白色|黑色/);
-    }
-  }
+test('V3 source imports no legacy generator fallback or copy sanitizer', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'recommendationLanguageV3.js'), 'utf8');
+  for (const forbidden of [
+    'recommendationReasonV2', 'renderXiaodaTodayCopy', 'renderXiaodaDetailCopy',
+    'applyBatchCopyDiversity', 'sanitizeUserFacingCopy', 'copyQualityGate',
+  ]) assert.equal(source.includes(forbidden), false, forbidden);
 });

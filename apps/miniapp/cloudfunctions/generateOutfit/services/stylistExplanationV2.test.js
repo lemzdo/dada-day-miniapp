@@ -13,6 +13,8 @@ const {
   resolveStylistReviewReuse,
   toLegacyAiComment,
   traceStylistExplanationValidationV2,
+  validateAdvice,
+  validateOverallComment,
   validateStylistExplanationV2,
 } = require('./stylistExplanationV2');
 const { buildXiaodaDefaultReviewV1 } = require('./xiaodaContentPlan');
@@ -142,7 +144,7 @@ test('validateStylistExplanationV2 rejects unsafe copy hallucinated facts repeat
     advice: '可以继续使用紫色配饰。',
   }, evidenceInput(), meta()), /invalid_stylist_explanation/);
 
-  assert.throws(() => validateStylistExplanationV2({
+  const partial = validateStylistExplanationV2({
     schemaVersion: 3,
     reviewVersion: STYLIST_REVIEW_VERSION,
     promptVersion: STYLIST_PROMPT_VERSION,
@@ -150,9 +152,35 @@ test('validateStylistExplanationV2 rejects unsafe copy hallucinated facts repeat
     voicePolicyVersion: VOICE_POLICY_VERSION,
     overallComment: '白色上衣和灰色下装放在一起很清爽，日常穿不会显得太用力。',
     advice: '白色上衣和灰色下装放在一起很清爽，日常穿不会显得太用力。',
-  }, evidenceInput(), meta()), /invalid_stylist_explanation/);
+  }, evidenceInput(), meta());
+  assert.equal(partial.partial, true);
+  assert.equal(partial.advice, null);
+  assert.deepEqual(partial.adviceRejectReasons, ['ADVICE_REPEATS_OVERALL']);
 
   assert.throws(() => validateStylistExplanationV2({ schemaVersion: 3 }, evidenceInput(), meta()), /invalid_stylist_explanation/);
+});
+
+test('overall and advice validate independently, including mechanical stable phrases', () => {
+  const ordinaryStable = validateOverallComment(
+    '白色上衣和灰色下装放在一起很稳定，日常穿也显得清爽。',
+    evidenceInput(),
+  );
+  assert.equal(ordinaryStable.accepted, true);
+
+  const mechanicalOverall = validateOverallComment(
+    '白色上衣和灰色下装稳定视觉重心，日常穿也显得清爽。',
+    evidenceInput(),
+  );
+  assert.equal(mechanicalOverall.accepted, false);
+  assert.ok(mechanicalOverall.rejectReasons.includes('OVERALL_COPY_INVALID'));
+
+  const mechanicalAdvice = validateAdvice(
+    '可以用白色上衣稳定视觉重心。',
+    '白色上衣和灰色下装放在一起很清爽，日常穿不会显得太用力。',
+    evidenceInput(),
+  );
+  assert.equal(mechanicalAdvice.accepted, false);
+  assert.ok(mechanicalAdvice.rejectReasons.includes('ADVICE_COPY_INVALID'));
 });
 
 test('legacy V2-shaped payload is still accepted but normalized without title or tags', () => {
@@ -174,7 +202,7 @@ test('legacy V2-shaped payload is still accepted but normalized without title or
   assert.equal(result.tip.text, '想再有精神一点，可以让鞋子呼应白色或灰色。');
 });
 
-test('buildRuleFallbackExplanationV2 returns human V3 fallback even with low data', () => {
+test('buildRuleFallbackExplanationV2 fails closed without canonical Contract content', () => {
   const result = buildRuleFallbackExplanationV2(evidenceInput({
     evidence: [],
     aesthetic: { score: null, coverage: 0, dimensions: {} },
@@ -185,8 +213,9 @@ test('buildRuleFallbackExplanationV2 returns human V3 fallback even with low dat
   assert.equal(result.confidence, 'low');
   assert.equal(result.copyPolicyVersion, COPY_POLICY_VERSION);
   assert.equal(result.voicePolicyVersion, VOICE_POLICY_VERSION);
-  assert.ok(result.overallComment);
-  assert.ok(result.advice);
+  assert.equal(result.overallComment, '');
+  assert.equal(result.advice, '');
+  assert.deepEqual(result.strengths, []);
   assert.deepEqual(result.styleTags, []);
   assert.doesNotMatch(`${result.overallComment}${result.advice}${result.summary}${result.strengths.map((point) => point.text).join('')}`, /识别|证据|线索|观察点|覆盖率|信息不足/);
 });

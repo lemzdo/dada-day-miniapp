@@ -308,6 +308,22 @@
   display: block;
 }
 
+.record-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10rpx;
+  margin: -2rpx 0 16rpx;
+}
+
+.record-tag {
+  padding: 5rpx 12rpx;
+  border-radius: 999rpx;
+  background: #F7EDE1;
+  color: #85694F;
+  font-size: 21rpx;
+  line-height: 1.2;
+}
+
 .record-thumbs {
   display: flex;
   gap: 12rpx;

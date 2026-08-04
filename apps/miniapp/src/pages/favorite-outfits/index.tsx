@@ -26,6 +26,8 @@ import {
 import { applyOutfitStatuses, setOutfitStatus, setOutfitStatuses } from '@/stores/outfitStatusStore';
 import { normalizeOutfitSnapshot, storeOutfitDetailDraft, storeOutfitStateSync, updateTodayRestoreSnapshotOutfit } from '@/utils/outfitSnapshot';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
+import { getOutfitStyleTags, getOutfitWeatherSummary } from '@/utils/outfitContextText';
+import { getSavedSnapshotDefaultCopy } from '@/utils/recommendationCopyContract';
 import type { OutfitStatusPatch } from '@/stores/outfitStatusStore';
 import type { Outfit } from '@starter-template/types';
 import './index.scss';
@@ -33,7 +35,12 @@ import './index.scss';
 const PAGE_SIZE = 10;
 const MAX_TITLE_LENGTH = 16;
 const FAVORITES_FIRST_PAGE_CACHE_TTL = 2 * 60 * 1000;
-const FAVORITES_FIRST_PAGE_CACHE_KEY = buildPageCacheKey(['favorites', 'first', 'v1', PAGE_SIZE]);
+const FAVORITES_FIRST_PAGE_CACHE_KEY = buildPageCacheKey([
+  'favorites',
+  'first',
+  'recommendation-copy-contract-v3',
+  PAGE_SIZE,
+]);
 
 interface FavoritesFirstPageCache {
   list: Outfit[];
@@ -490,6 +497,7 @@ export default function FavoriteOutfitsPage() {
                       <SafeImage
                         className="card-img"
                         src={item.thumbnailUrl || item.imageUrl}
+                        cacheIdentity={item.clothingId}
                         mode="aspectFill"
                         lazyLoad
                       />
@@ -537,17 +545,25 @@ export default function FavoriteOutfitsPage() {
                         <Text className="meta-tag-text">{outfit.scene}</Text>
                       </View>
                     )}
+                    {getOutfitStyleTags(outfit).slice(0, 2).map((tag) => (
+                      <View key={tag} className="meta-tag">
+                        <Text className="meta-tag-text">{tag}</Text>
+                      </View>
+                    ))}
+                    {outfit.weatherSnapshot && (
+                      <Text className="meta-time">{getOutfitWeatherSummary(outfit).chip}</Text>
+                    )}
                     <Text className="meta-time">{formatDate(outfit.favoritedAt || outfit.createdAt)}</Text>
                   </View>
 
-                  {(outfit.reasoning || outfit.reason) && (
+                  {getSavedSnapshotDefaultCopy(outfit) ? (
                     <View className="reason-note">
                       <Text className="reason-quote">“</Text>
                       <Text className="card-reason" numberOfLines={2}>
-                        {outfit.reasoning || outfit.reason}
+                        {getSavedSnapshotDefaultCopy(outfit)}
                       </Text>
                     </View>
-                  )}
+                  ) : null}
 
                   {getDeletedItemCount(outfit) > 0 && (
                     <View className="card-deleted-notice">

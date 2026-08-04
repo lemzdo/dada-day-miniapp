@@ -1,35 +1,137 @@
-const { classifyWearabilityItem, uniqueStrings } = require('./itemWearabilityFacts');
+const { deriveSceneEligibilityFacts, uniqueStrings } = require('./itemWearabilityFacts');
 const { evaluateWeatherWearability } = require('./wearabilityGuard');
+const { adaptLegacyVisibleFacts } = require('./recommendationEligibilityFacts');
+const { hydrateCanonicalEligibility } = require('./canonicalCandidate');
+const {
+  cloneEligibilityReason,
+  collectEligibilityReasonCandidates,
+  resolveEligibilityReason,
+} = require('./recommendationEligibilityReason');
 
-function evaluateSceneEligibilityV3({ scene, items = [] } = {}) {
+const ELIGIBILITY_REASON_CANDIDATES = Symbol('eligibilityReasonCandidates');
+
+function evaluateSceneEligibilityV3({ scene, items = [], weather = {}, visibleFacts, derivedFacts, itemFactsContext, instrumentation } = {}) {
+  recordMetric(instrumentation, 'evaluateSceneEligibilityV3');
   const normalizedScene = normalizeScene(scene);
-  const itemFacts = items.map(classifyWearabilityItem);
-  if (normalizedScene === 'work') return evaluateWork(itemFacts);
-  if (normalizedScene === 'date') return evaluateDate(itemFacts);
-  if (normalizedScene === 'sport') return evaluateSport(itemFacts);
-  return {
-    eligible: true,
-    hardRejected: false,
-    penalty: 0,
-    acceptReasons: ['HOME_RELAXED_ALLOWED'],
-    rejectReasons: [],
-    warnings: [],
-    sceneStrength: 'medium',
-    evidence: itemFacts.map(toEvidence),
-    itemFacts,
+  const candidateVisibleFacts = visibleFacts
+    || derivedFacts?.visibleFactsView
+    || buildCandidateVisibleFacts(items, itemFactsContext, instrumentation);
+  const itemFacts = Array.isArray(derivedFacts?.sceneFacts)
+    ? derivedFacts.sceneFacts
+    : itemFactsContext
+      ? items.map((item) => itemFactsContext.resolveItemFacts(item).sceneEligibilityItemFacts)
+      : items.map((item) => deriveSceneEligibilityFacts(
+        item,
+        candidateVisibleFacts.items.find((entry) => entry.id === (item?._id || item?.id || item?.clothingId || item?.itemId)),
+        { instrumentation },
+      ));
+  const baseResult = normalizedScene === 'work'
+    ? evaluateWork(itemFacts)
+    : normalizedScene === 'date'
+      ? evaluateDate(itemFacts)
+      : normalizedScene === 'sport'
+        ? evaluateSport(itemFacts)
+        : {
+            eligible: true,
+            hardRejected: false,
+            penalty: 0,
+            acceptReasons: ['HOME_RELAXED_ALLOWED'],
+            rejectReasons: [],
+            warnings: [],
+            sceneStrength: 'medium',
+            evidence: itemFacts.map(toEvidence),
+            itemFacts: itemFacts.map(toPublicItemFacts),
+          };
+  if (!baseResult.eligible || baseResult.hardRejected) return baseResult;
+
+  const reasonContext = {
+    scene: normalizedScene,
+    weather,
+    visibleFacts: candidateVisibleFacts,
+    sceneResult: baseResult,
+    instrumentation,
   };
+  const eligibilityReasonCandidates = collectEligibilityReasonCandidates(reasonContext);
+  const eligibilityReason = resolveEligibilityReason(reasonContext, eligibilityReasonCandidates);
+  if (!eligibilityReason) {
+    return {
+      ...baseResult,
+      eligible: false,
+      hardRejected: false,
+      rejectReasons: uniqueStrings([...baseResult.rejectReasons, 'UNMAPPED_ELIGIBILITY_PATH']),
+      eligibilityDiagnostic: {
+        code: 'UNMAPPED_ELIGIBILITY_PATH',
+        scene: normalizedScene,
+        sourceRule: 'sceneEligibilityV3',
+        sourceRuleReasons: uniqueStrings(baseResult.acceptReasons),
+        visibleFactsByItem: Object.fromEntries(candidateVisibleFacts.items.map((item) => [
+          item.id,
+          item.factRecords.map((record) => record.fact),
+        ])),
+      },
+    };
+  }
+
+  const eligibilityDiagnostic = normalizedScene === 'work' && eligibilityReason.isGenericFallback
+    ? buildUnmappedEligibilityDiagnostic({
+        scene: normalizedScene,
+        candidateVisibleFacts,
+        acceptReasons: baseResult.acceptReasons,
+      })
+    : undefined;
+  const result = {
+    ...baseResult,
+    eligibilityReason: cloneEligibilityReason(eligibilityReason),
+    ...(eligibilityDiagnostic ? { eligibilityDiagnostic } : {}),
+  };
+  attachEligibilityReasonCandidates(result, eligibilityReasonCandidates);
+  return result;
 }
 
-function applyWearabilityAndSceneEligibility(candidates = [], { scene, weather } = {}) {
+function buildCandidateVisibleFacts(items, itemFactsContext, instrumentation) {
+  recordMetric(instrumentation, 'composeLegacyVisibleFactsForEligibility');
+  return itemFactsContext
+    ? itemFactsContext.buildVisibleFacts(items)
+    : adaptLegacyVisibleFacts(items, { instrumentation });
+}
+
+function applyWearabilityAndSceneEligibility(candidates = [], {
+  scene,
+  weather,
+  itemFactsContext,
+  sourceItemById,
+  instrumentation,
+} = {}) {
   const accepted = [];
   const rejected = [];
   const rejectReasonCounts = {};
   let weatherRejectedCount = 0;
   let sceneRejectedCount = 0;
+  let eligibilityReasonCoverageGapCount = 0;
+  const unmappedEligibilityPaths = [];
   for (const candidate of Array.isArray(candidates) ? candidates : []) {
-    const weatherResult = evaluateWeatherWearability({ items: candidate.items, weather });
+    const candidateItems = Array.isArray(candidate.itemFactRefs)
+      ? itemFactsContext
+        ? candidate.itemFactRefs
+        : candidate.itemFactRefs.map((ref) => sourceItemById?.get(ref.itemId) || ref)
+      : Array.isArray(candidate.items) ? candidate.items : [];
+    const weatherResult = evaluateWeatherWearability({
+      items: candidateItems,
+      weather,
+      derivedFacts: candidate.derivedFacts,
+      itemFactsContext,
+      instrumentation,
+    });
     const sceneResult = weatherResult.pass
-      ? evaluateSceneEligibilityV3({ scene, items: candidate.items })
+      ? evaluateSceneEligibilityV3({
+          scene,
+          items: candidateItems,
+          weather,
+          visibleFacts: candidate.visibleFacts,
+          derivedFacts: candidate.derivedFacts,
+          itemFactsContext,
+          instrumentation,
+        })
       : buildSkippedSceneResult();
     const rejectReasons = uniqueStrings([
       ...(weatherResult.rejectReasons || []),
@@ -38,10 +140,15 @@ function applyWearabilityAndSceneEligibility(candidates = [], { scene, weather }
     for (const reason of rejectReasons) rejectReasonCounts[reason] = (rejectReasonCounts[reason] || 0) + 1;
     if (!weatherResult.pass) weatherRejectedCount += 1;
     if (weatherResult.pass && sceneResult.hardRejected) sceneRejectedCount += 1;
+    if (sceneResult.eligibilityDiagnostic?.code === 'UNMAPPED_ELIGIBILITY_PATH') {
+      eligibilityReasonCoverageGapCount += 1;
+      unmappedEligibilityPaths.push(toUnmappedEligibilityPath(candidate, sceneResult, scene));
+    }
 
     if (!weatherResult.pass || sceneResult.hardRejected || !sceneResult.eligible) {
       rejected.push({
         candidate,
+        rejectionStage: !weatherResult.pass ? 'wearability_guard' : 'scene_eligibility',
         weather: weatherResult,
         scene: sceneResult,
         rejectReasons,
@@ -50,20 +157,38 @@ function applyWearabilityAndSceneEligibility(candidates = [], { scene, weather }
     }
 
     const penalty = (Number(weatherResult.penalty) || 0) + (Number(sceneResult.penalty) || 0);
-    accepted.push({
-      ...candidate,
-      rankingScore: round2((Number(candidate.rankingScore) || 0) - penalty),
-      eligibility: {
-        weather: weatherResult,
-        scene: sceneResult,
-        penalty,
-      },
-      validatorRejectReasons: rejectReasons,
-      riskFlags: uniqueStrings([
-        ...(weatherResult.warningReasons || []),
-        ...(sceneResult.warnings || []),
-      ]),
-    });
+    const eligibilityReasonCandidates = getEligibilityReasonCandidates(sceneResult);
+    const riskFlags = uniqueStrings([
+      ...(weatherResult.warningReasons || []),
+      ...(sceneResult.warnings || []),
+    ]);
+    const acceptedCandidate = candidate.version
+      ? hydrateCanonicalEligibility(candidate, {
+          weatherEligibility: weatherResult,
+          sceneEligibility: sceneResult,
+          eligibilityReason: cloneEligibilityReason(sceneResult.eligibilityReason),
+          eligibilityReasonCandidates,
+          riskFlags,
+          validatorRejectReasons: rejectReasons,
+        })
+      : {
+          ...candidate,
+          rankingScore: round2((Number(candidate.rankingScore) || 0) - penalty),
+          eligibilityReason: cloneEligibilityReason(sceneResult.eligibilityReason),
+          eligibilityReasonCandidates,
+          eligibility: {
+            weather: weatherResult,
+            scene: sceneResult,
+            penalty,
+          },
+          validatorRejectReasons: rejectReasons,
+          riskFlags,
+        };
+    acceptedCandidate.rankingScore = round2((Number(candidate.rankingScore) || 0) - penalty);
+    accepted.push(acceptedCandidate);
+  }
+  if (!accepted.every((candidate) => candidate.eligibilityReason?.code)) {
+    throw new Error('guard accepted candidate eligibility reason invariant failed');
   }
   return {
     accepted,
@@ -74,43 +199,92 @@ function applyWearabilityAndSceneEligibility(candidates = [], { scene, weather }
       guardRejectedCount: rejected.length,
       weatherRejectedCount,
       sceneRejectedCount,
+      eligibilityReasonCoverageGapCount,
       rejectReasonCounts,
+      unmappedEligibilityPaths,
       limitedReason: accepted.length === 0 ? limitedReasonFor(scene, rejected) : '',
     },
   };
 }
 
+function buildUnmappedEligibilityDiagnostic({ scene, candidateVisibleFacts, acceptReasons }) {
+  return {
+    code: 'UNMAPPED_ELIGIBILITY_PATH',
+    scene,
+    sourceRule: 'sceneEligibilityV3',
+    sourceRuleReasons: uniqueStrings(acceptReasons),
+    visibleFactsByItem: Object.fromEntries(candidateVisibleFacts.items.map((item) => [
+      item.id,
+      item.factRecords.map((record) => record.fact),
+    ])),
+  };
+}
+
+function toUnmappedEligibilityPath(candidate, sceneResult, scene) {
+  return {
+    selectedOutfitItemIds: Array.isArray(candidate?.itemIds)
+      ? candidate.itemIds.slice()
+      : (candidate?.itemFactRefs || candidate?.items || [])
+        .map((item) => item?._id || item?.clothingId || item?.itemId)
+        .filter(Boolean),
+    scene: sceneResult.eligibilityDiagnostic?.scene || normalizeScene(scene),
+    sourceRule: sceneResult.eligibilityDiagnostic?.sourceRule || '',
+    sourceRuleReasons: uniqueStrings(sceneResult.eligibilityDiagnostic?.sourceRuleReasons || []),
+    visibleFactsByItem: sceneResult.eligibilityDiagnostic?.visibleFactsByItem || {},
+  };
+}
+
 function evaluateWork(facts) {
   const shoe = facts.find((fact) => fact.category === 'shoes');
-  const workSignalCount = facts.reduce((sum, fact) => sum + fact.workSignals.length + (fact.isFormalLike ? 1 : 0), 0);
-  const homeSignalCount = facts.reduce((sum, fact) => sum + fact.homeSignals.length + (fact.isHomeShoe ? 2 : 0), 0);
+  const polishEvidenceCount = facts.reduce((sum, fact) => sum + fact.polishEvidence.length, 0);
+  const homeSignalCount = facts.reduce((sum, fact) => sum + fact.explicitHomeSignals.length + (fact.isHomeShoe ? 2 : 0), 0);
+  const baseWorkSignalCount = facts.reduce((sum, fact) => sum
+    + fact.wearabilityFacts.workSignals.length
+    + (fact.wearabilityFacts.isFormalLike ? 1 : 0), 0);
+  const baseHomeSignalCount = facts.reduce((sum, fact) => sum
+    + fact.wearabilityFacts.homeSignals.length
+    + (fact.wearabilityFacts.isHomeShoe ? 2 : 0), 0);
   const rejectReasons = [];
   const acceptReasons = [];
   const warnings = [];
-  let penalty = 0;
+  const hasQualifiedWorkShoe = Boolean(shoe && !shoe.invalidWorkShoe
+    && (shoe.isCleanSneaker || shoe.polishEvidence.length > 0 || shoe.workSignals.length > 0));
+  const hasSimpleDressWorkSet = facts.some((fact) => fact.category === 'onepiece'
+    && fact.visibleFacts.includes('simple_style')) && hasQualifiedWorkShoe;
 
-  if (!shoe || shoe.isHomeShoe || shoe.isSlipperLike || shoe.isCrocsLike) rejectReasons.push('WORK_INVALID_SHOE');
-  if (homeSignalCount >= 3) rejectReasons.push('WORK_HOME_DOMINANT');
-  if (isPlainTeeShortsShoe(facts) && workSignalCount < 3) rejectReasons.push('WORK_TOO_CASUAL_SHORTS_TEE');
-  if (workSignalCount <= 0) rejectReasons.push('WORK_MISSING_POLISH_SIGNAL');
+  if (!shoe || shoe.invalidWorkShoe) rejectReasons.push('WORK_INVALID_SHOE');
+  if (homeSignalCount >= 2) rejectReasons.push('WORK_HOME_DOMINANT');
+  if (isPlainTeeShortsShoe(facts) && polishEvidenceCount < 3) rejectReasons.push('WORK_TOO_CASUAL_SHORTS_TEE');
+  if (polishEvidenceCount === 0) warnings.push('WORK_MISSING_POLISH_SIGNAL');
 
-  if (shoe && (shoe.isCleanSneaker || shoe.workSignals.length > 0 || /乐福|单鞋|皮鞋|短靴|loafer|flat|leather/i.test(shoe.evidence.join(' ')))) {
+  if (hasQualifiedWorkShoe) {
     acceptReasons.push('WORK_QUALIFIED_SHOE');
   }
-  if (workSignalCount > 0) acceptReasons.push('WORK_POLISHED_SIGNAL');
-  if (shoe?.isCleanSneaker && workSignalCount < 2) {
+  if (polishEvidenceCount > 0) acceptReasons.push('WORK_POLISHED_SIGNAL');
+  if (shoe?.isCleanSneaker && polishEvidenceCount < 2) {
     warnings.push('WORK_CLEAN_SNEAKER_NEEDS_POLISH');
-    penalty += 1;
   }
 
-  return buildSceneResult({
+  const workConfidence = (baseWorkSignalCount >= 3 || hasSimpleDressWorkSet) && baseHomeSignalCount === 0
+    ? 'high'
+    : polishEvidenceCount >= 2 && hasQualifiedWorkShoe && baseHomeSignalCount === 0
+      ? 'medium'
+      : 'low';
+  if (workConfidence === 'low') warnings.push('WORK_LOW_CONFIDENCE_SUPPLEMENT');
+
+  const result = buildSceneResult({
     rejectReasons,
     acceptReasons,
     warnings,
-    penalty,
+    penalty: 0,
     facts,
-    strong: workSignalCount >= 3 && homeSignalCount === 0,
+    strong: workConfidence === 'high',
   });
+  return {
+    ...result,
+    sceneStrength: result.eligible ? workConfidence : 'none',
+    sceneConfidence: workConfidence,
+  };
 }
 
 function evaluateDate(facts) {
@@ -147,21 +321,30 @@ function evaluateDate(facts) {
 function evaluateSport(facts) {
   const shoe = facts.find((fact) => fact.category === 'shoes');
   const apparel = facts.filter((fact) => ['top', 'bottom', 'skirt', 'onepiece'].includes(fact.category));
-  const hasSportApparel = apparel.some((fact) => fact.sportSignals.length > 0 || fact.isSportDress);
+  const hasSportBottom = apparel.some((fact) => fact.category === 'bottom' && fact.sportBottomEvidence);
+  const hasSportTop = apparel.some((fact) => fact.category === 'top' && fact.sportApparelEvidence);
+  const hasCompatibleSportTop = apparel.some((fact) => fact.category === 'top' && fact.sportCompatibleTop);
+  const hasCompatibleSportBottom = apparel.some((fact) => fact.category === 'bottom' && fact.sportCompatibleBottom);
+  const hasSportDress = apparel.some((fact) => fact.isSportDress);
+  const hasSportApparel = hasSportDress || ((hasSportBottom || hasCompatibleSportBottom) && (hasSportTop || hasCompatibleSportTop));
+  const provenLightSportBaseline = isProvenLightSportBaseline(facts);
   const allCoreApparelSport = apparel.length > 0 && apparel.every((fact) => {
     if (fact.isNormalDress || (fact.isSkirtLike && !fact.isSportDress)) return false;
-    if (fact.isFormalLike && fact.sportSignals.length === 0) return false;
-    return fact.sportSignals.length > 0 || fact.isSportDress;
+    if (fact.category === 'onepiece') return fact.isSportDress;
+    if (fact.category === 'bottom') return fact.sportBottomEvidence || fact.sportCompatibleBottom;
+    if (fact.category === 'top') return fact.sportApparelEvidence || ((hasSportBottom || hasCompatibleSportBottom) && fact.sportCompatibleTop);
+    return true;
   });
   const rejectReasons = [];
   const acceptReasons = [];
 
-  if (!shoe || !shoe.isSportShoe) rejectReasons.push('SPORT_INVALID_SHOE');
-  if (!hasSportApparel || !allCoreApparelSport) rejectReasons.push('SPORT_NON_SPORT_APPAREL');
+  if (!shoe || shoe.invalidSportShoe || (!shoe.isStableSportShoe && !shoe.visibleFacts.includes('sport_shoe'))) rejectReasons.push('SPORT_INVALID_SHOE');
+  if ((!hasSportApparel || !allCoreApparelSport) && !provenLightSportBaseline) rejectReasons.push('SPORT_NON_SPORT_APPAREL');
   if (facts.some((fact) => fact.isNormalDress || (fact.isSkirtLike && !fact.isSportDress))) rejectReasons.push('SPORT_DRESS_OR_SKIRT_NOT_ALLOWED');
 
-  if (shoe?.isSportShoe) acceptReasons.push('SPORT_SHOE');
+  if (shoe && (shoe.isStableSportShoe || shoe.visibleFacts.includes('sport_shoe'))) acceptReasons.push('SPORT_SHOE');
   if (hasSportApparel && allCoreApparelSport) acceptReasons.push('SPORT_APPAREL');
+  if (provenLightSportBaseline) acceptReasons.push('SPORT_LIGHT_ACTIVITY_BASELINE');
 
   return buildSceneResult({
     rejectReasons,
@@ -171,6 +354,24 @@ function evaluateSport(facts) {
     facts,
     strong: rejectReasons.length === 0,
   });
+}
+
+function isProvenLightSportBaseline(facts = []) {
+  const top = facts.find((fact) => fact.category === 'top');
+  const bottom = facts.find((fact) => fact.category === 'bottom');
+  const shoes = facts.find((fact) => fact.category === 'shoes');
+  const coreApparel = facts.filter((fact) => ['top', 'bottom', 'skirt', 'onepiece'].includes(fact.category));
+
+  return coreApparel.length === 2
+    && Boolean(top && bottom && shoes)
+    && top.isTshirtLike === true
+    && top.sportApparelEvidence === true
+    && bottom.isShorts === true
+    && shoes.isSportShoe === true
+    && shoes.invalidSportShoe !== true
+    && shoes.isHomeShoe !== true
+    && shoes.isSlipperLike !== true
+    && shoes.isCrocsLike !== true;
 }
 
 function buildSceneResult({ rejectReasons, acceptReasons, warnings, penalty, facts, strong }) {
@@ -184,7 +385,7 @@ function buildSceneResult({ rejectReasons, acceptReasons, warnings, penalty, fac
     warnings: uniqueStrings(warnings),
     sceneStrength: uniqueRejectReasons.length > 0 ? 'none' : strong ? 'strong' : 'medium',
     evidence: facts.map(toEvidence),
-    itemFacts: facts,
+    itemFacts: facts.map(toPublicItemFacts),
   };
 }
 
@@ -234,6 +435,31 @@ function toEvidence(fact) {
   };
 }
 
+function toPublicItemFacts(fact) {
+  return fact.wearabilityFacts || fact;
+}
+
+function attachEligibilityReasonCandidates(sceneResult, candidates) {
+  Object.defineProperty(sceneResult, ELIGIBILITY_REASON_CANDIDATES, {
+    value: Array.isArray(candidates) ? candidates : [],
+    enumerable: false,
+    configurable: false,
+  });
+}
+
+function getEligibilityReasonCandidates(sceneResult) {
+  const candidates = sceneResult?.[ELIGIBILITY_REASON_CANDIDATES];
+  return Array.isArray(candidates) ? candidates : [];
+}
+
+function recordMetric(instrumentation, name) {
+  if (!instrumentation || typeof instrumentation !== 'object') return;
+  const counters = instrumentation.counters && typeof instrumentation.counters === 'object'
+    ? instrumentation.counters
+    : instrumentation;
+  counters[name] = (Number(counters[name]) || 0) + 1;
+}
+
 function normalizeScene(value) {
   const raw = typeof value === 'string' ? value.trim().toLowerCase() : '';
   if (['home', '居家'].includes(raw)) return 'home';
@@ -250,5 +476,7 @@ function round2(value) {
 module.exports = {
   applyWearabilityAndSceneEligibility,
   evaluateSceneEligibilityV3,
+  getEligibilityReasonCandidates,
+  isProvenLightSportBaseline,
   normalizeScene,
 };

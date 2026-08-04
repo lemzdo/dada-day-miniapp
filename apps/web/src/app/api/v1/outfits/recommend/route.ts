@@ -17,6 +17,7 @@ import { getWeatherSnapshotWithCache } from '@/lib/weather/service';
 import { normalizeRecommendationProfile } from '@starter-template/utils';
 import type { RecommendRequest, RecommendResponse, Outfit, OutfitItemSummary, WeatherSnapshot, OutfitScores } from '@starter-template/types';
 import type { SceneTag, TimeOfDay, ClothingCategory } from '@starter-template/types';
+import { resolveRecommendScene } from './sceneNormalization';
 
 // ── POST /api/v1/outfits/recommend ───────────────────────────
 
@@ -25,7 +26,18 @@ export async function POST(request: Request) {
     const userId = getUserIdFromRequest(request);
     const body = (await request.json().catch(() => ({}))) as RecommendRequest;
 
-    // 1. 获取用户衣橱（全部衣服）
+    // 1. 归一化场景：未知非空场景立即返回 400 INVALID_SCENE，不进入推荐链路；
+    //    缺失场景才使用既有默认值 home。
+    const sceneResolution = resolveRecommendScene(body.scene);
+    if (!sceneResolution.valid) {
+      return NextResponse.json(
+        { code: 1, data: null, message: 'invalid scene', errorCode: 'INVALID_SCENE' },
+        { status: 400 },
+      );
+    }
+    const { sceneKey, sceneTag } = sceneResolution;
+
+    // 2. 获取用户衣橱（全部衣服）
     const { list: clothes } = await getClothesList({
       userId,
       status: 'active',
@@ -39,21 +51,24 @@ export async function POST(request: Request) {
         code: 0,
         data: {
           outfits: [],
+          sceneKey,
+          scene: sceneTag,
           weather,
         },
         message: '衣橱衣服不足，无法生成推荐',
       });
     }
 
-    // 2. 获取最近穿过的衣服（去重用）
+    // 3. 获取最近穿过的衣服（去重用）
     const recentlyWornIds = await getRecentlyWornClothingIds(userId, 3);
 
-    // 3. 获取天气
+    // 4. 获取天气
     const weather = await getWeatherSnapshotWithCache(body.cityCode, body.date);
     const userProfile = await getUserProfile(userId);
     const recommendationProfile = normalizeRecommendationProfile(userProfile?.styleProfile);
 
-    // 4. 调用推荐引擎
+    // 5. 调用推荐引擎：scene 必须传 sceneTag（中文 SceneTag），
+    //    不能传原始 body.scene，否则 engine 内的 SCENE_STYLE_PREFERENCES 会 miss。
     const recommendations = generateRecommendations({
       wardrobe: clothes.map((c) =>
         toWardrobeItem({
@@ -75,14 +90,14 @@ export async function POST(request: Request) {
       preferredStyles: recommendationProfile.styleTags,
       recommendationProfile,
       weather,
-      scene: body.scene,
+      scene: sceneTag,
       timeOfDay: body.timeOfDay,
       recentlyWornIds,
       excludeClothingIdSets: body.excludeClothingIdSets,
       maxResults: 3,
     });
 
-    // 5. 保存推荐的穿搭方案到数据库
+    // 6. 保存推荐的穿搭方案到数据库
     const savedOutfits: Outfit[] = [];
     const targetDate = body.date ?? new Date().toISOString().split('T')[0]!;
     const timeOfDay = body.timeOfDay ?? 'all_day';
@@ -142,9 +157,12 @@ export async function POST(request: Request) {
       });
     }
 
-    // 6. 返回响应
+    // 7. 返回响应
+    // sceneKey/scene 来自同一组归一化结果，禁止返回 sceneKey='' 的成功响应。
     const response: RecommendResponse = {
       outfits: savedOutfits,
+      sceneKey,
+      scene: sceneTag,
       weather: weather as WeatherSnapshot,
     };
 

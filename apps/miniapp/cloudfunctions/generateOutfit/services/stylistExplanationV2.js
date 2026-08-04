@@ -8,7 +8,6 @@ const {
   MECHANICAL_VOICE_TERMS,
   UNSUPPORTED_SENSATION_TERMS,
   findXiaodaVoicePolicyViolations,
-  renderXiaodaStylistFallback,
 } = require('./xiaodaVoicePolicy');
 const {
   buildXiaodaDefaultReviewV1,
@@ -82,29 +81,15 @@ function validateStylistExplanationV2(rawValue, evidenceInput, meta = {}) {
 }
 
 function validateStylistExplanationV3(raw, evidenceInput, meta = {}) {
-  const overallComment = normalizeVisibleCopy(raw.overallComment, 120);
-  const advice = normalizeVisibleCopy(raw.advice, 80, { optional: true });
-  if (!overallComment) {
+  const overallResult = validateOverallComment(raw.overallComment, evidenceInput, raw);
+  if (!overallResult.accepted) {
     const error = new Error('invalid_stylist_explanation');
-    error.validatorRejectReasons = ['SCHEMA_FIELDS_INVALID'];
+    error.validatorRejectReasons = overallResult.rejectReasons;
     throw error;
   }
-  if (advice && isTooSimilar(overallComment, advice, 0.7)) throw new Error('invalid_stylist_explanation');
-  assertKnownFactsOnly(`${overallComment}${advice}`, evidenceInput);
-  const contentPlan = evidenceInput?.contentPlan;
-  if (contentPlan) {
-    const defaultReview = buildXiaodaDefaultReviewV1(contentPlan);
-    const increment = hasQualifiedAiReviewIncrementV1(
-      { reason: overallComment, tip: advice, source: VALID_SOURCES.has(raw.source) ? raw.source : 'ai' },
-      contentPlan,
-      defaultReview,
-    );
-    if (!increment.qualified) {
-      const error = new Error('invalid_stylist_explanation');
-      error.validatorRejectReasons = increment.rejectReasons;
-      throw error;
-    }
-  }
+  const overallComment = overallResult.value;
+  const adviceResult = validateAdvice(raw.advice, overallComment, evidenceInput);
+  const advice = adviceResult.accepted ? adviceResult.value : null;
 
   const confidence = normalizeConfidence(raw.confidence, evidenceInput);
   const limitations = normalizeLimitations(raw.limitations, evidenceInput);
@@ -122,6 +107,8 @@ function validateStylistExplanationV3(raw, evidenceInput, meta = {}) {
     summary: overallComment,
     overallComment,
     advice,
+    partial: !adviceResult.accepted,
+    adviceRejectReasons: adviceResult.rejectReasons,
     strengths: [{ text: overallComment, evidenceCodes: primaryCode ? [primaryCode] : [] }],
     tradeoffs: [],
     tip,
@@ -134,6 +121,76 @@ function validateStylistExplanationV3(raw, evidenceInput, meta = {}) {
     model: limitText(meta.model, 64),
     generatedAt: limitText(meta.generatedAt, 40) || new Date().toISOString(),
     inputDigest: evidenceInput?.inputDigest || '',
+  };
+}
+
+function validateOverallComment(value, evidenceInput, raw = {}) {
+  const rejectReasons = [];
+  let overallComment = '';
+  if (typeof value !== 'string' || !value.trim()) {
+    rejectReasons.push('SCHEMA_FIELDS_INVALID');
+  } else {
+    try {
+      overallComment = normalizeVisibleCopy(value, 120);
+    } catch {
+      rejectReasons.push('OVERALL_COPY_INVALID');
+    }
+  }
+  if (overallComment) {
+    try {
+      assertKnownFactsOnly(overallComment, evidenceInput);
+    } catch {
+      rejectReasons.push('OVERALL_FACT_VALIDATION_FAILED');
+    }
+  }
+  const contentPlan = evidenceInput?.contentPlan;
+  if (overallComment && contentPlan) {
+    const defaultReview = buildXiaodaDefaultReviewV1(contentPlan);
+    const increment = hasQualifiedAiReviewIncrementV1(
+      { reason: overallComment, tip: '', source: VALID_SOURCES.has(raw.source) ? raw.source : 'ai' },
+      contentPlan,
+      defaultReview,
+    );
+    rejectReasons.push(...increment.rejectReasons.filter((reason) => reason !== 'invalid_suggestion'));
+    if (isTooSimilar(overallComment, defaultReview.reason, 0.76)) {
+      rejectReasons.push('TOO_SIMILAR_TO_DEFAULT');
+    }
+  }
+  return {
+    accepted: rejectReasons.length === 0,
+    value: overallComment,
+    rejectReasons: uniqueStrings(rejectReasons),
+  };
+}
+
+function validateAdvice(value, overallComment, evidenceInput) {
+  if (value === undefined || value === null || String(value).trim() === '') {
+    return { accepted: true, value: null, rejectReasons: [] };
+  }
+  const rejectReasons = [];
+  let advice = '';
+  try {
+    advice = normalizeVisibleCopy(value, 80, { optional: true });
+  } catch {
+    rejectReasons.push('ADVICE_COPY_INVALID');
+  }
+  if (advice && isTooSimilar(overallComment, advice, 0.7)) {
+    rejectReasons.push('ADVICE_REPEATS_OVERALL');
+  }
+  if (advice) {
+    try {
+      assertKnownFactsOnly(advice, evidenceInput);
+    } catch {
+      rejectReasons.push('ADVICE_FACT_VALIDATION_FAILED');
+    }
+  }
+  if (advice && evidenceInput?.contentPlan && !normalizeXiaodaSuggestionV1(advice, evidenceInput.contentPlan)) {
+    rejectReasons.push('ADVICE_NOT_ACTIONABLE_OR_NOT_IN_WARDROBE');
+  }
+  return {
+    accepted: rejectReasons.length === 0,
+    value: rejectReasons.length === 0 ? advice : null,
+    rejectReasons: uniqueStrings(rejectReasons),
   };
 }
 
@@ -189,7 +246,9 @@ function buildRuleFallbackExplanationV2(evidenceInput, meta = {}) {
     summary: copy.overallComment,
     overallComment: copy.overallComment,
     advice: copy.advice,
-    strengths: [{ text: copy.overallComment, evidenceCodes: primaryCode ? [primaryCode] : [] }],
+    strengths: copy.overallComment
+      ? [{ text: copy.overallComment, evidenceCodes: primaryCode ? [primaryCode] : [] }]
+      : [],
     tradeoffs: [],
     tip,
     styleTags: [],
@@ -224,6 +283,11 @@ function toLegacyAiComment(explanation) {
     voicePolicyVersion: explanation.voicePolicyVersion || VOICE_POLICY_VERSION,
     inputDigest: explanation.inputDigest,
     source: explanation.source,
+    reviewSource: explanation.source,
+    overallComment: explanation.overallComment || explanation.summary || '',
+    advice: explanation.advice || null,
+    partial: Boolean(explanation.partial),
+    adviceRejectReasons: uniqueStrings(explanation.adviceRejectReasons),
     explanationV2: explanation,
   };
 }
@@ -280,9 +344,11 @@ function buildStylistReviewDocument({ context, explanation, now }) {
     sceneIntent: context.sceneIntent || context.evidenceInput?.contentPlan?.sceneIntent,
     primaryBenefitCode: context.primaryBenefitCode || context.evidenceInput?.contentPlan?.primaryBenefit,
     validatorRejectReasons: [],
+    partial: Boolean(explanation.partial),
+    adviceRejectReasons: uniqueStrings(explanation.adviceRejectReasons),
     explanationV2: explanation,
     overallComment: explanation.overallComment,
-    advice: explanation.advice,
+    advice: explanation.advice || null,
     title: '',
     reason: aiComment.reason,
     styleTags: [],
@@ -327,7 +393,7 @@ function buildHumanFallbackCopy(evidenceInput) {
       advice: review.tip || '',
     };
   }
-  return renderXiaodaStylistFallback({ facts: evidenceToVoiceFacts(evidenceInput), benefits: [] });
+  return { overallComment: '', advice: '' };
 }
 
 function normalizeVisibleCopy(value, maxLength, options = {}) {
@@ -596,28 +662,6 @@ function readOutfitMaterials(evidenceInput) {
   return uniqueStrings(items.map((item) => item?.material)).sort();
 }
 
-function evidenceToVoiceFacts(evidenceInput = {}) {
-  const items = Array.isArray(evidenceInput.outfit?.items)
-    ? evidenceInput.outfit.items.map((entry, index) => ({
-        id: entry.itemId || entry.clothingId || `item-${index}`,
-        slot: entry.category || entry.slot || 'other',
-        name: entry.subcategory || entry.name || entry.category || '单品',
-        colors: readOutfitColorNames(evidenceInput),
-        styleTags: uniqueStrings(evidenceInput.outfit?.styleTags),
-        material: entry.material || '',
-        thickness: entry.thickness || '',
-      }))
-    : [];
-  return {
-    items,
-    outfit: {
-      categories: uniqueStrings(evidenceInput.outfit?.categories),
-      styleTags: uniqueStrings(evidenceInput.outfit?.styleTags),
-    },
-    context: evidenceInput.context || {},
-  };
-}
-
 function evidenceToCopyFactsInput(evidenceInput = {}) {
   const outfit = evidenceInput.outfit || {};
   const colors = readOutfitColorNames(evidenceInput);
@@ -711,5 +755,7 @@ module.exports = {
   resolveStylistReviewReuse,
   toLegacyAiComment,
   traceStylistExplanationValidationV2,
+  validateAdvice,
+  validateOverallComment,
   validateStylistExplanationV2,
 };

@@ -1,30 +1,54 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const {
-  LOW_QUALITY_COPY_PHRASES,
-  sanitizeUserFacingCopy,
-} = require('./copyQualityGate');
+const acceptanceGate = require('./recommendationCopyAcceptanceGate');
+const copyQualityGate = require('./copyQualityGate');
 
-test('sanitizeUserFacingCopy replaces low quality homepage and detail phrases at final exit', () => {
-  const input = '常见单品组合起来不复杂，出门前不用大改。颜色重点的单品已经在这里，其他部分少加复杂元素。';
-  const result = sanitizeUserFacingCopy(input, {
-    items: [{ name: '米白 T恤' }, { name: '军绿色阔腿裤' }, { name: '白色运动鞋' }],
-    scene: '居家',
-    fallback: '米白 T恤和白色运动鞋颜色接近，军绿色阔腿裤负责把颜色落住。',
-  });
-
-  assert.equal(result, '米白 T恤和白色运动鞋颜色接近，军绿色阔腿裤负责把颜色落住。');
-  for (const phrase of LOW_QUALITY_COPY_PHRASES) {
-    assert.equal(result.includes(phrase), false, phrase);
-  }
+test('re-exports the binary acceptance gate', () => {
+  assert.equal(copyQualityGate.COPY_ACCEPTANCE_PASS, acceptanceGate.COPY_ACCEPTANCE_PASS);
+  assert.equal(copyQualityGate.COPY_ACCEPTANCE_REJECT, acceptanceGate.COPY_ACCEPTANCE_REJECT);
+  assert.equal(copyQualityGate.evaluateRecommendationCopy, acceptanceGate.evaluateRecommendationCopy);
+  assert.equal(copyQualityGate.evaluateRecommendationPair, acceptanceGate.evaluateRecommendationPair);
 });
 
-test('sanitizeUserFacingCopy keeps short grounded copy when no insight is available', () => {
-  const result = sanitizeUserFacingCopy('穿起来不绕，整体不会太飘。', {
-    items: [{ displayName: '深灰卫衣' }, { displayName: '黑色长裤' }],
-    fallback: '',
+test('deprecated string shim is byte-for-byte identity and creates no fallback', () => {
+  const legacy = '更有层次，不至于太淡';
+
+  assert.strictEqual(
+    copyQualityGate.sanitizeUserFacingCopy(legacy, {
+      fallback: '不得返回这句。',
+      items: [{ name: '白衬衫' }, { name: '蓝长裤' }],
+      scene: 'work',
+    }),
+    legacy,
+  );
+  assert.strictEqual(copyQualityGate.sanitizeUserFacingCopy('', { fallback: '不得创建兜底。' }), '');
+});
+
+test('deprecated object shim returns the exact object without repair or fallback fields', () => {
+  const source = {
+    todayReason: '穿起来不绕。',
+    detailExplanation: '',
+    usedPhrases: ['常见单品'],
+  };
+  const before = structuredClone(source);
+  const result = copyQualityGate.sanitizeCopyObject(source, {
+    todayFallback: '不得替换。',
+    detailFallback: '不得补写。',
   });
 
-  assert.equal(result, '深灰卫衣和黑色长裤可以直接成套穿。');
+  assert.strictEqual(result, source);
+  assert.deepEqual(result, before);
+  assert.equal('aiExtraDefault' in result, false);
+});
+
+test('migration removes the old rewrite and fallback helper API', () => {
+  for (const name of [
+    'LOW_QUALITY_COPY_PHRASES',
+    'applyFactualRewrites',
+    'containsLowQualityCopy',
+    'requiresGroundedFallback',
+  ]) {
+    assert.equal(name in copyQualityGate, false, name);
+  }
 });

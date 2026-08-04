@@ -1,209 +1,93 @@
-const { sanitizeCopyObject } = require('./copyQualityGate');
+const { getClaimById } = require('./xiaodaVoiceBankV2');
 
-const PHRASE_LIMITS = {
-  '不用多想': 1,
-  '不费心': 1,
-  '临时出门': 2,
-  '自然': 2,
-  '日常': 3,
-  '有呼应': 2,
-  '不至于太淡': 0,
-  '不会太飘': 0,
-  '压住一点': 0,
-  '压下来一点': 0,
-  '放在一起': 0,
-  '颜色接近': 0,
-  '深浅变化': 0,
-  '上下分区': 0,
-  '不全是浅色': 0,
-  '适合今天': 0,
-};
-
-const ANGLES = ['颜色关系', '场景适配', '天气厚薄', '单品作用', '单品组合', '鞋子收尾', '风格统一', '方便程度'];
-const COLOR_ANGLES = new Set(['颜色呼应', '颜色对比', '颜色关系']);
-
-const REPLACEMENTS = {
-  '不用多想': ['很直接', '不绕', '一眼能看懂'],
-  '不费心': ['省事', '不折腾', '顺手'],
-  '临时出门': ['短暂外出', '下楼走走', '附近走走'],
-  '自然': ['顺眼', '不刻意', '轻松'],
-  '日常': ['平时穿', '生活里', '常用'],
-  '有呼应': ['颜色接近', '颜色能接上', '颜色有联系'],
-  '不至于太淡': ['不全是浅色', '有深浅变化', '有颜色落点'],
-  '不会太飘': ['有颜色落点', '落在日常里', '有深色收住'],
-  '压住一点': ['收住一些', '带出一点对比', '加一点分量'],
-  '压下来一点': ['收住一些', '带出一点对比', '加一点分量'],
-  '放在一起': ['搭起来', '接在一块', '一起穿'],
-  '颜色接近': ['能接上', '有联系', '接在一块'],
-  '深浅变化': ['明暗关系', '颜色层次', '一点对比'],
-  '上下分区': ['上下关系', '轮廓更清楚', '比例更清楚'],
-  '不全是浅色': ['多一点落点', '多一点分量', '不那么单调'],
-  '适合今天': ['今天穿起来省事', '按现在的安排穿得住', '今天穿不会绕'],
-};
-
-const STRUCTURE_REWRITES = [
-  ({ first, second, third }) => `${first}和${second}颜色接近，${third}让这套不全是浅色。`,
-  ({ first, second, third }) => `${third}带出一点对比，${first}和${second}负责把颜色接上。`,
-  ({ first, third }) => `${first}先把上半身提亮，${third}让整套不只停在浅色。`,
-  ({ first, second, third }) => `${second}收在脚下，和${first}接得上，${third}让画面更完整。`,
-  ({ first, second, third }) => `${first}和${second}负责前后接色，${third}把下半身收住。`,
-  ({ first, second, third }) => `${first}配${third}偏轻松，${second}让临时出门更方便。`,
-];
-
-function applyBatchCopyDiversity(copies = []) {
-  const counts = {};
-  const usedAngles = new Set();
-  const angleCounts = {};
-  const structureCounts = {};
-  return copies.map((copy, index) => {
-    const next = { ...copy };
-    const inheritedColorDetail = normalizeAngle(copy.angle) === '颜色关系' && normalizeAngle(copy.detailAngle) === '颜色关系';
-    next.angle = chooseAngle(copy.angle, usedAngles, angleCounts, index);
-    next.detailAngle = inheritedColorDetail ? chooseNonColorDetailAngle(index) : chooseDetailAngle(copy.detailAngle, next.angle, index);
-    usedAngles.add(next.angle);
-    angleCounts[next.angle] = (angleCounts[next.angle] || 0) + 1;
-    if (normalizeAngle(copy.angle) === '颜色关系' && next.angle !== '颜色关系') {
-      next.todayReason = fallbackTodayForAngle(next.angle, index);
-    }
-    for (const phrase of Object.keys(PHRASE_LIMITS)) {
-      next.todayReason = limitPhrase(next.todayReason, phrase, counts);
-      next.detailExplanation = limitPhrase(next.detailExplanation, phrase, counts);
-      next.aiExtraDefault = next.detailExplanation;
-    }
-    next.todayReason = diversifyStructure(next.todayReason, structureCounts, index);
-    if (inheritedColorDetail || (next.angle === '颜色关系' && next.detailAngle === '颜色关系')) {
-      next.detailAngle = chooseDetailAngle('', next.angle, index);
-      next.detailExplanation = fallbackDetailForAngle(next.detailAngle, index);
-      next.aiExtraDefault = next.detailExplanation;
-    }
-    Object.assign(next, sanitizeCopyObject(next));
-    next.usedPhrases = Object.keys(PHRASE_LIMITS).filter((phrase) => `${next.todayReason}${next.detailExplanation}`.includes(phrase));
-    return next;
-  });
+function createBatchCopyConstraints() {
+  return {
+    usedClaimIds: [],
+    claimUsage: {},
+  };
 }
 
-function limitPhrase(text, phrase, counts) {
-  let result = String(text || '');
-  while (result.includes(phrase)) {
-    const used = counts[phrase] || 0;
-    const limit = PHRASE_LIMITS[phrase] || 0;
-    if (used < limit) {
-      counts[phrase] = used + 1;
-      const marker = `__KEEP_PHRASE_${Object.keys(PHRASE_LIMITS).indexOf(phrase)}_${used}__`;
-      result = result.replace(phrase, marker);
-      continue;
-    }
-    result = result.replace(phrase, nextReplacement(phrase, used));
+function appendBatchCopySelection(constraints, selection) {
+  const current = hasValidConstraints(constraints)
+    ? copyConstraints(constraints)
+    : createBatchCopyConstraints();
+  const claimId = readClaimId(selection);
+  if (!claimId) return current;
+  return {
+    usedClaimIds: appendUnique(current.usedClaimIds, [claimId]),
+    claimUsage: {
+      ...current.claimUsage,
+      [claimId]: Number(current.claimUsage[claimId] || 0) + 1,
+    },
+  };
+}
+
+function buildBatchCopyConstraints(selections = []) {
+  return (Array.isArray(selections) ? selections : []).reduce(
+    appendBatchCopySelection,
+    createBatchCopyConstraints(),
+  );
+}
+
+function copyConstraints(constraints) {
+  return {
+    usedClaimIds: Array.isArray(constraints?.usedClaimIds)
+      ? constraints.usedClaimIds.slice()
+      : [],
+    claimUsage: isPlainObject(constraints?.claimUsage)
+      ? { ...constraints.claimUsage }
+      : {},
+  };
+}
+
+function hasValidConstraints(value) {
+  return isPlainObject(value)
+    && isDenseUniqueClaimIdArray(value.usedClaimIds)
+    && isClaimCountRecord(value.claimUsage);
+}
+
+function readClaimId(selection) {
+  if (!isPlainObject(selection)) return '';
+  const claimId = readString(selection.claimId);
+  const definition = getClaimById(claimId);
+  return definition ? definition.claimId : '';
+}
+
+function isClaimCountRecord(value) {
+  return isPlainObject(value) && Object.entries(value).every(([claimId, count]) =>
+    Boolean(getClaimById(readString(claimId)))
+    && Number.isInteger(count)
+    && count >= 0);
+}
+
+function isDenseUniqueClaimIdArray(value) {
+  if (!Array.isArray(value)) return false;
+  const normalized = [];
+  for (let index = 0; index < value.length; index += 1) {
+    if (!Object.prototype.hasOwnProperty.call(value, index)) return false;
+    const claimId = readString(value[index]);
+    if (!getClaimById(claimId) || normalized.includes(claimId)) return false;
+    normalized.push(claimId);
   }
-  return result.replace(/__KEEP_PHRASE_(\d+)_(\d+)__/g, (_, phraseIndex) => Object.keys(PHRASE_LIMITS)[Number(phraseIndex)] || '');
-}
-
-function nextReplacement(phrase, index) {
-  const replacements = REPLACEMENTS[phrase] || [''];
-  return replacements[Math.abs(index) % replacements.length] || '';
-}
-
-function chooseAngle(angle, usedAngles, angleCounts, index) {
-  const normalized = normalizeAngle(angle);
-  if (normalized && canUseAngle(normalized, angleCounts) && !usedAngles.has(normalized)) return normalized;
-  const required = ['场景适配', '天气厚薄', '单品作用'].find((entry) => !usedAngles.has(entry));
-  if (required) return required;
-  return ANGLES.find((entry) => canUseAngle(entry, angleCounts) && !usedAngles.has(entry))
-    || ANGLES.find((entry) => canUseAngle(entry, angleCounts))
-    || ANGLES[index % ANGLES.length];
-}
-
-function chooseDetailAngle(detailAngle, todayAngle, index) {
-  const normalized = normalizeAngle(detailAngle);
-  if (normalized && normalized !== todayAngle) return normalized;
-  const pool = todayAngle === '颜色关系'
-    ? ['场景适配', '天气厚薄', '单品作用', '单品组合']
-    : ['颜色关系', '单品作用', '天气厚薄', '场景适配'];
-  return pool[Math.abs(index) % pool.length];
-}
-
-function chooseNonColorDetailAngle(index) {
-  const pool = ['场景适配', '天气厚薄', '单品作用', '单品组合'];
-  return pool[Math.abs(index) % pool.length];
-}
-
-function normalizeAngle(angle) {
-  if (COLOR_ANGLES.has(angle)) return '颜色关系';
-  if (angle === '天气适配') return '天气厚薄';
-  if (angle === '单品关系') return '单品组合';
-  return angle || '';
-}
-
-function canUseAngle(angle, angleCounts) {
-  if (angle === '颜色关系') return (angleCounts[angle] || 0) < 3;
-  if (angle === '鞋子收尾') return (angleCounts[angle] || 0) < 2;
   return true;
 }
 
-function fallbackDetailForAngle(angle, index) {
-  const textByAngle = {
-    场景适配: '这套不需要很强的正式感，按现在的安排穿会比较轻松。',
-    天气厚薄: '如果温度在二十多度，这样穿不会太厚，也不用额外加很多层。',
-    单品作用: '鞋子把这套从家里带到楼下也接得住，不需要重新换一身。',
-    单品组合: '上衣和下装都比较直接，搭起来不挑安排。',
-  };
-  return textByAngle[angle] || ['这套穿起来比较直接。', '整体不用加太多复杂元素。'][index % 2];
+function appendUnique(current, additions) {
+  return [...new Set([...(current || []), ...(additions || [])].map(readString).filter(Boolean))];
 }
 
-function fallbackTodayForAngle(angle, index) {
-  const textByAngle = {
-    场景适配: '这套更偏轻松场合，不需要撑得太正式。',
-    天气厚薄: '二十多度穿这组不会太厚，活动起来也省事。',
-    单品作用: '鞋子把活动感补上，下楼或短暂外出都接得住。',
-    单品组合: '上衣和下装都很直接，整套不需要太多解释。',
-    鞋子收尾: '鞋子让这套更好走，临时出门不用再换。',
-    风格统一: '几件单品都偏清爽，放在生活里不突兀。',
-    方便程度: '这套穿脱和行动都方便，适合不想折腾的时候。',
-  };
-  return textByAngle[angle] || ['这套穿起来比较直接。', '整体不用加太多复杂元素。'][index % 2];
+function readString(value) {
+  return typeof value === 'string' ? value.trim() : '';
 }
 
-function diversifyStructure(text, structureCounts, index) {
-  const current = String(text || '');
-  const signature = sentenceSignature(current);
-  const used = structureCounts[signature] || 0;
-  if (used < 2) {
-    structureCounts[signature] = used + 1;
-    return current;
-  }
-  const parts = readColorEchoParts(current);
-  if (!parts) {
-    structureCounts[signature] = used + 1;
-    return current;
-  }
-  const variantIndex = signature === 'color-close-layer'
-    ? ((index + used) % (STRUCTURE_REWRITES.length - 1)) + 1
-    : (index + used + 1) % STRUCTURE_REWRITES.length;
-  const rewritten = STRUCTURE_REWRITES[variantIndex](parts);
-  const nextSignature = sentenceSignature(rewritten);
-  structureCounts[nextSignature] = (structureCounts[nextSignature] || 0) + 1;
-  return rewritten;
-}
-
-function sentenceSignature(text) {
-  if (/(颜色接近|能接上|有联系|接在一块)，.+让这套(?:不全是浅色|多一点层次|多一点落点|多一点分量|不那么单调)/.test(String(text || ''))) return 'color-close-layer';
-  return String(text || '')
-    .replace(/[^，。！？]+?(T恤|运动鞋|阔腿裤|短裤|短袖|卫衣|牛仔裤|下装|上衣|鞋子)/g, 'ITEM')
-    .replace(/[。！？].*$/g, '')
-    .replace(/\s+/g, '');
-}
-
-function readColorEchoParts(text) {
-  const match = String(text || '').match(/^(.+?)和(.+?)(?:有呼应|颜色接近|颜色能接上|颜色有联系)，(.+?)(?:让|把|带|加|多|不)/);
-  if (!match) return null;
-  return {
-    first: match[1],
-    second: match[2],
-    third: match[3],
-  };
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 module.exports = {
-  PHRASE_LIMITS,
-  applyBatchCopyDiversity,
+  appendBatchCopySelection,
+  buildBatchCopyConstraints,
+  copyConstraints,
+  createBatchCopyConstraints,
+  hasValidConstraints,
 };

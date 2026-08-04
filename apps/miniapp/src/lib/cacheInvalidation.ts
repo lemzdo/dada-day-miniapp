@@ -1,4 +1,5 @@
 import { clearUserPageCacheByPrefix } from './userPageCache';
+import { getUserStorageSync, setUserStorageSync } from './userStorage';
 import type { ActiveAuthContext } from '@/stores/userStore';
 
 export const PAGE_CACHE_PREFIXES = {
@@ -16,11 +17,16 @@ interface CacheInvalidationOptions {
   authContext?: ActiveAuthContext | null;
 }
 
+export const TODAY_WARDROBE_INPUT_VERSION_KEY = 'today:recommendationInput:wardrobeVersion';
+export const TODAY_PROFILE_INPUT_VERSION_KEY = 'today:recommendationInput:profileVersion';
+
 export async function invalidateWardrobeCache(options: CacheInvalidationOptions = {}): Promise<void> {
   await safeClearPrefix(PAGE_CACHE_PREFIXES.wardrobe, options);
 }
 
 export async function invalidateTodayRecommendationCache(options: CacheInvalidationOptions = {}): Promise<void> {
+  bumpRecommendationInputVersion(TODAY_WARDROBE_INPUT_VERSION_KEY, options);
+  bumpRecommendationInputVersion(TODAY_PROFILE_INPUT_VERSION_KEY, options);
   await safeClearPrefix(PAGE_CACHE_PREFIXES.today, options);
 }
 
@@ -49,6 +55,7 @@ export async function invalidateHistoryCache(options: CacheInvalidationOptions =
 }
 
 export async function invalidateAfterWardrobeMutation(options: CacheInvalidationOptions = {}): Promise<void> {
+  bumpRecommendationInputVersion(TODAY_WARDROBE_INPUT_VERSION_KEY, options);
   await safeClearPrefixes(
     [
       PAGE_CACHE_PREFIXES.wardrobe,
@@ -88,6 +95,7 @@ export async function invalidateAfterUploadTaskMutation(options: CacheInvalidati
 }
 
 export async function invalidateAfterConfirmDraftsSaved(options: CacheInvalidationOptions = {}): Promise<void> {
+  bumpRecommendationInputVersion(TODAY_WARDROBE_INPUT_VERSION_KEY, options);
   await safeClearPrefixes(
     [
       PAGE_CACHE_PREFIXES.uploadTasks,
@@ -100,6 +108,7 @@ export async function invalidateAfterConfirmDraftsSaved(options: CacheInvalidati
 }
 
 export async function invalidateAfterProfileMutation(options: CacheInvalidationOptions = {}): Promise<void> {
+  bumpRecommendationInputVersion(TODAY_PROFILE_INPUT_VERSION_KEY, options);
   await safeClearPrefixes(
     [
       PAGE_CACHE_PREFIXES.profile,
@@ -119,4 +128,9 @@ async function safeClearPrefix(prefix: string, options: CacheInvalidationOptions
   } catch (error) {
     console.warn('[cacheInvalidation] clear cache failed', { prefix, error });
   }
+}
+
+function bumpRecommendationInputVersion(storageKey: string, options: CacheInvalidationOptions) {
+  const current = Number(getUserStorageSync<number>(storageKey, { authContext: options.authContext })) || 0;
+  setUserStorageSync(storageKey, Math.max(Date.now(), current + 1), { authContext: options.authContext });
 }
