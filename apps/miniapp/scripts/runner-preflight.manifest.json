@@ -1,0 +1,227 @@
+{
+  "schemaVersion": "d1d-runner-preflight-manifest-v1",
+  "auditStatus": "snapshot-aware-clean-state-and-precise-reset",
+  "entrypoints": {
+    "cmd": "apps/miniapp/scripts/run-sport-windows-acceptance.cmd",
+    "powershell": "apps/miniapp/scripts/run-sport-windows-acceptance.ps1",
+    "runner": "apps/miniapp/scripts/recommendation-v6-e2e.cjs",
+    "captureHelper": "apps/miniapp/scripts/windows-devtools-capture.ps1"
+  },
+  "staticFindings": {
+    "argv": {
+      "cmd": ["%*"],
+      "powershell": ["--preflight-only"],
+      "runner": ["--preflight-only"]
+    },
+    "processEnvReads": [
+      "EVIDENCE_DIR",
+      "MINIPROGRAM_AUTOMATOR_PATH",
+      "EVIDENCE_ONLY",
+      "PRESENTATION_EVIDENCE_ONLY",
+      "CAPTURE_PRESENTATION_EVIDENCE",
+      "PRECONDITION_ONLY",
+      "D1D_DEVTOOLS_HWND",
+      "D1D_WINDOW_HANDLE",
+      "WINDOW_HANDLE",
+      "SCREENSHOT_PROVIDER"
+      ,"AUTOMATOR_WS_ENDPOINT"
+      ,"D1D_RUNNER_RESOLVED_CONFIG_JSON"
+    ],
+    "powershellEnvWrites": [
+      "EVIDENCE_DIR",
+      "D1D_DEVTOOLS_HWND",
+      "SCREENSHOT_PROVIDER",
+      "CAPTURE_PRESENTATION_EVIDENCE",
+      "D1D_RUNNER_RESOLVED_CONFIG_JSON",
+      "MINIPROGRAM_AUTOMATOR_PATH"
+    ],
+    "runnerConfigInvalidBranches": [
+      "RUNNER_ARGUMENT_INVALID",
+      "CONFIG_BOOLEAN_INVALID",
+      "CONFIG_PATH_INVALID",
+      "AUTOMATOR_PATH_FORMAT_INVALID",
+      "AUTOMATOR_MODULE_NOT_RESOLVED",
+      "AUTOMATOR_PACKAGE_JSON_INVALID",
+      "AUTOMATOR_PACKAGE_NAME_INVALID",
+      "AUTOMATOR_PACKAGE_VERSION_INVALID",
+      "AUTOMATOR_MODULE_UNLOADABLE",
+      "AUTOMATOR_CONNECT_EXPORT_MISSING",
+      "WINDOW_HANDLE_CONFLICT",
+      "WINDOW_HANDLE_REQUIRED",
+      "WINDOW_HANDLE_INVALID",
+      "EVIDENCE_DIR_REQUIRED",
+      "SCREENSHOT_PROVIDER_INVALID",
+      "AUTOMATOR_ENDPOINT_INVALID",
+      "PREFLIGHT_MODE_CONFLICT",
+      "PREFLIGHT_CAPTURE_REQUIRED",
+      "RUNNER_PATH_MISSING",
+      "RESOLVED_CONFIG_JSON_INVALID",
+      "RESOLVED_CONFIG_HASH_INVALID",
+      "RESOLVED_CONFIG_MISMATCH",
+      "RUNNER_RESOLVER_MISSING"
+    ],
+    "preRequestFailureBranches": [
+      "CAPTURE_HELPER_MISSING",
+      "RUNNER_MISSING",
+      "DEVTOOLS_LISTENER_NOT_FOUND",
+      "DEVTOOLS_WINDOW_INVALID",
+      "SCREENSHOT_PROVIDER_MISMATCH",
+      "SCREENSHOT_INVALID",
+      "DEVTOOLS_CONNECT_FAILED",
+      "TODAY_PAGE_NAVIGATION_FAILED",
+      "TODAY_PAGE_UNAVAILABLE",
+      "TODAY_PAGE_UNREADABLE",
+      "PRECONDITION_NOT_CLEAN",
+      "PRECONDITION_HOOK_NOT_FRESH",
+      "CAPTURE_HOOK_RESTORE_FAILED",
+      "CAPTURE_HOOK_INSTALL_FAILED",
+      "CAPTURE_NO_AVAILABLE_TARGET"
+    ]
+  },
+  "requiredConfigurationFromCurrentCode": {
+    "dependencyDeclaration": {
+      "package": "apps/miniapp/package.json",
+      "devDependency": "miniprogram-automator@0.12.1"
+    },
+    "evidenceDir": {
+      "env": "EVIDENCE_DIR",
+      "required": true,
+      "validation": ["non-empty", "absolute path", "directory creatable", "write/read JSON", "write/read PNG"]
+    },
+    "automatorModule": {
+      "env": "MINIPROGRAM_AUTOMATOR_PATH",
+      "required": true,
+      "resolution": ["require.resolve from repository root", "require.resolve from apps/miniapp"],
+      "packageName": "miniprogram-automator",
+      "historicalVersion": "0.12.1",
+      "pathFormat": "package directory containing package.json; not package.json and not out/index",
+      "validation": ["normalized path", "exists", "package name", "package version", "requireable", "connect export function"]
+    },
+    "devtools": {
+      "listenerPorts": [52849, 9420],
+      "automatorWsEndpoint": "ws://127.0.0.1:9420",
+      "connectCall": "automator.connect({ wsEndpoint: 'ws://127.0.0.1:9420' })"
+    },
+    "window": {
+      "envAliases": ["D1D_DEVTOOLS_HWND", "D1D_WINDOW_HANDLE", "WINDOW_HANDLE"],
+      "required": true,
+      "validation": ["positive integer", "visible usable HWND by capture helper"]
+    },
+    "screenshot": {
+      "env": "SCREENSHOT_PROVIDER",
+      "requiredValue": "windows-native-primary-screen",
+      "helper": "apps/miniapp/scripts/windows-devtools-capture.ps1",
+      "rpc": "forbidden"
+    },
+    "captureHook": {
+      "env": "CAPTURE_PRESENTATION_EVIDENCE",
+      "requiredForPreflight": true,
+      "requiredValue": "true",
+      "generationMarker": "recommendation-v61-capture-hook-v1",
+      "handshake": "passed",
+      "bufferBeforeInitial": 0
+    },
+    "cleanState": {
+      "route": "pages/today/index",
+      "requiresIdle": true,
+      "requiresStableSceneTransition": true,
+      "requiresSnapshotIdentityConsistency": true,
+      "acceptedSnapshotCardCounts": [8, "legal-tail", 0],
+      "zeroCardSnapshotRequiresExhausted": true,
+      "rejectsPendingRequest": true,
+      "rejectsUncommittedResponse": true,
+      "baselineCounters": ["intentStartCount", "capturedRequestCount", "captureRequestBufferCount"]
+    },
+    "preciseInitialReset": {
+      "timing": "once before the formal matrix Initial",
+      "currentUserOnly": true,
+      "removedBusinessKeys": [
+        "today:outfitReturnSnapshot:recommendation-copy-contract-v3",
+        "today:sceneSnapshot:recommendation-copy-contract-v3:*"
+      ],
+      "fullStorageClearForbidden": true,
+      "preserved": [
+        "wardrobe",
+        "recommendation input versions",
+        "profile and preferences",
+        "auth and identity",
+        "weather",
+        "candidate pool cloud documents",
+        "exposure",
+        "favorites and history",
+        "all unrelated storage"
+      ]
+    },
+    "mode": {
+      "normal": "no EVIDENCE_ONLY/PRESENTATION_EVIDENCE_ONLY and no PRECONDITION_ONLY",
+      "preflightOnly": "--preflight-only (legacy PRECONDITION_ONLY=true is accepted only as an alias)"
+    },
+    "contracts": {
+      "todayPage": "pages/today/index",
+      "todayRelaunchUrl": "/pages/today/index",
+      "scene": "sport",
+      "initialSlot": "initial",
+      "expectedCloudBuild": "generateOutfit-recommendation-count-contract-authority-20260803",
+      "expectedQaVersion": "qa-batch-audit-v6-1-semantic-presentation",
+      "authoritativeQaPath": "result.data.qaBatchAudit.qaGateSummary",
+      "authoritativeQaSummaryIsRequiredWhenTruncated": true,
+      "presentationEvidenceMode": "sanitized_v1",
+      "presentationEvidenceVersion": "presentation-evidence-v3"
+    },
+    "runnerMethods": {
+      "connectPhase": ["connect", "currentPage", "reLaunch", "on", "disconnect"],
+      "healthPhase": ["currentPage", "size", "data", "$"],
+      "preconditionPhase": ["evaluate", "reLaunch", "currentPage", "size", "data", "$", "$$"],
+      "sportPhase": ["switchTab", "tap", "data", "property", "attribute", "text"]
+    }
+  },
+  "pathsAndProcesses": {
+    "runnerDerivedPaths": [
+      "path.join(__dirname, 'windows-devtools-capture.ps1')",
+      "EVIDENCE_DIR/screenshots",
+      "EVIDENCE_DIR.zip"
+    ],
+    "powershellDerivedPaths": [
+      "scriptRoot/../../../",
+      "scriptRoot/windows-devtools-capture.ps1",
+      "scriptRoot/recommendation-v6-e2e.cjs",
+      "repoRoot/artifacts/recommendation-v6-e2e/sport-windows-*"
+    ],
+    "childProcesses": [
+      "powershell.exe capture helper",
+      "node.exe runner",
+      "powershell.exe Compress-Archive on runner finalization"
+    ],
+    "cwd": {
+      "cmd": "caller cwd is preserved",
+      "powershell": "caller cwd is preserved",
+      "runner": "caller cwd is preserved; all repo paths are derived from __dirname or resolved config"
+    },
+    "encoding": ["cmd inherits", "PowerShell UTF-8 no BOM streams", "runner utf8 files"],
+    "exitCodePropagation": ["runner -> PS1 $LASTEXITCODE", "PS1 -> cmd exit /b %ERRORLEVEL%"]
+  },
+  "locks": [],
+  "historicalBaseline": {
+    "automator": "miniprogram-automator@0.12.1",
+    "modulePath": "C:/Users/lemzdo/AppData/Local/pnpm-cache/dlx/.../node_modules/.pnpm/miniprogram-automator@0.12.1/node_modules/miniprogram-automator",
+    "connect": "connect({ wsEndpoint: 'ws://127.0.0.1:9420' })",
+    "source": ["artifacts/devtools-env-matrix-20260727/*/probe.json", "artifacts/recommendation-v6-1-*/**/environment.json"]
+  },
+  "requiredPreflightOrder": [
+    "resolve and validate all configuration",
+    "load the real automator and validate exports",
+    "connect the real DevTools endpoint",
+    "validate mini instance and project/method contract",
+    "install request blocker",
+    "restore old hook and clear runner state",
+    "accept an idle internally consistent persisted snapshot as clean",
+    "remove only current-user Today and scene recommendation snapshot keys",
+    "reLaunch Today and prove idle empty post-reset state",
+    "install fresh hook and prove generation/handshake/empty buffer",
+    "validate HWND/provider and run official Windows capture smoke",
+    "write/read JSON and PNG evidence",
+    "validate sport initial mode/version contract without calling generateOutfit",
+    "emit READY_FOR_INITIAL",
+    "finally restore blocker/hook/page state/resources"
+  ]
+}

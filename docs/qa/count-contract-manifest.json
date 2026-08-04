@@ -1,0 +1,173 @@
+{
+  "schemaVersion": "recommendation-count-contract-manifest-v1",
+  "generatedAt": "2026-07-30",
+  "implementationStatus": "implemented_and_locally_regressed",
+  "authority": {
+    "requestedBatchSize": "server request normalization, capped by MAX_REQUESTED_BATCH_SIZE",
+    "expectedCardCount": "server countContract.expectedCardCount",
+    "returnedCardCount": "server countContract.returnedCardCount and data.outfits.length",
+    "remainingUniqueBeforeConsume": "server candidate-pool selection availability before this response consumes the batch",
+    "remainingUniqueAfterConsume": "server remainingUniqueBeforeConsume - returnedCardCount",
+    "tailBatchAuthorized": "server countContract proof; never inferred from returnedCardCount < requestedBatchSize",
+    "poolExhaustedAfterConsume": "server countContract.poolExhaustedAfterConsume",
+    "executionMode": "server response debug.executionMode",
+    "candidatePoolId": "server countContract.candidatePoolId"
+  },
+  "locations": [
+    {
+      "path": "apps/miniapp/cloudfunctions/generateOutfit/index.js",
+      "symbol": "requestedCount / attachPresentationEvidenceDebug",
+      "kind": "business-contract",
+      "currentAssumption": "requestedCount is capped at 8 and Evidence is called with expectedCardCount: 8",
+      "authority": "requestedBatchSize and countContract.expectedCardCount",
+      "requiredChange": "derive one countContract after final selection and pass its expectedCardCount"
+    },
+    {
+      "path": "apps/miniapp/cloudfunctions/generateOutfit/index.js",
+      "symbol": "validateCandidatePoolAvailability",
+      "kind": "business-contract",
+      "currentAssumption": "result length below requestedCount is accepted from limited/exhausted flags only",
+      "authority": "countContract proof",
+      "requiredChange": "require exact returned/expected equality and explicit tail authorization"
+    },
+    {
+      "path": "apps/miniapp/cloudfunctions/generateOutfit/services/presentationEvidence.js",
+      "symbol": "buildPresentationEvidence",
+      "kind": "business-contract",
+      "currentAssumption": "caller supplies a fixed expectedCardCount and cards are checked against it",
+      "authority": "countContract.expectedCardCount",
+      "requiredChange": "embed and validate the same countContract"
+    },
+    {
+      "path": "apps/miniapp/cloudfunctions/generateOutfit/services/qaBatchAudit.js",
+      "symbol": "MAX_FINAL_CARDS / finalCards",
+      "kind": "diagnostic-bound",
+      "currentAssumption": "diagnostic finalCards is capped at 8",
+      "authority": "countContract.expectedCardCount for card identity coverage; MAX_FINAL_CARDS remains only a payload budget cap",
+      "requiredChange": "make the contract count explicit and reject truncation of selected cards"
+    },
+    {
+      "path": "apps/miniapp/scripts/recommendation-v6-e2e.cjs",
+      "symbol": "validatePresentationEvidenceCapture",
+      "kind": "business-contract",
+      "currentAssumption": "expectedCount defaults to 8",
+      "authority": "evidence.countContract.expectedCardCount",
+      "requiredChange": "derive expected count dynamically and validate all identity bindings"
+    },
+    {
+      "path": "apps/miniapp/scripts/recommendation-v6-e2e.cjs",
+      "symbol": "presentationCardsFromData / readTodaySnapshot",
+      "kind": "snapshot-reference",
+      "currentAssumption": "response and persisted snapshot arrays are sliced to 8",
+      "authority": "snapshot.countContract.expectedCardCount",
+      "requiredChange": "retain the exact returned batch and its count contract"
+    },
+    {
+      "path": "apps/miniapp/scripts/recommendation-v6-e2e.cjs",
+      "symbol": "captureBatch",
+      "kind": "runner",
+      "currentAssumption": "total must be at least 8 and exactly 8 cards are navigated/captured",
+      "authority": "snapshot.countContract.expectedCardCount",
+      "requiredChange": "capture 8, 7, 5, 1, or zero terminal state according to the contract"
+    },
+    {
+      "path": "apps/miniapp/scripts/recommendation-v6-e2e.test.js",
+      "symbol": "visual harness and Initial/Refresh lifecycle",
+      "kind": "runner-test-fixture",
+      "currentAssumption": "default fixtures and screenshot assertions use 8",
+      "authority": "test fixture countContract.expectedCardCount; 8 remains the normal-batch fixture",
+      "requiredChange": "add dynamic tail-batch and mismatch coverage without weakening normal 8-card checks"
+    },
+    {
+      "path": "apps/miniapp/cloudfunctions/generateOutfit/services/qaBatchAudit.js",
+      "symbol": "MAX_ALTERNATIVES / MAX_REJECTION_REASONS / MAX_ARCHETYPES",
+      "kind": "diagnostic-bound",
+      "currentAssumption": "several audit arrays have fixed small caps",
+      "authority": "not a card-count authority",
+      "requiredChange": "keep these only as documented payload sampling limits"
+    },
+    {
+      "path": "apps/miniapp/cloudfunctions/generateOutfit/services/presentationEvidence.js",
+      "symbol": "safeTextArray",
+      "kind": "field-bound",
+      "currentAssumption": "each card's tags/narratives are capped at 8",
+      "authority": "not a card-count authority",
+      "requiredChange": "leave as field-size protection and document the distinction"
+    },
+    {
+      "path": "apps/miniapp/cloudfunctions/generateOutfit/services/candidatePool.js",
+      "symbol": "tryPersistCandidatePool validation",
+      "kind": "performance-path",
+      "currentAssumption": "every written chunk is read back before manifest commit",
+      "authority": "local plan checksum plus awaited CloudBase set acknowledgement",
+      "requiredChange": "validate the exact persisted payload locally and avoid redundant large-object rereads"
+    },
+    {
+      "path": "apps/miniapp/src/pages/today/sceneResponseValidation.js",
+      "symbol": "validateRecommendationCountContract",
+      "kind": "client-response-contract",
+      "currentAssumption": "client accepts only a response whose outfits length and metadata derive the same expected count",
+      "authority": "data.countContract",
+      "requiredChange": "reject missing cards, invalid tail flags, invalid execution mode, and contradictory metadata"
+    },
+    {
+      "path": "apps/miniapp/src/pages/today/index.tsx",
+      "symbol": "Today restore and scene snapshot persistence",
+      "kind": "snapshot-reference",
+      "currentAssumption": "restore and scene cache carry the response count contract with the exact outfit array",
+      "authority": "countContract.expectedCardCount",
+      "requiredChange": "reject legacy or truncated snapshots before display"
+    },
+    {
+      "path": "apps/miniapp/scripts/recommendation-v6-e2e.cjs",
+      "symbol": "QA summary / validation report / Evidence ZIP",
+      "kind": "acceptance-output",
+      "currentAssumption": "summary, card capture, identity binding, and ZIP rows use the same dynamic expected count",
+      "authority": "response/evidence countContract",
+      "requiredChange": "fail on card, snapshot, Evidence, binding, or identity count mismatch"
+    },
+    {
+      "path": "packages/types/src/outfit.ts",
+      "symbol": "RecommendationCountContract",
+      "kind": "shared-type-contract",
+      "currentAssumption": "server, client, QA, and presentation evidence share one typed count contract",
+      "authority": "RecommendationCountContract",
+      "requiredChange": "keep response, Evidence, QA, and debug fields aligned"
+    }
+  ],
+  "fixedEightLocations": [
+    {
+      "path": "apps/miniapp/cloudfunctions/generateOutfit/index.js",
+      "symbol": "normalizeRequestedBatchSize / maxResults default",
+      "meaning": "business request cap and default only; normal batches still require exact contract count"
+    },
+    {
+      "path": "apps/miniapp/cloudfunctions/generateOutfit/services/qaBatchAudit.js",
+      "symbol": "MAX_FINAL_CARDS, MAX_ALTERNATIVES, MAX_REJECTION_REASONS, MAX_ARCHETYPES and bounded sampled arrays",
+      "meaning": "diagnostic/payload caps; never card-count authority"
+    },
+    {
+      "path": "apps/miniapp/cloudfunctions/generateOutfit/services/presentationEvidence.js",
+      "symbol": "safeTextArray and bounded narrative arrays",
+      "meaning": "per-field payload cap; never card-count authority"
+    },
+    {
+      "path": "apps/miniapp/scripts/recommendation-v6-e2e.cjs",
+      "symbol": "bounded QA sanitizers and summary fields",
+      "meaning": "payload sanitization caps; card navigation, screenshot, Evidence, binding, and ZIP counts are dynamic"
+    },
+    {
+      "path": "apps/miniapp/**/**.test.js",
+      "symbol": "Array.from length 8 / expected 8 fixtures",
+      "meaning": "normal_8 regression fixtures; tail tests use 1, 5, and 7 and negative tests require exact failure"
+    }
+  ],
+  "states": [
+    { "name": "normal_8", "expectedCardCount": 8, "tailBatchAuthorized": false, "poolExhaustedAfterConsume": false },
+    { "name": "tail_1", "expectedCardCount": 1, "tailBatchAuthorized": true, "poolExhaustedAfterConsume": true },
+    { "name": "tail_5", "expectedCardCount": 5, "tailBatchAuthorized": true, "poolExhaustedAfterConsume": true },
+    { "name": "tail_7", "expectedCardCount": 7, "tailBatchAuthorized": true, "poolExhaustedAfterConsume": true },
+    { "name": "empty_exhausted", "expectedCardCount": 0, "tailBatchAuthorized": false, "poolExhaustedAfterConsume": true },
+    { "name": "invalid_missing_card", "expectedCardCount": 5, "tailBatchAuthorized": true, "mustFail": true }
+  ]
+}
