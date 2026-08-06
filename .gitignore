@@ -21,3 +21,20 @@ tmp/
 temp/
 .cache/
 .turbo/
+
+# Local build and acceptance outputs
+/apps/web/.next/
+/apps/web/.test/
+/apps/miniapp/dist/
+/artifacts/
+
+# Generated evidence outside artifacts
+/apps/miniapp/scripts/screenshots/
+/apps/miniapp/scripts/output/
+/apps/miniapp/scripts/*.jsonl
+/apps/miniapp/scripts/*.zip
+/apps/miniapp/scripts/coverage/
+/apps/miniapp/cloudfunctions/generateOutfit/scripts/output/
+/apps/miniapp/cloudfunctions/generateOutfit/scripts/*.jsonl
+/apps/miniapp/cloudfunctions/generateOutfit/scripts/*.zip
+/apps/miniapp/cloudfunctions/generateOutfit/scripts/coverage/
