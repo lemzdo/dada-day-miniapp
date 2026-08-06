@@ -404,6 +404,10 @@ export default function TodayPage() {
     resetUserState();
     lastHandledRuntimeKeyRef.current = runtimeKey;
     entryIntentIdRef.current = `today-entry:${runtimeKey}:${Date.now()}`;
+    // A valid user-scoped snapshot is synchronous and must be allowed to paint
+    // before WeatherCard finishes location/auth/cloud work. Weather changes
+    // continue through handleWeatherChange as a background refresh afterwards.
+    restoreTodaySnapshotFromDetail(captureAuthContext(), { requireReturnIntent: false });
     if (currentWeatherRef.current) {
       void handleWeatherChange(currentWeatherRef.current, {
         weatherMode: currentWeatherModeRef.current,
@@ -1353,8 +1357,11 @@ export default function TodayPage() {
     });
   }
 
-  function restoreTodaySnapshotFromDetail(authContext?: ActiveAuthContext | null) {
-    if (!shouldRestoreFromDetailRef.current) return false;
+  function restoreTodaySnapshotFromDetail(
+    authContext?: ActiveAuthContext | null,
+    options: { requireReturnIntent?: boolean } = {},
+  ) {
+    if (options.requireReturnIntent !== false && !shouldRestoreFromDetailRef.current) return false;
     shouldRestoreFromDetailRef.current = false;
 
     const snapshot = readTodayRestoreSnapshot(authContext);
