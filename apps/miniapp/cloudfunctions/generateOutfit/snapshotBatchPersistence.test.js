@@ -75,6 +75,9 @@ function createBatchDatabase(clothes, options = {}) {
       in(values) {
         return values;
       },
+      set(value) {
+        return { __cloudbaseSet: true, value };
+      },
     },
     collection(name) {
       if (name === 'clothes') return query(clothes, 'clothes');
@@ -100,7 +103,18 @@ function createBatchDatabase(clothes, options = {}) {
                   throw error;
                 }
                 const index = outfits.findIndex((record) => record._id === id);
-                outfits[index] = { ...outfits[index], ...data };
+                const nextData = Object.fromEntries(Object.entries(data).map(([key, value]) => [
+                  key,
+                  value && value.__cloudbaseSet ? value.value : value,
+                ]));
+                if (outfits[index].selectedDifferentiator === null
+                  && nextData.selectedDifferentiator
+                  && !data.selectedDifferentiator?.__cloudbaseSet) {
+                  const error = new Error("Cannot create field 'authorizedValue' in element {selectedDifferentiator: null}");
+                  error.errCode = -502001;
+                  throw error;
+                }
+                outfits[index] = { ...outfits[index], ...nextData };
               } finally {
                 operations.activeWrites -= 1;
               }
@@ -266,6 +280,97 @@ test('mixed existing and new references update and add without changing keys', a
   assert.equal(operations.adds, 3);
 });
 
+test('nullable selectedDifferentiator is atomically replaced for existing outfit references', async () => {
+  const [base] = buildBases(1);
+  const selectedDifferentiator = {
+    type: 'relation',
+    relationCode: 'TOP_ACCENT_WITH_NEUTRAL_BOTTOM',
+    roles: ['top', 'bottom'],
+    authorizedValues: ['粉色', '灰色'],
+    authorizedValue: '粉色',
+    subjectItemIds: ['top-0'],
+    evidenceFactIds: ['fact-1'],
+  };
+  const { database, operations, outfits } = createBatchDatabase([
+    ...base.clothingIds.map((_id) => ({ _id, _openid: 'snapshot-batch-user', status: 'active' })),
+  ]);
+  outfits.push({
+    _id: 'existing-outfit',
+    _openid: 'snapshot-batch-user',
+    outfitKey: base.clothingIds.slice().sort().join('_'),
+    selectedDifferentiator: null,
+    presentationPlan: { selectedDifferentiator: null, title: '保留标题' },
+    copyContract: null,
+    userTitle: '保留用户标题',
+    snapshotItems: [{ itemId: 'top-0', imageUrl: 'cloud://stable/top-0.png' }],
+  });
+  const entry = loadEntryWithDatabase(database);
+  const nextBase = {
+    ...base,
+    selectedDifferentiator,
+    presentationPlan: { selectedDifferentiator, title: '新标题' },
+    copyContract: { todayReason: '保留授权文案' },
+  };
+
+  const payload = entry.__test.buildOutfitSaveData(nextBase, {
+    outfitKey: base.clothingIds.slice().sort().join('_'),
+    now: '2026-07-30T00:01:00.000Z',
+    patch: {},
+    current: outfits[0],
+  });
+  const updatePayload = entry.__test.buildOutfitReferenceUpdatePayload(payload);
+  assert.deepEqual(Object.keys(updatePayload).filter((key) => key.startsWith('selectedDifferentiator.')), []);
+  assert.equal(updatePayload.selectedDifferentiator.__cloudbaseSet, true);
+  assert.equal(updatePayload.presentationPlan.__cloudbaseSet, true);
+  assert.equal(updatePayload.copyContract.__cloudbaseSet, true);
+  assert.equal(Object.keys(updatePayload).filter((key) => key === 'selectedDifferentiator').length, 1);
+
+  const saved = await entry.__test.upsertRecommendationOutfitsBatch({
+    openid: 'snapshot-batch-user',
+    bases: [nextBase],
+    now: '2026-07-30T00:01:00.000Z',
+    operationCounts: { reads: 0, writes: 0 },
+  });
+  assert.deepEqual(saved[0].selectedDifferentiator, selectedDifferentiator);
+  assert.deepEqual(outfits[0].selectedDifferentiator, selectedDifferentiator);
+  assert.equal(outfits[0].userTitle, '保留用户标题');
+  assert.equal(outfits[0].snapshotItems.length, 3);
+  assert.equal(outfits[0].snapshotItems.some((item) => item.itemId === 'top-0'), true);
+  assert.equal(operations.updates, 1);
+
+  const replacement = { ...selectedDifferentiator, relationCode: 'COLOR_ECHO_TOP_SHOES', authorizedValue: '白色' };
+  const replacementResult = await entry.__test.upsertRecommendationOutfitsBatch({
+    openid: 'snapshot-batch-user',
+    bases: [{ ...nextBase, selectedDifferentiator: replacement }],
+    now: '2026-07-30T00:02:00.000Z',
+  });
+  assert.deepEqual(replacementResult[0].selectedDifferentiator, replacement);
+
+  const clearedResult = await entry.__test.upsertRecommendationOutfitsBatch({
+    openid: 'snapshot-batch-user',
+    bases: [{ ...nextBase, selectedDifferentiator: null }],
+    now: '2026-07-30T00:03:00.000Z',
+  });
+  assert.equal(clearedResult[0].selectedDifferentiator, null);
+  assert.equal(outfits[0].selectedDifferentiator, null);
+  assert.equal(operations.updates, 3);
+});
+
+test('selectedDifferentiator update payload always contains only its parent key', () => {
+  const entry = loadEntryWithDatabase(createBatchDatabase([]).database);
+  const value = { relationCode: 'RELATION', authorizedValue: '白色', evidence: ['fact-1'] };
+  for (const selectedDifferentiator of [value, null]) {
+    const payload = entry.__test.buildOutfitReferenceUpdatePayload({
+      selectedDifferentiator,
+      title: '保留其他字段',
+    });
+    const keys = Object.keys(payload);
+    assert.equal(keys.includes('selectedDifferentiator'), true);
+    assert.equal(keys.some((key) => key.startsWith('selectedDifferentiator.')), false);
+    assert.equal(keys.filter((key) => key === 'selectedDifferentiator').length, 1);
+  }
+});
+
 test('a single write failure rolls back every reference and preserves the original cause', async () => {
   const bases = buildBases(3);
   const clothes = [...new Set(bases.flatMap((base) => base.clothingIds))]
@@ -290,6 +395,37 @@ test('a single write failure rolls back every reference and preserves the origin
 
   assert.equal(outfits.length, 0);
   assert.equal(operations.rollbacks, 1);
+});
+
+test('transaction failures with direct diagnostic fields are wrapped without changing the transaction call', async () => {
+  const { database } = createBatchDatabase([]);
+  database.runTransaction = async () => {
+    const error = new Error('transaction failed');
+    error.stage = 'outfit_add';
+    error.errCode = -502001;
+    error.errMsg = 'write rejected';
+    error.documentId = 'outfit-doc-2';
+    error.outfitKey = 'top-2_bottom_shoes';
+    throw error;
+  };
+  const entry = loadEntryWithDatabase(database);
+
+  await assert.rejects(entry.__test.runOutfitReferenceTransaction(async () => undefined), (error) => {
+    assert.equal(error.businessCode, 'OUTFIT_REFERENCE_WRITE_FAILED');
+    assert.deepEqual(error.cause, {
+      errorName: 'Error',
+      errCode: -502001,
+      errMsg: 'write rejected',
+      stage: 'outfit_add',
+      operation: null,
+      collection: null,
+      documentId: 'outfit-doc-2',
+      outfitKey: 'top-2_bottom_shoes',
+      requestId: null,
+      stack: error.cause.stack,
+    });
+    return true;
+  });
 });
 
 test('same-user concurrent batches are serialized and remain idempotent', async () => {
@@ -346,17 +482,70 @@ test('read failures retain their stage and database cause', async () => {
   );
 });
 
-test('raw CloudBase error fields are preserved without exposing them to the client', () => {
+test('raw CloudBase error fields are preserved in the safe diagnostic shape', () => {
   const entry = loadEntryWithDatabase(createBatchDatabase([]).database);
   const raw = new Error('database.insertDocument: exceed concurrent request limit');
   raw.errCode = -501004;
   raw.stack = 'raw-stack';
   assert.deepEqual(entry.__test.serializeOutfitReferenceCause(raw, { stage: 'outfit_add' }), {
+    errorName: 'Error',
     errCode: -501004,
     errMsg: 'database.insertDocument: exceed concurrent request limit',
-    stack: 'raw-stack',
     stage: 'outfit_add',
-    documentId: '',
-    outfitKey: '',
+    operation: null,
+    collection: null,
+    documentId: null,
+    outfitKey: null,
+    requestId: null,
+    stack: 'raw-stack',
   });
+});
+
+test('failure response exposes only a safe outfit reference diagnostic, including cyclic causes', () => {
+  const entry = loadEntryWithDatabase(createBatchDatabase([]).database);
+  const cause = {
+    errorName: 'CloudBaseError',
+    stage: 'outfit_add',
+    errCode: -502001,
+    errMsg: 'injected failure',
+    documentId: 'outfit-doc-1',
+    outfitKey: 'top-1_bottom-1',
+    operation: 'add',
+    collection: 'outfits',
+    requestId: 'request-1',
+    stack: `${Array.from({ length: 12 }, (_, index) => `line-${index}`).join('\n')}\n${'x'.repeat(1800)}`,
+    clothes: [{ _id: 'private-clothing' }],
+    items: [{ imageUrl: 'https://private.example/image.jpg' }],
+    openid: 'private-openid',
+    payload: { private: true },
+  };
+  cause.self = cause;
+  const wrapped = new Error('操作暂时失败，请稍后再试');
+  wrapped.businessCode = 'OUTFIT_REFERENCE_WRITE_FAILED';
+  wrapped.cause = cause;
+
+  assert.doesNotThrow(() => entry.__test.getSafeOutfitReferenceCause(cause));
+  const response = entry.__test.fail(wrapped);
+  assert.equal(response.code, 1);
+  assert.equal(response.data.errorCode, 'OUTFIT_REFERENCE_WRITE_FAILED');
+  assert.equal(response.message, '操作暂时失败，请稍后再试');
+  assert.deepEqual(response.data.debug.outfitReferenceWriteFailure, {
+    errorName: 'CloudBaseError',
+    errCode: -502001,
+    errMsg: 'injected failure',
+    stage: 'outfit_add',
+    operation: 'add',
+    collection: 'outfits',
+    documentId: 'outfit-doc-1',
+    outfitKey: 'top-1_bottom-1',
+    requestId: 'request-1',
+    stack: Array.from({ length: 8 }, (_, index) => `line-${index}`).join('\n'),
+  });
+  const serialized = JSON.stringify(response.data.debug);
+  assert.equal(serialized.includes('clothes'), false);
+  assert.equal(serialized.includes('items'), false);
+  assert.equal(serialized.includes('openid'), false);
+  assert.equal(serialized.includes('imageUrl'), false);
+  assert.equal(serialized.includes('payload'), false);
+  assert.doesNotThrow(() => JSON.stringify(response));
 });

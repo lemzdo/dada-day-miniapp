@@ -115,7 +115,7 @@ function buildCardEvidence({ card, candidate, plan, canonicalCard, scene, cardIn
       && Array.isArray(entry.roles) && entry.roles.length > 0
       && Array.isArray(entry.authorizedValues) && entry.authorizedValues.length > 0);
   const selectedDifferentiator = diagnosticDifferentiators[0]
-    || toDifferentiator(factModel.availableDifferentiators[0])
+    || toDifferentiator(canonicalPlan.selectedDifferentiator)
     || null;
   const finalTitle = safeNarrative(readString(sourceCard.displayTitle || sourceCard.title || canonical.title));
   const fallbackReason = factModel.items.length > 0 ? canonicalPlan.reasonClaim?.text : '';
@@ -136,7 +136,9 @@ function buildCardEvidence({ card, candidate, plan, canonicalCard, scene, cardIn
   );
   const contentPlanFactSignatureHash = hashValue(contentPlan.presentationFactSignature, 'presentation-fact-v2');
   const copyContractFactSignatureHash = hashValue(copyContract.presentationFactSignature, 'presentation-fact-v2');
-  const canonicalRelationCode = safeCode(canonicalPlan.primaryRelation?.relationCode || factModel.primaryRelationCode) || null;
+  const canonicalRelationCode = safeCode(canonicalPlan.primaryRelationCode
+    || canonicalPlan.primaryRelation?.relationCode
+    || factModel.primaryRelationCode) || null;
   const contentPlanRelationCode = safeCode(contentPlan.primaryRelationCode) || null;
   const copyContractRelationCode = safeCode(copyContract.primaryRelationCode) || null;
   const factSignaturesEqual = allEqualAndPresent([
@@ -144,11 +146,14 @@ function buildCardEvidence({ card, candidate, plan, canonicalCard, scene, cardIn
     contentPlanFactSignatureHash,
     copyContractFactSignatureHash,
   ]);
-  const relationCodesEqual = allEqualAndPresent([
+  const relationBindingStatus = compareRelationCodes([
     canonicalRelationCode,
     contentPlanRelationCode,
     copyContractRelationCode,
   ]);
+  const relationCodesEqual = relationBindingStatus === 'NOT_APPLICABLE'
+    ? null
+    : relationBindingStatus === 'MATCH';
   const titleMatchesPlan = Boolean(presentationPlan && finalTitle && canonicalPlan.titleConcept && finalTitle === canonicalPlan.titleConcept);
   const reasonMatchesPlan = Boolean(presentationPlan && finalReason && canonicalPlan.reasonClaim?.text && finalReason === canonicalPlan.reasonClaim.text);
 
@@ -172,7 +177,7 @@ function buildCardEvidence({ card, candidate, plan, canonicalCard, scene, cardIn
     presentationFactSignatureHash: canonicalFactSignatureHash,
     itemRoles,
     primaryRelationCode: canonicalRelationCode,
-    availableDifferentiators: factModel.availableDifferentiators.map(toDifferentiator).filter(Boolean),
+    availableDifferentiators: factModel.availableDifferentiators.map(toDifferentiator).filter(Boolean).slice(0, 4),
     selectedDifferentiator,
     binding: {
       canonicalFactSignatureHash,
@@ -183,8 +188,22 @@ function buildCardEvidence({ card, candidate, plan, canonicalCard, scene, cardIn
       contentPlanRelationCode,
       copyContractRelationCode,
       relationCodesEqual,
+      relationBindingStatus,
       titleMatchesPlan,
       reasonMatchesPlan,
+    },
+    semanticBinding: {
+      source: safeCode(canonicalPlan.source) || null,
+      planVersion: safeCode(canonicalPlan.version) || null,
+      todayAction: safeCode(canonicalPlan.todayAction) || null,
+      todayDimension: safeCode(canonicalPlan.todayDimension) || null,
+      todaySubjectCount: Array.isArray(canonicalPlan.todaySubjectItemIds) ? canonicalPlan.todaySubjectItemIds.length : 0,
+      todayEvidenceFactIds: sanitizeEvidenceFactIds(canonicalPlan.todayEvidenceFactIds),
+      detailAction: safeCode(canonicalPlan.detailAction) || null,
+      detailDimension: safeCode(canonicalPlan.detailDimension) || null,
+      detailSubjectCount: Array.isArray(canonicalPlan.detailSubjectItemIds) ? canonicalPlan.detailSubjectItemIds.length : 0,
+      detailEvidenceFactIds: sanitizeEvidenceFactIds(canonicalPlan.detailEvidenceFactIds),
+      detailDisplay: safeCode(canonicalPlan.detailDisplay) || null,
     },
     contentPlanSummary,
     copyContractSummary,
@@ -198,8 +217,9 @@ function buildCardEvidence({ card, candidate, plan, canonicalCard, scene, cardIn
 
 function buildReasonSemanticSkeleton(plan) {
   return [
-    plan?.primaryRelation?.relationCode || '',
+    plan?.primaryRelationCode || plan?.primaryRelation?.relationCode || '',
     plan?.reasonClaim?.relationCode || '',
+    plan?.reasonClaim?.semanticSkeleton || '',
     plan?.sceneConclusion || '',
   ].join('|');
 }
@@ -207,8 +227,15 @@ function buildReasonSemanticSkeleton(plan) {
 function buildTitleSemanticSkeleton(plan) {
   return [
     plan?.titleConcept || '',
-    plan?.primaryRelation?.relationCode || '',
+    plan?.primaryRelationCode || plan?.primaryRelation?.relationCode || '',
   ].join('|');
+}
+
+function sanitizeEvidenceFactIds(values) {
+  return safeTextArray((Array.isArray(values) ? values : []).map((value) => {
+    const parts = String(value || '').split(':').filter(Boolean);
+    return parts.at(-1) || '';
+  }));
 }
 
 function buildContentPlanSummary(plan, presentationPlan) {
@@ -287,6 +314,13 @@ function allEqualAndPresent(values) {
     && values.length > 0
     && values.every((value) => value !== null && value !== undefined && value !== '')
     && values.every((value) => value === values[0]);
+}
+
+function compareRelationCodes(values) {
+  const applicable = (Array.isArray(values) ? values : [])
+    .filter((value) => value !== null && value !== undefined && value !== '');
+  if (applicable.length === 0) return 'NOT_APPLICABLE';
+  return applicable.every((value) => value === applicable[0]) ? 'MATCH' : 'MISMATCH';
 }
 
 function findMatchingEntry(entries, card, index) {

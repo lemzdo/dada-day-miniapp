@@ -46,6 +46,7 @@ function buildQaAuditSummaries({
   weatherSnapshot,
   temperatureBandApplied = false,
   cloudBuild = '',
+  PRESENTATION_FACT_MODEL_BUILD = '',
   guardAcceptedCandidates = [],
   guardRejectedCandidates = [],
   acceptedCandidates = [],
@@ -163,6 +164,12 @@ function buildQaAuditSummaries({
   const cardConsistencyFailures = finalCards.filter((card) => card.consistency === false).length;
   const qualificationFailureCount = visibleRecords.filter((record) => hasQualificationFailure(record)).length;
   const safetyFailureCount = visibleRecords.filter((record) => hasSafetyFailure(record)).length;
+  const safetyWarningCount = visibleRecords.filter((record) => hasOrdinarySafetyWarning(record)).length;
+  const sceneConfidenceWarningCount = visibleRecords.filter((record) => hasSceneConfidenceWarning(record)).length;
+  const qaWarnings = [
+    ...(safetyWarningCount > 0 ? ['SAFETY_WARNING'] : []),
+    ...(sceneConfidenceWarningCount > 0 ? ['SCENE_CONFIDENCE_WARNING'] : []),
+  ];
   const qaBlockReasons = buildQaBlockReasons({
     duplicateCause,
     syntheticSuffixCount,
@@ -188,6 +195,7 @@ function buildQaAuditSummaries({
     version: QA_BATCH_AUDIT_VERSION,
     auditId: safeText(auditId, 80),
     cloudBuild: safeText(cloudBuild, 80),
+    PRESENTATION_FACT_MODEL_BUILD: safeText(PRESENTATION_FACT_MODEL_BUILD, 80),
     identity: {
       scene: {
         requestScene: safeText(requestScene, 40),
@@ -260,6 +268,9 @@ function buildQaAuditSummaries({
     gateStatus,
     qaGatePassed: gateStatus !== 'failed',
     qaBlockReasons,
+    qaWarnings,
+    safetyWarningCount,
+    sceneConfidenceWarningCount,
     tagSceneMismatchCount,
     cardConsistencyFailures,
     fallbackReasonCount,
@@ -275,6 +286,7 @@ function buildQaAuditSummaries({
   clientAudit.qaGateSummary = buildQaGateSummary(clientAudit);
   const serverSummary = {
     auditId: clientAudit.auditId,
+    PRESENTATION_FACT_MODEL_BUILD: clientAudit.PRESENTATION_FACT_MODEL_BUILD,
     generated: clientAudit.counts.generated,
     candidate: clientAudit.counts.candidate,
     accepted: clientAudit.counts.accepted,
@@ -323,6 +335,9 @@ function buildQaAuditSummaries({
     gateStatus: clientAudit.gateStatus,
     qaGatePassed: clientAudit.qaGatePassed,
     qaBlockReasons: clientAudit.qaBlockReasons,
+    qaWarnings: clientAudit.qaWarnings,
+    safetyWarningCount: clientAudit.safetyWarningCount,
+    sceneConfidenceWarningCount: clientAudit.sceneConfidenceWarningCount,
     tagSceneMismatchCount: clientAudit.tagSceneMismatchCount,
     cardConsistencyFailures: clientAudit.cardConsistencyFailures,
     fallbackReasonCount: clientAudit.fallbackReasonCount,
@@ -441,6 +456,9 @@ function buildCardSummary(candidate, compiledOutfit, aliasMap) {
   const sharedPlan = readPresentationPlan(presentationSource);
   const presentationFactModel = sharedPlan?.factModel || buildPresentationFactModel(presentationSource);
   const presentationPlan = sharedPlan || buildPresentationPlan(presentationFactModel);
+  const presentationFactSignature = sharedPlan?.presentationFactSignature
+    || presentationPlan.presentationFactSignature
+    || presentationFactModel.presentationFactSignature;
   const title = readVisibleTitle(compiledOutfit) || candidate.title || '';
   const tags = Array.isArray(compiledOutfit?.styleTags) ? compiledOutfit.styleTags : [];
   const todayReason = readVisibleReason(compiledOutfit);
@@ -456,10 +474,10 @@ function buildCardSummary(candidate, compiledOutfit, aliasMap) {
     todayReason: safeText(todayReason, 240),
     titleSignature: textSignature(title || selectionSignatures.titleSignature || ''),
     tagSignature: textSignature(tags.length > 0 ? tags.slice().sort().join('|') : selectionSignatures.tagSignature || ''),
-    presentationFactSignatureHash: presentationFactModel.presentationFactSignature
-      ? textSignature(`presentation-fact-v2|${presentationFactModel.presentationFactSignature}`)
+    presentationFactSignatureHash: presentationFactSignature
+      ? textSignature(`presentation-fact-v2|${presentationFactSignature}`)
       : null,
-    primaryRelationCode: presentationPlan.primaryRelation.relationCode || null,
+    primaryRelationCode: presentationPlan.primaryRelationCode || presentationPlan.primaryRelation?.relationCode || null,
     unsupportedClaimCount: presentationPlan.unsupportedClaims.length,
     reasonSemanticSkeleton: buildReasonSemanticSkeleton(presentationPlan),
     titleSemanticSkeleton: buildTitleSemanticSkeleton(presentationPlan),
@@ -533,19 +551,26 @@ function buildVisibleOutfitRecords(outfits, selected) {
     const sharedPlan = readPresentationPlan(presentationSource);
     const presentationFactModel = sharedPlan?.factModel || buildPresentationFactModel(presentationSource);
     const presentationPlan = sharedPlan || buildPresentationPlan(presentationFactModel);
+    const presentationFactSignature = sharedPlan?.presentationFactSignature
+      || presentationPlan.presentationFactSignature
+      || presentationFactModel.presentationFactSignature;
     return {
       outfit,
       candidate,
       outfitKey: key || String(candidate?.outfitKey || ''),
       itemSetSignature: buildItemSetSignature(outfit, candidate),
-      presentationFactSignature: presentationFactModel.presentationFactSignature,
-      presentationFactSignatureHash: presentationFactModel.presentationFactSignature
-        ? textSignature(`presentation-fact-v2|${presentationFactModel.presentationFactSignature}`)
+      presentationFactSignature,
+      presentationFactSignatureHash: presentationFactSignature
+        ? textSignature(`presentation-fact-v2|${presentationFactSignature}`)
         : null,
-      primaryRelationCode: presentationPlan.primaryRelation.relationCode || null,
-      availableDifferentiatorCount: Array.isArray(presentationFactModel.availableDifferentiators)
-        ? presentationFactModel.availableDifferentiators.length
-        : 0,
+      primaryRelationCode: presentationPlan.primaryRelationCode || presentationPlan.primaryRelation?.relationCode || null,
+      availableDifferentiatorCount: Number.isFinite(presentationPlan.availableDifferentiatorCount)
+        ? presentationPlan.availableDifferentiatorCount
+        : Array.isArray(presentationFactModel.availableDifferentiators)
+          ? presentationFactModel.availableDifferentiators.length
+          : 0,
+      selectedDifferentiator: presentationPlan.selectedDifferentiator || null,
+      differentiatorApplied: isSelectedDifferentiatorApplied(presentationPlan, outfit),
       unsupportedClaimCount: presentationPlan.unsupportedClaims.length,
       reasonSemanticSkeleton: buildReasonSemanticSkeleton(presentationPlan),
       titleSemanticSkeleton: buildTitleSemanticSkeleton(presentationPlan),
@@ -575,19 +600,43 @@ function buildDifferentiatorIgnoredGroups(records) {
   for (const record of Array.isArray(records) ? records : []) {
     const reason = readVisibleReason(record.outfit);
     if (!reason) continue;
-    const key = `${normalizePresentationText(reason)}|${record.reasonSemanticSkeleton}`;
-    const entry = groups.get(key) || { signatures: new Set(), count: 0 };
+    const key = normalizePresentationText(reason);
+    const entry = groups.get(key) || { signatures: new Set(), count: 0, unappliedCount: 0 };
     entry.signatures.add(record.presentationFactSignatureHash || 'missing');
     entry.count += 1;
+    if (!record.differentiatorApplied) entry.unappliedCount += 1;
     groups.set(key, entry);
   }
-  return [...groups.values()].filter((entry) => entry.count > 1 && entry.signatures.size > 1);
+  return [...groups.values()].filter((entry) => entry.count > 1
+    && entry.signatures.size > 1
+    && entry.unappliedCount > 0);
+}
+
+function isSelectedDifferentiatorApplied(plan, outfit) {
+  const selected = plan?.selectedDifferentiator;
+  if (!selected || !selected.relationCode) return false;
+  const relationCode = plan?.primaryRelationCode || plan?.primaryRelation?.relationCode || '';
+  if (relationCode !== selected.relationCode || plan?.reasonClaim?.relationCode !== selected.relationCode) return false;
+  if (selected.semanticSkeleton
+    && plan?.reasonClaim?.semanticSkeleton !== selected.semanticSkeleton) return false;
+  if (selected.todayExpressionIntent
+    && plan?.reasonClaim?.todayExpressionIntent !== selected.todayExpressionIntent) return false;
+  if (normalizePresentationText(readVisibleReason(outfit))
+    !== normalizePresentationText(plan?.todayReason || plan?.reasonClaim?.text)) return false;
+  return containsAll(plan?.todaySubjectItemIds, selected.subjectItemIds)
+    && containsAll(plan?.todayEvidenceFactIds, selected.evidenceFactIds);
+}
+
+function containsAll(values, expected) {
+  const source = new Set(uniqueStrings(values));
+  return uniqueStrings(expected).every((value) => source.has(value));
 }
 
 function buildReasonSemanticSkeleton(plan) {
   return [
-    plan?.primaryRelation?.relationCode || '',
+    plan?.primaryRelationCode || plan?.primaryRelation?.relationCode || '',
     plan?.reasonClaim?.relationCode || '',
+    plan?.reasonClaim?.semanticSkeleton || '',
     plan?.sceneConclusion || '',
   ].join('|');
 }
@@ -595,7 +644,7 @@ function buildReasonSemanticSkeleton(plan) {
 function buildTitleSemanticSkeleton(plan) {
   return [
     plan?.titleConcept || '',
-    plan?.primaryRelation?.relationCode || '',
+    plan?.primaryRelationCode || plan?.primaryRelation?.relationCode || '',
   ].join('|');
 }
 
@@ -696,8 +745,8 @@ function resolveDuplicateCause({
   differentiatorIgnoredDuplicateCount = 0,
 } = {}) {
   if (syntheticSuffixCount > 0 || placeholderTitleCount > 0) return DUPLICATE_CAUSES.SYNTHETIC_VARIATION;
-  if (titleDuplicateWarningCount === 0) return DUPLICATE_CAUSES.NONE;
   if (differentiatorIgnoredDuplicateCount > 0) return DUPLICATE_CAUSES.DIFFERENTIATOR_IGNORED;
+  if (titleDuplicateWarningCount === 0) return DUPLICATE_CAUSES.NONE;
   if (factEquivalentDuplicateCount > 0) return DUPLICATE_CAUSES.FACT_EQUIVALENCE;
   return DUPLICATE_CAUSES.NONE;
 }
@@ -712,13 +761,45 @@ function hasQualificationFailure(record) {
 function hasSafetyFailure(record) {
   const candidate = record?.candidate || {};
   const outfit = record?.outfit || {};
+  const scene = candidate.sceneEligibility || candidate.eligibility?.scene || outfit.eligibility?.scene;
+  if (scene?.eligible === false || scene?.hardRejected === true) return true;
+  if (Number(record?.unsupportedClaimCount) > 0) return true;
   return [
-    candidate.riskFlags,
     candidate.validatorRejectReasons,
-    outfit.riskFlags,
     outfit.validatorRejectReasons,
     outfit.copyContract?.riskFlags,
-  ].some((flags) => Array.isArray(flags) && flags.length > 0);
+  ].some((flags) => Array.isArray(flags) && flags.some((flag) => !isOrdinaryWarningCode(flag)));
+}
+
+function hasOrdinarySafetyWarning(record) {
+  const codes = readEligibilityWarnings(record);
+  return codes.some((code) => !isSceneConfidenceWarningCode(code));
+}
+
+function hasSceneConfidenceWarning(record) {
+  return readEligibilityWarnings(record).some(isSceneConfidenceWarningCode);
+}
+
+function readEligibilityWarnings(record) {
+  const candidate = record?.candidate || {};
+  const outfit = record?.outfit || {};
+  return uniqueStrings([
+    ...(Array.isArray(candidate.riskFlags) ? candidate.riskFlags : []),
+    ...(Array.isArray(candidate.eligibility?.weather?.warningReasons) ? candidate.eligibility.weather.warningReasons : []),
+    ...(Array.isArray(candidate.eligibility?.scene?.warnings) ? candidate.eligibility.scene.warnings : []),
+    ...(Array.isArray(outfit.eligibility?.weather?.warningReasons) ? outfit.eligibility.weather.warningReasons : []),
+    ...(Array.isArray(outfit.eligibility?.scene?.warnings) ? outfit.eligibility.scene.warnings : []),
+  ]).filter(isOrdinaryWarningCode);
+}
+
+function isOrdinaryWarningCode(value) {
+  const code = String(value || '').trim().toUpperCase();
+  return /(?:WARNING|LOW_CONFIDENCE|MISSING_POLISH|NEEDS_POLISH|HEAVY_COMBO)/.test(code);
+}
+
+function isSceneConfidenceWarningCode(value) {
+  const code = String(value || '').trim().toUpperCase();
+  return /(?:LOW_CONFIDENCE|MISSING_POLISH|NEEDS_POLISH|SCENE_CONFIDENCE)/.test(code);
 }
 
 function normalizeItemCategory(item) {
@@ -909,14 +990,10 @@ function hasTagSceneMismatch(outfit) {
 }
 
 function buildReasonFactSignature(outfit) {
-  const contract = outfit?.copyContract || {};
-  const values = uniqueStrings([
-    ...(Array.isArray(contract.todayRequiredFactIds) ? contract.todayRequiredFactIds : []),
-    ...(Array.isArray(contract.todayEvidenceIds) ? contract.todayEvidenceIds : []),
-    safeText(contract.coreEligibilityReasonCode || outfit?.eligibilityReason?.code || '', 96),
-    ...readVisibleItems(outfit).map((item) => item?.clothingId || item?.itemId || item?._id || item?.id),
-  ]).sort();
-  return textSignature(values.join('|') || safeText(outfit?.outfitKey, 96));
+  const sharedPlan = readPresentationPlan(outfit);
+  const plan = sharedPlan || buildPresentationPlan(buildPresentationFactModel(outfit));
+  const factSignature = sharedPlan?.presentationFactSignature || plan.presentationFactSignature || '';
+  return textSignature(factSignature);
 }
 
 function normalizeCounts(input, fallback) {

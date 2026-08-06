@@ -1,6 +1,17 @@
 const cloud = require('wx-server-sdk');
 const crypto = require('crypto');
-const { attachAestheticEvaluation } = require('./services/aestheticCompatibility');
+
+let attachAestheticEvaluation;
+try {
+  ({ attachAestheticEvaluation } = require('./services/aestheticCompatibility.js'));
+} catch (error) {
+  console.error('[CLOUD_RUNTIME_REQUIRE_FAILURE]', {
+    code: error?.code,
+    message: error?.message,
+    stack: error?.stack,
+  });
+  throw error;
+}
 const { loadActiveWardrobe } = require('./services/loadActiveWardrobe');
 const {
   createAiReviewServiceError,
@@ -88,11 +99,7 @@ const {
   assertFinalPresentation,
   canonicalizeRecommendationBatch,
 } = require('./services/recommendationPresentation');
-const {
-  buildPresentationFactModel,
-  buildPresentationPlan,
-  readPresentationPlan,
-} = require('./services/presentationFactModel');
+const { PRESENTATION_FACT_MODEL_BUILD } = require('./services/presentationFactModel');
 const {
   buildPresentationEvidence,
   isPresentationEvidenceMode,
@@ -171,15 +178,19 @@ exports.main = async (event = {}) => {
     return ok(await generate(event, recommendationDiagnostics));
   } catch (error) {
     const isAiReviewAction = action === 'getAiComment' || action === 'aiComment';
+    if (error?.businessCode === 'OUTFIT_REFERENCE_WRITE_FAILED') {
+      // Keep this log deliberately narrow: the complete transaction error can contain payloads or cycles.
+      console.error('[OutfitReferenceWriteFailure]', {
+        auditId: recommendationDiagnostics?.auditId || null,
+        cause: getSafeOutfitReferenceCause(error.cause),
+      });
+    }
     if (recommendationDiagnostics) {
       console.error('[RecommendationServerError]', {
         auditId: recommendationDiagnostics.auditId,
         stage: recommendationDiagnostics.stage,
         errorCode: getRecommendationErrorCode(error),
         message: getSafeRecommendationErrorMessage(error),
-        ...(error?.businessCode === 'OUTFIT_REFERENCE_WRITE_FAILED' && error.cause
-          ? { cause: error.cause }
-          : {}),
         totalMs: Date.now() - recommendationDiagnostics.startedAt,
       });
     } else {
@@ -416,6 +427,7 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
     selectedCount: recommendations.length,
     limitedReason: recommendations.debug?.limitedReason || '',
     cloudBuildVersion: CLOUD_BUILD_VERSION,
+    PRESENTATION_FACT_MODEL_BUILD,
     executionMode,
     candidatePoolIdentityHash: candidatePoolIdentity.identityHash,
     candidatePoolAgeMs,
@@ -534,6 +546,7 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
     meta: {
       auditId: diagnostics.auditId,
       cloudBuildVersion: CLOUD_BUILD_VERSION,
+      PRESENTATION_FACT_MODEL_BUILD,
       reasonCatalogVersion: REASON_CATALOG_VERSION,
       aiReviewVersion: AI_REVIEW_VERSION,
     },
@@ -717,6 +730,7 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
       meta: {
         auditId: diagnostics.auditId,
         cloudBuildVersion: CLOUD_BUILD_VERSION,
+        PRESENTATION_FACT_MODEL_BUILD,
         reasonCatalogVersion: REASON_CATALOG_VERSION,
         aiReviewVersion: AI_REVIEW_VERSION,
       },
@@ -744,6 +758,7 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
     meta: {
       auditId: diagnostics.auditId,
       cloudBuildVersion: CLOUD_BUILD_VERSION,
+      PRESENTATION_FACT_MODEL_BUILD,
       reasonCatalogVersion: REASON_CATALOG_VERSION,
       aiReviewVersion: AI_REVIEW_VERSION,
     },
@@ -893,6 +908,7 @@ function buildRecommendationQaSummaries({
     weatherSnapshotPresent: Boolean(weatherSnapshot),
     temperatureBandApplied: Boolean(recommendations.debug?.temperatureBandApplied),
     cloudBuild: CLOUD_BUILD_VERSION,
+    PRESENTATION_FACT_MODEL_BUILD,
     guardAcceptedCandidates: recommendations.debug?._auditGuardAcceptedCandidates || [],
     guardRejectedCandidates: recommendations.debug?._auditGuardRejectedCandidates || [],
     acceptedCandidates: recommendations.debug?._auditAcceptedCandidates || [],
@@ -1047,7 +1063,7 @@ function finalizeRecommendationResponse({
 function syncRecommendationResponseDiagnostics(data, timings, budget, qaBatchAudit) {
   data.debug.timings = { ...timings };
   data.debug.responseBytes = { ...budget };
-  data.debug.qaTruncated = Boolean(qaBatchAudit?.qaTruncated);
+    data.debug.qaTruncated = Boolean(qaBatchAudit?.qaTruncated);
   if (!qaBatchAudit) return;
   qaBatchAudit.timings = { ...timings };
   qaBatchAudit.responseBytes = { ...budget };
@@ -1758,7 +1774,23 @@ function normalizeContentPlan(value) {
     observations: readStringArray(value.observations).slice(0, 8),
     primaryBenefit,
     ...(value.primaryRelationCode ? { primaryRelationCode: limitText(value.primaryRelationCode, 96) } : {}),
+    ...(value.source ? { source: limitText(value.source, 48) } : {}),
+    ...(value.presentationPlanVersion ? { presentationPlanVersion: limitText(value.presentationPlanVersion, 48) } : {}),
     ...(value.presentationFactSignature ? { presentationFactSignature: limitText(value.presentationFactSignature, 4096) } : {}),
+    ...(value.selectedDifferentiator && typeof value.selectedDifferentiator === 'object'
+      ? { selectedDifferentiator: value.selectedDifferentiator }
+      : {}),
+    todayAction: value.todayAction || null,
+    todayDimension: value.todayDimension || null,
+    todaySubjectItemIds: readStringArray(value.todaySubjectItemIds),
+    todayEvidenceFactIds: readStringArray(value.todayEvidenceFactIds),
+    todaySentenceClusterId: value.todaySentenceClusterId ?? null,
+    detailAction: value.detailAction || null,
+    detailDimension: value.detailDimension || null,
+    detailSubjectItemIds: readStringArray(value.detailSubjectItemIds),
+    detailEvidenceFactIds: readStringArray(value.detailEvidenceFactIds),
+    detailSentenceClusterId: value.detailSentenceClusterId ?? null,
+    detailDisplay: value.detailDisplay === 'visible' ? 'visible' : 'hidden',
     ...(value.secondaryBenefit ? { secondaryBenefit: limitText(value.secondaryBenefit, 64) } : {}),
     ...(value.suggestion && typeof value.suggestion === 'object' && value.suggestion.text
       ? { suggestion: { text: limitText(value.suggestion.text, 120) } }
@@ -1821,6 +1853,7 @@ const COPY_CONTRACT_FIELDS = [
   'todayAction',
   'todayDimension',
   'todayEvidenceIds',
+  'todayEvidenceFactIds',
   'todayRequiredFactIds',
   'todayEvidenceSources',
   'todaySentenceClusterId',
@@ -1843,12 +1876,17 @@ const COPY_CONTRACT_FIELDS = [
   'detailAction',
   'detailDimension',
   'detailEvidenceIds',
+  'detailEvidenceFactIds',
   'detailRequiredFactIds',
   'detailEvidenceSources',
   'detailSentenceClusterId',
   'detailSubjectItemId',
   'detailSubjectItemIds',
   'detailSlotBindings',
+  'detailDisplay',
+  'primaryRelationCode',
+  'selectedDifferentiator',
+  'presentationPlanVersion',
   'riskFlags',
   'copyGateResult',
   'copyRiskFlags',
@@ -2439,18 +2477,40 @@ async function runOutfitReferenceTransaction(callback) {
 function serializeOutfitReferenceCause(error, fallback = {}) {
   const source = error && typeof error === 'object' ? error : { message: String(error || '') };
   return {
-    errCode: source.errCode ?? source.code ?? null,
-    errMsg: source.errMsg || source.message || '',
-    stack: typeof source.stack === 'string' ? source.stack.slice(0, 4000) : '',
-    stage: source.outfitReferenceStage || fallback.stage || '',
-    documentId: source.outfitReferenceDocumentId || '',
-    outfitKey: source.outfitReferenceKey || '',
+    errorName: safeOutfitReferenceField(source.errorName ?? source.name, 80),
+    errCode: safeOutfitReferenceField(source.errCode ?? source.code, 80),
+    errMsg: safeOutfitReferenceField(source.errMsg ?? source.message, 240),
+    stage: safeOutfitReferenceField(source.outfitReferenceStage ?? source.stage ?? fallback.stage, 120),
+    operation: safeOutfitReferenceField(source.operation ?? fallback.operation, 80),
+    collection: safeOutfitReferenceField(source.collection ?? fallback.collection, 120),
+    documentId: safeOutfitReferenceField(source.outfitReferenceDocumentId ?? source.documentId ?? fallback.documentId, 160),
+    outfitKey: safeOutfitReferenceField(source.outfitReferenceKey ?? source.outfitKey ?? fallback.outfitKey, 240),
+    requestId: safeOutfitReferenceField(source.requestId ?? fallback.requestId, 160),
+    stack: limitOutfitReferenceStack(source.stack),
   };
+}
+
+function safeOutfitReferenceField(value, maxLength) {
+  if (typeof value === 'string') return value.slice(0, maxLength);
+  if (typeof value === 'number' || typeof value === 'boolean') return value;
+  return null;
+}
+
+function limitOutfitReferenceStack(stack) {
+  if (typeof stack !== 'string') return null;
+  return stack.split(/\r?\n/).slice(0, 8).join('\n').slice(0, 1500);
+}
+
+function getSafeOutfitReferenceCause(cause) {
+  if (!cause || typeof cause !== 'object') return null;
+  return serializeOutfitReferenceCause(cause);
 }
 
 function annotateOutfitReferenceCause(error, details = {}) {
   if (error && typeof error === 'object') {
     if (details.stage) error.outfitReferenceStage = details.stage;
+    if (details.operation) error.operation = details.operation;
+    if (details.collection) error.collection = details.collection;
     if (details.documentId) error.outfitReferenceDocumentId = details.documentId;
     if (details.outfitKey) error.outfitReferenceKey = details.outfitKey;
   }
@@ -3111,7 +3171,9 @@ async function upsertOutfitByKey({ openid, existing, base, patch, now }) {
     });
 
     if (current) {
-      await transaction.collection('outfits').doc(current._id).update({ data });
+      await transaction.collection('outfits').doc(current._id).update({
+        data: buildOutfitReferenceUpdatePayload(data),
+      });
       return { ...current, ...data };
     }
 
@@ -3180,11 +3242,22 @@ function buildOutfitSaveData(base, { outfitKey, now, patch, current }) {
     reason,
     reasoning,
     reasonVersion: base.reasonVersion || current?.reasonVersion,
+    presentationPlan: base.presentationPlan || current?.presentationPlan,
     ...pickRecommendationCopyContractFields(base, current),
     ...pickOutfitStoryFields(base, current),
     ...reviewFields,
     updatedAt: now,
   };
+}
+
+function buildOutfitReferenceUpdatePayload(data) {
+  const payload = { ...data };
+  for (const field of ['selectedDifferentiator', 'presentationPlan', 'copyContract']) {
+    if (Object.prototype.hasOwnProperty.call(payload, field)) {
+      payload[field] = db.command.set(payload[field]);
+    }
+  }
+  return payload;
 }
 
 async function upsertRecommendationOutfitsBatch({
@@ -3203,7 +3276,11 @@ async function upsertRecommendationOutfitsBatch({
     try {
       await assertOutfitClothesAvailable(openid, clothingIds, transaction);
     } catch (error) {
-      throw annotateOutfitReferenceCause(error, { stage: 'clothes_validation_read' });
+      throw annotateOutfitReferenceCause(error, {
+        stage: 'clothes_validation_read',
+        operation: 'read',
+        collection: 'clothes',
+      });
     }
 
     if (operationCounts) operationCounts.reads += 1;
@@ -3214,7 +3291,11 @@ async function upsertRecommendationOutfitsBatch({
         .limit(100)
         .get();
     } catch (error) {
-      throw annotateOutfitReferenceCause(error, { stage: 'outfit_existing_read' });
+      throw annotateOutfitReferenceCause(error, {
+        stage: 'outfit_existing_read',
+        operation: 'read',
+        collection: 'outfits',
+      });
     }
     const existingByKey = buildOutfitRecordMap(existingResponse.data);
 
@@ -3232,10 +3313,14 @@ async function upsertRecommendationOutfitsBatch({
       if (operationCounts) operationCounts.writes += 1;
       if (current) {
         try {
-          await transaction.collection('outfits').doc(current._id).update({ data });
+          await transaction.collection('outfits').doc(current._id).update({
+            data: buildOutfitReferenceUpdatePayload(data),
+          });
         } catch (error) {
           throw annotateOutfitReferenceCause(error, {
             stage: 'outfit_update',
+            operation: 'update',
+            collection: 'outfits',
             documentId: current._id,
             outfitKey,
           });
@@ -3258,6 +3343,8 @@ async function upsertRecommendationOutfitsBatch({
       } catch (error) {
         throw annotateOutfitReferenceCause(error, {
           stage: 'outfit_add',
+          operation: 'add',
+          collection: 'outfits',
           outfitKey,
         });
       }
@@ -3409,6 +3496,7 @@ function normalizeOutfitPayload(payload) {
     scoreExplanations: payload.scoreExplanations,
     generationType: payload.generationType,
     source: payload.source || 'recommend',
+    presentationPlan: payload.presentationPlan,
     reasoning: payload.reasoning,
     reason: payload.reason,
     outfitKey: payload.outfitKey,
@@ -3447,12 +3535,6 @@ function toTempOutfit(recommendation, context) {
   const clothingIds = recommendation.items.map((item) => item._id);
   const itemMap = new Map(recommendation.items.map((item) => [item._id, item]));
   const snapshotItems = clothingIds.map((id) => snapshotFromClothing(itemMap.get(id), null, id));
-  const existingPresentationPlan = readPresentationPlan(recommendation);
-  const presentationFactModel = existingPresentationPlan?.factModel || buildPresentationFactModel({
-    ...recommendation,
-    scene: context.scene,
-  });
-  const presentationPlan = existingPresentationPlan || buildPresentationPlan(presentationFactModel);
   recordInstrumentationMetric(context.instrumentation, 'buildSnapshotItems');
   const data = {
     _id: `recommend:${recommendation.outfitKey || signature(clothingIds)}`,
@@ -3502,7 +3584,6 @@ function toTempOutfit(recommendation, context) {
   const outfit = attachAestheticEvaluation(toOutfit(data, recommendation.items), recommendation.items);
   return {
     ...outfit,
-    presentationPlan,
     cardViewModel: buildOutfitCardViewModel(outfit),
   };
 }
@@ -3540,10 +3621,6 @@ function materializeSelectedCandidate(candidate, {
     sourceItemById,
   });
   const scores = materialized.scores || {};
-  const presentationFactModel = buildPresentationFactModel({ ...materialized, scene });
-  const presentationPlan = buildPresentationPlan(presentationFactModel);
-  materialized.presentationPlan = presentationPlan;
-  materialized.title = presentationPlan.titleConcept;
   materialized.scoreExplanations = buildScoreExplanations(scores, tempConfig, scene)
     .filter((entry) => hasRealWeather || entry.dimension !== 'weatherAdaptation');
   materialized.reasoning = hasRealWeather
@@ -4854,6 +4931,7 @@ function toOutfit(item, clothes) {
     generationType: item.generationType || 'auto',
     sourceItemId: item.sourceItemId,
     source: item.source || 'recommend',
+    presentationPlan: item.presentationPlan,
     isFavorite: Boolean(item.isFavorite),
     favoriteOutfitId: item.favoriteOutfitId || undefined,
     favoritedAt: item.favoritedAt || undefined,
@@ -4931,9 +5009,15 @@ function ok(data) {
 
 function fail(error) {
   const errorCode = error && (error.businessCode || error.aiReviewCode);
+  const data = errorCode ? { errorCode } : null;
+  if (errorCode === 'OUTFIT_REFERENCE_WRITE_FAILED' && data) {
+    data.debug = {
+      outfitReferenceWriteFailure: getSafeOutfitReferenceCause(error.cause),
+    };
+  }
   return {
     code: 1,
-    data: errorCode ? { errorCode } : null,
+    data,
     message: error && error.message ? error.message : 'unknown error',
   };
 }
@@ -4946,7 +5030,10 @@ function createBusinessError(code, message) {
 
 if (process.env.NODE_ENV === 'test') {
   exports.__test = {
+    PRESENTATION_FACT_MODEL_BUILD,
     buildRecommendationResponseData,
+    buildOutfitSaveData,
+    buildOutfitReferenceUpdatePayload,
     buildSnapshotRecordData,
     canonicalizeAiCommentSource,
     createRecommendationSceneContract,
@@ -4967,6 +5054,8 @@ if (process.env.NODE_ENV === 'test') {
     toSnapshotOutfit,
     runOutfitReferenceTransaction,
     serializeOutfitReferenceCause,
+    getSafeOutfitReferenceCause,
+    fail,
     ok,
     isQaAuditEnabled: isRecommendationQaAuditEnabled,
     validateCandidatePoolAvailability,

@@ -9,7 +9,7 @@ const {
   PRESENTATION_EVIDENCE_MAX_BYTES,
   PRESENTATION_EVIDENCE_MODE,
 } = require('./presentationEvidence');
-const { PRESENTATION_DIAGNOSTIC_KEY } = require('./recommendationPresentation');
+const { canonicalizeRecommendation, PRESENTATION_DIAGNOSTIC_KEY } = require('./recommendationPresentation');
 const { buildRecommendationCountContract } = require('../shared/countContract');
 
 function buildFixtureCard(index) {
@@ -148,11 +148,8 @@ test('sanitized evidence captures eight real presentation-shaped cards without c
     canonicalSubtype: '运动上衣',
     normalizedColor: '黑色',
   });
-  assert.equal(evidence.cards[0].primaryRelationCode, 'DISTINCT_TOP_BOTTOM_COLOR');
-  assert.equal(evidence.cards[0].selectedDifferentiator.type, 'relation');
-  assert.equal(evidence.cards[0].selectedDifferentiator.relationCode, 'DISTINCT_TOP_BOTTOM_COLOR');
-  assert.deepEqual(evidence.cards[0].selectedDifferentiator.roles, ['top', 'bottom']);
-  assert.deepEqual(evidence.cards[0].selectedDifferentiator.authorizedValues, ['黑色', '白色']);
+  assert.equal(evidence.cards[0].primaryRelationCode, 'NEUTRAL_COLOR_BRIDGE');
+  assert.equal(evidence.cards[0].selectedDifferentiator.relationCode, 'NEUTRAL_COLOR_BRIDGE');
   assert.equal(evidence.cards[0].contentPlanSummary.sceneIntent, 'sport:light_activity');
   assert.equal(evidence.cards[0].copyContractSummary.gateResult, 'PASS');
   assert.equal(evidence.cards[0].copyContractSummary.todayReasonSource, 'rule_default');
@@ -188,6 +185,40 @@ test('missing evidence stays explicit and does not invent facts', () => {
   assert.equal(card.contentPlanSummary.reasonClaim, null);
   assert.equal(card.copyContractSummary.unsupportedClaimCount, 0);
   assert.equal(card.finalReason, null);
+});
+
+test('relation binding reports MATCH, MISMATCH, and NOT_APPLICABLE without a false failure', () => {
+  const countContract = buildRecommendationCountContract({ returnedCardCount: 1, remainingUniqueBeforeConsume: 1 });
+  const withRelation = canonicalizeRecommendation({
+    scene: 'sport',
+    items: [
+      { itemId: 'top-1', category: 'top', subcategory: 'T恤', factRecords: [{ fact: 'color', value: 'black', authorized: true }] },
+      { itemId: 'bottom-1', category: 'bottom', subcategory: '短裤', factRecords: [{ fact: 'color', value: 'white', authorized: true }] },
+    ],
+    copyContract: { coreEligibilityReasonCode: 'SPORT_LIGHT_ACTIVITY_SET', riskFlags: [] },
+    contentPlan: { version: 'xiaoda-content-plan-v1', sceneIntent: 'sport:light_activity', primaryBenefit: 'movement', items: [{ id: 'top-1', slot: 'top' }] },
+  }, { scene: 'sport' });
+  const match = buildPresentationEvidence({ scene: 'sport', finalCards: [withRelation], countContract }).cards[0];
+  assert.equal(match.binding.relationBindingStatus, 'MATCH');
+  assert.equal(match.binding.relationCodesEqual, true);
+
+  const mismatched = {
+    ...withRelation,
+    contentPlan: { ...withRelation.contentPlan, primaryRelationCode: 'OTHER_RELATION' },
+  };
+  const mismatch = buildPresentationEvidence({ scene: 'sport', finalCards: [mismatched], countContract }).cards[0];
+  assert.equal(mismatch.binding.relationBindingStatus, 'MISMATCH');
+  assert.equal(mismatch.binding.relationCodesEqual, false);
+
+  const withoutRelation = canonicalizeRecommendation({
+    scene: 'home',
+    items: [{ itemId: 'top-2', category: 'top', subcategory: 'T恤' }],
+    copyContract: { coreEligibilityReasonCode: 'HOME_COMFORT', riskFlags: [] },
+    contentPlan: { version: 'xiaoda-content-plan-v1', sceneIntent: 'home:indoor_relax', primaryBenefit: 'ease', items: [{ id: 'top-2', slot: 'top' }] },
+  }, { scene: 'home' });
+  const notApplicable = buildPresentationEvidence({ scene: 'home', finalCards: [withoutRelation], countContract }).cards[0];
+  assert.equal(notApplicable.binding.relationBindingStatus, 'NOT_APPLICABLE');
+  assert.equal(notApplicable.binding.relationCodesEqual, null);
 });
 
 test('PII and evidence budget checks fail instead of dropping fields', () => {

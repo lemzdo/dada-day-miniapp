@@ -726,9 +726,24 @@ export interface RecommendationPresentationBindingEvidence {
   canonicalRelationCode: string | null;
   contentPlanRelationCode: string | null;
   copyContractRelationCode: string | null;
-  relationCodesEqual: boolean;
+  relationCodesEqual: boolean | null;
+  relationBindingStatus: 'MATCH' | 'MISMATCH' | 'NOT_APPLICABLE';
   titleMatchesPlan: boolean;
   reasonMatchesPlan: boolean;
+}
+
+export interface RecommendationPresentationSemanticBindingEvidence {
+  source: string | null;
+  planVersion: string | null;
+  todayAction: string | null;
+  todayDimension: string | null;
+  todaySubjectCount: number;
+  todayEvidenceFactIds: string[];
+  detailAction: string | null;
+  detailDimension: string | null;
+  detailSubjectCount: number;
+  detailEvidenceFactIds: string[];
+  detailDisplay: 'visible' | 'hidden' | null;
 }
 
 export interface RecommendationPresentationEvidenceCard {
@@ -740,6 +755,7 @@ export interface RecommendationPresentationEvidenceCard {
   availableDifferentiators: RecommendationPresentationDifferentiatorEvidence[];
   selectedDifferentiator: RecommendationPresentationDifferentiatorEvidence | null;
   binding: RecommendationPresentationBindingEvidence;
+  semanticBinding: RecommendationPresentationSemanticBindingEvidence;
   contentPlanSummary: RecommendationPresentationContentPlanSummary;
   copyContractSummary: RecommendationPresentationCopyContractSummary;
   reasonSemanticSkeleton: string;

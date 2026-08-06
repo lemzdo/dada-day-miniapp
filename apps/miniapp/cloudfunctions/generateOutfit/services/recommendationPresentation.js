@@ -6,6 +6,7 @@ const STYLE_TAG_ALLOWLIST = new Set([
 const PRESENTATION_DIAGNOSTIC_KEY = '__presentationDiagnostic';
 
 const {
+  assignPresentationDifferentiators,
   applyPresentationPlan,
   buildPresentationFactModel,
   buildPresentationPlan,
@@ -21,29 +22,40 @@ const SCENE_PREFIX = Object.freeze({
 
 function canonicalizeRecommendationBatch(outfits, { scene } = {}) {
   const source = Array.isArray(outfits) ? outfits : [];
-  const canonical = source.map((outfit) => canonicalizeRecommendation(outfit, { scene }));
+  const models = source.map((outfit) => buildPresentationFactModel({
+    ...outfit,
+    scene: normalizeScene(scene || outfit?.scene),
+  }));
+  const differentiators = assignPresentationDifferentiators(models);
+  const canonical = source.map((outfit, index) => canonicalizeRecommendation(outfit, {
+    scene,
+    model: models[index],
+    selectedDifferentiator: differentiators[index],
+  }));
   assertHomeQuickOutingRatio(canonical, scene);
   assertFinalPresentation(canonical, scene);
   return canonical;
 }
 
-function canonicalizeRecommendation(outfit, { scene } = {}) {
+function canonicalizeRecommendation(outfit, { scene, model, selectedDifferentiator } = {}) {
   if (!outfit || typeof outfit !== 'object' || Array.isArray(outfit)) return outfit;
   const sceneKey = normalizeScene(scene || outfit.scene);
-  const existingPlan = readPresentationPlan(outfit);
-  const model = existingPlan?.factModel || buildPresentationFactModel({ ...outfit, scene: sceneKey });
-  const plan = existingPlan || buildPresentationPlan(model);
+  const factModel = model || buildPresentationFactModel({ ...outfit, scene: sceneKey });
+  const assignedDifferentiator = selectedDifferentiator === undefined
+    ? assignPresentationDifferentiators([factModel])[0]
+    : selectedDifferentiator;
+  const plan = buildPresentationPlan(factModel, { selectedDifferentiator: assignedDifferentiator });
   const tags = canonicalizeTags(outfit.styleTags, sceneKey);
   const next = {
     ...outfit,
     styleTags: tags,
   };
-  applyPresentationPlan(next, model, plan);
+  applyPresentationPlan(next, factModel, plan);
   setPresentationDiagnostic(next, {
-    model,
+    model: factModel,
     plan,
-    availableDifferentiators: model.availableDifferentiators,
-    selectedDifferentiator: null,
+    availableDifferentiators: factModel.availableDifferentiators,
+    selectedDifferentiator: assignedDifferentiator,
   });
   return next;
 }
@@ -527,14 +539,40 @@ function assertFinalPresentation(outfits) {
       const contentPlan = outfit.contentPlan || {};
       if (copyContract.presentationFactSignature !== expectedSignature
         || contentPlan.presentationFactSignature !== expectedSignature
-        || copyContract.primaryRelationCode !== (plan.primaryRelation?.relationCode || null)
-        || contentPlan.primaryRelationCode !== (plan.primaryRelation?.relationCode || null)
-        || copyContract.todayReason !== plan.reasonClaim.text
-        || contentPlan.defaultTodayReason !== plan.reasonClaim.text) {
+        || copyContract.primaryRelationCode !== plan.primaryRelationCode
+        || contentPlan.primaryRelationCode !== plan.primaryRelationCode
+        || outfit.todayReasonSource !== 'presentation_plan'
+        || copyContract.todayReasonSource !== 'presentation_plan'
+        || copyContract.source !== 'presentation_plan'
+        || contentPlan.source !== 'presentation_plan'
+        || copyContract.todayReason !== plan.todayReason
+        || contentPlan.defaultTodayReason !== plan.todayReason
+        || copyContract.detailExplanation !== plan.detailExplanation
+        || contentPlan.defaultDetailExplanation !== plan.detailExplanation
+        || !surfaceMetadataMatchesPlan(outfit, plan)
+        || !surfaceMetadataMatchesPlan(copyContract, plan)
+        || !surfaceMetadataMatchesPlan(contentPlan, plan)) {
         throw new Error('canonical recommendation presentation plan binding invariant failed');
       }
     }
   }
+}
+
+function surfaceMetadataMatchesPlan(source, plan) {
+  return source.todayAction === plan.todayAction
+    && source.todayDimension === plan.todayDimension
+    && source.detailAction === plan.detailAction
+    && source.detailDimension === plan.detailDimension
+    && source.todaySentenceClusterId === null
+    && source.detailSentenceClusterId === null
+    && arraysEqual(source.todaySubjectItemIds, plan.todaySubjectItemIds)
+    && arraysEqual(source.todayEvidenceFactIds, plan.todayEvidenceFactIds)
+    && arraysEqual(source.detailSubjectItemIds, plan.detailSubjectItemIds)
+    && arraysEqual(source.detailEvidenceFactIds, plan.detailEvidenceFactIds);
+}
+
+function arraysEqual(left, right) {
+  return JSON.stringify(Array.isArray(left) ? left : []) === JSON.stringify(Array.isArray(right) ? right : []);
 }
 
 function assertAuthorizedTitleFacts(outfit) {

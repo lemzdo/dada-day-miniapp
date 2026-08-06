@@ -5,6 +5,7 @@ const test = require('node:test');
 const { resolveRecommendationAvailability } = require('./recommendationAvailability');
 const { finalizeAcceptedRecommendations } = require('./recommendationCopyFinalization');
 const { compileRecommendationLanguageV3, deriveDisplayTagsV3 } = require('./recommendationLanguageV3');
+const { canonicalizeRecommendationBatch } = require('./recommendationPresentation');
 const { buildQaBatchAudit } = require('./qaBatchAudit');
 const {
   normalizeRecommendationWeather,
@@ -164,7 +165,7 @@ function visibleCardContract(internals, recommendations, weather, batchPrefix) {
     mode: 'new_recommendation',
     requestedCount: 8,
   });
-  return finalized.finalRecommendations.map((outfit) => ({
+  return canonicalizeRecommendationBatch(finalized.finalRecommendations, { scene: 'sport' }).map((outfit) => ({
     outfitKey: outfit.outfitKey,
     itemIds: outfit.clothingIds,
     title: outfit.title,

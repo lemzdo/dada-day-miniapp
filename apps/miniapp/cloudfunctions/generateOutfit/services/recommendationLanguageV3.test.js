@@ -13,6 +13,7 @@ const { CLAIM_CATALOG } = require('./xiaodaVoiceBankV2');
 const { ELIGIBILITY_REASON_CATALOG } = require('./recommendationEligibilityReason');
 const { evaluateSceneEligibilityV3 } = require('./sceneEligibilityV3');
 const { buildPresentationFactModel, buildPresentationPlan } = require('./presentationFactModel');
+const { canonicalizeRecommendationBatch } = require('./recommendationPresentation');
 
 function item(id, category, subcategory, extra = {}) {
   return { clothingId: id, category, subcategory, confidence: 0.95, ...extra };
@@ -81,7 +82,7 @@ test('compiler maps canonical Contract fields without local fallback', () => {
   assert.deepEqual(result.riskFlags, []);
 });
 
-test('compiler keeps title, copy Contract, content plan, and response plan bound to one semantic plan', () => {
+test('compiler leaves final presentation ownership to post-finalization canonicalization', () => {
   const source = outfit('sport', 21, {
     items: [
       item('top-21', 'top', '短袖T恤', {
@@ -107,14 +108,16 @@ test('compiler keeps title, copy Contract, content plan, and response plan bound
     weather: source.weatherSnapshot,
   });
 
-  assert.equal(result.presentationPlan, presentationPlan);
-  assert.equal(result.title, presentationPlan.titleConcept);
-  assert.equal(result.reason, presentationPlan.reasonClaim.text);
-  assert.equal(result.copyContract.todayReason, presentationPlan.reasonClaim.text);
-  assert.equal(result.copyContract.primaryRelationCode, presentationPlan.primaryRelation.relationCode);
-  assert.equal(result.copyContract.presentationFactSignature, presentationPlan.presentationFactSignature);
-  assert.equal(result.contentPlan.primaryRelationCode, presentationPlan.primaryRelation.relationCode);
-  assert.equal(result.contentPlan.presentationFactSignature, presentationPlan.presentationFactSignature);
+  assert.equal(result.presentationPlan, null);
+  assert.notEqual(result.copyContract.todayReasonSource, 'presentation_plan');
+  const [canonical] = canonicalizeRecommendationBatch([result], { scene: 'sport' });
+  assert.equal(canonical.title, presentationPlan.titleConcept);
+  assert.equal(canonical.reason, canonical.presentationPlan.todayReason);
+  assert.equal(canonical.copyContract.todayReason, canonical.presentationPlan.todayReason);
+  assert.equal(canonical.copyContract.primaryRelationCode, canonical.presentationPlan.primaryRelationCode);
+  assert.equal(canonical.copyContract.presentationFactSignature, canonical.presentationPlan.presentationFactSignature);
+  assert.equal(canonical.contentPlan.primaryRelationCode, canonical.presentationPlan.primaryRelationCode);
+  assert.equal(canonical.contentPlan.presentationFactSignature, canonical.presentationPlan.presentationFactSignature);
 });
 
 test('four scenes compile only fixed Catalog strings and allow missing detail', () => {

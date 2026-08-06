@@ -1568,7 +1568,7 @@ function validateVersionContract(auditId, responsePayload, qaPayload) {
   throw gateError('VERSION_CONTRACT_MISMATCH', `VERSION_CONTRACT_MISMATCH for ${auditId}`);
 }
 
-function validateCandidatePoolDiagnostics(auditId, rawResponse, responsePayload) {
+function validateCandidatePoolDiagnostics(auditId, rawResponse, responsePayload, qaPayload = responsePayload) {
   const responseData = authoritativeResponseData(rawResponse);
   const countContract = authoritativeResponseCountContract(rawResponse);
   try {
@@ -3082,7 +3082,7 @@ async function waitAudit(from, expectedSceneKey, slot = 'initial') {
       return { auditId, start, terminal: latestTerminal, response, qa };
     }
     validateVersionContract(auditId, response.payload, qa.payload);
-    validateCandidatePoolDiagnostics(auditId, runtimeCapture?.rawResponse || null, response.payload);
+    validateCandidatePoolDiagnostics(auditId, runtimeCapture?.rawResponse || null, response.payload, qa.payload);
     validateCanonicalQa(auditId, qa.payload);
     if (RUNNER_CONFIG.capturePresentationEvidence && runtimeCapture?.status === 'fulfilled') {
       const budgetFailure = presentationEvidenceBudgetFailure(runtimeCapture, auditId);

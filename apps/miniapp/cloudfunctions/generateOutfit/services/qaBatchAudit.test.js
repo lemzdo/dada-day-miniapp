@@ -459,6 +459,76 @@ test('unique titles and unique item sets pass without warnings', () => {
   assert.equal(clientAudit.qaGatePassed, true);
 });
 
+test('ordinary Work confidence warnings are recorded without SAFETY_INVALID', () => {
+  const candidate = makeCandidate('work-warning');
+  candidate.riskFlags = ['WORK_MISSING_POLISH_SIGNAL', 'WORK_LOW_CONFIDENCE_SUPPLEMENT'];
+  candidate.eligibility = { scene: { eligible: true, hardRejected: false, warnings: candidate.riskFlags.slice() } };
+  const { clientAudit } = buildQaAuditSummaries({
+    selectedOutfits: [candidate],
+    acceptedCandidates: [candidate],
+    finalOutfits: [makeFinalOutfit(candidate, { title: '通勤衬衫搭配' })],
+  });
+  assert.equal(clientAudit.safetyWarningCount, 0);
+  assert.equal(clientAudit.sceneConfidenceWarningCount, 1);
+  assert.deepEqual(clientAudit.qaWarnings, ['SCENE_CONFIDENCE_WARNING']);
+  assert.equal(clientAudit.qaBlockReasons.includes('SAFETY_INVALID'), false);
+  assert.equal(clientAudit.qaGatePassed, true);
+});
+
+test('ordinary weather warnings are recorded as SAFETY_WARNING without blocking', () => {
+  const candidate = makeCandidate('weather-warning');
+  candidate.riskFlags = ['WARM_WEATHER_HEAVY_COMBO'];
+  candidate.eligibility = { weather: { pass: true, warningReasons: candidate.riskFlags.slice() }, scene: { eligible: true } };
+  const { clientAudit } = buildQaAuditSummaries({
+    selectedOutfits: [candidate],
+    acceptedCandidates: [candidate],
+    finalOutfits: [makeFinalOutfit(candidate, { title: '居家针织搭配' })],
+  });
+  assert.equal(clientAudit.safetyWarningCount, 1);
+  assert.deepEqual(clientAudit.qaWarnings, ['SAFETY_WARNING']);
+  assert.equal(clientAudit.qaBlockReasons.includes('SAFETY_INVALID'), false);
+});
+
+test('hard rejection, unsupported claims, and copy-gate risks remain blocking failures', () => {
+  const hard = makeCandidate('hard-reject');
+  hard.eligibility = { scene: { eligible: false, hardRejected: true } };
+  const hardAudit = buildQaAuditSummaries({
+    selectedOutfits: [hard],
+    acceptedCandidates: [hard],
+    finalOutfits: [makeFinalOutfit(hard)],
+  }).clientAudit;
+  assert.ok(hardAudit.qaBlockReasons.includes('SAFETY_INVALID'));
+
+  const unsupported = makeCandidate('unsupported');
+  const unsupportedCard = makeFinalOutfit(unsupported);
+  unsupportedCard.presentationPlan = {
+    version: 'presentation-plan-v3',
+    source: 'presentation_plan',
+    factModel: { items: [], relations: [], presentationFactSignature: 'unsupported-signature', availableDifferentiators: [] },
+    presentationFactSignature: 'unsupported-signature',
+    primaryRelation: { relationCode: null, roles: [], authorizedValues: [] },
+    reasonClaim: { relationCode: null, text: unsupportedCard.copyContract.todayReason },
+    titleConcept: unsupportedCard.title,
+    sceneConclusion: '适合居家场景',
+    unsupportedClaims: ['unsupported_material_claim'],
+  };
+  const unsupportedAudit = buildQaAuditSummaries({
+    selectedOutfits: [unsupported],
+    acceptedCandidates: [unsupported],
+    finalOutfits: [unsupportedCard],
+  }).clientAudit;
+  assert.equal(unsupportedAudit.unsupportedClaimCount, 1);
+  assert.ok(unsupportedAudit.qaBlockReasons.includes('SAFETY_INVALID'));
+
+  const copyRisk = makeCandidate('copy-risk');
+  const copyRiskAudit = buildQaAuditSummaries({
+    selectedOutfits: [copyRisk],
+    acceptedCandidates: [copyRisk],
+    finalOutfits: [makeFinalOutfit(copyRisk, { riskFlags: ['COPY_EVIDENCE_INSUFFICIENT'] })],
+  }).clientAudit;
+  assert.ok(copyRiskAudit.qaBlockReasons.includes('SAFETY_INVALID'));
+});
+
 test('eligibility rejection audit is restricted to sport debug requests', () => {
   const base = {
     auditId: 'rec_sport_audit',

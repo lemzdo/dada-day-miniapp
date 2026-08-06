@@ -1,9 +1,111 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const Module = require('node:module');
+const path = require('node:path');
 const test = require('node:test');
 
 const DEPLOYED_SHARED_PATH = './shared/sceneEligibilityFacts';
 const DEPLOYED_WEARABILITY_PATH = './services/itemWearabilityFacts';
+const { PRESENTATION_FACT_MODEL_BUILD } = require('./services/presentationFactModel');
+
+const CLOUD_FUNCTION_ROOT = __dirname;
+
+function listDirectoryNames(directory) {
+  return fs.readdirSync(directory, { withFileTypes: true }).map((entry) => entry.name);
+}
+
+function resolveCaseAwarePath(candidatePath) {
+  const absolutePath = path.resolve(candidatePath);
+  const parsed = path.parse(absolutePath);
+  let current = parsed.root;
+  const segments = absolutePath.slice(parsed.root.length).split(path.sep).filter(Boolean);
+  const mismatches = [];
+
+  for (const segment of segments) {
+    let names;
+    try {
+      names = listDirectoryNames(current);
+    } catch {
+      return { exists: false, actualPath: current, mismatches };
+    }
+    const exact = names.find((name) => name === segment);
+    if (exact) {
+      current = path.join(current, exact);
+      continue;
+    }
+    const actualName = names.find((name) => name.toLowerCase() === segment.toLowerCase());
+    if (actualName) {
+      mismatches.push({ directory: current, expected: segment, actual: actualName });
+      current = path.join(current, actualName);
+      continue;
+    }
+    return { exists: false, actualPath: path.join(current, segment), mismatches };
+  }
+  return { exists: fs.existsSync(current), actualPath: current, mismatches };
+}
+
+function resolveStaticRelativeModule(sourceFile, request) {
+  const requestedPath = path.resolve(path.dirname(sourceFile), request);
+  const candidates = path.extname(requestedPath)
+    ? [requestedPath]
+    : [requestedPath, `${requestedPath}.js`, `${requestedPath}.json`, path.join(requestedPath, 'index.js')];
+  const attempted = [];
+  for (const candidate of candidates) {
+    const resolved = resolveCaseAwarePath(candidate);
+    attempted.push({ candidate, ...resolved });
+    if (resolved.exists && fs.statSync(resolved.actualPath).isFile()) return { ...resolved, resolvedPath: resolved.actualPath, attempted };
+  }
+  return { exists: false, resolvedPath: null, attempted };
+}
+
+function collectStaticRelativeRequires(sourceFile) {
+  const source = fs.readFileSync(sourceFile, 'utf8');
+  const staticRequests = [];
+  const dynamicRequests = [];
+  const requirePattern = /require\(\s*([^)]*)\)/g;
+  let match;
+  while ((match = requirePattern.exec(source))) {
+    const argument = match[1].trim();
+    const staticMatch = argument.match(/^(['"])(\.\/[^'"]*|\.\.\/[^'"]*)\1$/);
+    if (staticMatch) staticRequests.push(staticMatch[2]);
+    else if (argument.startsWith('.') || argument.includes('+') || argument.includes('`')) dynamicRequests.push(argument);
+  }
+  return { staticRequests, dynamicRequests };
+}
+
+function inspectCloudFunctionEntryModules(entryFile) {
+  const queue = [entryFile];
+  const visited = new Set();
+  const errors = [];
+  const dynamicRequires = [];
+  while (queue.length > 0) {
+    const sourceFile = queue.shift();
+    if (visited.has(sourceFile)) continue;
+    visited.add(sourceFile);
+    const { staticRequests, dynamicRequests } = collectStaticRelativeRequires(sourceFile);
+    dynamicRequires.push(...dynamicRequests.map((request) => ({ sourceFile, request })));
+    for (const request of staticRequests) {
+      const resolution = resolveStaticRelativeModule(sourceFile, request);
+      const expectedPath = path.resolve(path.dirname(sourceFile), request);
+      const mismatch = resolution.attempted.find((attempt) => attempt.mismatches.length > 0);
+      if (!resolution.resolvedPath || mismatch) {
+        errors.push({
+          sourceFile,
+          require: request,
+          expectedPath,
+          actualDiskName: mismatch?.mismatches?.[0]?.actual || null,
+          code: mismatch ? 'REQUIRE_CASE_MISMATCH' : 'LOCAL_FILE_MISSING',
+        });
+        continue;
+      }
+      if (resolution.resolvedPath.startsWith(`${CLOUD_FUNCTION_ROOT}${path.sep}`)
+        && !resolution.resolvedPath.includes(`${path.sep}node_modules${path.sep}`)) {
+        queue.push(resolution.resolvedPath);
+      }
+    }
+  }
+  return { visited: [...visited], errors, dynamicRequires };
+}
 
 function createDatabase(wardrobe, candidatePoolRecords) {
   function query(readData) {
@@ -82,6 +184,18 @@ function loadDeployedEntry(wardrobe, candidatePoolRecords) {
   }
 }
 
+test('deployment entry resolves every static relative dependency with exact disk casing', () => {
+  const entryFile = path.join(CLOUD_FUNCTION_ROOT, 'index.js');
+  const inspection = inspectCloudFunctionEntryModules(entryFile);
+  if (inspection.errors.length > 0) {
+    assert.fail(JSON.stringify(inspection.errors, null, 2));
+  }
+  const aestheticResolution = resolveStaticRelativeModule(entryFile, './services/aestheticCompatibility');
+  assert.equal(aestheticResolution.resolvedPath, path.join(CLOUD_FUNCTION_ROOT, 'services', 'aestheticCompatibility.js'));
+  assert.deepEqual(aestheticResolution.attempted.flatMap((attempt) => attempt.mismatches), []);
+  console.log(`[deployment-entry-smoke] inspected=${inspection.visited.length} dynamicRequires=${JSON.stringify(inspection.dynamicRequires)}`);
+});
+
 function wardrobeItem() {
   return {
     _id: 'smoke-top',
@@ -123,6 +237,20 @@ test('deployed generateOutfit entry loads the shared runtime contract and serves
     });
     assert.equal(response.code, 0, response.message);
     assert.notEqual(response.message.includes('normalizeType is not a function'), true);
+    assert.equal(response.data.debug.PRESENTATION_FACT_MODEL_BUILD, PRESENTATION_FACT_MODEL_BUILD);
+    assert.equal(response.data.meta.PRESENTATION_FACT_MODEL_BUILD, PRESENTATION_FACT_MODEL_BUILD);
+    assert.equal(response.data.qaBatchAudit, undefined);
+    const poolHitResponse = await entry.main({
+      action: 'generate',
+      scene,
+      weatherMode: 'disabled',
+      maxResults: 1,
+      recommendationBatchId: response.data.recommendationBatchId,
+    });
+    assert.equal(poolHitResponse.code, 0, poolHitResponse.message);
+    assert.equal(poolHitResponse.data.debug.executionMode, 'candidate_pool_hit');
+    assert.equal(poolHitResponse.data.debug.PRESENTATION_FACT_MODEL_BUILD, PRESENTATION_FACT_MODEL_BUILD);
+    assert.equal(poolHitResponse.data.meta.PRESENTATION_FACT_MODEL_BUILD, PRESENTATION_FACT_MODEL_BUILD);
   }
   assert.ok(candidatePoolRecords.some((record) => record.recordType === 'manifest'));
   assert.ok(candidatePoolRecords.some((record) => record.recordType === 'chunk'));

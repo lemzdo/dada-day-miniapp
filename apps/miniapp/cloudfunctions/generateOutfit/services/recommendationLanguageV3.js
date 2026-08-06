@@ -13,7 +13,6 @@ const {
 } = require('./batchCopyDiversity');
 const { buildOutfitCardViewModel } = require('./outfitCardViewModel');
 const { resolveRealAiReviewSource } = require('./recommendationReviewProvenance');
-const { applyPresentationPlan, readPresentationPlan } = require('./presentationFactModel');
 
 const RECOMMENDATION_REASON_VERSION_V3 = 'recommendation-reason-v3';
 const CATEGORY_ORDER = ['top', 'outerwear', 'onepiece', 'bottom', 'skirt', 'shoes', 'accessory', 'other'];
@@ -154,7 +153,7 @@ function buildCompiledOutfitV3(plan) {
     reviewSource: preserveAiReview ? aiReviewSource : 'rule_default',
     contentPlanVersion: plan.contentPlan.version,
     contentPlan: plan.contentPlan,
-    presentationPlan: plan.presentationPlan || outfit.presentationPlan,
+    presentationPlan: null,
     sceneIntent: plan.contentPlan.sceneIntent,
     primaryBenefitCode: plan.contentPlan.primaryBenefit,
     validatorRejectReasons: canonical.riskFlags,
@@ -277,17 +276,6 @@ function planBatchCopyV3(outfitPlans = []) {
       observationFocus: outfit.observationFocus,
       canonicalCopy: copyContract,
     });
-    const presentationPlan = readPresentationPlan(outfit);
-    if (presentationPlan) {
-      const semanticPresentation = {
-        ...outfit,
-        copyContract,
-        contentPlan,
-      };
-      applyPresentationPlan(semanticPresentation, presentationPlan.factModel, presentationPlan);
-      copyContract = semanticPresentation.copyContract;
-      contentPlan = semanticPresentation.contentPlan;
-    }
     plans.push({
       outfit,
       facts,
@@ -297,7 +285,7 @@ function planBatchCopyV3(outfitPlans = []) {
       contractInput,
       copyContract,
       contentPlan,
-      presentationPlan,
+      presentationPlan: null,
       batchConstraints,
       batchIndex: index,
       copyPlanAttempts: attempts,

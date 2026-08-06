@@ -166,6 +166,108 @@ function sportFixtureOutfit(index, top, bottom, shoes) {
   };
 }
 
+test('final presentation plan atomically owns copy, metadata, evidence, and source', () => {
+  const source = {
+    ...sportFixtureOutfit(0, 'sport top', 'shorts', 'sport shoe'),
+    todayAction: 'old_action',
+    todayDimension: 'old_dimension',
+    todaySentenceClusterId: 'OLD-TODAY-CLUSTER',
+    detailSentenceClusterId: 'OLD-DETAIL-CLUSTER',
+    copyContract: {
+      coreEligibilityReasonCode: 'SPORT_LIGHT_ACTIVITY_SET',
+      riskFlags: [],
+      todayClaim: { claimId: 'OLD-TODAY' },
+      detailClaim: { claimId: 'OLD-DETAIL' },
+      todayAction: 'old_action',
+      todayDimension: 'old_dimension',
+      todaySentenceClusterId: 'OLD-TODAY-CLUSTER',
+      detailSentenceClusterId: 'OLD-DETAIL-CLUSTER',
+      enhancedReason: '旧增强理由',
+    },
+    contentPlan: {
+      version: 'xiaoda-content-plan-v1',
+      sceneIntent: 'sport:light_activity',
+      primaryBenefit: 'movement',
+      items: [{ id: 'top-0', slot: 'top' }],
+      todayAction: 'old_action',
+      todaySentenceClusterId: 'OLD-TODAY-CLUSTER',
+      detailSentenceClusterId: 'OLD-DETAIL-CLUSTER',
+    },
+  };
+  const [card] = canonicalizeRecommendationBatch([source], { scene: 'sport' });
+  const plan = card.presentationPlan;
+
+  for (const field of [
+    'titleConcept', 'todayReason', 'detailExplanation', 'primaryRelationCode',
+    'todayAction', 'todayDimension', 'todaySubjectItemIds', 'todayEvidenceFactIds',
+    'detailAction', 'detailDimension', 'detailSubjectItemIds', 'detailEvidenceFactIds',
+    'selectedDifferentiator', 'source', 'planId', 'version',
+  ]) assert.equal(Object.hasOwn(plan, field), true, field);
+  assert.equal(plan.source, 'presentation_plan');
+  assert.equal(card.source, 'presentation_plan');
+  assert.equal(card.todayReasonSource, 'presentation_plan');
+  assert.equal(card.copyContract.todayReasonSource, 'presentation_plan');
+  assert.equal(card.copyContract.source, 'presentation_plan');
+  assert.equal(card.contentPlan.source, 'presentation_plan');
+  assert.equal(card.copyContract.todayReason, plan.todayReason);
+  assert.equal(card.contentPlan.defaultTodayReason, plan.todayReason);
+  assert.equal(card.copyContract.detailExplanation, plan.detailExplanation);
+  assert.equal(card.contentPlan.defaultDetailExplanation, plan.detailExplanation);
+  assert.deepEqual(card.todaySubjectItemIds, plan.todaySubjectItemIds);
+  assert.deepEqual(card.copyContract.todayEvidenceFactIds, plan.todayEvidenceFactIds);
+  assert.deepEqual(card.contentPlan.detailEvidenceFactIds, plan.detailEvidenceFactIds);
+  assert.equal(card.todaySentenceClusterId, null);
+  assert.equal(card.copyContract.todaySentenceClusterId, null);
+  assert.equal(card.contentPlan.detailSentenceClusterId, null);
+  assert.equal(card.copyContract.todayClaim, null);
+  assert.equal(card.copyContract.detailClaim, null);
+  assert.equal(Object.hasOwn(card.copyContract, 'enhancedReason'), false);
+  assert.notEqual(plan.todayReason, plan.detailExplanation);
+  assert.doesNotMatch(`${plan.todayReason}${plan.detailExplanation}`, /放在中间/);
+});
+
+test('detail is hidden when the plan has no second supported fact', () => {
+  const card = canonicalizeRecommendation(outfit(9, {
+    scene: 'home',
+    items: [{ itemId: 'top-only', category: 'top', subcategory: 'shirt' }],
+  }), { scene: 'home' });
+  assert.equal(card.presentationPlan.detailDisplay, 'hidden');
+  assert.equal(card.presentationPlan.detailExplanation, '');
+  assert.equal(card.copyContract.detailExplanation, '');
+  assert.equal(card.contentPlan.defaultDetailExplanation, '');
+});
+
+test('same-color top and bottom copy does not infer a shoe contrast', () => {
+  const source = sportFixtureOutfit(0, 'sport top', 'sport pants', 'sport shoe');
+  source.items[0].colorPalette = [{ name: 'black' }];
+  source.items[0].factRecords[0] = { fact: 'color', value: 'black', authorized: true };
+  source.items[1].colorPalette = [{ name: 'black' }];
+  source.items[1].factRecords[0] = { fact: 'color', value: 'black', authorized: true };
+  source.items[2].colorPalette = [{ name: 'white' }];
+  source.items[2].factRecords[0] = { fact: 'color', value: 'white', authorized: true };
+
+  const card = canonicalizeRecommendation(source, { scene: 'sport' });
+  assert.equal(card.presentationPlan.primaryRelationCode, 'SAME_COLOR_TOP_BOTTOM');
+  assert.match(card.copyContract.todayReason, /顺色衔接/);
+  assert.doesNotMatch(card.copyContract.todayReason, /鞋.+对比|形成对比/);
+});
+
+test('full compute and pool hit use the same final presentation differentiation', () => {
+  const source = [
+    sportFixtureOutfit(1, 'sport top', 'shorts', 'sport shoe'),
+    sportFixtureOutfit(2, 'sport top', 'shorts', 'sport shoe'),
+  ];
+  const full = canonicalizeRecommendationBatch(source.map((card) => ({ ...card, executionMode: 'full_compute' })), { scene: 'sport' });
+  const hit = canonicalizeRecommendationBatch(source.map((card) => ({ ...card, executionMode: 'candidate_pool_hit' })), { scene: 'sport' });
+  const semantics = (cards) => cards.map((card) => ({
+    title: card.title,
+    reason: card.copyContract.todayReason,
+    detail: card.copyContract.detailExplanation,
+    differentiator: card.presentationPlan.selectedDifferentiator,
+  }));
+  assert.deepEqual(semantics(hit), semantics(full));
+});
+
 test('real sport fixture uses authorized subtype and color facts for natural distinct titles', () => {
   const fixture = Array.from({ length: 8 }, (_, index) => sportFixtureOutfit(
     index,

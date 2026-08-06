@@ -44,6 +44,12 @@ function canonicalCard(scene) {
       { itemId: `${scene}-shoes`, category: 'shoes', subcategory: '运动鞋', color: '白色' },
     ],
     styleTags: [],
+    contentPlan: {
+      version: 'xiaoda-content-plan-v1',
+      sceneIntent: `${scene}:fixture`,
+      primaryBenefit: 'fixture',
+      items: [{ id: `${scene}-top`, slot: 'top', role: 'core', displayName: 'T恤' }],
+    },
     copyContract: {
       todayReason: '基于当前衣物事实生成的有效理由。',
       coreEligibilityReasonCode: 'SPORT_LIGHT_ACTIVITY_SET',
@@ -77,6 +83,25 @@ test('saved snapshot enrichment still presents a user title without changing the
   assert.equal(resolved.title, card.title);
   assert.equal(resolved.userTitle, '周末跑步');
   assert.equal(resolved.displayTitle, '周末跑步');
+});
+
+test('snapshot persistence keeps the final presentation plan and existing user title together', () => {
+  const { buildOutfitSaveData } = loadGenerateOutfitInternals();
+  const card = canonicalCard('sport');
+  card.clothingIds = card.snapshotItems.map((item) => item.itemId);
+  const saved = buildOutfitSaveData(card, {
+    outfitKey: card.outfitKey,
+    now: '2026-08-04T00:00:00.000Z',
+    patch: {},
+    current: { userTitle: '周末跑步' },
+  });
+
+  assert.equal(saved.userTitle, '周末跑步');
+  assert.equal(saved.displayTitle, '周末跑步');
+  assert.equal(saved.source, 'presentation_plan');
+  assert.deepEqual(saved.presentationPlan, card.presentationPlan);
+  assert.equal(saved.copyContract.todayReason, card.presentationPlan.todayReason);
+  assert.equal(saved.contentPlan.defaultTodayReason, card.presentationPlan.todayReason);
 });
 
 test('missing, empty, or invalid canonical titles are not masked by persisted asset titles', () => {

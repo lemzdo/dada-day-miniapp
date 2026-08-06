@@ -2349,6 +2349,25 @@ test('candidate_pool_hit accepts an empty or not_applicable saveStatus and skips
   assert.doesNotThrow(() => internals.validateCandidatePoolDiagnostics('rec_pool_hit_na', rawResponse, { ...base, candidatePoolSaveStatus: 'not_applicable' }));
 });
 
+test('candidate pool diagnostics reads QA payload from its explicit scope', () => {
+  const internals = loadE2eInternals();
+  const responsePayload = {
+    executionMode: 'candidate_pool_hit',
+    candidatePoolSaveStatus: null,
+  };
+  const qaPayload = {
+    cacheHit: true,
+    requestedCandidatePoolIdPresent: true,
+    timings: { candidatePoolLoadMs: 12, compositionMs: 0, canonicalizeMs: 0, eligibilityMs: 0, scoringMs: 0 },
+  };
+  assert.doesNotThrow(() => internals.validateCandidatePoolDiagnostics(
+    'rec_pool_hit_explicit_qa',
+    rawRecommendationResponse(),
+    responsePayload,
+    qaPayload,
+  ));
+});
+
 test('candidate_pool_hit rejects a fabricated saved status', () => {
   const internals = loadE2eInternals();
   assert.throws(() => internals.validateCandidatePoolDiagnostics('rec_pool_hit_saved', rawRecommendationResponse(), {
