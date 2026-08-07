@@ -89,6 +89,12 @@ export interface CloudResponseTransportDiagnostics {
   resultDataUnwrapped: boolean;
   resultKeysBeforeUnwrap: string[];
   dataKeysAfterUnwrap: string[];
+  immediatelyBeforeCallFunction?: number;
+  callFunctionPromiseResolved?: number;
+  responseAdaptStart?: number;
+  responseAdaptEnd?: number;
+  generateOutfitWrapperStart?: number;
+  generateOutfitWrapperEnd?: number;
 }
 
 export function isSupersededCloudResult(value: unknown): value is SupersededCloudResult {
@@ -118,6 +124,7 @@ const CACHE_TTL = {
 };
 
 export const WEATHER_CACHE_KEY = 'd1d:lastWeather';
+export const GENERATE_OUTFIT_PERFORMANCE_ARTIFACT_KEY = 'generateOutfit:performance-ledger:v1';
 
 export function initCloud() {
   if (!taroCloud) {
@@ -134,7 +141,9 @@ export function initCloud() {
 async function callCloudFunction<T>(name: string, data: Record<string, unknown> = {}): Promise<T> {
   if (!taroCloud) throw new Error('wx.cloud is not available');
 
+  const immediatelyBeforeCallFunction = Date.now();
   const res = await taroCloud.callFunction<CloudResult<T>>({ name, data });
+  const callFunctionPromiseResolved = Date.now();
   const result = res.result;
   if (!result || result.code !== 0) {
     const error = new CloudFunctionError(name, result?.message || `${name} failed`, result?.code, result?.data);
@@ -147,12 +156,17 @@ async function callCloudFunction<T>(name: string, data: Record<string, unknown> 
     throw error;
   }
 
+  const responseAdaptStart = Date.now();
   const resultData = result.data;
   setCloudResponseTransportDiagnostics(resultData, {
     cacheStatus: 'miss',
     resultDataUnwrapped: true,
     resultKeysBeforeUnwrap: getObjectKeys(result),
     dataKeysAfterUnwrap: getObjectKeys(resultData),
+    immediatelyBeforeCallFunction,
+    callFunctionPromiseResolved,
+    responseAdaptStart,
+    responseAdaptEnd: Date.now(),
   });
   return resultData;
 }
@@ -652,7 +666,10 @@ export async function generateCloudOutfit(params: RecommendRequest = {}) {
   const hasExclusions =
     (Array.isArray(params.excludeClothingIdSets) && params.excludeClothingIdSets.length > 0) ||
     (Array.isArray(params.excludedOutfitKeys) && params.excludedOutfitKeys.length > 0);
-  const ttl = hasExclusions ? 0 : CACHE_TTL.outfit;
+  // A diagnostic response is deliberately never served from or written to the
+  // recommendation cache: the returned ledger must describe this invocation.
+  let ttl = hasExclusions ? 0 : CACHE_TTL.outfit;
+  if (params.diagnostics === true) ttl = 0;
   const requestPayload: Record<string, unknown> = {
     ...params,
     auditId: params.auditId || createRecommendationAuditId('cloud'),
@@ -660,8 +677,14 @@ export async function generateCloudOutfit(params: RecommendRequest = {}) {
   if (isRecommendationDiagnosticEnvironment() && !requestPayload.debugRecommendationAudit) {
     requestPayload.debugRecommendationAudit = true;
   }
-  const { auditId: _auditId, trigger: _trigger, ...cacheKeyData } = requestPayload;
-  return callCachedCloudFunction<RecommendResponse>(
+  const {
+    auditId: _auditId,
+    trigger: _trigger,
+    diagnostics: _diagnostics,
+    ...cacheKeyData
+  } = requestPayload;
+  const generateOutfitWrapperStart = Date.now();
+  const result = await callCachedCloudFunction<RecommendResponse>(
     'generateOutfit',
     requestPayload,
     ttl,
@@ -671,6 +694,32 @@ export async function generateCloudOutfit(params: RecommendRequest = {}) {
       cacheKeyData,
     },
   );
+  const transport = getCloudResponseTransportDiagnostics(result);
+  if (transport) {
+    setCloudResponseTransportDiagnostics(result, {
+      ...transport,
+      generateOutfitWrapperStart,
+      generateOutfitWrapperEnd: Date.now(),
+    });
+  }
+  if (params.diagnostics === true) {
+    const performance = result?.diagnostics?.performance;
+    if (performance && typeof performance === 'object') {
+      Taro.setStorageSync(GENERATE_OUTFIT_PERFORMANCE_ARTIFACT_KEY, performance);
+    }
+  }
+  return result;
+}
+
+export async function probeGenerateOutfitTransport(
+  kind: 'small' | 'payload',
+  payloadBytes?: number,
+) {
+  return callCloudFunction<Record<string, unknown>>('generateOutfit', {
+    action: kind === 'payload' ? 'transport_probe_payload' : 'transport_probe_small',
+    diagnostic: true,
+    ...(kind === 'payload' && payloadBytes ? { payloadBytes } : {}),
+  });
 }
 
 export function isRecommendationDiagnosticEnvironment(): boolean {

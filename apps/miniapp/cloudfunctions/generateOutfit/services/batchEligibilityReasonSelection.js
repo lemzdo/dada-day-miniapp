@@ -18,7 +18,12 @@ function selectBatchEligibilityReasons(outfitsWithCandidates = []) {
     throw new Error('eligibility reason candidates are required for every outfit');
   }
 
-  const choiceIndexes = searchBestCombination(entries);
+  // Most production batches already have one highest-quality reason per card.
+  // Avoid entering the bounded combinatorial search when there is no choice to
+  // optimize; the selected result is identical to the recursive path.
+  const choiceIndexes = entries.every((entry) => entry.best.length === 1)
+    ? entries.map(() => 0)
+    : searchBestCombination(entries);
   const selected = choiceIndexes.map((choiceIndex, index) => entries[index].best[choiceIndex]);
   const codeCounts = countBy(selected, (candidate) => candidate.code);
 

@@ -75,6 +75,24 @@ const ELIGIBILITY_REASON_CATALOG = Object.freeze([
 ]);
 
 const ELIGIBILITY_REASON_BY_CODE = new Map(ELIGIBILITY_REASON_CATALOG.map((entry) => [entry.reasonCode, entry]));
+const ELIGIBILITY_REASON_CATALOG_CONTEXT_INDEX = buildEligibilityReasonContextIndex();
+const CATALOG_VISIBLE_FACTS = new Set(
+  ELIGIBILITY_REASON_CATALOG.flatMap((entry) => entry.requiredVisibleFacts),
+);
+
+function buildEligibilityReasonContextIndex() {
+  const index = new Map();
+  for (const scene of ['home', 'work', 'date', 'sport']) {
+    for (const band of ['no_weather', 'hot', 'warm', 'mild', 'cool', 'cold']) {
+      index.set(`${scene}|${band}`, ELIGIBILITY_REASON_CATALOG.flatMap((entry, catalogOrder) => (
+        entry.scene === scene && matchesWeatherCondition(entry.weatherCondition, band)
+          ? [{ entry, catalogOrder }]
+          : []
+      )));
+    }
+  }
+  return index;
+}
 
 function collectEligibilityReasonCandidates({ scene, weather, visibleFacts, sceneResult, instrumentation } = {}) {
   recordMetric(instrumentation, 'collectEligibilityReasonCandidates');
@@ -83,9 +101,8 @@ function collectEligibilityReasonCandidates({ scene, weather, visibleFacts, scen
   const band = weatherBand(weather);
   const items = Array.isArray(visibleFacts?.items) ? visibleFacts.items : [];
   const candidates = [];
-  for (let catalogOrder = 0; catalogOrder < ELIGIBILITY_REASON_CATALOG.length; catalogOrder += 1) {
-    const entry = ELIGIBILITY_REASON_CATALOG[catalogOrder];
-    if (entry.scene !== normalizedScene || !matchesWeatherCondition(entry.weatherCondition, band)) continue;
+  const catalogEntries = ELIGIBILITY_REASON_CATALOG_CONTEXT_INDEX.get(`${normalizedScene}|${band}`) || [];
+  for (const { entry, catalogOrder } of catalogEntries) {
     const matched = entry.match(items);
     if (!matched) continue;
     const patternLabel = readMatchedPatternLabel(matched, items);
@@ -492,7 +509,7 @@ function normalizeColorGroup(value) {
 }
 
 function isCatalogVisibleFact(fact) {
-  return new Set(ELIGIBILITY_REASON_CATALOG.flatMap((entry) => entry.requiredVisibleFacts)).has(readString(fact));
+  return CATALOG_VISIBLE_FACTS.has(readString(fact));
 }
 
 function weatherBand(weather = {}) {

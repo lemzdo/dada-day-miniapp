@@ -1,5 +1,8 @@
 const cloud = require('wx-server-sdk');
 const crypto = require('crypto');
+const MODULE_LOADED_AT = Date.now();
+const MODULE_INSTANCE_ID = crypto.randomBytes(4).toString('hex');
+const SERVER_LEDGER_VERSION = 'generateOutfit-phase-ledger-v2';
 
 let attachAestheticEvaluation;
 try {
@@ -158,8 +161,16 @@ const RECOMMENDATION_SCENE_LABELS = Object.freeze({
 
 exports.main = async (event = {}) => {
   const action = event.action || 'generate';
+  const handlerStartedAt = Date.now();
+  if (action === 'transport_probe' || action === 'transport_probe_small' || action === 'transport_probe_payload') {
+    if (event.diagnostic !== true) return fail(createBusinessError('TRANSPORT_PROBE_DIAGNOSTIC_ONLY', 'transport_probe requires diagnostic=true'));
+    if (action === 'transport_probe_payload') {
+      return ok(buildTransportPayloadProbeResult(handlerStartedAt, event.payloadBytes));
+    }
+    return ok(buildTransportProbeResult(handlerStartedAt));
+  }
   const recommendationDiagnostics = action === 'generate'
-    ? createRecommendationDiagnostics(event)
+    ? createRecommendationDiagnostics(event, handlerStartedAt)
     : null;
   try {
     if (action === 'detail') return ok(await getOutfitDetail(event));
@@ -236,6 +247,54 @@ function validateCandidatePoolAvailability(recommendations, requestedCount) {
     limitedReason: limited ? 'DIVERSITY_EXHAUSTED' : null,
     exhausted: contract.poolExhaustedAfterConsume,
     countContract: contract,
+  };
+}
+
+function buildTransportProbeResult(handlerStartedAt) {
+  const handlerEndedAt = Date.now();
+  const moduleAgeMs = Math.max(0, handlerStartedAt - MODULE_LOADED_AT);
+  return {
+    transportProbe: true,
+    ledgerVersion: SERVER_LEDGER_VERSION,
+    cloudBuildVersion: CLOUD_BUILD_VERSION,
+    moduleLoadedAt: MODULE_LOADED_AT,
+    moduleAgeMs,
+    moduleInstanceId: MODULE_INSTANCE_ID,
+    coldModule: moduleAgeMs < 2000,
+    phaseLedger: [
+      { phase: 'moduleInit', startAt: MODULE_LOADED_AT, endAt: handlerStartedAt, duration: moduleAgeMs },
+      { phase: 'handlerStart', startAt: handlerStartedAt, endAt: handlerStartedAt, duration: 0 },
+      { phase: 'handlerEnd', startAt: handlerStartedAt, endAt: handlerEndedAt, duration: handlerEndedAt - handlerStartedAt },
+    ],
+    serverHandlerStart: handlerStartedAt,
+    serverHandlerEnd: handlerEndedAt,
+    serverHandlerDurationMs: handlerEndedAt - handlerStartedAt,
+  };
+}
+
+function buildTransportPayloadProbeResult(handlerStartedAt, requestedBytes) {
+  const targetBytes = Math.max(8 * 1024, Math.min(Number(requestedBytes) || 96 * 1024, 768 * 1024));
+  const filler = 'x'.repeat(Math.max(0, Math.floor((targetBytes - 1024) / 8)));
+  const data = {
+    transportProbe: true,
+    probeKind: 'payload',
+    synthetic: true,
+    outfits: Array.from({ length: 8 }, (_, index) => ({
+      id: `synthetic-${index}`,
+      outfitId: `synthetic-${index}`,
+      itemCount: 3,
+      title: 'synthetic transport payload',
+      reason: 'synthetic transport payload',
+      filler,
+    })),
+  };
+  const handlerEndedAt = Date.now();
+  return {
+    ...data,
+    responseBytes: serializedBytes(data),
+    serverHandlerStart: handlerStartedAt,
+    serverHandlerEnd: handlerEndedAt,
+    serverHandlerDurationMs: handlerEndedAt - handlerStartedAt,
   };
 }
 
@@ -351,7 +410,9 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
   }
 
   let candidatePoolPersistPromise = Promise.resolve(null);
+  let candidatePoolPersistenceInput = null;
   if (!recommendations) {
+    const candidateGenerationStartedAt = Date.now();
     recommendations = generateRuleRecommendations({
       clothes,
       scene,
@@ -365,14 +426,13 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
       timings: diagnostics.timings,
       diagnostics,
     });
+    recordServerPhase(diagnostics, 'candidateGeneration', candidateGenerationStartedAt);
     baseRecommendationBatchId = recommendationBatchId;
-    candidatePoolPersistPromise = persistGeneratedCandidatePool({
-      diagnostics,
+    candidatePoolPersistenceInput = {
       candidatePoolId: recommendationBatchId,
-      identity: candidatePoolIdentity,
       candidates: recommendations.candidatePoolCandidates,
-      debugRecommendationAudit,
-    });
+      debugCandidatePoolProjection: event.debugCandidatePoolProjection === true,
+    };
   }
   const cardCompilationPromise = recommendations.length === 0
     ? Promise.resolve([])
@@ -388,18 +448,35 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
         recommendationBatchId,
         diagnostics,
       }));
-  const poolPersist = await candidatePoolPersistPromise;
-  if (poolPersist && poolPersist.status !== 'saved') {
-    recommendationBatchId = undefined;
-    cacheMissReason = 'candidate_pool_not_saved';
+  if (candidatePoolPersistenceInput) {
+    // Keep the first synchronous part of candidate-pool planning off the card
+    // compilation turn. An async function does not yield until its first await.
+    // The card microtask is queued first, so its startAt is directly after
+    // candidate generation rather than after pool-plan construction.
+    candidatePoolPersistPromise = Promise.resolve().then(() => persistGeneratedCandidatePool({
+      diagnostics,
+      candidatePoolId: candidatePoolPersistenceInput.candidatePoolId,
+      identity: candidatePoolIdentity,
+      candidates: candidatePoolPersistenceInput.candidates,
+      debugRecommendationAudit,
+      debugCandidatePoolProjection: candidatePoolPersistenceInput.debugCandidatePoolProjection,
+    }));
+  }
+  let poolPersist = null;
+  if (recommendations.length === 0) {
+    poolPersist = await candidatePoolPersistPromise;
+    if (poolPersist && poolPersist.status !== 'saved') {
+      recommendationBatchId = undefined;
+      cacheMissReason = 'candidate_pool_not_saved';
+    }
   }
   const rawCountContract = recommendations.countContract;
   assertRecommendationCountContract(rawCountContract);
   assertReturnedCardCount(rawCountContract, recommendations.length);
-  const persistedCandidatePoolId = executionMode === 'candidate_pool_hit'
+  let persistedCandidatePoolId = executionMode === 'candidate_pool_hit'
     ? requestedCandidatePoolId
-    : (diagnostics.candidatePoolSaveStatus === 'saved' ? baseRecommendationBatchId : null);
-  const responseCountContract = buildRecommendationCountContract({
+    : (baseRecommendationBatchId || null);
+  let responseCountContract = buildRecommendationCountContract({
     ...rawCountContract,
     candidatePoolId: persistedCandidatePoolId,
   });
@@ -449,7 +526,7 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
     requestedCandidatePoolIdPresent: diagnostics.requestedCandidatePoolIdPresent ?? false,
     requestedCandidatePoolIdLength: diagnostics.requestedCandidatePoolIdLength ?? 0,
     countContract: responseCountContract,
-    phaseLedger: diagnostics.phases,
+    ...(diagnostics.diagnosticsRequested === true ? { phaseLedger: diagnostics.phases } : {}),
   };
   const missingRoles = getMissingRequiredRoles(clothes, scene);
   const missingFacts = getMissingRequiredFacts(clothes, scene);
@@ -555,6 +632,29 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
     requestedCount,
   });
   const canonicalRecommendations = canonicalizeRecommendationBatch(finalRecommendations, { scene });
+  diagnostics.snapshotPayloadBytes = serializedBytes(canonicalRecommendations);
+  const snapshotUpsertStartedAt = Date.now();
+  const snapshotOps = { reads: 0, writes: 0 };
+  const snapshotPromise = upsertRecommendationOutfitsBatch({
+    openid: OPENID,
+    bases: canonicalRecommendations,
+    now,
+    operationCounts: snapshotOps,
+  });
+  poolPersist = await candidatePoolPersistPromise;
+  if (poolPersist && poolPersist.status !== 'saved') {
+    recommendationBatchId = undefined;
+    cacheMissReason = 'candidate_pool_not_saved';
+  }
+  persistedCandidatePoolId = executionMode === 'candidate_pool_hit'
+    ? requestedCandidatePoolId
+    : (diagnostics.candidatePoolSaveStatus === 'saved' ? baseRecommendationBatchId : null);
+  responseCountContract = buildRecommendationCountContract({
+    ...rawCountContract,
+    candidatePoolId: persistedCandidatePoolId,
+  });
+  recommendations.countContract = responseCountContract;
+  assertReturnedCardCount(responseCountContract, recommendations.length);
   let availability;
   if (executionMode === 'candidate_pool_hit') {
     const validated = validateCandidatePoolAvailability(recommendations, requestedCount);
@@ -600,16 +700,11 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
   debug.limitedReason = availability.limitedReason;
   debug.missingRoles = availability.missingRoles;
   debug.missingFacts = availability.missingFacts;
-  const snapshotUpsertStartedAt = Date.now();
-  const snapshotOps = { reads: 0, writes: 0 };
-  const outfitRecords = await upsertRecommendationOutfitsBatch({
-    openid: OPENID,
-    bases: canonicalRecommendations,
-    now,
-    operationCounts: snapshotOps,
-  });
+  const outfitRecords = await snapshotPromise;
   diagnostics.timings.snapshotUpsertMs = Date.now() - snapshotUpsertStartedAt;
   recordServerPhase(diagnostics, 'snapshotPersistence', snapshotUpsertStartedAt);
+  diagnostics.snapshotPersistence = snapshotOps;
+  debug.snapshotPersistence = snapshotOps;
   diagnostics.databaseOps.reads += snapshotOps.reads;
   diagnostics.databaseOps.writes += snapshotOps.writes;
   const outfits = canonicalRecommendations.map((tempOutfit, index) => {
@@ -760,11 +855,15 @@ function buildRecommendationResponseData(sceneContract, data) {
   };
 }
 
-function createRecommendationDiagnostics(event = {}) {
+function createRecommendationDiagnostics(event = {}, handlerStartAt = Date.now()) {
   return {
     auditId: readAuditId(event.auditId),
     stage: 'received',
-    startedAt: Date.now(),
+    startedAt: handlerStartAt,
+    diagnosticsRequested: event.diagnostics === true,
+    handlerStartAt,
+    snapshotPayloadBytes: 0,
+    candidatePoolPayloadBytes: 0,
     phases: [],
     timings: {
       dataLoadMs: 0,
@@ -778,9 +877,15 @@ function createRecommendationDiagnostics(event = {}) {
       candidatePoolManifestWriteMs: 0,
       exclusionMs: 0,
       compositionMs: 0,
+      candidateFactPreparationMs: 0,
+      candidateConstructionMs: 0,
       canonicalizeMs: 0,
       eligibilityMs: 0,
+      wearabilitySceneEligibilityMs: 0,
       scoringMs: 0,
+      scoringPreparationMs: 0,
+      filteringMs: 0,
+      dedupeMs: 0,
       batchSelectionMs: 0,
       cardCompilationMs: 0,
       qaAuditMs: 0,
@@ -831,6 +936,7 @@ async function persistGeneratedCandidatePool({
   identity,
   candidates,
   debugRecommendationAudit,
+  debugCandidatePoolProjection = false,
 }) {
   const startedAt = Date.now();
   const poolPersist = await tryPersistCandidatePool({
@@ -841,8 +947,14 @@ async function persistGeneratedCandidatePool({
     now: Date.now(),
     auditId: diagnostics.auditId,
     debugRecommendationAudit,
+    debugCandidatePoolProjection,
   });
   diagnostics.timings.candidatePoolSaveMs = Date.now() - startedAt;
+  diagnostics.candidatePoolPayloadBytes = Math.max(
+    0,
+    Number(poolPersist.serializedBytes)
+      || Number(poolPersist.manifestBytes || 0) + Number(poolPersist.chunksBytes || 0),
+  );
   recordServerPhase(diagnostics, 'candidatePoolPersistence', startedAt);
   diagnostics.timings.candidatePoolPlanMs = poolPersist.planBuildMs || 0;
   diagnostics.timings.candidatePoolSerializationMs = poolPersist.serializationMs || 0;
@@ -1120,9 +1232,18 @@ function finalizeRecommendationResponse({
   recordServerPhase(diagnostics, 'responseSerialization', serializationStartedAt);
   diagnostics.timings.totalMs = Date.now() - diagnostics.startedAt;
   recordServerPhase(diagnostics, 'handlerEnd', diagnostics.startedAt);
-  responseData.debug.phaseLedger = diagnostics.phases;
+  if (diagnostics.diagnosticsRequested === true) responseData.debug.phaseLedger = diagnostics.phases;
   syncRecommendationResponseDiagnostics(responseData, diagnostics.timings, budget, qaResult?.clientAudit);
+  if (diagnostics.diagnosticsRequested === true) {
+    responseData.diagnostics = {
+      performance: buildRecommendationPerformanceLedger(diagnostics, budget),
+    };
+  }
   budget = measureRecommendationResponse(responseData);
+  if (responseData.diagnostics?.performance) {
+    responseData.diagnostics.performance.responsePayloadBytes = budget.totalDataBytes;
+    budget = measureRecommendationResponse(responseData);
+  }
   syncRecommendationResponseDiagnostics(responseData, diagnostics.timings, budget, qaResult?.clientAudit);
   emitRecommendationServerDone({
     auditId: diagnostics.auditId,
@@ -1137,6 +1258,70 @@ function finalizeRecommendationResponse({
     console.info('[RecommendationQA_SERVER]', qaResult.serverSummary);
   }
   return responseData;
+}
+
+function buildRecommendationPerformanceLedger(diagnostics, budget) {
+  const phases = Array.isArray(diagnostics.phases)
+    ? diagnostics.phases.map((phase) => ({
+        phase: String(phase.phase || ''),
+        startAt: Number(phase.startAt) || 0,
+        endAt: Number(phase.endAt) || 0,
+        duration: Math.max(0, Number(phase.duration) || 0),
+      }))
+    : [];
+  const phaseByName = new Map(phases.map((phase) => [phase.phase, phase]));
+  const orderedPath = [
+    'candidateGeneration',
+    'cardCompilation',
+    'snapshotPersistence',
+    'candidatePoolPersistence',
+    'presentationEnrichment',
+    'exposurePersistence',
+    'responseSerialization',
+    'handlerEnd',
+  ];
+  const criticalPath = orderedPath.filter((phase) => phaseByName.has(phase));
+  const handlerEnd = phaseByName.get('handlerEnd');
+  const candidateGeneration = phaseByName.get('candidateGeneration');
+  const cardCompilation = phaseByName.get('cardCompilation');
+  const handlerStart = Number(diagnostics.handlerStartAt) || Number(diagnostics.startedAt) || 0;
+  const handlerEndAt = handlerEnd?.endAt || Date.now();
+  return {
+    ledgerVersion: SERVER_LEDGER_VERSION,
+    moduleInstanceId: MODULE_INSTANCE_ID,
+    moduleLoadedAt: MODULE_LOADED_AT,
+    handlerStart,
+    handlerEnd: handlerEndAt,
+    serverTotalMs: Math.max(0, handlerEndAt - handlerStart),
+    phases,
+    criticalPath,
+    dbRoundTrips: Math.max(0, Number(diagnostics.databaseOps?.reads) || 0)
+      + Math.max(0, Number(diagnostics.databaseOps?.writes) || 0),
+    snapshotPayloadBytes: Math.max(0, Number(diagnostics.snapshotPayloadBytes) || 0),
+    candidatePoolPayloadBytes: Math.max(0, Number(diagnostics.candidatePoolPayloadBytes) || 0),
+    responsePayloadBytes: Math.max(0, Number(budget?.totalDataBytes) || 0),
+    cardCompilationStartDelayMs: candidateGeneration && cardCompilation
+      ? Math.max(0, cardCompilation.startAt - candidateGeneration.endAt)
+      : 0,
+    snapshotPersistence: compactPerformanceNumbers(diagnostics.snapshotPersistence),
+    candidatePoolPersistence: compactPerformanceNumbers({
+      saveMs: diagnostics.timings?.candidatePoolSaveMs,
+      planMs: diagnostics.timings?.candidatePoolPlanMs,
+      serializationMs: diagnostics.timings?.candidatePoolSerializationMs,
+      chunkWriteMs: diagnostics.timings?.candidatePoolChunkWriteMs,
+      validationMs: diagnostics.timings?.candidatePoolValidationMs,
+      manifestWriteMs: diagnostics.timings?.candidatePoolManifestWriteMs,
+      dbReadCount: diagnostics.candidatePoolValidationReadCount,
+      chunkCount: diagnostics.candidatePoolChunkCount,
+    }),
+  };
+}
+
+function compactPerformanceNumbers(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value)
+    .filter(([, entry]) => Number.isFinite(Number(entry)))
+    .map(([key, entry]) => [key, Math.max(0, Number(entry))]));
 }
 
 function syncRecommendationResponseDiagnostics(data, timings, budget, qaBatchAudit) {
@@ -3345,12 +3530,39 @@ async function upsertRecommendationOutfitsBatch({
   now,
   operationCounts,
 }) {
+  const inputStartedAt = Date.now();
   const records = Array.isArray(bases) ? bases : [];
+  if (operationCounts) {
+    Object.defineProperty(operationCounts, 'snapshot', {
+      configurable: true,
+      enumerable: false,
+      writable: true,
+      value: {
+      inputPreparationMs: 0,
+      serializationMs: 0,
+      queryReadMs: 0,
+      writeMs: 0,
+      transactionMs: 0,
+      responseWaitMs: 0,
+      dbRoundTrips: 0,
+      payloadBytes: 0,
+      },
+    });
+  }
   if (records.length === 0) return [];
   const clothingIds = uniqueStrings(records.flatMap((base) => readBaseClothingIds(base)));
   const outfitKeys = records.map((base) => getOutfitKey(readBaseClothingIds(base)));
+  const snapshot = operationCounts?.snapshot;
+  if (snapshot) {
+    snapshot.inputPreparationMs = Date.now() - inputStartedAt;
+    const serializationStartedAt = Date.now();
+    snapshot.payloadBytes = serializedBytes(records);
+    snapshot.serializationMs = Date.now() - serializationStartedAt;
+  }
 
-  return runOutfitReferenceTransaction(async (transaction) => {
+  const transactionStartedAt = Date.now();
+  const result = await runOutfitReferenceTransaction(async (transaction) => {
+    const queryReadStartedAt = Date.now();
     if (operationCounts) operationCounts.reads += 1;
     try {
       await assertOutfitClothesAvailable(openid, clothingIds, transaction);
@@ -3361,7 +3573,12 @@ async function upsertRecommendationOutfitsBatch({
         collection: 'clothes',
       });
     }
+    if (snapshot) {
+      snapshot.queryReadMs += Date.now() - queryReadStartedAt;
+      snapshot.dbRoundTrips += 1;
+    }
 
+    const existingReadStartedAt = Date.now();
     if (operationCounts) operationCounts.reads += 1;
     let existingResponse;
     try {
@@ -3375,6 +3592,10 @@ async function upsertRecommendationOutfitsBatch({
         operation: 'read',
         collection: 'outfits',
       });
+    }
+    if (snapshot) {
+      snapshot.queryReadMs += Date.now() - existingReadStartedAt;
+      snapshot.dbRoundTrips += 1;
     }
     const existingByKey = buildOutfitRecordMap(existingResponse.data);
 
@@ -3390,6 +3611,7 @@ async function upsertRecommendationOutfitsBatch({
         current,
       });
       if (operationCounts) operationCounts.writes += 1;
+      const writeStartedAt = Date.now();
       if (current) {
         try {
           await transaction.collection('outfits').doc(current._id).update({
@@ -3407,6 +3629,11 @@ async function upsertRecommendationOutfitsBatch({
         const updated = { ...current, ...data };
         existingByKey.set(outfitKey, updated);
         saved.push(updated);
+        if (snapshot) {
+          snapshot.writeMs += Date.now() - writeStartedAt;
+          snapshot.payloadBytes += serializedBytes(data);
+          snapshot.dbRoundTrips += 1;
+        }
         continue;
       }
       const addData = {
@@ -3419,6 +3646,11 @@ async function upsertRecommendationOutfitsBatch({
         const added = { ...addData, _id: addRes._id };
         existingByKey.set(outfitKey, added);
         saved.push(added);
+        if (snapshot) {
+          snapshot.writeMs += Date.now() - writeStartedAt;
+          snapshot.payloadBytes += serializedBytes(addData);
+          snapshot.dbRoundTrips += 1;
+        }
       } catch (error) {
         throw annotateOutfitReferenceCause(error, {
           stage: 'outfit_add',
@@ -3430,6 +3662,11 @@ async function upsertRecommendationOutfitsBatch({
     }
     return saved;
   });
+  if (snapshot) {
+    snapshot.transactionMs = Date.now() - transactionStartedAt;
+    snapshot.responseWaitMs = Math.max(0, snapshot.transactionMs - snapshot.queryReadMs - snapshot.writeMs);
+  }
+  return result;
 }
 
 async function findOutfitByKey(openid, outfitKey, database = db) {
@@ -3833,6 +4070,7 @@ function generateRuleRecommendations({
     .filter((item) => item && item._id)
     .filter((item) => !hasRealWeather || matchesSeason(item, tempConfig));
   const sourceItemById = new Map(filtered.map((item) => [item._id, item]));
+  const itemFactsStartedAt = Date.now();
   const itemFactsContext = disableItemFactsContext
     ? null
     : buildItemFactsContext({
@@ -3840,6 +4078,8 @@ function generateRuleRecommendations({
         createCompositionFacts: createCompositionItemFacts,
         instrumentation: testInstrumentation,
       });
+  timings.candidateFactPreparationMs = Date.now() - itemFactsStartedAt;
+  const candidateConstructionStartedAt = Date.now();
   const compositionCandidates = buildOutfitCandidatesV1({
     clothes: filtered,
     scene,
@@ -3853,6 +4093,7 @@ function generateRuleRecommendations({
     itemFactsContext,
     compactCandidates: true,
   });
+  timings.candidateConstructionMs = Date.now() - candidateConstructionStartedAt;
   timings.compositionMs = Date.now() - compositionStartedAt;
   if (diagnostics) diagnostics.stage = 'canonicalize';
   const candidateCoreStartedAt = Date.now();
@@ -3886,6 +4127,7 @@ function generateRuleRecommendations({
   });
   assertEligibilityReasons(guardResult.accepted, { node: 'afterGuard', scene, weather: normalizedWeather });
   timings.eligibilityMs = Date.now() - eligibilityStartedAt;
+  timings.wearabilitySceneEligibilityMs = timings.eligibilityMs;
   const exclusionStartedAt = Date.now();
   const excluded = new Set([
     ...(excludeClothingIdSets || []).filter(Array.isArray).map((ids) => signature(ids)),
@@ -3920,11 +4162,15 @@ function generateRuleRecommendations({
       candidate.selectionSignatures.itemSignature = outfitKey;
   }
   timings.scoringMs = Date.now() - scoringStartedAt;
+  timings.scoringPreparationMs = timings.scoringMs;
   if (diagnostics) diagnostics.stage = 'batchSelection';
   const batchSelectionStartedAt = Date.now();
+  const filteringStartedAt = Date.now();
   const available = scored.filter((rec) => !excluded.has(rec.outfitKey));
   const sortedAvailable = sortCandidatesStable(available);
+  timings.filteringMs = Date.now() - filteringStartedAt;
   timings.exclusionMs = Date.now() - exclusionStartedAt;
+  const dedupeStartedAt = Date.now();
   const selectedCandidateCores = selectCanonicalCandidateBatch(sortedAvailable, limit);
 
   const reasonSelections = selectBatchEligibilityReasons(selectedCandidateCores.map((candidate) => ({
@@ -3936,6 +4182,7 @@ function generateRuleRecommendations({
   }
 
   assertEligibilityReasons(selectedCandidateCores, { node: 'afterSelection', scene, weather: normalizedWeather });
+  timings.dedupeMs = Date.now() - dedupeStartedAt;
   timings.batchSelectionMs = Date.now() - batchSelectionStartedAt;
   const materializationStartedAt = Date.now();
   const results = selectedCandidateCores.map((candidate) => materializeSelectedCandidate(candidate, {
@@ -5117,6 +5364,7 @@ if (process.env.NODE_ENV === 'test') {
     canonicalizeAiCommentSource,
     createRecommendationSceneContract,
     createRecommendationDiagnostics,
+    recordServerPhase,
     finalizeRecommendationResponse,
     finalizeFullComputeAfterPoolPersist,
     attachPresentationEvidenceDebug,

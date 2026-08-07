@@ -388,6 +388,7 @@ async function tryPersistCandidatePool({
   now = Date.now(),
   auditId,
   debugRecommendationAudit = false,
+    debugCandidatePoolProjection,
   logger = console,
 } = {}) {
   const phaseRecorder = createCandidatePoolPhaseRecorder();
@@ -445,7 +446,8 @@ async function tryPersistCandidatePool({
   let successfulChunkCount = 0;
   const successfulChunkIndexes = [];
 
-  if (debugRecommendationAudit === true) {
+    if (debugCandidatePoolProjection === true
+      || (debugCandidatePoolProjection === undefined && debugRecommendationAudit === true)) {
     measureCandidatePoolPhase(phaseRecorder, 'cleanupTelemetryAssembly', () => {
       emitCandidatePoolDiagnostic(logger, 'info', '[CandidatePoolProjectionProfile]', {
         auditId: diagnosticAuditId,

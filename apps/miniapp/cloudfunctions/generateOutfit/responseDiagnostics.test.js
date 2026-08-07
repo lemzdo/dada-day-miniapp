@@ -156,6 +156,51 @@ test('QA-disabled response does not build or return an audit object', () => {
   }
 });
 
+test('diagnostics=true returns an anonymous performance ledger while normal responses do not', () => {
+  const internals = loadInternals();
+  const makeResponse = (requested) => {
+    const diagnostics = internals.createRecommendationDiagnostics({
+      auditId: 'rec_ledger_contract',
+      diagnostics: requested,
+    }, 100);
+    diagnostics.databaseOps = { reads: 2, writes: 3 };
+    diagnostics.snapshotPayloadBytes = 1200;
+    diagnostics.candidatePoolPayloadBytes = 3400;
+    internals.recordServerPhase(diagnostics, 'candidateGeneration', 110, 130);
+    internals.recordServerPhase(diagnostics, 'cardCompilation', 131, 140);
+    internals.recordServerPhase(diagnostics, 'handlerEnd', 100, 150);
+    const oldLog = console.log;
+    console.log = () => {};
+    try {
+      return internals.finalizeRecommendationResponse({
+        sceneContract: internals.createRecommendationSceneContract('home'),
+        diagnostics,
+        qaResult: null,
+        data: {
+          outfits: [],
+          debug: { timings: diagnostics.timings, responseBytes: {} },
+          meta: { cloudBuildVersion: 'test' },
+        },
+      });
+    } finally {
+      console.log = oldLog;
+    }
+  };
+
+  const diagnosticResponse = makeResponse(true);
+  assert.equal(diagnosticResponse.diagnostics.performance.ledgerVersion, 'generateOutfit-phase-ledger-v2');
+  assert.equal(diagnosticResponse.diagnostics.performance.dbRoundTrips, 5);
+  assert.deepEqual(diagnosticResponse.diagnostics.performance.criticalPath, ['candidateGeneration', 'cardCompilation', 'responseSerialization', 'handlerEnd']);
+  const serialized = JSON.stringify(diagnosticResponse.diagnostics.performance);
+  assert.equal(serialized.includes('openid'), false);
+  assert.equal(serialized.includes('userId'), false);
+  assert.equal(serialized.includes('imageUrl'), false);
+  assert.equal(serialized.includes('clothing'), false);
+  const normalResponse = makeResponse(false);
+  assert.equal(normalResponse.diagnostics, undefined);
+  assert.equal(normalResponse.debug.phaseLedger, undefined);
+});
+
 test('presentation evidence over budget is omitted without changing the successful response contract', () => {
   const internals = loadInternals();
   const debug = {};

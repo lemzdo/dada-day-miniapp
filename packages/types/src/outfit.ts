@@ -813,10 +813,37 @@ export interface RecommendRequest {
   recommendationBatchId?: string;
   maxResults?: number;
   debugRecommendationAudit?: boolean;
+  /** Return the anonymous server phase ledger for one explicitly diagnostic request. */
+  diagnostics?: boolean;
   presentationEvidenceMode?: RecommendationPresentationEvidenceMode;
   auditId?: string;
   /** Client-side trigger descriptor (e.g. 'initial', 'refresh', 'scene'). Used by the cloud function to distinguish initial_request from refresh_without_pool_id. */
   trigger?: string;
+}
+
+export interface RecommendationPerformancePhase {
+  phase: string;
+  startAt: number;
+  endAt: number;
+  duration: number;
+}
+
+export interface RecommendationPerformanceLedger {
+  ledgerVersion: string;
+  moduleInstanceId: string;
+  moduleLoadedAt: number;
+  handlerStart: number;
+  handlerEnd: number;
+  serverTotalMs: number;
+  phases: RecommendationPerformancePhase[];
+  criticalPath: string[];
+  dbRoundTrips: number;
+  snapshotPayloadBytes: number;
+  candidatePoolPayloadBytes: number;
+  responsePayloadBytes: number;
+  cardCompilationStartDelayMs?: number;
+  snapshotPersistence?: Record<string, number>;
+  candidatePoolPersistence?: Record<string, number>;
 }
 
 export interface RecommendationDiagnosticsTimings {
@@ -1061,6 +1088,9 @@ export interface RecommendResponse {
   weatherMode?: WeatherMode;
   recommendationNotice?: string;
   recommendationBatchId?: string;
+  diagnostics?: {
+    performance: RecommendationPerformanceLedger;
+  };
   missingRoles?: RecommendationMissingRole[];
   missingFacts?: RecommendationMissingFact[];
   limited?: boolean;

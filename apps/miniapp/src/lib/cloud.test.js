@@ -69,13 +69,24 @@ test('loading owner race: stale request finally does not affect current', () => 
   assert.equal(isLoading, true, 'stale request finally should not change loading');
 });
 
-test('cloud.ts cacheKeyData excludes trigger alongside auditId', () => {
+test('cloud.ts cacheKeyData excludes trigger, auditId, and diagnostics', () => {
   const source = fs.readFileSync(path.join(__dirname, 'cloud.ts'), 'utf8');
   assert.match(
     source,
-    /const \{\s*auditId:\s*_auditId,\s*trigger:\s*_trigger,\s*\.\.\.cacheKeyData\s*\}\s*=\s*requestPayload/,
-    'cacheKeyData must destructure out both auditId and trigger',
+    /auditId:\s*_auditId,[\s\S]*trigger:\s*_trigger,[\s\S]*diagnostics:\s*_diagnostics,[\s\S]*\.\.\.cacheKeyData/,
+    'cacheKeyData must destructure out request-only diagnostic fields',
   );
+});
+
+test('diagnostic generateOutfit response is persisted as a performance artifact', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'cloud.ts'), 'utf8');
+  const generateOutfitSection = source.match(/export async function generateCloudOutfit[\s\S]*?\n\}/);
+  assert.ok(generateOutfitSection, 'should find generateCloudOutfit function');
+  const funcBody = generateOutfitSection[0];
+  assert.match(funcBody, /params\.diagnostics === true/);
+  assert.match(funcBody, /result\?\.diagnostics\?\.performance/);
+  assert.match(funcBody, /GENERATE_OUTFIT_PERFORMANCE_ARTIFACT_KEY/);
+  assert.match(funcBody, /Taro\.setStorageSync/);
 });
 
 test('cloud.ts trigger is still sent to cloud function via requestPayload', () => {
