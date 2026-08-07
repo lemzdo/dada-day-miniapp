@@ -72,6 +72,36 @@ test('scene snapshot key includes runtime date scene weather and copy version', 
   assert.equal(key, 'user-a|2026-07-09|all_day|上班|26:cloudy|wardrobe-3|profile-2|recommendation-reason-v3|page-copy-v4');
 });
 
+test('scene snapshot key canonicalizes the same SAVE and READ inputs', () => {
+  const saveKey = buildSceneSnapshotKey({
+    userRuntimeKey: 'user-a',
+    date: '2026-07-09',
+    timeOfDay: 'all_day',
+    scene: '灞呭',
+    weatherFingerprint: 'resolved|20 - 25|cloudy',
+    wardrobeVersion: 3,
+    profileVersion: 'profile-2',
+    reasonVersion: 'recommendation-reason-v3',
+    copyVersion: TODAY_SCENE_COPY_VERSION,
+  });
+  const readKey = buildSceneSnapshotKey({
+    userRuntimeKey: 'user-a',
+    date: '2026-07-09',
+    timeOfDay: 'all_day',
+    scene: '灞呭',
+    weatherFingerprint: 'resolved|20 - 25|cloudy',
+    wardrobeVersion: '3',
+    profileVersion: 'profile-2',
+    reasonVersion: 'recommendation-reason-v3',
+    copyVersion: TODAY_SCENE_COPY_VERSION,
+    auditId: 'volatile-audit-id',
+    generatedAt: Date.now(),
+  });
+
+  assert.equal(saveKey, readKey);
+  assert.equal(buildSceneSnapshotKey({ wardrobeVersion: undefined }), buildSceneSnapshotKey({ wardrobeVersion: null }));
+});
+
 test('scene snapshot requires every outfit to carry the current Contract and Catalog versions', () => {
   const key = buildSceneSnapshotKey({ scene: '上班' });
   const expected = { key };

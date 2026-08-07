@@ -10,6 +10,8 @@ export type WeatherRecommendationRefreshResult = 'unchanged' | 'refreshed' | 'fa
 
 interface WeatherCardProps {
   city?: string;
+  onLocationPermissionPrompt?: () => void;
+  onLocationPermissionResolved?: () => void;
   onWeatherChange?: (
     weather: WeatherSnapshot | undefined,
     options: { forceRefresh?: boolean; weatherMode: WeatherMode },
@@ -38,7 +40,7 @@ interface TaroLocationResult {
   longitude: number;
 }
 
-export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherCardProps) {
+export function WeatherCard({ city = '当前位置', onLocationPermissionPrompt, onLocationPermissionResolved, onWeatherChange }: WeatherCardProps) {
   const [weather, setWeather] = useState<ResolvedWeatherResponse>(() => readCachedWeather() ?? getFallbackResolvedWeather(city));
   const [status, setStatus] = useState<WeatherStatus>('checkingAuth');
   const [permission, setPermission] = useState<LocationPermission>('unknown');
@@ -163,14 +165,20 @@ export function WeatherCard({ city = '当前位置', onWeatherChange }: WeatherC
       if (source === 'manual' || forceRefresh) setRefreshing(true);
       setStatus('locating');
 
-      const location = await withTimeout(
-        Taro.getLocation({
-          type: 'gcj02',
-          isHighAccuracy: false,
-        }) as Promise<TaroLocationResult>,
-        8000,
-        '定位超时，请确认手机定位服务已开启',
-      );
+      onLocationPermissionPrompt?.();
+      let location: TaroLocationResult;
+      try {
+        location = await withTimeout(
+          Taro.getLocation({
+            type: 'gcj02',
+            isHighAccuracy: false,
+          }) as Promise<TaroLocationResult>,
+          8000,
+          '定位超时，请确认手机定位服务已开启',
+        );
+      } finally {
+        onLocationPermissionResolved?.();
+      }
       if (!mountedRef.current) return;
 
       setPermission('authorized');

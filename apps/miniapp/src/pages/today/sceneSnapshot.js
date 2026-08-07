@@ -25,7 +25,14 @@ function buildSceneSnapshotKey({
     profileVersion,
     reasonVersion,
     copyVersion,
-  ].map((value) => String(value || '')).join('|');
+  ].map(normalizeSceneSnapshotKeyPart).join('|');
+}
+
+function normalizeSceneSnapshotKeyPart(value) {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : '';
+  if (typeof value === 'string') return value;
+  return String(value);
 }
 
 function shouldUseSceneSnapshot(snapshot, expected) {

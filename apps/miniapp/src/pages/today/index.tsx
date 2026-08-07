@@ -1,5 +1,5 @@
 import { Image, Swiper, SwiperItem, Text, View } from '@tarojs/components';
-import Taro, { useDidShow, usePullDownRefresh, useUnload } from '@tarojs/taro';
+import Taro, { useDidShow, useLoad, usePullDownRefresh, useUnload } from '@tarojs/taro';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { WeatherCard, type WeatherRecommendationRefreshResult } from '@/components/WeatherCard';
 import { useAuthRuntime } from '@/hooks/useAuthRuntime';
@@ -65,6 +65,19 @@ import {
 } from './refreshExclusions';
 import { getProductStateCopy } from '@/utils/xiaodaProductStateCopy';
 import { buildOutfitCardViewModel } from './cardViewModel';
+import {
+  completeTodayPerformanceRun,
+  markTodayPerformanceDuration,
+  markTodayPerformanceStage,
+  recordTodayAuthContextCurrentChecked,
+  recordTodayRestoreDispatchAttempt,
+  recordTodayRestoreException,
+  recordTodayRestoreFunctionEntered,
+  recordTodayRestoreReturn,
+  startTodayPerformanceRun,
+  subscribeTodayPerformanceLedger,
+  type TodayPerformanceLedgerSnapshot,
+} from '@/lib/performance/todayPerformanceLedger';
 import {
   buildRecommendationInputSignature,
   createRecommendationIntentRegistry,
@@ -228,7 +241,10 @@ function getOutfitStatusPatch(outfit: Outfit, fallbackOutfitKey = ''): OutfitSta
 }
 
 function applyTodayOutfitStatuses(outfits: Outfit[], authContext?: ActiveAuthContext | null) {
-  return applyOutfitStatuses(outfits, authContext).map((outfit) => normalizeOutfitSnapshot(outfit));
+  markTodayPerformanceStage('statusApplyStart');
+  const next = applyOutfitStatuses(outfits, authContext).map((outfit) => normalizeOutfitSnapshot(outfit));
+  markTodayPerformanceStage('statusApplyEnd');
+  return next;
 }
 
 function withDefinedOutfitFields(patch: Partial<Outfit>, source: Outfit): Partial<Outfit> {
@@ -298,6 +314,7 @@ export default function TodayPage() {
   const behaviorTrackerRef = useRef(createOutfitBehaviorExposureTracker());
   const sceneSnapshotsRef = useRef<Record<string, ExtendedSceneSnapshot>>({});
   const [currentWeather, setCurrentWeather] = useState<WeatherSnapshot | undefined>(undefined);
+  const [performanceSnapshot, setPerformanceSnapshot] = useState<TodayPerformanceLedgerSnapshot>({ active: null, history: [] });
   const selectedScene = SCENE_TAGS[selectedSceneKey];
   const selectedSceneRef = useRef<SceneTag>(selectedScene);
   outfitsRef.current = outfits;
@@ -309,6 +326,12 @@ export default function TodayPage() {
   batchExhaustedRef.current = batchExhausted;
   recommendationNoticeRef.current = recommendationNotice;
   selectedSceneRef.current = selectedScene;
+
+  useLoad(() => {
+    markTodayPerformanceStage('todayOnLoad');
+  });
+
+  useEffect(() => subscribeTodayPerformanceLedger(setPerformanceSnapshot), []);
 
   const resetUserState = useCallback(() => {
     requestSeq.current += 1;
@@ -384,9 +407,18 @@ export default function TodayPage() {
   });
 
   useDidShow(() => {
-    if (!isAuthenticated || !runtimeKey) return;
+    startTodayPerformanceRun();
+    markTodayPerformanceStage('appOrPageEntry');
+    markTodayPerformanceStage('todayComponentEnter');
+    markTodayPerformanceStage('todayOnShow');
     const authContext = captureAuthContext();
-    restoreTodaySnapshotFromDetail(authContext);
+    if (!authContext) return;
+    markTodayPerformanceStage('localIdentityReady');
+    // A resumed Today tab is a normal restore entry, not only a return from
+    // outfit detail. Keep the detail-intent gate for detail-specific callers,
+    // but never let it suppress the user-scoped hot snapshot on a fresh run.
+    recordTodayRestoreDispatchAttempt();
+    restoreTodaySnapshotFromDetail(authContext, { requireReturnIntent: false });
     const syncedOutfit = consumeOutfitStateSync({ authContext });
     if (syncedOutfit) {
       updateOutfitsByKey(syncedOutfit, syncedOutfit, authContext);
@@ -394,6 +426,7 @@ export default function TodayPage() {
   });
 
   useEffect(() => {
+    markTodayPerformanceStage('identityStart');
     if (!isAuthenticated || !runtimeKey) {
       lastHandledRuntimeKeyRef.current = null;
       resetUserState();
@@ -403,10 +436,15 @@ export default function TodayPage() {
     if (lastHandledRuntimeKeyRef.current === runtimeKey) return;
     resetUserState();
     lastHandledRuntimeKeyRef.current = runtimeKey;
+    markTodayPerformanceStage('identityRemoteStart');
+    markTodayPerformanceStage('identityReady');
+    markTodayPerformanceStage('identityRemoteEnd');
+    markTodayPerformanceStage('sceneReady');
     entryIntentIdRef.current = `today-entry:${runtimeKey}:${Date.now()}`;
     // A valid user-scoped snapshot is synchronous and must be allowed to paint
     // before WeatherCard finishes location/auth/cloud work. Weather changes
     // continue through handleWeatherChange as a background refresh afterwards.
+    recordTodayRestoreDispatchAttempt();
     restoreTodaySnapshotFromDetail(captureAuthContext(), { requireReturnIntent: false });
     if (currentWeatherRef.current) {
       void handleWeatherChange(currentWeatherRef.current, {
@@ -508,6 +546,8 @@ export default function TodayPage() {
     }
 
     try {
+      markTodayPerformanceStage('executionMode', requestKind === 'initial' ? 'COLD' : 'COLD');
+      markTodayPerformanceStage('generateOutfitRequestStart');
       const cloudRequestStartedAt = Date.now();
       const data = await generateCloudOutfit({
         date: getToday(),
@@ -522,6 +562,12 @@ export default function TodayPage() {
       });
       const cloudRoundTripMs = Date.now() - cloudRequestStartedAt;
       const responseReceivedAt = Date.now();
+      markTodayPerformanceStage('generateOutfitResponseEnd');
+      markTodayPerformanceStage('auditId', getRecommendationAuditId(data, auditId));
+      markTodayPerformanceStage('executionMode', data.debug?.executionMode ?? 'COLD');
+      if (typeof (data as { code?: unknown }).code === 'number' || typeof (data as { code?: unknown }).code === 'string') {
+        markTodayPerformanceStage('responseCode', String((data as unknown as { code: number | string }).code));
+      }
 
       if (!isRecommendationIntentCurrent(intent) || !isAuthContextCurrent(authContext)) {
         logRecommendationIntentReject(requestContext, data, 'SUPERSEDED_INTENT');
@@ -557,6 +603,7 @@ export default function TodayPage() {
       }
       countContractRef.current = data.countContract;
       const eligibleApiOutfits = data.outfits.filter(hasCurrentNewRecommendationCopy);
+      markTodayPerformanceStage('responseAdaptEnd');
 
       const requestWeatherFingerprint = getRecommendationWeatherFingerprint(weather);
       const normalizedOutfits = eligibleApiOutfits.map((outfit) => normalizeOutfitSnapshot(outfit));
@@ -581,6 +628,7 @@ export default function TodayPage() {
       currentIndexRef.current = 0;
       recommendationBatchIdRef.current = data.recommendationBatchId ?? nextOutfits[0]?.recommendationBatchId;
       setOutfits(nextOutfits);
+      markTodayPerformanceStage('setOutfitsCalled');
       setCurrentIndex(0);
       setHasRecommendations(nextOutfits.length > 0);
       setError('');
@@ -1097,6 +1145,7 @@ export default function TodayPage() {
     weather: WeatherSnapshot | undefined,
     options: { forceRefresh?: boolean; weatherMode: WeatherMode },
   ): Promise<WeatherRecommendationRefreshResult> {
+    markTodayPerformanceStage('weatherStart');
     const weatherFingerprint = getRecommendationWeatherFingerprint(weather);
     const sameRecommendationWeather = weatherFingerprint === recommendationWeatherFingerprintRef.current;
     currentWeatherRef.current = weather;
@@ -1114,15 +1163,18 @@ export default function TodayPage() {
           weather,
         });
         restoreSceneSnapshotToPage(snapshot, sceneKey, weather, options.weatherMode);
+        markTodayPerformanceStage('weatherEnd');
         return 'unchanged';
       }
     }
 
     if (outfitsRef.current.length > 0 && sameRecommendationWeather) {
+      markTodayPerformanceStage('weatherEnd');
       return 'unchanged';
     }
 
     try {
+      if (outfitsRef.current.length > 0) markTodayPerformanceStage('backgroundRefreshStart');
       const refreshed = await requestRecommendations({
         intentId: outfitsRef.current.length === 0
           ? entryIntentIdRef.current
@@ -1133,8 +1185,11 @@ export default function TodayPage() {
         silent: outfitsRef.current.length > 0,
         trigger: options.forceRefresh ? 'weather-force' : 'weather',
       });
+      if (outfitsRef.current.length > 0) markTodayPerformanceStage('backgroundRefreshEnd');
+      markTodayPerformanceStage('weatherEnd');
       return refreshed ? 'refreshed' : 'failed';
     } catch (error) {
+      markTodayPerformanceStage('weatherEnd');
       return 'failed';
     }
   }
@@ -1291,6 +1346,7 @@ export default function TodayPage() {
     input: TodayRestoreSnapshotInput = {},
     authContext?: ActiveAuthContext | null,
   ) {
+    markTodayPerformanceStage('snapshotPersistStart');
     const snapshotOutfits = applyTodayOutfitStatuses(
       (input.outfits ?? outfitsRef.current).map((outfit) => normalizeOutfitSnapshot(outfit)),
       authContext,
@@ -1355,22 +1411,57 @@ export default function TodayPage() {
       lastVisibleBatch: snapshot.lastVisibleBatch,
       recommendationNotice: snapshot.recommendationNotice,
     });
+    markTodayPerformanceStage('snapshotPersistEnd');
   }
 
   function restoreTodaySnapshotFromDetail(
     authContext?: ActiveAuthContext | null,
     options: { requireReturnIntent?: boolean } = {},
   ) {
-    if (options.requireReturnIntent !== false && !shouldRestoreFromDetailRef.current) return false;
-    shouldRestoreFromDetailRef.current = false;
+    recordTodayRestoreFunctionEntered();
+    try {
+      if (!authContext) {
+        recordTodayAuthContextCurrentChecked(false);
+        recordTodayRestoreReturn('NO_LOCAL_AUTH');
+        return false;
+      }
+      const authContextCurrent = isAuthContextCurrent(authContext);
+      recordTodayAuthContextCurrentChecked(authContextCurrent);
+      if (!authContextCurrent) {
+        recordTodayRestoreReturn('AUTH_CONTEXT_STALE');
+        return false;
+      }
+      if (options.requireReturnIntent !== false && !shouldRestoreFromDetailRef.current) {
+        recordTodayRestoreReturn('RETURN_INTENT_REQUIRED');
+        return false;
+      }
+      shouldRestoreFromDetailRef.current = false;
 
-    const snapshot = readTodayRestoreSnapshot(authContext);
-    if (!snapshot || !canRestoreTodaySnapshot(snapshot)) return false;
+      markTodayPerformanceStage('snapshotReadStart');
+      const snapshot = readTodayRestoreSnapshot(authContext);
+      markTodayPerformanceStage('snapshotReadEnd');
+      if (!snapshot) {
+        recordTodayRestoreReturn('SNAPSHOT_EMPTY');
+        return false;
+      }
+      markTodayPerformanceStage('snapshotValidationStart');
+      if (!canRestoreTodaySnapshot(snapshot)) {
+        markTodayPerformanceStage('snapshotValid', 'false');
+        markTodayPerformanceStage('snapshotValidationEnd');
+        recordTodayRestoreReturn('SNAPSHOT_INVALID');
+        return false;
+      }
+      markTodayPerformanceStage('snapshotFound');
+      markTodayPerformanceStage('snapshotValid', 'true');
+      markTodayPerformanceStage('executionMode', 'HOT');
+      markTodayPerformanceStage('snapshotValidationEnd');
 
     const restoredOutfits = applyTodayOutfitStatuses(
       snapshot.outfits.map((outfit) => normalizeOutfitSnapshot(outfit)),
       authContext,
     );
+    markTodayPerformanceStage('snapshotParseEnd');
+    markTodayPerformanceStage('snapshotCardCount', restoredOutfits.length);
     const restoredIndex = clampIndex(snapshot.currentIndex, restoredOutfits.length);
     const restoredRecommendationWeatherFingerprint = getSnapshotWeatherFingerprint(snapshot);
     const restoredCurrentWeather = currentWeatherRef.current ?? snapshot.weatherSnapshot;
@@ -1401,6 +1492,7 @@ export default function TodayPage() {
     currentWeatherFingerprintRef.current = getRecommendationWeatherFingerprint(restoredCurrentWeather);
     setSelectedSceneKey(snapshot.selectedSceneKey);
     setOutfits(restoredOutfits);
+    markTodayPerformanceStage('setOutfitsCalled');
     setCurrentIndex(restoredIndex);
     setCurrentWeather(restoredCurrentWeather);
     setHasRecommendations(snapshot.hasRecommendations);
@@ -1421,34 +1513,48 @@ export default function TodayPage() {
         weatherMode: currentWeatherModeRef.current,
       });
     }
-    return true;
+      recordTodayRestoreReturn('RESTORE_COMPLETED');
+      return true;
+    } catch (error) {
+      recordTodayRestoreException(error);
+      throw error;
+    }
   }
 
   function readTodayRestoreSnapshot(authContext?: ActiveAuthContext | null) {
     try {
       const value = getUserStorageSync<TodayRestoreSnapshot>(TODAY_RESTORE_SNAPSHOT_KEY, { authContext });
-      if (!value || typeof value !== 'object') return null;
+      if (!value || typeof value !== 'object') {
+        markTodayPerformanceStage('snapshotRejectReason', 'EMPTY');
+        return null;
+      }
       if (
         value.version !== 3
         || value.copyContractVersion !== COPY_CONTRACT_VERSION
         || !Array.isArray(value.outfits)
-      ) return null;
+      ) {
+        markTodayPerformanceStage('snapshotRejectReason', 'SCHEMA');
+        return null;
+      }
       return value;
     } catch {
+      markTodayPerformanceStage('snapshotRejectReason', 'READ_ERROR');
       return null;
     }
   }
 
   function canRestoreTodaySnapshot(snapshot: TodayRestoreSnapshot) {
-    if (Date.now() - snapshot.generatedAt > TODAY_RESTORE_SNAPSHOT_TTL_MS) return false;
-    if (snapshot.targetDate !== getToday()) return false;
-    if (snapshot.timeOfDay !== TODAY_TIME_OF_DAY) return false;
-    if (snapshot.selectedSceneKey !== selectedSceneKeyRef.current) return false;
-    if (snapshot.scene !== selectedSceneRef.current) return false;
-    if (snapshot.sceneSnapshotKey !== getSceneSnapshotKey(snapshot.scene, getSnapshotWeatherFingerprint(snapshot))) return false;
-    if (hasWardrobeRefreshSignal()) return false;
-    if (!snapshot.outfits.every(hasCurrentNewRecommendationCopy)) return false;
-    return isValidSceneSnapshotCountState(snapshot);
+    if (Date.now() - snapshot.generatedAt > TODAY_RESTORE_SNAPSHOT_TTL_MS) { markTodayPerformanceStage('snapshotRejectReason', 'TTL'); return false; }
+    if (snapshot.targetDate !== getToday()) { markTodayPerformanceStage('snapshotRejectReason', 'DATE'); return false; }
+    if (snapshot.timeOfDay !== TODAY_TIME_OF_DAY) { markTodayPerformanceStage('snapshotRejectReason', 'TIME'); return false; }
+    if (snapshot.selectedSceneKey !== selectedSceneKeyRef.current) { markTodayPerformanceStage('snapshotRejectReason', 'SCENE'); return false; }
+    if (snapshot.scene !== selectedSceneRef.current) { markTodayPerformanceStage('snapshotRejectReason', 'SCENE_TAG'); return false; }
+    if (snapshot.sceneSnapshotKey !== getSceneSnapshotKey(snapshot.scene, getSnapshotWeatherFingerprint(snapshot))) { markTodayPerformanceStage('snapshotRejectReason', 'FINGERPRINT'); return false; }
+    if (hasWardrobeRefreshSignal()) { markTodayPerformanceStage('snapshotRejectReason', 'WARDROBE_REFRESH'); return false; }
+    if (!snapshot.outfits.every(hasCurrentNewRecommendationCopy)) { markTodayPerformanceStage('snapshotRejectReason', 'COPY_CONTRACT'); return false; }
+    const valid = isValidSceneSnapshotCountState(snapshot);
+    if (!valid) markTodayPerformanceStage('snapshotRejectReason', 'COUNT_CONTRACT');
+    return valid;
   }
 
   function hasWardrobeRefreshSignal() {
@@ -1581,7 +1687,9 @@ export default function TodayPage() {
   function getSceneSnapshotKey(scene: SceneTag, weatherFingerprint = currentWeatherFingerprintRef.current) {
     const inputVersions = getRecommendationInputVersions();
     return buildSceneSnapshotKey({
-      userRuntimeKey: runtimeKey || '',
+      // authEpoch is a request/session guard, not an ownership input. Using it
+      // here makes a remote identity refresh invalidate the same user's snapshot.
+      userRuntimeKey: captureAuthContext()?.userScope || '',
       date: getToday(),
       timeOfDay: TODAY_TIME_OF_DAY,
       scene,
@@ -1959,15 +2067,32 @@ export default function TodayPage() {
   const isFavoriteBusy = operation === 'favorite';
   const isWearBusy = operation === 'wear';
 
+  useEffect(() => {
+    markTodayPerformanceStage('reactCommitAfterOutfits');
+    if (currentOutfit) {
+      markTodayPerformanceStage('firstCardMounted');
+      markTodayPerformanceStage('finalCardCount', outfits.length);
+      markTodayPerformanceDuration('onShowToFirstCard', 'todayOnShow', 'firstCardMounted');
+    }
+  }, [currentOutfit, outfits.length]);
+
   return (
     <View className="today-page">
+      {performanceSnapshot.active && (
+        <TodayPerformancePanel snapshot={performanceSnapshot} />
+      )}
       <View className="top-section">
         <View className="hero-header">
           <View className="hero-brand">
             <Text className="hero-brand-cn">搭搭</Text>
             <Text className="hero-brand-day">day</Text>
           </View>
-          <WeatherCard city="上海" onWeatherChange={handleWeatherChange} />
+          <WeatherCard
+            city="上海"
+            onLocationPermissionPrompt={() => markTodayPerformanceStage('locationPermissionPromptStart')}
+            onLocationPermissionResolved={() => markTodayPerformanceStage('locationPermissionResolved')}
+            onWeatherChange={handleWeatherChange}
+          />
         </View>
       </View>
 
@@ -2151,6 +2276,37 @@ export default function TodayPage() {
   );
 }
 
+function TodayPerformancePanel({ snapshot }: { snapshot: TodayPerformanceLedgerSnapshot }) {
+  const [expanded, setExpanded] = useState(false);
+  const active = snapshot.active;
+  if (!active) return null;
+  const firstCardMs = active.durations.onShowToFirstCard;
+  const firstImageMs = active.durations.onShowToFirstImage;
+  const stageDurations = Object.entries(active.durations)
+    .sort(([, left], [, right]) => right - left)
+    .slice(0, 4);
+  return (
+    <View className={`today-performance-panel ${expanded ? 'expanded' : ''}`}>
+      <View className="today-performance-header" onClick={() => setExpanded((value) => !value)}>
+        <Text className="today-performance-title">性能 {active.complete ? 'COMPLETE' : 'RUNNING'}</Text>
+        <Text className="today-performance-mode">{active.executionMode} · {expanded ? '收起' : '展开'}</Text>
+      </View>
+      {expanded && (
+        <View className="today-performance-body">
+          <Text>snapshot {String(active.stages.snapshotFound === 'NOT_OBSERVED' ? 'not found' : active.stages.snapshotValid)} · cards {active.finalCardCount}</Text>
+          <Text>requests {active.generateOutfitRequestCount} · first card {formatPerformanceMs(firstCardMs)} · first image {formatPerformanceMs(firstImageMs)}</Text>
+          <Text>runId {active.runId}</Text>
+          {stageDurations.map(([name, duration]) => <Text key={name}>{name}: {Math.round(duration)}ms</Text>)}
+        </View>
+      )}
+    </View>
+  );
+}
+
+function formatPerformanceMs(value: number | undefined) {
+  return typeof value === 'number' ? `${Math.round(value)}ms` : 'NOT_OBSERVED';
+}
+
 function RecommendationImage({
   src,
   cacheIdentity,
@@ -2167,6 +2323,7 @@ function RecommendationImage({
   const resolvedSourceRef = useRef('');
 
   useEffect(() => {
+    if (src) markTodayPerformanceStage('firstImageLoadStart');
     resolvedSourceRef.current = '';
     setStatus(src ? (isImageSessionReady(src, cacheIdentity) ? 'loaded' : 'loading') : 'empty');
     setRetryKey(0);
@@ -2223,6 +2380,8 @@ function RecommendationImage({
         onLoad={() => {
           markImageSessionReady(src, cacheIdentity);
           setStatus('loaded');
+          markTodayPerformanceStage('firstImageLoaded');
+          completeTodayPerformanceRun();
         }}
         onError={() => {
           markImageSessionFailed(src, cacheIdentity);
