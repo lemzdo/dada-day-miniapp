@@ -9,7 +9,10 @@
     "verify": "pnpm typecheck && pnpm lint && pnpm test",
     "format": "prettier --write .",
     "typecheck": "turbo typecheck",
-    "clean": "turbo clean"
+    "clean": "turbo clean",
+    "devtools:health": "node apps/miniapp/scripts/devtools-acceptance.js health",
+    "today:hot:accept": "node apps/miniapp/scripts/devtools-acceptance.js today-hot",
+    "devtools:acceptance:test": "node --test apps/miniapp/scripts/devtools-acceptance.test.js"
   },
   "devDependencies": {
     "@eslint/js": "^9.15.0",
