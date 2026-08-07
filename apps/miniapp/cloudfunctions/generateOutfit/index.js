@@ -240,8 +240,12 @@ function validateCandidatePoolAvailability(recommendations, requestedCount) {
 }
 
 async function generate(event, diagnostics = createRecommendationDiagnostics(event)) {
+  const requestParseStartedAt = diagnostics.startedAt;
   diagnostics.stage = 'loadWardrobe';
+  recordServerPhase(diagnostics, 'requestParse', requestParseStartedAt);
+  const authStartedAt = Date.now();
   const { OPENID } = cloud.getWXContext();
+  recordServerPhase(diagnostics, 'authContext', authStartedAt);
   const inputScene = typeof event.scene === 'string' ? event.scene.trim() : '';
   const scene = inputScene || undefined;
   const sceneContract = createRecommendationSceneContract(inputScene);
@@ -265,6 +269,7 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
     db.collection('users').where({ _openid: OPENID }).limit(1).get(),
   ]);
   diagnostics.timings.dataLoadMs = Date.now() - dataLoadStartedAt;
+  recordServerPhase(diagnostics, 'userAndWardrobeRead', dataLoadStartedAt);
   diagnostics.databaseOps.reads += wardrobeReadCount + 1;
   const recommendationProfile = normalizeRecommendationProfile(userRes.data?.[0]?.styleProfile);
   const exclude = Array.isArray(event.excludeClothingIdSets) ? event.excludeClothingIdSets : [];
@@ -291,6 +296,7 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
     engineVersion: CANDIDATE_POOL_ENGINE_VERSION,
   });
   diagnostics.timings.identityMs = Date.now() - identityStartedAt;
+  recordServerPhase(diagnostics, 'candidatePoolIdentity', identityStartedAt);
   let recommendations;
   let executionMode = 'full_compute';
   let candidatePoolAgeMs = 0;
@@ -311,6 +317,7 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
       timings: diagnostics.timings,
     });
     diagnostics.timings.candidatePoolLoadMs = Date.now() - candidatePoolLoadStartedAt;
+    recordServerPhase(diagnostics, 'candidatePoolLoad', candidatePoolLoadStartedAt);
     diagnostics.databaseOps.reads += diagnostics.timings.poolDbReadCount || 0;
     if (poolResult.hit) {
       try {
@@ -343,6 +350,7 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
     }
   }
 
+  let candidatePoolPersistPromise = Promise.resolve(null);
   if (!recommendations) {
     recommendations = generateRuleRecommendations({
       clothes,
@@ -357,52 +365,33 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
       timings: diagnostics.timings,
       diagnostics,
     });
-    const candidatePoolSaveStartedAt = Date.now();
     baseRecommendationBatchId = recommendationBatchId;
-    const poolPersist = await tryPersistCandidatePool({
-      database: db,
+    candidatePoolPersistPromise = persistGeneratedCandidatePool({
+      diagnostics,
       candidatePoolId: recommendationBatchId,
       identity: candidatePoolIdentity,
       candidates: recommendations.candidatePoolCandidates,
-      now: Date.now(),
-      auditId: diagnostics.auditId,
       debugRecommendationAudit,
     });
-    diagnostics.timings.candidatePoolSaveMs = Date.now() - candidatePoolSaveStartedAt;
-    diagnostics.timings.candidatePoolPlanMs = poolPersist.planBuildMs || 0;
-    diagnostics.timings.candidatePoolSerializationMs = poolPersist.serializationMs || 0;
-    diagnostics.timings.candidatePoolChunkWriteMs = poolPersist.chunkWriteMs || 0;
-    diagnostics.timings.candidatePoolValidationMs = poolPersist.validationMs || 0;
-    diagnostics.timings.candidatePoolManifestWriteMs = poolPersist.manifestWriteMs || 0;
-    diagnostics.databaseOps.reads += poolPersist.dbReadCount || 0;
-    diagnostics.databaseOps.writes += poolPersist.dbWriteCount || 0;
-    diagnostics.candidatePoolSaveStatus = poolPersist.status;
-    diagnostics.candidatePoolSaveReason = poolPersist.reason;
-    diagnostics.candidatePoolSerializedBytes = poolPersist.serializedBytes;
-    diagnostics.candidatePoolChunkCount = poolPersist.chunkCount;
-    diagnostics.candidatePoolManifestBytes = poolPersist.manifestBytes || 0;
-    diagnostics.candidatePoolChunksBytes = poolPersist.chunksBytes || 0;
-    diagnostics.candidatePoolChunkWriteTimings = poolPersist.chunkWriteTimings || [];
-    diagnostics.candidatePoolMaxActiveChunkWrites = poolPersist.maxActiveChunkWrites || 0;
-    diagnostics.candidatePoolValidationReadCount = poolPersist.validationReadCount || 0;
-    diagnostics.candidatePoolValidationMode = poolPersist.validationMode || 'local_checksum_after_awaited_set';
-    diagnostics.candidatePoolCleanupAttempted = poolPersist.cleanupAttempted === true;
-    diagnostics.candidatePoolCleanupDeletedCount = poolPersist.cleanupDeletedCount || 0;
-    diagnostics.candidatePoolCleanupFailedCount = poolPersist.cleanupFailedCount || 0;
-    diagnostics.candidatePoolPhaseTiming = poolPersist.phaseTiming
-      ? {
-          ...poolPersist.phaseTiming,
-          wrapperWallMs: diagnostics.timings.candidatePoolSaveMs,
-          wrapperDeltaMs: Math.max(
-            0,
-            diagnostics.timings.candidatePoolSaveMs - Number(poolPersist.phaseTiming.totalWallMs || 0),
-          ),
-        }
-      : null;
-    if (poolPersist.status !== 'saved') {
-      recommendationBatchId = undefined;
-      cacheMissReason = 'candidate_pool_not_saved';
-    }
+  }
+  const cardCompilationPromise = recommendations.length === 0
+    ? Promise.resolve([])
+    : Promise.resolve().then(() => compileRecommendationsForResponse({
+        recommendations,
+        openid: OPENID,
+        scene,
+        targetDate,
+        timeOfDay: event.timeOfDay || 'all_day',
+        weather: weatherSnapshot,
+        weatherMode,
+        now,
+        recommendationBatchId,
+        diagnostics,
+      }));
+  const poolPersist = await candidatePoolPersistPromise;
+  if (poolPersist && poolPersist.status !== 'saved') {
+    recommendationBatchId = undefined;
+    cacheMissReason = 'candidate_pool_not_saved';
   }
   const rawCountContract = recommendations.countContract;
   assertRecommendationCountContract(rawCountContract);
@@ -460,6 +449,7 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
     requestedCandidatePoolIdPresent: diagnostics.requestedCandidatePoolIdPresent ?? false,
     requestedCandidatePoolIdLength: diagnostics.requestedCandidatePoolIdLength ?? 0,
     countContract: responseCountContract,
+    phaseLedger: diagnostics.phases,
   };
   const missingRoles = getMissingRequiredRoles(clothes, scene);
   const missingFacts = getMissingRequiredFacts(clothes, scene);
@@ -554,25 +544,7 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
   });
   }
 
-  diagnostics.stage = 'cardCompilation';
-  const cardCompilationStartedAt = Date.now();
-  const compiledOutfits = compileRecommendationLanguageV3({
-    outfits: recommendations.map((recommendation) =>
-      toTempOutfit(recommendation, {
-        openid: OPENID,
-        scene,
-        targetDate,
-        timeOfDay: event.timeOfDay || 'all_day',
-        weather: weatherSnapshot,
-        weatherMode,
-        now,
-        recommendationBatchId,
-      }),
-    ),
-    scene,
-    weather: weatherSnapshot,
-  });
-  assertEligibilityReasons(compiledOutfits, { node: 'beforeFinalization', scene, weather });
+  const compiledOutfits = await cardCompilationPromise;
   const {
     finalRecommendations,
     acceptedCount,
@@ -582,7 +554,6 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
     mode: 'new_recommendation',
     requestedCount,
   });
-  diagnostics.timings.cardCompilationMs = Date.now() - cardCompilationStartedAt;
   const canonicalRecommendations = canonicalizeRecommendationBatch(finalRecommendations, { scene });
   let availability;
   if (executionMode === 'candidate_pool_hit') {
@@ -638,6 +609,7 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
     operationCounts: snapshotOps,
   });
   diagnostics.timings.snapshotUpsertMs = Date.now() - snapshotUpsertStartedAt;
+  recordServerPhase(diagnostics, 'snapshotPersistence', snapshotUpsertStartedAt);
   diagnostics.databaseOps.reads += snapshotOps.reads;
   diagnostics.databaseOps.writes += snapshotOps.writes;
   const outfits = canonicalRecommendations.map((tempOutfit, index) => {
@@ -661,6 +633,7 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
   diagnostics.databaseOps.reads += hydratedOutfits.length > 0 ? 2 : 0;
   assertFinalPresentation(hydratedOutfits, scene);
   diagnostics.timings.enrichMs = Date.now() - enrichStartedAt;
+  recordServerPhase(diagnostics, 'presentationEnrichment', enrichStartedAt);
   if (hydratedOutfits.length !== finalRecommendationCount
     || !hydratedOutfits.every((item) => hasCurrentCopyContract(item)
       && typeof item.copyContract?.todayReason === 'string'
@@ -677,6 +650,7 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
   });
   diagnostics.databaseOps.writes += hydratedOutfits.length;
   diagnostics.timings.exposureMs = Date.now() - exposureStartedAt;
+  recordServerPhase(diagnostics, 'exposurePersistence', exposureStartedAt);
   const qaResult = buildRecommendationQaSummaries({
     enabled: debugRecommendationAudit,
     auditId: diagnostics.auditId,
@@ -791,6 +765,7 @@ function createRecommendationDiagnostics(event = {}) {
     auditId: readAuditId(event.auditId),
     stage: 'received',
     startedAt: Date.now(),
+    phases: [],
     timings: {
       dataLoadMs: 0,
       identityMs: 0,
@@ -836,6 +811,106 @@ function createRecommendationDiagnostics(event = {}) {
       writes: 0,
     },
   };
+}
+
+function recordServerPhase(diagnostics, phase, startAt, endAt = Date.now()) {
+  if (!diagnostics || !phase) return;
+  const start = Number(startAt) || endAt;
+  const end = Number(endAt) || Date.now();
+  diagnostics.phases.push({
+    phase,
+    startAt: start,
+    endAt: end,
+    duration: Math.max(0, end - start),
+  });
+}
+
+async function persistGeneratedCandidatePool({
+  diagnostics,
+  candidatePoolId,
+  identity,
+  candidates,
+  debugRecommendationAudit,
+}) {
+  const startedAt = Date.now();
+  const poolPersist = await tryPersistCandidatePool({
+    database: db,
+    candidatePoolId,
+    identity,
+    candidates,
+    now: Date.now(),
+    auditId: diagnostics.auditId,
+    debugRecommendationAudit,
+  });
+  diagnostics.timings.candidatePoolSaveMs = Date.now() - startedAt;
+  recordServerPhase(diagnostics, 'candidatePoolPersistence', startedAt);
+  diagnostics.timings.candidatePoolPlanMs = poolPersist.planBuildMs || 0;
+  diagnostics.timings.candidatePoolSerializationMs = poolPersist.serializationMs || 0;
+  diagnostics.timings.candidatePoolChunkWriteMs = poolPersist.chunkWriteMs || 0;
+  diagnostics.timings.candidatePoolValidationMs = poolPersist.validationMs || 0;
+  diagnostics.timings.candidatePoolManifestWriteMs = poolPersist.manifestWriteMs || 0;
+  diagnostics.databaseOps.reads += poolPersist.dbReadCount || 0;
+  diagnostics.databaseOps.writes += poolPersist.dbWriteCount || 0;
+  diagnostics.candidatePoolSaveStatus = poolPersist.status;
+  diagnostics.candidatePoolSaveReason = poolPersist.reason;
+  diagnostics.candidatePoolSerializedBytes = poolPersist.serializedBytes;
+  diagnostics.candidatePoolChunkCount = poolPersist.chunkCount;
+  diagnostics.candidatePoolManifestBytes = poolPersist.manifestBytes || 0;
+  diagnostics.candidatePoolChunksBytes = poolPersist.chunksBytes || 0;
+  diagnostics.candidatePoolChunkWriteTimings = poolPersist.chunkWriteTimings || [];
+  diagnostics.candidatePoolMaxActiveChunkWrites = poolPersist.maxActiveChunkWrites || 0;
+  diagnostics.candidatePoolValidationReadCount = poolPersist.validationReadCount || 0;
+  diagnostics.candidatePoolValidationMode = poolPersist.validationMode || 'local_checksum_after_awaited_set';
+  diagnostics.candidatePoolCleanupAttempted = poolPersist.cleanupAttempted === true;
+  diagnostics.candidatePoolCleanupDeletedCount = poolPersist.cleanupDeletedCount || 0;
+  diagnostics.candidatePoolCleanupFailedCount = poolPersist.cleanupFailedCount || 0;
+  diagnostics.candidatePoolPhaseTiming = poolPersist.phaseTiming
+    ? {
+        ...poolPersist.phaseTiming,
+        wrapperWallMs: diagnostics.timings.candidatePoolSaveMs,
+        wrapperDeltaMs: Math.max(
+          0,
+          diagnostics.timings.candidatePoolSaveMs - Number(poolPersist.phaseTiming.totalWallMs || 0),
+        ),
+      }
+    : null;
+  return poolPersist;
+}
+
+function compileRecommendationsForResponse({
+  recommendations,
+  openid,
+  scene,
+  targetDate,
+  timeOfDay,
+  weather,
+  weatherMode,
+  now,
+  recommendationBatchId,
+  diagnostics,
+}) {
+  diagnostics.stage = 'cardCompilation';
+  const startedAt = Date.now();
+  const compiledOutfits = compileRecommendationLanguageV3({
+    outfits: recommendations.map((recommendation) =>
+      toTempOutfit(recommendation, {
+        openid,
+        scene,
+        targetDate,
+        timeOfDay,
+        weather,
+        weatherMode,
+        now,
+        recommendationBatchId,
+      }),
+    ),
+    scene,
+    weather,
+  });
+  assertEligibilityReasons(compiledOutfits, { node: 'beforeFinalization', scene, weather });
+  diagnostics.timings.cardCompilationMs = Date.now() - startedAt;
+  recordServerPhase(diagnostics, 'cardCompilation', startedAt);
+  return compiledOutfits;
 }
 
 function readAuditId(value) {
@@ -932,6 +1007,7 @@ function buildRecommendationQaSummaries({
     },
   });
   timings.qaAuditMs = Date.now() - startedAt;
+  recordServerPhase(diagnostics, 'qaAcceptance', startedAt);
   return result;
 }
 
@@ -1041,7 +1117,10 @@ function finalizeRecommendationResponse({
     budget = measureRecommendationResponse(responseData);
   }
   diagnostics.timings.serializationMs = Date.now() - serializationStartedAt;
+  recordServerPhase(diagnostics, 'responseSerialization', serializationStartedAt);
   diagnostics.timings.totalMs = Date.now() - diagnostics.startedAt;
+  recordServerPhase(diagnostics, 'handlerEnd', diagnostics.startedAt);
+  responseData.debug.phaseLedger = diagnostics.phases;
   syncRecommendationResponseDiagnostics(responseData, diagnostics.timings, budget, qaResult?.clientAudit);
   budget = measureRecommendationResponse(responseData);
   syncRecommendationResponseDiagnostics(responseData, diagnostics.timings, budget, qaResult?.clientAudit);
