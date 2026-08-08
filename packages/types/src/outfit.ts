@@ -815,6 +815,8 @@ export interface RecommendRequest {
   debugRecommendationAudit?: boolean;
   /** Return the anonymous server phase ledger for one explicitly diagnostic request. */
   diagnostics?: boolean;
+  /** Return only the anonymous performance ledger without deep QA payloads. */
+  performanceDiagnostics?: boolean;
   presentationEvidenceMode?: RecommendationPresentationEvidenceMode;
   auditId?: string;
   /** Client-side trigger descriptor (e.g. 'initial', 'refresh', 'scene'). Used by the cloud function to distinguish initial_request from refresh_without_pool_id. */

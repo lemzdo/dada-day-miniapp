@@ -6,9 +6,14 @@ const net = require('node:net');
 const childProcess = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const {
+  SERVICE_PORT,
+  AUTOMATOR_PORT,
+  parseNetstatListeners,
+  readListeners,
+  ensureDevToolsDirectSession,
+} = require('./devtools-direct-session');
 
-const SERVICE_PORT = 52849;
-const AUTOMATOR_PORT = 9420;
 const WS_ENDPOINT = process.env.AUTOMATOR_WS_ENDPOINT || `ws://127.0.0.1:${AUTOMATOR_PORT}`;
 const LEDGER_KEY = 'today:performance-ledger:v1';
 const CURRENT_LEDGER_SCHEMA_VERSION = 3;
@@ -55,19 +60,6 @@ function listenerInfo(port) {
 function processNameForPid(pid) {
   try { return childProcess.execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `(Get-Process -Id ${pid} -ErrorAction Stop).ProcessName`], { encoding: 'utf8', timeout: 2000 }).trim() || null; } catch { return null; }
 }
-function parseNetstatListeners(output, port) {
-  const rows = [];
-  for (const line of String(output).split(/\r?\n/)) {
-    const match = line.trim().match(/^TCP\s+([^\s]+)\s+[^\s]+\s+LISTENING\s+(\d+)$/i);
-    if (!match) continue;
-    const address = match[1];
-    const localPort = Number(address.slice(address.lastIndexOf(':') + 1));
-    if (localPort !== port) continue;
-    rows.push({ address: address.slice(0, address.lastIndexOf(':')).replace(/^\[|\]$/g, ''), port: localPort, pid: Number(match[2]) });
-  }
-  return rows;
-}
-
 function loadAutomator() {
   const packagePath = require.resolve('miniprogram-automator/package.json', { paths: [path.resolve(__dirname, '../..'), process.cwd()] });
   const packageRoot = path.dirname(packagePath);
@@ -93,32 +85,27 @@ async function connectWithRetry() {
 }
 
 async function health() {
-  const serviceTcp = await tcpProbe(SERVICE_PORT);
-  const serviceListeners = listenerInfo(SERVICE_PORT);
-  if (!serviceTcp.ok) return { classification: 'DEVTOOLS_SERVICE_PORT_DOWN', service52849: 'DOWN', automator9420: 'UNKNOWN', underlyingError: serviceTcp.error, listener: serviceListeners };
-  const automatorTcp = await tcpProbe(AUTOMATOR_PORT);
-  const automatorListeners = listenerInfo(AUTOMATOR_PORT);
-  if (!automatorTcp.ok) return { classification: 'AUTOMATOR_PORT_DOWN', service52849: 'LISTEN', automator9420: 'DOWN', serviceListener: serviceListeners, listener: automatorListeners, underlyingError: automatorTcp.error };
   let session;
-  try { session = await connectWithRetry(); } catch (error) {
-    return { classification: 'AUTOMATOR_CONNECT_FAILED', service52849: 'LISTEN', automator9420: 'LISTEN', serviceListener: serviceListeners, listener: automatorListeners, underlyingError: errorText(error) };
-  }
   try {
-    const page = await session.mini.currentPage();
-    const stack = await session.mini.pageStack();
+    session = await ensureDevToolsDirectSession({ endpoint: WS_ENDPOINT });
+    const stack = typeof session.mini.pageStack === 'function' ? await session.mini.pageStack() : [];
     const runtime = await session.mini.systemInfo();
-    if (!page) throw new Error('currentPage returned null');
-    return { classification: 'AUTOMATOR_OK', service52849: 'LISTEN', automator9420: 'LISTEN', serviceListener: serviceListeners, listener: automatorListeners, pid: automatorListeners?.[0]?.pid || null, processName: automatorListeners?.[0]?.processName || null, automatorConnect: 'OK', automatorPackage: `miniprogram-automator@${session.version}`, currentPage: page.path || null, pageStack: stack.map((item) => item.path || null), runtime: { SDKVersion: runtime?.SDKVersion || null } };
+    return { classification: 'AUTOMATOR_OK', service52849: 'LISTEN', automator9420: 'LISTEN', serviceListener: session.service.listeners, listener: session.automator.listeners, pid: session.automator.listeners?.[0]?.pid || null, processName: session.automator.listeners?.[0]?.processName || null, automatorConnect: 'OK', automatorPackage: `miniprogram-automator@${session.version}`, currentPage: session.page.path || null, route: session.route, pageStack: stack.map((item) => item.path || null), runtime: { SDKVersion: runtime?.SDKVersion || null } };
   } catch (error) {
-    return { classification: 'AUTOMATOR_PAGE_UNAVAILABLE', service52849: 'LISTEN', automator9420: 'LISTEN', serviceListener: serviceListeners, listener: automatorListeners, underlyingError: errorText(error) };
-  } finally { try { session.mini.disconnect(); } catch {} }
+    return { classification: error.code || 'AUTOMATOR_ATTACH_FAILED', service52849: 'UNKNOWN', automator9420: 'UNKNOWN', underlyingError: errorText(error), details: error.details || null };
+  } finally { try { session?.mini.disconnect(); } catch {} }
 }
 
 async function connectHealth() {
-  const result = await health();
-  json(result);
-  if (result.classification !== 'AUTOMATOR_OK') { process.exitCode = 1; return null; }
-  return connectWithRetry();
+  try {
+    const session = await ensureDevToolsDirectSession({ endpoint: WS_ENDPOINT });
+    json({ classification: 'AUTOMATOR_OK', service52849: 'LISTEN', automator9420: 'LISTEN', automatorPackage: `miniprogram-automator@${session.version}`, route: session.route });
+    return session;
+  } catch (error) {
+    json({ classification: error.code || 'AUTOMATOR_ATTACH_FAILED', underlyingError: errorText(error), details: error.details || null });
+    process.exitCode = 1;
+    return null;
+  }
 }
 
 async function readLedger(mini) {
@@ -191,4 +178,4 @@ async function main() {
   throw new Error(`Unknown command: ${command}`);
 }
 if (require.main === module) main().catch((error) => { process.stderr.write(`${errorText(error)}\n`); process.exitCode = 1; });
-module.exports = { parseNetstatListeners, summarizeLedger, isHot, classification };
+module.exports = { parseNetstatListeners, summarizeLedger, isHot, classification, ensureDevToolsDirectSession };

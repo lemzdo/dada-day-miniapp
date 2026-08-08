@@ -342,7 +342,9 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
   const weatherMode = weather.mode;
   const weatherSnapshot = toWeatherSnapshot(weather);
   const presentationEvidenceEnabled = isPresentationEvidenceMode(event.presentationEvidenceMode);
-  const debugRecommendationAudit = isRecommendationQaAuditEnabled(event.debugRecommendationAudit, process.env.RECOMMENDATION_QA_AUDIT_ENABLED);
+  const performanceOnlyDiagnostics = event.performanceDiagnostics === true;
+  const debugRecommendationAudit = !performanceOnlyDiagnostics
+    && isRecommendationQaAuditEnabled(event.debugRecommendationAudit, process.env.RECOMMENDATION_QA_AUDIT_ENABLED);
   const identityStartedAt = Date.now();
   const candidatePoolIdentity = buildCandidatePoolIdentity({
     openid: OPENID,
@@ -434,8 +436,11 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
       debugCandidatePoolProjection: event.debugCandidatePoolProjection === true,
     };
   }
+  let snapshotPromise = null;
+  let snapshotOps = null;
+  let snapshotUpsertStartedAt = 0;
   const cardCompilationPromise = recommendations.length === 0
-    ? Promise.resolve([])
+    ? Promise.resolve({ compiledOutfits: [], finalRecommendations: [], canonicalRecommendations: [] })
     : Promise.resolve().then(() => compileRecommendationsForResponse({
         recommendations,
         openid: OPENID,
@@ -447,7 +452,40 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
         now,
         recommendationBatchId,
         diagnostics,
-      }));
+      })).then(({ compiledOutfits, startedAt }) => {
+        const finalizationStartedAt = Date.now();
+        const finalized = finalizeAcceptedRecommendations(compiledOutfits, {
+          mode: 'new_recommendation',
+          requestedCount,
+        });
+        diagnostics.timings.cardPreparation.finalizationMs = Date.now() - finalizationStartedAt;
+        const finalRecommendations = finalized.finalRecommendations;
+        const canonicalizationStartedAt = Date.now();
+        const canonicalRecommendations = canonicalizeRecommendationBatch(finalRecommendations, { scene });
+        diagnostics.timings.cardPreparation.canonicalizationMs = Date.now() - canonicalizationStartedAt;
+        const snapshotInputStartedAt = Date.now();
+        diagnostics.snapshotPayloadBytes = serializedBytes(canonicalRecommendations);
+        diagnostics.timings.cardPreparation.cloneSerializeMs = Date.now() - snapshotInputStartedAt;
+
+        // The candidate pool id is already stable at this point. Start the
+        // snapshot write immediately after its complete input is materialized;
+        // candidate-pool persistence remains an independently awaited promise.
+        snapshotUpsertStartedAt = Date.now();
+        snapshotOps = { reads: 0, writes: 0 };
+        snapshotPromise = upsertRecommendationOutfitsBatch({
+          openid: OPENID,
+          bases: canonicalRecommendations,
+          now,
+          availableClothingIds: clothes
+            .filter((item) => item && item.status !== DELETED_STATUS)
+            .map((item) => item._id),
+          operationCounts: snapshotOps,
+        });
+        diagnostics.timings.cardPreparation.snapshotInputConstructionMs = Date.now() - snapshotInputStartedAt;
+        diagnostics.timings.cardCompilationMs = snapshotUpsertStartedAt - startedAt;
+        recordServerPhase(diagnostics, 'cardCompilation', startedAt, snapshotUpsertStartedAt);
+        return { ...finalized, compiledOutfits, canonicalRecommendations };
+      });
   if (candidatePoolPersistenceInput) {
     // Keep the first synchronous part of candidate-pool planning off the card
     // compilation turn. An async function does not yield until its first await.
@@ -462,6 +500,22 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
       debugCandidatePoolProjection: candidatePoolPersistenceInput.debugCandidatePoolProjection,
     }));
   }
+  const generatedCandidates = Array.isArray(recommendations?.candidatePoolCandidates)
+    ? recommendations.candidatePoolCandidates
+    : [];
+  const candidateDebug = recommendations?.debug || {};
+  diagnostics.candidateMetrics = {
+    wardrobeItemCount: clothes.length,
+    combinationCount: Number(candidateDebug.candidateCountBeforeTemperatureFilter)
+      || Number(candidateDebug.candidateCount)
+      || generatedCandidates.length,
+    generatedCandidateCount: Number(candidateDebug.generatedCount) || generatedCandidates.length,
+    acceptedCandidateCount: Number(candidateDebug.guardAcceptedCount) || 0,
+    uniqueCandidateCount: new Set(generatedCandidates.map((candidate) => candidate?.outfitKey || candidate?.id)).size,
+    selectedCandidateCount: recommendations.length,
+    candidatePoolPersistedCount: candidatePoolPersistenceInput?.candidates?.length
+      || (executionMode === 'candidate_pool_hit' ? Number(candidateDebug.candidateCount) || 0 : 0),
+  };
   let poolPersist = null;
   if (recommendations.length === 0) {
     poolPersist = await candidatePoolPersistPromise;
@@ -526,7 +580,9 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
     requestedCandidatePoolIdPresent: diagnostics.requestedCandidatePoolIdPresent ?? false,
     requestedCandidatePoolIdLength: diagnostics.requestedCandidatePoolIdLength ?? 0,
     countContract: responseCountContract,
-    ...(diagnostics.diagnosticsRequested === true ? { phaseLedger: diagnostics.phases } : {}),
+    ...(diagnostics.diagnosticsRequested === true && diagnostics.performanceOnly !== true
+      ? { phaseLedger: diagnostics.phases }
+      : {}),
   };
   const missingRoles = getMissingRequiredRoles(clothes, scene);
   const missingFacts = getMissingRequiredFacts(clothes, scene);
@@ -621,26 +677,14 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
   });
   }
 
-  const compiledOutfits = await cardCompilationPromise;
   const {
+    compiledOutfits,
     finalRecommendations,
     acceptedCount,
     finalRecommendationCount,
     copyHiddenCount,
-  } = finalizeAcceptedRecommendations(compiledOutfits, {
-    mode: 'new_recommendation',
-    requestedCount,
-  });
-  const canonicalRecommendations = canonicalizeRecommendationBatch(finalRecommendations, { scene });
-  diagnostics.snapshotPayloadBytes = serializedBytes(canonicalRecommendations);
-  const snapshotUpsertStartedAt = Date.now();
-  const snapshotOps = { reads: 0, writes: 0 };
-  const snapshotPromise = upsertRecommendationOutfitsBatch({
-    openid: OPENID,
-    bases: canonicalRecommendations,
-    now,
-    operationCounts: snapshotOps,
-  });
+    canonicalRecommendations,
+  } = await cardCompilationPromise;
   poolPersist = await candidatePoolPersistPromise;
   if (poolPersist && poolPersist.status !== 'saved') {
     recommendationBatchId = undefined;
@@ -704,9 +748,10 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
   diagnostics.timings.snapshotUpsertMs = Date.now() - snapshotUpsertStartedAt;
   recordServerPhase(diagnostics, 'snapshotPersistence', snapshotUpsertStartedAt);
   diagnostics.snapshotPersistence = snapshotOps;
-  debug.snapshotPersistence = snapshotOps;
-  diagnostics.databaseOps.reads += snapshotOps.reads;
-  diagnostics.databaseOps.writes += snapshotOps.writes;
+  if (diagnostics.diagnosticsRequested === true) debug.snapshotPersistence = snapshotOps;
+  diagnostics.databaseOps.reads += snapshotOps?.reads || 0;
+  diagnostics.databaseOps.writes += snapshotOps?.writeRoundTrips || snapshotOps?.writes || 0;
+  const idMappingStartedAt = Date.now();
   const outfits = canonicalRecommendations.map((tempOutfit, index) => {
     const outfitRecord = outfitRecords[index];
     return {
@@ -716,6 +761,7 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
       outfitKind: 'recommendation',
     };
   });
+  diagnostics.timings.cardPreparation.idMappingMs = Date.now() - idMappingStartedAt;
   const enrichStartedAt = Date.now();
   const hydratedOutfits = await enrichOutfitsState(outfits, {
     openid: OPENID,
@@ -735,6 +781,7 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
       && item.copyContract.todayReason.trim().length > 0)) {
     throw new Error('final recommendation response invariant failed');
   }
+  const responseOutfits = projectRecommendationResponseOutfits(hydratedOutfits);
   const exposureStartedAt = Date.now();
   await saveOutfitExposures({
     openid: OPENID,
@@ -786,7 +833,7 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
       sceneContract,
       qaResult,
       rejectionReasonCounts: recommendations.debug?.rejectReasonCounts,
-      outfits: hydratedOutfits,
+      outfits: responseOutfits,
       weatherSnapshot,
       weatherMode,
       recommendationNotice,
@@ -813,7 +860,7 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
     qaResult,
     rejectionReasonCounts: recommendations.debug?.rejectReasonCounts,
     data: {
-    outfits: hydratedOutfits,
+    outfits: responseOutfits,
     ...(weatherSnapshot ? { weather: weatherSnapshot } : {}),
     weatherMode,
     recommendationNotice,
@@ -855,12 +902,130 @@ function buildRecommendationResponseData(sceneContract, data) {
   };
 }
 
+// Persistence keeps the full fact-bearing snapshot. The recommendation response
+// already carries the fact-bearing `items` array, so sending the same evidence a
+// second time in `snapshotItems` needlessly multiplies the 8-card payload.
+function projectRecommendationResponseOutfits(outfits) {
+  return (Array.isArray(outfits) ? outfits : []).map((outfit) => {
+    const snapshotItems = Array.isArray(outfit?.snapshotItems)
+      ? outfit.snapshotItems.map((item) => ({
+          itemId: item.itemId,
+          name: item.name,
+          category: item.category,
+          color: item.color,
+          imageUrl: item.imageUrl,
+          displayImageUrl: item.displayImageUrl,
+          thumbnailUrl: item.thumbnailUrl,
+          isDeleted: Boolean(item.isDeleted),
+        }))
+      : [];
+    const projected = pickPublicOutfitFields(outfit);
+    projected.snapshotItems = snapshotItems;
+    if (projected.contentPlan && typeof projected.contentPlan === 'object') {
+      projected.contentPlan = { ...projected.contentPlan };
+      delete projected.contentPlan.presentationFactSignature;
+      delete projected.contentPlan.defaultCopy;
+      delete projected.contentPlan.defaultTodayReason;
+      delete projected.contentPlan.defaultDetailExplanation;
+    }
+    if (projected.aestheticEvaluation && typeof projected.aestheticEvaluation === 'object') {
+      projected.aestheticEvaluation = { ...projected.aestheticEvaluation };
+      if (!Array.isArray(projected.aestheticEvaluation.evidenceCodes)
+        && Array.isArray(projected.aestheticEvaluation.evidence)) {
+        projected.aestheticEvaluation.evidenceCodes = projected.aestheticEvaluation.evidence
+          .map((item) => item?.code)
+          .filter((code) => typeof code === 'string' && code.length > 0)
+          .slice(0, 32);
+      }
+      delete projected.aestheticEvaluation.evidence;
+    }
+    if (Array.isArray(projected.items)) {
+      projected.items = projected.items.map(projectRecommendationResponseItem);
+    }
+    return projected;
+  });
+}
+
+const PUBLIC_OUTFIT_RESPONSE_FIELDS = [
+  'id', 'outfitId', 'title', 'userTitle', 'displayTitle', 'clothingIds', 'outfitKey',
+  'outfitKind', 'incomplete', 'deletedItemCount', 'scene', 'targetDate', 'timeOfDay',
+  'weatherSnapshot', 'weatherMode', 'scores', 'generationType', 'source', 'sourceFavoriteOutfitId',
+  'favoritedAt', 'favoriteOutfitId', 'wornAt', 'wornDate', 'isFavorite', 'isWornToday',
+  'todayHistoryId', 'historyId', 'lastWornAt', 'recommendationBatchId', 'generatedAt',
+  'styleTags', 'createdAt', 'updatedAt', 'reason', 'reasoning', 'reasonVersion', 'copyContract',
+  'copyContractVersion', 'voiceBankVersion', 'todayClaim', 'todayClaimId', 'todayAction',
+  'todayDimension', 'todayEvidenceIds', 'todayRequiredFactIds', 'todayEvidenceSources',
+  'todaySentenceClusterId', 'todaySubjectItemId', 'todaySubjectItemIds', 'todaySlotBindings',
+  'todayReasonSource', 'enhancedReason', 'detailClaim', 'detailClaimId', 'detailAction',
+  'detailDimension', 'detailEvidenceIds', 'detailRequiredFactIds', 'detailEvidenceSources',
+  'detailSentenceClusterId', 'detailSubjectItemId', 'detailSubjectItemIds', 'detailSlotBindings',
+  'riskFlags', 'copyGateResult', 'copyRiskFlags', 'copyDisplay', 'defaultCopyHidden',
+  'copyFinalizationMode', 'aestheticEvaluation', 'contentPlan', 'selectedDifferentiator',
+  'presentationPlan', 'items', 'snapshotItems', 'outfitKind', 'outfitReferenceStage',
+];
+
+function pickPublicOutfitFields(outfit) {
+  const projected = {};
+  for (const field of PUBLIC_OUTFIT_RESPONSE_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(outfit || {}, field)) projected[field] = outfit[field];
+  }
+  if (projected.copyContract && typeof projected.copyContract === 'object') {
+    projected.copyContract = projectPublicCopyContract(projected.copyContract);
+  }
+  if (Array.isArray(projected.items)) projected.items = projected.items.map(projectRecommendationResponseItem);
+  return projected;
+}
+
+function projectPublicCopyContract(contract) {
+  const projected = { ...contract };
+  for (const field of [
+    'factEvidence', 'factRecords', 'factsWithSource', 'coreEligibilityEvidence',
+    'eligibilityEvidence', 'evidence', 'evidenceFacts', 'sourceFacts', 'facts',
+    'presentationFactSignature', 'internalFactSignature', 'debug', 'audit',
+  ]) delete projected[field];
+  return projected;
+}
+
+// Raw fact records are required by candidate generation and QA, but are not a
+// client response contract. The copy contract and scalar item facts remain;
+// removing the repeated evidence carrier prevents the same wardrobe facts
+// being serialized once per card and again in every nested diagnostic model.
+function projectRecommendationResponseItem(item) {
+  if (!item || typeof item !== 'object') return item;
+  const projected = {};
+  for (const field of [
+    'clothingId', 'category', 'subcategory', 'imageUrl', 'displayImageUrl', 'thumbnailUrl',
+    'colorPalette', 'isDeleted', 'confidence', 'recognitionConfidence', 'aiConfidence',
+    'factConfidence', 'fit', 'silhouette', 'shoulderFit', 'shoulderLine', 'sleeveLength',
+    'sleeve', 'pantsLength', 'patternType', 'styleComplexity', 'thickness', 'material',
+    'neckline', 'collar', 'closure', 'shoeClosure', 'shoeType', 'materialGuess', 'userEdited',
+    'fieldSource', 'styleTags', 'sceneTags',
+  ]) {
+    if (Object.prototype.hasOwnProperty.call(item, field)) projected[field] = item[field];
+  }
+  return projected;
+}
+
+function projectSnapshotItemsForCardPreparation(items) {
+  return (Array.isArray(items) ? items : []).map((item) => ({
+    itemId: item.itemId,
+    name: item.name,
+    category: item.category,
+    color: item.color,
+    imageUrl: item.imageUrl,
+    displayImageUrl: item.displayImageUrl,
+    thumbnailUrl: item.thumbnailUrl,
+    isDeleted: Boolean(item.isDeleted),
+  }));
+}
+
 function createRecommendationDiagnostics(event = {}, handlerStartAt = Date.now()) {
   return {
     auditId: readAuditId(event.auditId),
     stage: 'received',
     startedAt: handlerStartAt,
-    diagnosticsRequested: event.diagnostics === true,
+    diagnosticsRequested: event.diagnostics === true || event.performanceDiagnostics === true,
+    performanceOnly: event.performanceDiagnostics === true,
     handlerStartAt,
     snapshotPayloadBytes: 0,
     candidatePoolPayloadBytes: 0,
@@ -898,6 +1063,15 @@ function createRecommendationDiagnostics(event = {}, handlerStartAt = Date.now()
       enrichMs: 0,
       exposureMs: 0,
       presentationEvidenceMs: 0,
+      cardPreparation: {
+        canonicalRecommendationConstructionMs: 0,
+        factPresentationPreparationMs: 0,
+        finalizationMs: 0,
+        canonicalizationMs: 0,
+        snapshotInputConstructionMs: 0,
+        cloneSerializeMs: 0,
+        idMappingMs: 0,
+      },
       serializationMs: 0,
       totalMs: 0,
     },
@@ -1003,26 +1177,31 @@ function compileRecommendationsForResponse({
 }) {
   diagnostics.stage = 'cardCompilation';
   const startedAt = Date.now();
+  const constructionStartedAt = Date.now();
+  const tempOutfits = recommendations.map((recommendation) =>
+    toTempOutfit(recommendation, {
+      openid,
+      scene,
+      targetDate,
+      timeOfDay,
+      weather,
+      weatherMode,
+      now,
+      recommendationBatchId,
+    }),
+  );
+  diagnostics.timings.cardPreparation.canonicalRecommendationConstructionMs = Date.now() - constructionStartedAt;
+  const factPreparationStartedAt = Date.now();
   const compiledOutfits = compileRecommendationLanguageV3({
-    outfits: recommendations.map((recommendation) =>
-      toTempOutfit(recommendation, {
-        openid,
-        scene,
-        targetDate,
-        timeOfDay,
-        weather,
-        weatherMode,
-        now,
-        recommendationBatchId,
-      }),
-    ),
+    outfits: tempOutfits,
     scene,
     weather,
   });
+  diagnostics.timings.cardPreparation.factPresentationPreparationMs = Date.now() - factPreparationStartedAt;
   assertEligibilityReasons(compiledOutfits, { node: 'beforeFinalization', scene, weather });
+  diagnostics.timings.cardPreparation.finalizationMs = 0;
   diagnostics.timings.cardCompilationMs = Date.now() - startedAt;
-  recordServerPhase(diagnostics, 'cardCompilation', startedAt);
-  return compiledOutfits;
+  return { compiledOutfits, startedAt };
 }
 
 function readAuditId(value) {
@@ -1232,11 +1411,13 @@ function finalizeRecommendationResponse({
   recordServerPhase(diagnostics, 'responseSerialization', serializationStartedAt);
   diagnostics.timings.totalMs = Date.now() - diagnostics.startedAt;
   recordServerPhase(diagnostics, 'handlerEnd', diagnostics.startedAt);
-  if (diagnostics.diagnosticsRequested === true) responseData.debug.phaseLedger = diagnostics.phases;
+  if (diagnostics.diagnosticsRequested === true && diagnostics.performanceOnly !== true) {
+    responseData.debug.phaseLedger = diagnostics.phases;
+  }
   syncRecommendationResponseDiagnostics(responseData, diagnostics.timings, budget, qaResult?.clientAudit);
   if (diagnostics.diagnosticsRequested === true) {
     responseData.diagnostics = {
-      performance: buildRecommendationPerformanceLedger(diagnostics, budget),
+      performance: buildRecommendationPerformanceLedger(diagnostics, budget, responseData),
     };
   }
   budget = measureRecommendationResponse(responseData);
@@ -1245,6 +1426,13 @@ function finalizeRecommendationResponse({
     budget = measureRecommendationResponse(responseData);
   }
   syncRecommendationResponseDiagnostics(responseData, diagnostics.timings, budget, qaResult?.clientAudit);
+  if (diagnostics.performanceOnly === true || diagnostics.diagnosticsRequested !== true) {
+    stripResponseDiagnosticsForBusinessResponse(responseData, { performanceOnly: diagnostics.performanceOnly === true });
+    budget = measureRecommendationResponse(responseData);
+    if (responseData.diagnostics?.performance) {
+      responseData.diagnostics.performance.responsePayloadBytes = budget.totalDataBytes;
+    }
+  }
   emitRecommendationServerDone({
     auditId: diagnostics.auditId,
     scene: responseData.scene,
@@ -1260,7 +1448,7 @@ function finalizeRecommendationResponse({
   return responseData;
 }
 
-function buildRecommendationPerformanceLedger(diagnostics, budget) {
+function buildRecommendationPerformanceLedger(diagnostics, budget, responseData) {
   const phases = Array.isArray(diagnostics.phases)
     ? diagnostics.phases.map((phase) => ({
         phase: String(phase.phase || ''),
@@ -1300,6 +1488,17 @@ function buildRecommendationPerformanceLedger(diagnostics, budget) {
     snapshotPayloadBytes: Math.max(0, Number(diagnostics.snapshotPayloadBytes) || 0),
     candidatePoolPayloadBytes: Math.max(0, Number(diagnostics.candidatePoolPayloadBytes) || 0),
     responsePayloadBytes: Math.max(0, Number(budget?.totalDataBytes) || 0),
+    candidateMetrics: diagnostics.candidateMetrics || {},
+    cardPreparation: {
+      ...compactPerformanceNumbers(diagnostics.timings?.cardPreparation),
+      toTempOutfitMs: Number(diagnostics.timings?.cardPreparation?.canonicalRecommendationConstructionMs) || 0,
+      compileRecommendationLanguageV3Ms: Number(diagnostics.timings?.cardPreparation?.factPresentationPreparationMs) || 0,
+      finalizeAcceptedRecommendationsMs: Number(diagnostics.timings?.cardPreparation?.finalizationMs) || 0,
+      canonicalizeRecommendationBatchMs: Number(diagnostics.timings?.cardPreparation?.canonicalizationMs) || 0,
+      snapshotSerializeInputMs: Number(diagnostics.timings?.cardPreparation?.snapshotInputConstructionMs) || 0,
+      idMappingMs: Number(diagnostics.timings?.cardPreparation?.idMappingMs) || 0,
+    },
+    businessPayloadByteBreakdown: measureRecommendationResponseBreakdown(responseData, 20),
     cardCompilationStartDelayMs: candidateGeneration && cardCompilation
       ? Math.max(0, cardCompilation.startAt - candidateGeneration.endAt)
       : 0,
@@ -1333,6 +1532,14 @@ function syncRecommendationResponseDiagnostics(data, timings, budget, qaBatchAud
   qaBatchAudit.responseBytes = { ...budget };
 }
 
+function stripResponseDiagnosticsForBusinessResponse(data, { performanceOnly = false } = {}) {
+  if (!data?.debug || typeof data.debug !== 'object') return;
+  for (const field of [
+    'timings', 'responseBytes', 'phaseLedger', 'snapshotPersistence', 'databaseOps',
+  ]) delete data.debug[field];
+  if (performanceOnly) delete data.debug.candidatePoolSaveReason;
+}
+
 function measureRecommendationResponse(data) {
   const eligibilityRejectionAuditBytes = data.qaBatchAudit?.eligibilityRejectionAudit?.serializedBytes;
   return {
@@ -1344,6 +1551,32 @@ function measureRecommendationResponse(data) {
       ? { eligibilityRejectionAuditBytes }
       : {}),
   };
+}
+
+function measureRecommendationResponseFields(data) {
+  const source = data && typeof data === 'object' ? data : {};
+  return Object.fromEntries(Object.entries(source).map(([key, value]) => [key, serializedBytes(value)]));
+}
+
+function measureRecommendationResponseBreakdown(value, limit = 20) {
+  const rows = [];
+  const visit = (current, path) => {
+    if (!current || typeof current !== 'object') return;
+    for (const [key, child] of Object.entries(current)) {
+      const childPath = `${path}.${key}`;
+      rows.push({ path: childPath, bytes: serializedBytes(child === undefined ? null : child) });
+      if (child && typeof child === 'object' && !Array.isArray(child)) visit(child, childPath);
+      if (Array.isArray(child)) {
+        child.forEach((item, index) => {
+          const itemPath = `${childPath}[${index + 1}]`;
+          rows.push({ path: itemPath, bytes: serializedBytes(item === undefined ? null : item) });
+          if (item && typeof item === 'object' && !Array.isArray(item)) visit(item, itemPath);
+        });
+      }
+    }
+  };
+  visit(value, 'response');
+  return rows.sort((left, right) => right.bytes - left.bytes || left.path.localeCompare(right.path)).slice(0, limit);
 }
 
 function truncateQaForResponseBudget(audit) {
@@ -1367,7 +1600,7 @@ function emitRecommendationServerDone({ auditId, scene, debug, budget, rejection
     rejected: debug.rejectedCount,
     selected: debug.selectedCount,
     topRejectionReasons: topRejectionReasons(rejectionReasonCounts),
-    totalMs: debug.timings.totalMs,
+    totalMs: debug.timings?.totalMs ?? null,
     responseBytes: budget.totalDataBytes,
     qaBytes: budget.qaBytes,
     buildVersion: CLOUD_BUILD_VERSION,
@@ -3528,6 +3761,7 @@ async function upsertRecommendationOutfitsBatch({
   openid,
   bases,
   now,
+  availableClothingIds,
   operationCounts,
 }) {
   const inputStartedAt = Date.now();
@@ -3545,6 +3779,8 @@ async function upsertRecommendationOutfitsBatch({
       transactionMs: 0,
       responseWaitMs: 0,
       dbRoundTrips: 0,
+      writeRoundTrips: 0,
+      logicalWrites: 0,
       payloadBytes: 0,
       },
     });
@@ -3560,22 +3796,79 @@ async function upsertRecommendationOutfitsBatch({
     snapshot.serializationMs = Date.now() - serializationStartedAt;
   }
 
-  const transactionStartedAt = Date.now();
-  const result = await runOutfitReferenceTransaction(async (transaction) => {
-    const queryReadStartedAt = Date.now();
+  // Existing recommendation references do not need a transaction: the update
+  // payload below is recommendation-owned only and never writes user state.
+  // Read once, then use a small concurrency window to avoid the serial
+  // transaction write latency on the hot retry path. New/mixed batches keep
+  // the transactional path because their add/update decision is not atomic
+  // outside a transaction.
+  if (Array.isArray(availableClothingIds)) {
+    const existingReadStartedAt = Date.now();
     if (operationCounts) operationCounts.reads += 1;
+    let existingResponse;
     try {
-      await assertOutfitClothesAvailable(openid, clothingIds, transaction);
+      existingResponse = await db.collection('outfits')
+        .where({ _openid: openid, outfitKey: db.command.in(uniqueStrings(outfitKeys)) })
+        .limit(100)
+        .get();
     } catch (error) {
       throw annotateOutfitReferenceCause(error, {
-        stage: 'clothes_validation_read',
+        stage: 'outfit_existing_read',
         operation: 'read',
-        collection: 'clothes',
+        collection: 'outfits',
       });
     }
-    if (snapshot) {
-      snapshot.queryReadMs += Date.now() - queryReadStartedAt;
-      snapshot.dbRoundTrips += 1;
+    const existingByKey = buildOutfitRecordMap(existingResponse.data);
+    if (existingByKey.size === records.length) {
+      if (snapshot) {
+        snapshot.queryReadMs += Date.now() - existingReadStartedAt;
+        snapshot.dbRoundTrips += 1;
+      }
+      let saved;
+      try {
+        saved = await updateExistingRecommendationReferences({
+          records,
+          outfitKeys,
+          existingByKey,
+          now,
+          operationCounts,
+        });
+      } catch (error) {
+        if (error?.businessCode) throw error;
+        const wrapped = createBusinessError('OUTFIT_REFERENCE_WRITE_FAILED', '鎿嶄綔鏆傛椂澶辫触锛岃绋嶅悗鍐嶈瘯');
+        wrapped.cause = serializeOutfitReferenceCause(error, {
+          stage: error?.outfitReferenceStage || 'outfit_recommendation_update',
+        });
+        throw wrapped;
+      }
+      if (snapshot) {
+        snapshot.transactionMs = Date.now() - existingReadStartedAt;
+        snapshot.responseWaitMs = Math.max(0, snapshot.transactionMs - snapshot.queryReadMs - snapshot.writeMs);
+      }
+      return saved;
+    }
+  }
+
+  const transactionStartedAt = Date.now();
+  const result = await runOutfitReferenceTransaction(async (transaction) => {
+    if (Array.isArray(availableClothingIds)) {
+      assertAvailableClothingIds(clothingIds, availableClothingIds);
+    } else {
+      const queryReadStartedAt = Date.now();
+      if (operationCounts) operationCounts.reads += 1;
+      try {
+        await assertOutfitClothesAvailable(openid, clothingIds, transaction);
+      } catch (error) {
+        throw annotateOutfitReferenceCause(error, {
+          stage: 'clothes_validation_read',
+          operation: 'read',
+          collection: 'clothes',
+        });
+      }
+      if (snapshot) {
+        snapshot.queryReadMs += Date.now() - queryReadStartedAt;
+        snapshot.dbRoundTrips += 1;
+      }
     }
 
     const existingReadStartedAt = Date.now();
@@ -3600,6 +3893,8 @@ async function upsertRecommendationOutfitsBatch({
     const existingByKey = buildOutfitRecordMap(existingResponse.data);
 
     const saved = [];
+    const pendingUpdates = [];
+    const pendingAdds = [];
     for (let index = 0; index < records.length; index += 1) {
       const base = records[index];
       const outfitKey = outfitKeys[index];
@@ -3611,54 +3906,94 @@ async function upsertRecommendationOutfitsBatch({
         current,
       });
       if (operationCounts) operationCounts.writes += 1;
-      const writeStartedAt = Date.now();
+      if (snapshot) snapshot.logicalWrites += 1;
       if (current) {
-        try {
-          await transaction.collection('outfits').doc(current._id).update({
-            data: buildOutfitReferenceUpdatePayload(data),
-          });
-        } catch (error) {
-          throw annotateOutfitReferenceCause(error, {
-            stage: 'outfit_update',
-            operation: 'update',
-            collection: 'outfits',
-            documentId: current._id,
-            outfitKey,
-          });
-        }
-        const updated = { ...current, ...data };
-        existingByKey.set(outfitKey, updated);
-        saved.push(updated);
-        if (snapshot) {
-          snapshot.writeMs += Date.now() - writeStartedAt;
-          snapshot.payloadBytes += serializedBytes(data);
-          snapshot.dbRoundTrips += 1;
-        }
-        continue;
-      }
-      const addData = {
-        _openid: openid,
-        ...data,
-        createdAt: now,
-      };
-      try {
-        const addRes = await transaction.collection('outfits').add({ data: addData });
-        const added = { ...addData, _id: addRes._id };
-        existingByKey.set(outfitKey, added);
-        saved.push(added);
-        if (snapshot) {
-          snapshot.writeMs += Date.now() - writeStartedAt;
-          snapshot.payloadBytes += serializedBytes(addData);
-          snapshot.dbRoundTrips += 1;
-        }
-      } catch (error) {
-        throw annotateOutfitReferenceCause(error, {
-          stage: 'outfit_add',
-          operation: 'add',
-          collection: 'outfits',
+        pendingUpdates.push({ current, data, outfitKey });
+      } else {
+        pendingAdds.push({
           outfitKey,
+          data: {
+            _id: buildRecommendationOutfitDocumentId(openid, outfitKey),
+            _openid: openid,
+            ...data,
+            createdAt: now,
+          },
         });
       }
+    }
+
+    for (const pending of pendingUpdates) {
+      const writeStartedAt = Date.now();
+      try {
+        await transaction.collection('outfits').doc(pending.current._id).update({
+          data: buildOutfitReferenceUpdatePayload(pending.data),
+        });
+      } catch (error) {
+        throw annotateOutfitReferenceCause(error, {
+          stage: 'outfit_update',
+          operation: 'update',
+          collection: 'outfits',
+          documentId: pending.current._id,
+          outfitKey: pending.outfitKey,
+        });
+      }
+      const updated = { ...pending.current, ...pending.data };
+      existingByKey.set(pending.outfitKey, updated);
+      if (snapshot) {
+        snapshot.writeMs += Date.now() - writeStartedAt;
+        snapshot.payloadBytes += serializedBytes(pending.data);
+        snapshot.writeRoundTrips += 1;
+        snapshot.dbRoundTrips += 1;
+      }
+    }
+
+    if (pendingAdds.length > 0) {
+      const writeStartedAt = Date.now();
+      const addData = pendingAdds.map((pending) => pending.data);
+      let addRes;
+      try {
+        addRes = await transaction.collection('outfits').add({ data: addData });
+      } catch (error) {
+        throw annotateOutfitReferenceCause(error, {
+          stage: 'outfit_batch_add',
+          operation: 'batch_add',
+          collection: 'outfits',
+          outfitKey: pendingAdds[0]?.outfitKey,
+        });
+      }
+      const returnedIds = Array.isArray(addRes?._ids)
+        ? addRes._ids
+        : (addRes?._id ? [addRes._id] : []);
+      if (returnedIds.length !== pendingAdds.length) {
+        throw annotateOutfitReferenceCause(new Error('batch add did not return one id per outfit'), {
+          stage: 'outfit_batch_add_result',
+          operation: 'batch_add',
+          collection: 'outfits',
+          expected: pendingAdds.length,
+          actual: returnedIds.length,
+        });
+      }
+      pendingAdds.forEach((pending, index) => {
+        const added = { ...pending.data, _id: returnedIds[index] };
+        existingByKey.set(pending.outfitKey, added);
+        saved.push(added);
+        if (snapshot) {
+          snapshot.payloadBytes += serializedBytes(addData[index]);
+        }
+      });
+      if (snapshot) {
+        snapshot.writeMs += Date.now() - writeStartedAt;
+        snapshot.writeRoundTrips += 1;
+        snapshot.dbRoundTrips += 1;
+      }
+    }
+
+    pendingUpdates.forEach((pending) => {
+      saved.push(existingByKey.get(pending.outfitKey));
+    });
+    saved.sort((left, right) => outfitKeys.indexOf(left.outfitKey) - outfitKeys.indexOf(right.outfitKey));
+    if (snapshot) {
+      snapshot.logicalWrites = records.length;
     }
     return saved;
   });
@@ -3669,6 +4004,84 @@ async function upsertRecommendationOutfitsBatch({
   return result;
 }
 
+const RECOMMENDATION_OWNED_REFERENCE_FIELDS = [
+  'title', 'clothingIds', 'outfitKey', 'snapshotItems', 'incomplete', 'deletedItemCount',
+  'scene', 'targetDate', 'timeOfDay', 'weather', 'weatherSnapshot', 'weatherMode',
+  'eligibility', 'eligibilityReason', 'scores', 'aestheticEvaluation', 'scoreExplanations',
+  'generationType', 'source', 'recommendationBatchId', 'generatedAt', 'styleTags', 'reason',
+  'reasoning', 'reasonVersion', 'presentationPlan', 'copyContract', 'copyContractVersion',
+  'voiceBankVersion', 'selectedDifferentiator', 'contentPlan', 'updatedAt',
+];
+
+function buildRecommendationOwnedReferenceUpdatePayload(data) {
+  const payload = {};
+  for (const field of RECOMMENDATION_OWNED_REFERENCE_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(data || {}, field)) payload[field] = data[field];
+  }
+  return buildOutfitReferenceUpdatePayload(payload);
+}
+
+async function updateExistingRecommendationReferences({
+  records,
+  outfitKeys,
+  existingByKey,
+  now,
+  operationCounts,
+}) {
+  const pending = records.map((base, index) => {
+    const outfitKey = outfitKeys[index];
+    const current = existingByKey.get(outfitKey);
+    const data = buildOutfitSaveData(base, { outfitKey, now, patch: {}, current });
+    return { current, data, outfitKey };
+  });
+  const saved = new Array(pending.length);
+  let nextIndex = 0;
+  const worker = async () => {
+    while (nextIndex < pending.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      const item = pending[index];
+      if (operationCounts) operationCounts.writes += 1;
+      const writeStartedAt = Date.now();
+      try {
+        // Keep each update independent; the production SDK supplies the I/O
+        // yield that lets the worker window overlap network round trips.
+        await db.collection('outfits').doc(item.current._id).update({
+          data: buildRecommendationOwnedReferenceUpdatePayload(item.data),
+        });
+      } catch (error) {
+        throw annotateOutfitReferenceCause(error, {
+          stage: 'outfit_recommendation_update',
+          operation: 'update',
+          collection: 'outfits',
+          documentId: item.current._id,
+          outfitKey: item.outfitKey,
+        });
+      }
+      if (operationCounts?.snapshot) {
+        operationCounts.snapshot.writeMs += Date.now() - writeStartedAt;
+        operationCounts.snapshot.writeRoundTrips += 1;
+        operationCounts.snapshot.dbRoundTrips += 1;
+        operationCounts.snapshot.logicalWrites += 1;
+        operationCounts.snapshot.payloadBytes += serializedBytes(item.data);
+      }
+      saved[index] = { ...item.current, ...item.data };
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(3, pending.length) }, () => worker()));
+  return saved;
+}
+
+function assertAvailableClothingIds(expectedIds, availableIds) {
+  const available = new Set(uniqueStrings(availableIds));
+  if (expectedIds.some((id) => !available.has(id))) {
+    throw createBusinessError(
+      'OUTFIT_CONTAINS_DELETED_CLOTHES',
+      '杩欏鎼厤鏈夎。鐗╁凡绉诲嚭琛ｆ┍锛屾殏鏃朵笉鑳界户缁娇鐢?',
+    );
+  }
+}
+
 async function findOutfitByKey(openid, outfitKey, database = db) {
   const res = await database.collection('outfits').where({ _openid: openid, outfitKey }).limit(1).get();
   return res.data[0] || null;
@@ -3676,6 +4089,10 @@ async function findOutfitByKey(openid, outfitKey, database = db) {
 
 function readBaseClothingIds(base) {
   return base && Array.isArray(base.clothingIds) ? base.clothingIds : [];
+}
+
+function buildRecommendationOutfitDocumentId(openid, outfitKey) {
+  return `recommendation-${sha256(`${openid}|${outfitKey}`).slice(0, 24)}`;
 }
 
 function buildSnapshotItems(clothingIds, base, current) {
@@ -3900,6 +4317,7 @@ function toTempOutfit(recommendation, context) {
   const outfit = attachAestheticEvaluation(toOutfit(data, recommendation.items), recommendation.items);
   return {
     ...outfit,
+    snapshotItems: projectSnapshotItemsForCardPreparation(outfit.snapshotItems),
     cardViewModel: buildOutfitCardViewModel(outfit),
   };
 }
@@ -5358,6 +5776,7 @@ if (process.env.NODE_ENV === 'test') {
   exports.__test = {
     PRESENTATION_FACT_MODEL_BUILD,
     buildRecommendationResponseData,
+    projectRecommendationResponseOutfits,
     buildOutfitSaveData,
     buildOutfitReferenceUpdatePayload,
     buildSnapshotRecordData,
@@ -5366,12 +5785,15 @@ if (process.env.NODE_ENV === 'test') {
     createRecommendationDiagnostics,
     recordServerPhase,
     finalizeRecommendationResponse,
+    measureRecommendationResponseBreakdown,
+    stripResponseDiagnosticsForBusinessResponse,
     finalizeFullComputeAfterPoolPersist,
     attachPresentationEvidenceDebug,
     buildPresentationEvidence,
     generateCandidatePoolRecommendations,
     upsertRecommendationOutfitsBatch,
     measureRecommendationResponse,
+    measureRecommendationResponseFields,
     normalizeOutfitPayload,
     generateRuleRecommendations,
     assertEligibilityReasons,

@@ -669,12 +669,14 @@ export async function generateCloudOutfit(params: RecommendRequest = {}) {
   // A diagnostic response is deliberately never served from or written to the
   // recommendation cache: the returned ledger must describe this invocation.
   let ttl = hasExclusions ? 0 : CACHE_TTL.outfit;
-  if (params.diagnostics === true) ttl = 0;
+  if (params.diagnostics === true || params.performanceDiagnostics === true) ttl = 0;
   const requestPayload: Record<string, unknown> = {
     ...params,
     auditId: params.auditId || createRecommendationAuditId('cloud'),
   };
-  if (isRecommendationDiagnosticEnvironment() && !requestPayload.debugRecommendationAudit) {
+  if (isRecommendationDiagnosticEnvironment()
+    && !requestPayload.debugRecommendationAudit
+    && requestPayload.performanceDiagnostics !== true) {
     requestPayload.debugRecommendationAudit = true;
   }
   const {
@@ -702,7 +704,7 @@ export async function generateCloudOutfit(params: RecommendRequest = {}) {
       generateOutfitWrapperEnd: Date.now(),
     });
   }
-  if (params.diagnostics === true) {
+  if (params.diagnostics === true || params.performanceDiagnostics === true) {
     const performance = result?.diagnostics?.performance;
     if (performance && typeof performance === 'object') {
       Taro.setStorageSync(GENERATE_OUTFIT_PERFORMANCE_ARTIFACT_KEY, performance);

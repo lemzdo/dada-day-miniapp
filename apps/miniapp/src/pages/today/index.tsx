@@ -138,6 +138,7 @@ interface ClientImageTiming {
   auditId: string;
   cloudRoundTripMs: number;
   clientApplyMs: number;
+  transport: ReturnType<typeof getCloudResponseTransportDiagnostics>;
   requestedImageCount: number;
   resolvedImageCount: number;
   applyFinishedAt: number;
@@ -562,6 +563,8 @@ export default function TodayPage() {
       });
       const cloudRoundTripMs = Date.now() - cloudRequestStartedAt;
       const responseReceivedAt = Date.now();
+      const transport = getCloudResponseTransportDiagnostics(data);
+      markTodayPerformanceStage('responseAdaptStart');
       markTodayPerformanceStage('generateOutfitResponseEnd');
       markTodayPerformanceStage('auditId', getRecommendationAuditId(data, auditId));
       markTodayPerformanceStage('executionMode', data.debug?.executionMode ?? 'COLD');
@@ -671,6 +674,7 @@ export default function TodayPage() {
         auditId: getRecommendationAuditId(data, auditId),
         cloudRoundTripMs,
         clientApplyMs: Date.now() - responseReceivedAt,
+        transport,
         firstOutfit: nextOutfits[0],
       });
       return true;
@@ -753,6 +757,7 @@ export default function TodayPage() {
       });
       const cloudRoundTripMs = Date.now() - cloudRequestStartedAt;
       const responseReceivedAt = Date.now();
+      const transport = getCloudResponseTransportDiagnostics(data);
 
       if (!isRecommendationIntentCurrent(intent) || !isAuthContextCurrent(authContext)) return;
       const currentInputSignature = getRecommendationInputSignature({
@@ -838,6 +843,7 @@ export default function TodayPage() {
           auditId: getRecommendationAuditId(data, auditId),
           cloudRoundTripMs,
           clientApplyMs: Date.now() - responseReceivedAt,
+          transport,
           firstOutfit: nextOutfits[0],
         });
         trackOutfitBehaviorEvent(behaviorTrackerRef.current.buildBatchRefreshEvent({
@@ -910,6 +916,7 @@ export default function TodayPage() {
           auditId: getRecommendationAuditId(data, auditId),
           cloudRoundTripMs,
           clientApplyMs: Date.now() - responseReceivedAt,
+          transport,
           firstOutfit: undefined,
         });
       }
@@ -1882,6 +1889,7 @@ export default function TodayPage() {
       requestedCandidatePoolIdLength: readDebugNumber(debug?.requestedCandidatePoolIdLength ?? qaAudit?.requestedCandidatePoolIdLength),
       timings: debug?.timings ?? qaAudit?.timings ?? {},
       responseBytes: debug?.responseBytes ?? qaAudit?.responseBytes ?? {},
+      transport: getCloudResponseTransportDiagnostics(data),
       qaEnabled: Boolean(data.qaBatchAudit),
     });
   }
@@ -1909,11 +1917,13 @@ export default function TodayPage() {
     auditId,
     cloudRoundTripMs,
     clientApplyMs,
+    transport,
     firstOutfit,
   }: {
     auditId: string;
     cloudRoundTripMs: number;
     clientApplyMs: number;
+    transport: ReturnType<typeof getCloudResponseTransportDiagnostics>;
     firstOutfit?: Outfit;
   }) {
     if (!isRecommendationDiagnosticEnvironment()) return;
@@ -1925,6 +1935,7 @@ export default function TodayPage() {
       auditId,
       cloudRoundTripMs,
       clientApplyMs,
+      transport,
       requestedImageCount,
       resolvedImageCount: 0,
       applyFinishedAt: Date.now(),
@@ -1957,6 +1968,7 @@ export default function TodayPage() {
         imageTimeout,
         requestedImageCount: timing.requestedImageCount,
         resolvedImageCount: timing.resolvedImageCount,
+        transport: timing.transport,
       },
     });
   }

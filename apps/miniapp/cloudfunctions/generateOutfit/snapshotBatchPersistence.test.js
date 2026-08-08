@@ -89,7 +89,8 @@ function createBatchDatabase(clothes, options = {}) {
           async update({ data }) {
               operations.activeWrites += 1;
               operations.maxConcurrentWrites = Math.max(operations.maxConcurrentWrites, operations.activeWrites);
-              if (operations.activeWrites > 1) {
+              if (options.writeDelayMs) await new Promise((resolve) => setTimeout(resolve, options.writeDelayMs));
+              if (operations.activeWrites > 1 && !options.allowConcurrentWrites) {
                 operations.activeWrites -= 1;
                 const error = new Error('database.updateDocInTransaction: exceed concurrent request limit');
                 error.errCode = -501004;
@@ -132,15 +133,15 @@ function createBatchDatabase(clothes, options = {}) {
           }
           operations.adds += 1;
           try {
-            if (options.failAtWrite && operations.updates + operations.adds === options.failAtWrite) {
+            if (options.failBatchAdd || (options.failAtWrite && operations.updates + operations.adds === options.failAtWrite)) {
               const error = new Error('database.insertDocument: injected failure');
               error.errCode = -502001;
               throw error;
             }
-            const _id = `outfit-${nextId}`;
-            nextId += 1;
-            outfits.push({ ...data, _id });
-            return { _id };
+            const rows = Array.isArray(data) ? data : [data];
+            const ids = rows.map((row) => row._id || `outfit-${nextId++}`);
+            rows.forEach((row, index) => outfits.push({ ...row, _id: ids[index] }));
+            return Array.isArray(data) ? { _ids: ids } : { _id: ids[0] };
           } finally {
             operations.activeWrites -= 1;
           }
@@ -211,7 +212,7 @@ test('recommendation snapshots use one transaction and two reads while preservin
   assert.deepEqual(firstCounts, { reads: 2, writes: 8 });
   assert.equal(operations.transactions, 1);
   assert.equal(operations.reads, 2);
-  assert.equal(operations.adds, 8);
+  assert.equal(operations.adds, 1);
   assert.equal(operations.maxConcurrentWrites, 1);
   assert.equal(outfits.length, 8);
 
@@ -225,7 +226,7 @@ test('recommendation snapshots use one transaction and two reads while preservin
   assert.deepEqual(retry.map((record) => record._id), first.map((record) => record._id));
   assert.deepEqual(retryCounts, { reads: 2, writes: 8 });
   assert.equal(operations.transactions, 2);
-  assert.equal(operations.adds, 8);
+  assert.equal(operations.adds, 1);
   assert.equal(operations.updates, 8);
   assert.equal(outfits.length, 8);
 });
@@ -277,7 +278,128 @@ test('mixed existing and new references update and add without changing keys', a
   assert.equal(new Set(saved.map((record) => record.outfitKey)).size, 3);
   assert.equal(outfits.length, 3);
   assert.equal(operations.updates, 1);
-  assert.equal(operations.adds, 3);
+  assert.equal(operations.adds, 2);
+});
+
+test('snapshot persistence round-trips are explicit for all-new, all-existing, and mixed batches', async () => {
+  const bases = buildBases(8);
+  const clothingIds = [...new Set(bases.flatMap((base) => base.clothingIds))];
+  const clothes = clothingIds.map((_id) => ({
+    _id,
+    _openid: 'snapshot-batch-user',
+    status: 'active',
+  }));
+  const { database, operations, outfits } = createBatchDatabase(clothes);
+  const entry = loadEntryWithDatabase(database);
+
+  const allNewCounts = { reads: 0, writes: 0 };
+  await entry.__test.upsertRecommendationOutfitsBatch({
+    openid: 'snapshot-batch-user',
+    bases,
+    now: '2026-07-30T00:00:00.000Z',
+    availableClothingIds: clothingIds,
+    operationCounts: allNewCounts,
+  });
+  assert.equal(allNewCounts.snapshot.dbRoundTrips, 2);
+  assert.equal(allNewCounts.snapshot.writeRoundTrips, 1);
+
+  const allExistingCounts = { reads: 0, writes: 0 };
+  await entry.__test.upsertRecommendationOutfitsBatch({
+    openid: 'snapshot-batch-user',
+    bases,
+    now: '2026-07-30T00:01:00.000Z',
+    availableClothingIds: clothingIds,
+    operationCounts: allExistingCounts,
+  });
+  assert.equal(allExistingCounts.snapshot.dbRoundTrips, 9);
+  assert.equal(allExistingCounts.snapshot.writeRoundTrips, 8);
+
+  const mixedCounts = { reads: 0, writes: 0 };
+  await entry.__test.upsertRecommendationOutfitsBatch({
+    openid: 'snapshot-batch-user',
+    bases: [...bases.slice(0, 4), ...buildBases(4, 8)],
+    now: '2026-07-30T00:02:00.000Z',
+    availableClothingIds: [...clothingIds, ...buildBases(4, 8).flatMap((base) => base.clothingIds)],
+    operationCounts: mixedCounts,
+  });
+  assert.equal(mixedCounts.snapshot.dbRoundTrips, 6);
+  assert.equal(mixedCounts.snapshot.writeRoundTrips, 5);
+  assert.equal(operations.adds, 2);
+  assert.equal(operations.updates, 12);
+  assert.equal(outfits.length, 12);
+});
+
+test('all-existing recommendation snapshots use one read and controlled parallel owned-field updates', async () => {
+  const bases = buildBases(8);
+  const clothingIds = [...new Set(bases.flatMap((base) => base.clothingIds))];
+  const clothes = clothingIds.map((_id) => ({ _id, _openid: 'snapshot-batch-user', status: 'active' }));
+  const { database, operations, outfits } = createBatchDatabase(clothes, { allowConcurrentWrites: true, writeDelayMs: 2 });
+  const entry = loadEntryWithDatabase(database);
+  const first = await entry.__test.upsertRecommendationOutfitsBatch({
+    openid: 'snapshot-batch-user',
+    bases,
+    now: '2026-07-30T00:00:00.000Z',
+    availableClothingIds: clothingIds,
+  });
+  const userState = {
+    userTitle: '我的通勤套装',
+    isFavorite: true,
+    favoritedAt: '2026-07-29T00:00:00.000Z',
+    wornAt: '2026-07-29T00:00:00.000Z',
+    wornDate: '2026-07-29',
+    isWornToday: false,
+  };
+  Object.assign(outfits[0], userState);
+
+  const counts = { reads: 0, writes: 0 };
+  const retry = await entry.__test.upsertRecommendationOutfitsBatch({
+    openid: 'snapshot-batch-user',
+    bases,
+    now: '2026-07-30T00:01:00.000Z',
+    availableClothingIds: clothingIds,
+    operationCounts: counts,
+  });
+
+  assert.deepEqual(retry.map((record) => record._id), first.map((record) => record._id));
+  assert.equal(counts.reads, 1);
+  assert.equal(counts.writes, 8);
+  assert.equal(counts.snapshot.dbRoundTrips, 9);
+  assert.equal(counts.snapshot.writeRoundTrips, 8);
+  assert.ok(operations.maxConcurrentWrites > 1);
+  assert.deepEqual(
+    Object.fromEntries(Object.keys(userState).map((key) => [key, outfits[0][key]])),
+    userState,
+  );
+});
+
+test('parallel existing recommendation update failure is surfaced with its reference cause', async () => {
+  const bases = buildBases(2);
+  const clothingIds = [...new Set(bases.flatMap((base) => base.clothingIds))];
+  const clothes = clothingIds.map((_id) => ({ _id, _openid: 'snapshot-batch-user', status: 'active' }));
+  const options = { allowConcurrentWrites: true, writeDelayMs: 2 };
+  const { database, operations } = createBatchDatabase(clothes, options);
+  const entry = loadEntryWithDatabase(database);
+  await entry.__test.upsertRecommendationOutfitsBatch({
+    openid: 'snapshot-batch-user',
+    bases,
+    now: '2026-07-30T00:00:00.000Z',
+    availableClothingIds: clothingIds,
+  });
+  options.failAtWrite = operations.updates + operations.adds + 1;
+  await assert.rejects(
+    entry.__test.upsertRecommendationOutfitsBatch({
+      openid: 'snapshot-batch-user',
+      bases,
+      now: '2026-07-30T00:01:00.000Z',
+      availableClothingIds: clothingIds,
+    }),
+    (error) => {
+      assert.equal(error.businessCode, 'OUTFIT_REFERENCE_WRITE_FAILED');
+      assert.equal(error.cause.stage, 'outfit_recommendation_update');
+      return true;
+    },
+  );
+  assert.equal(operations.transactions, 1);
 });
 
 test('nullable selectedDifferentiator is atomically replaced for existing outfit references', async () => {
@@ -375,7 +497,7 @@ test('a single write failure rolls back every reference and preserves the origin
   const bases = buildBases(3);
   const clothes = [...new Set(bases.flatMap((base) => base.clothingIds))]
     .map((_id) => ({ _id, _openid: 'snapshot-batch-user', status: 'active' }));
-  const { database, operations, outfits } = createBatchDatabase(clothes, { failAtWrite: 2 });
+  const { database, operations, outfits } = createBatchDatabase(clothes, { failBatchAdd: true });
   const entry = loadEntryWithDatabase(database);
 
   await assert.rejects(
@@ -387,8 +509,8 @@ test('a single write failure rolls back every reference and preserves the origin
     (error) => {
       assert.equal(error.businessCode, 'OUTFIT_REFERENCE_WRITE_FAILED');
       assert.equal(error.cause.errCode, -502001);
-      assert.equal(error.cause.stage, 'outfit_add');
-      assert.equal(error.cause.outfitKey, bases[1].clothingIds.slice().sort().join('_'));
+      assert.equal(error.cause.stage, 'outfit_batch_add');
+      assert.equal(error.cause.outfitKey, bases[0].clothingIds.slice().sort().join('_'));
       return true;
     },
   );

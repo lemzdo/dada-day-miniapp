@@ -23,7 +23,7 @@ export type TodayPerformanceStage =
   | 'statusApplyStart' | 'statusApplyEnd' | 'setOutfitsCalled'
   | 'reactCommitAfterOutfits' | 'firstCardMounted' | 'firstImageLoadStart'
   | 'firstImageLoaded' | 'generateOutfitRequestStart' | 'generateOutfitResponseEnd'
-  | 'responseAdaptEnd' | 'snapshotPersistStart' | 'snapshotPersistEnd'
+  | 'responseAdaptStart' | 'responseAdaptEnd' | 'snapshotPersistStart' | 'snapshotPersistEnd'
   | 'backgroundRefreshStart' | 'backgroundRefreshEnd' | 'finalCardCount'
   | 'generateOutfitRequestCount' | 'executionMode' | 'responseCode' | 'auditId'
   | 'runComplete';

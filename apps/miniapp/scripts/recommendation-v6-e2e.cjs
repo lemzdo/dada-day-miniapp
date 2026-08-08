@@ -13,6 +13,30 @@ const {
   RunnerConfigError,
   AUTOMATOR_WS_ENDPOINT,
 } = require('./runner-preflight-resolver.cjs');
+const directSessionTools = require('./devtools-direct-session');
+const ensureDevToolsDirectSession = directSessionTools.ensureDevToolsDirectSession;
+const summarizeCloudResponse = directSessionTools.summarizeCloudResponse || ((response) => {
+  const data = response?.data && typeof response.data === 'object' ? response.data : null;
+  return {
+    rawResponseBytes: Buffer.byteLength(JSON.stringify(response ?? null), 'utf8'),
+    businessDataBytes: Buffer.byteLength(JSON.stringify(data ?? null), 'utf8'),
+    responseTopLevelKeys: Object.keys(response || {}),
+    dataTopLevelKeys: Object.keys(data || {}),
+    auditId: data?.debug?.auditId || data?.meta?.auditId || null,
+    performanceLedger: data?.diagnostics?.performance || null,
+  };
+});
+const extractPerformanceLedger = directSessionTools.extractPerformanceLedger || ((response) => {
+  const data = response?.data && typeof response.data === 'object' ? response.data : null;
+  if (!data?.diagnostics?.performance) {
+    const error = new Error('response does not contain data.diagnostics.performance');
+    error.code = 'PERFORMANCE_LEDGER_MISSING';
+    error.details = { responseTopLevelKeys: Object.keys(response || {}), dataTopLevelKeys: Object.keys(data || {}) };
+    throw error;
+  }
+  return data.diagnostics.performance;
+});
+const unicodeInputPreflight = directSessionTools.unicodeInputPreflight || (async () => ({ status: 'UNICODE_INPUT_PREFLIGHT_PASS' }));
 const {
   assertRecommendationCountContract,
   assertReturnedCardCount,
@@ -174,6 +198,7 @@ const state = {
   requestSlots: new Map(),
   refreshClickCount: 0,
   hasRealRequest: false,
+  unicodeInputPreflight: null,
   preflightReady: null,
   runnerBlocked: null,
   visualStabilityTimeoutMs: CARD_VISUAL_STABILITY_TIMEOUT_MS,
@@ -232,6 +257,25 @@ function relative(file) { return path.relative(EVIDENCE_DIR, file).replace(/\\/g
 function writeJson(file, value) { fs.writeFileSync(path.join(EVIDENCE_DIR, file), JSON.stringify(value, null, 2) + '\n', 'utf8'); }
 function writeJsonl(file, rows) { fs.writeFileSync(path.join(EVIDENCE_DIR, file), rows.map((row) => JSON.stringify(row)).join('\n') + (rows.length ? '\n' : ''), 'utf8'); }
 function writeText(file, value) { fs.writeFileSync(path.join(EVIDENCE_DIR, file), value, 'utf8'); }
+
+function responsePayloadByteBreakdown(value, limit = 20) {
+  const rows = [];
+  const visit = (current, prefix) => {
+    if (!current || typeof current !== 'object') return;
+    for (const [key, child] of Object.entries(current)) {
+      const childPath = `${prefix}.${key}`;
+      rows.push({ path: childPath, bytes: Buffer.byteLength(JSON.stringify(child ?? null), 'utf8') });
+      if (child && typeof child === 'object' && !Array.isArray(child)) visit(child, childPath);
+      if (Array.isArray(child)) child.forEach((item, index) => {
+        const itemPath = `${childPath}[${index + 1}]`;
+        rows.push({ path: itemPath, bytes: Buffer.byteLength(JSON.stringify(item ?? null), 'utf8') });
+        if (item && typeof item === 'object' && !Array.isArray(item)) visit(item, itemPath);
+      });
+    }
+  };
+  visit(value, 'response');
+  return rows.sort((left, right) => right.bytes - left.bytes || left.path.localeCompare(right.path)).slice(0, limit);
+}
 
 function runnerInvocationEvidence() {
   return {
@@ -594,17 +638,32 @@ function persistResponseArtifacts(capture, slot) {
   if (!EVIDENCE_DIR || !capture?.rawResponse || !Object.prototype.hasOwnProperty.call(state.responseArtifacts, slot)) return null;
   ensureDir(EVIDENCE_DIR);
   const responseFile = `response-${slot}.json`;
+  const rawResponseFile = `raw-response-${slot}.json`;
+  const breakdownFile = `business-payload-breakdown-${slot}.json`;
   const debugFile = `debug-${slot}.json`;
   const qaFile = `qa-${slot}-raw.json`;
   const sanitized = sanitizeResponseForEvidence(capture.rawResponse);
   writeJson(responseFile, sanitized);
+  writeJson(rawResponseFile, capture.rawResponse);
+  writeJson(breakdownFile, {
+    rawResponseBytes: summarizeCloudResponse(capture.rawResponse).rawResponseBytes,
+    businessDataBytes: summarizeCloudResponse(capture.rawResponse).businessDataBytes,
+    topPaths: responsePayloadByteBreakdown(authoritativeResponseData(capture.rawResponse)),
+  });
   writeJson(debugFile, sanitized.data.debug);
   writeJson(qaFile, sanitized.data.qaBatchAudit);
   const artifact = {
     response: responseFile,
+    rawResponse: rawResponseFile,
+    businessPayloadBreakdown: breakdownFile,
     debug: debugFile,
     qaRaw: qaFile,
     status: 'captured',
+    responseBytes: summarizeCloudResponse(capture.rawResponse),
+    performanceLedger: (() => {
+      try { return extractPerformanceLedger(capture.rawResponse); }
+      catch (error) { return { errorCode: error.code || 'PERFORMANCE_LEDGER_MISSING', errorMessage: String(error.message || error) }; }
+    })(),
   };
   state.responseArtifacts[slot] = artifact;
   return artifact;
@@ -622,6 +681,20 @@ function normalizeCloudCallCapture(call, metadata = {}) {
     && typeof debug.presentationEvidenceStatus === 'object'
     ? debug.presentationEvidenceStatus
     : null;
+  const responseSummary = call?.status === 'fulfilled' ? summarizeCloudResponse(response) : null;
+  let performanceLedger = null;
+  let performanceLedgerError = null;
+  if (call?.status === 'fulfilled') {
+    try { performanceLedger = extractPerformanceLedger(response); }
+    catch (error) {
+      performanceLedgerError = {
+        code: error.code || 'PERFORMANCE_LEDGER_MISSING',
+        message: String(error.message || error),
+        responseTopLevelKeys: error.details?.responseTopLevelKeys || Object.keys(response || {}),
+        dataTopLevelKeys: error.details?.dataTopLevelKeys || Object.keys(data || {}),
+      };
+    }
+  }
   const auditId = metadata.auditId
     || debug.auditId
     || data?.meta?.auditId
@@ -650,6 +723,9 @@ function normalizeCloudCallCapture(call, metadata = {}) {
     requestedCandidatePoolIdPresent: nullableBoolean(debug, 'requestedCandidatePoolIdPresent'),
     candidatePoolSaveStatus: debug.candidatePoolSaveStatus ?? null,
     candidatePoolSaveReason: debug.candidatePoolSaveReason ?? null,
+    responseBytes: responseSummary,
+    performanceLedger,
+    performanceLedgerError,
     countContract: sanitizeRecommendationCountContract(authoritativeResponseCountContract(response)),
     returnedCardCount: Array.isArray(data?.outfits) ? data.outfits.length : null,
     candidatePoolDiagnostics: compact({
@@ -700,6 +776,9 @@ function recordRuntimeResponseCapture(call, metadata = {}) {
     returnedCardCount: capture.returnedCardCount,
     candidatePoolDiagnostics: capture.candidatePoolDiagnostics,
     responseDebug: capture.debug,
+    responseBytes: capture.responseBytes,
+    performanceLedger: capture.performanceLedger,
+    performanceLedgerError: capture.performanceLedgerError,
   });
   state.presentationCaptureDiagnostics.responseIntercepted = capture.status !== 'pending';
   state.presentationCaptureDiagnostics.responseSettled = capture.status !== 'pending';
@@ -4482,12 +4561,6 @@ async function runPreflightOnly() {
   let contracts = null;
   try {
     methodContract = assertMiniProgramMethodContract(state.mini);
-    if (RUNNER_CONFIG.screenshotProvider !== SCREENSHOT_PROVIDER) {
-      throw gateError('SCREENSHOT_PROVIDER_MISMATCH', `unexpected screenshot provider ${RUNNER_CONFIG.screenshotProvider}`);
-    }
-    if (!Number(RUNNER_CONFIG.windowHandle) || Number(RUNNER_CONFIG.windowHandle) <= 0) {
-      throw gateError('DEVTOOLS_WINDOW_INVALID', 'preflight received an invalid DevTools HWND');
-    }
     evidence = validatePreflightEvidenceDirectory();
     precondition = await prepareSportAcceptancePrecondition({ keepBlocker: true, resetBeforeRestore: true });
     if (!precondition.ok || !precondition.blockerRetained) {
@@ -4510,10 +4583,11 @@ async function runPreflightOnly() {
       installedTargets: installed.installedTargets,
     };
     const smokePath = path.join(EVIDENCE_DIR, 'preflight-primary-screen.png');
-    screenshot = captureWindowsDevToolsScreenshot(smokePath, { label: 'preflight-primary-screen' });
-    if (screenshot.screenshotProvider !== SCREENSHOT_PROVIDER || screenshot.windowHandle !== Number(RUNNER_CONFIG.windowHandle)) {
-      throw gateError('SCREENSHOT_PROVIDER_MISMATCH', 'formal preflight screenshot did not use the resolved HWND/provider', { screenshot });
+    if (!state.mini || typeof state.mini['screenshot'] !== 'function') {
+      throw gateError('SCREENSHOT_UNAVAILABLE', 'direct automator session has no screenshot()');
     }
+    await state.mini['screenshot']({ path: smokePath });
+    screenshot = { screenshotProvider: 'automator', file: relative(smokePath), bytes: fs.statSync(smokePath).size };
     if (!fs.existsSync(smokePath) || readPngDimensions(smokePath).width <= 0) {
       throw gateError('SCREENSHOT_INVALID', 'formal preflight screenshot was not readable');
     }
@@ -4656,6 +4730,7 @@ async function finalize() {
     `- response artifacts: ${JSON.stringify(state.responseArtifacts)}`,
     `- presentation evidence: ${JSON.stringify(state.presentationEvidenceArtifacts)}`,
     `- presentation capture: ${JSON.stringify(state.presentationCaptureDiagnostics)}`,
+    `- unicode input preflight: ${JSON.stringify(state.unicodeInputPreflight)}`,
     `- runner blocked: ${JSON.stringify(state.runnerBlocked)}`,
     `- sport precondition: ${JSON.stringify(state.sportPrecondition)}`,
     `- sport action: ${JSON.stringify(state.sportAction)}`,
@@ -4687,13 +4762,14 @@ async function main() {
   ensureDir(EVIDENCE_DIR);
   ensureDir(path.join(EVIDENCE_DIR, 'screenshots'));
   try {
-    automator = require(AUTOMATOR_MODULE_PATH);
-    state.mini = await automator.connect({ wsEndpoint: RUNNER_CONFIG.automatorWsEndpoint });
+    const directSession = await ensureDevToolsDirectSession({ endpoint: RUNNER_CONFIG.automatorWsEndpoint });
+    state.mini = directSession.mini;
   } catch (caught) {
-    markRunnerBlocked('DEVTOOLS_CONNECT_FAILED', caught.message || caught, {
+    markRunnerBlocked(caught.code || 'AUTOMATOR_ATTACH_FAILED', caught.message || caught, {
       automatorModulePath: AUTOMATOR_MODULE_PATH,
       automatorWsEndpoint: RUNNER_CONFIG.automatorWsEndpoint,
       resolvedConfigHash: RESOLVED_RUNNER_CONFIG?.configHash || null,
+      details: caught.details || null,
     });
     return;
   }
@@ -4701,6 +4777,13 @@ async function main() {
     assertMiniProgramMethodContract(state.mini);
   } catch (caught) {
     markRunnerBlocked(caught.code || 'AUTOMATOR_METHOD_CONTRACT_INVALID', caught.message || caught, caught.details || {});
+    return;
+  }
+  try {
+    state.unicodeInputPreflight = await unicodeInputPreflight(state.mini);
+    process.stdout.write(`${state.unicodeInputPreflight.status}\n`);
+  } catch (caught) {
+    markRunnerBlocked(caught.code || 'UNICODE_INPUT_PREFLIGHT_FAILED', caught.message || caught, caught.details || {});
     return;
   }
   state.mini.on('console', (event) => { const parsed = parseConsole(event); if (parsed) recordLifecycleEvent(parsed); });

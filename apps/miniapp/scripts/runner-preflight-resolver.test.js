@@ -68,7 +68,7 @@ test('invalid external values are aggregated before any connection attempt', () 
     assert.equal(caught.code, 'RUNNER_CONFIG_INVALID');
     const codes = caught.issues.map((issue) => issue.code);
     assert.ok(codes.includes('RUNNER_ARGUMENT_INVALID'));
-    assert.ok(codes.includes('WINDOW_HANDLE_INVALID'));
+    assert.equal(codes.includes('WINDOW_HANDLE_INVALID'), false);
     assert.ok(codes.includes('SCREENSHOT_PROVIDER_INVALID'));
     assert.ok(codes.includes('CONFIG_BOOLEAN_INVALID'));
     assert.ok(codes.includes('AUTOMATOR_PACKAGE_JSON_INVALID'));

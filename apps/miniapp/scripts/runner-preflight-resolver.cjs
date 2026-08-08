@@ -158,20 +158,9 @@ function resolveAutomatorPackage(env, issues) {
 }
 
 function resolveWindowHandle(env, issues) {
-  const names = ['D1D_DEVTOOLS_HWND', 'D1D_WINDOW_HANDLE', 'WINDOW_HANDLE'];
-  const values = names.filter((name) => env[name] !== undefined && env[name] !== '').map((name) => ({ name, value: env[name].trim() }));
-  const unique = [...new Set(values.map((entry) => entry.value))];
-  if (unique.length > 1) addIssue(issues, 'windowHandle', 'WINDOW_HANDLE_CONFLICT', 'window handle aliases must contain the same value', { values });
-  const raw = unique[0] || null;
-  if (!raw) {
-    addIssue(issues, 'D1D_DEVTOOLS_HWND', 'WINDOW_HANDLE_REQUIRED', 'a DevTools HWND is required before the runner starts');
-    return null;
-  }
-  if (!/^\d+$/.test(raw) || Number(raw) <= 0 || !Number.isSafeInteger(Number(raw))) {
-    addIssue(issues, 'D1D_DEVTOOLS_HWND', 'WINDOW_HANDLE_INVALID', 'DevTools HWND must be a positive integer', { value: raw });
-    return null;
-  }
-  return raw;
+  // Direct automator connectivity is the sole DevTools liveness signal.
+  // Window handles are legacy metadata and must never gate acceptance.
+  return null;
 }
 
 function resolveRunnerConfig({ env = process.env, argv = process.argv.slice(2), preResolvedConfigJson = env.D1D_RUNNER_RESOLVED_CONFIG_JSON } = {}) {

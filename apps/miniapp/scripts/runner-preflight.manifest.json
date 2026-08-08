@@ -46,9 +46,6 @@
       "AUTOMATOR_PACKAGE_VERSION_INVALID",
       "AUTOMATOR_MODULE_UNLOADABLE",
       "AUTOMATOR_CONNECT_EXPORT_MISSING",
-      "WINDOW_HANDLE_CONFLICT",
-      "WINDOW_HANDLE_REQUIRED",
-      "WINDOW_HANDLE_INVALID",
       "EVIDENCE_DIR_REQUIRED",
       "SCREENSHOT_PROVIDER_INVALID",
       "AUTOMATOR_ENDPOINT_INVALID",
@@ -64,7 +61,6 @@
       "CAPTURE_HELPER_MISSING",
       "RUNNER_MISSING",
       "DEVTOOLS_LISTENER_NOT_FOUND",
-      "DEVTOOLS_WINDOW_INVALID",
       "SCREENSHOT_PROVIDER_MISMATCH",
       "SCREENSHOT_INVALID",
       "DEVTOOLS_CONNECT_FAILED",
@@ -104,8 +100,8 @@
     },
     "window": {
       "envAliases": ["D1D_DEVTOOLS_HWND", "D1D_WINDOW_HANDLE", "WINDOW_HANDLE"],
-      "required": true,
-      "validation": ["positive integer", "visible usable HWND by capture helper"]
+      "required": false,
+      "validation": ["ignored legacy metadata; never gates direct automator acceptance"]
     },
     "screenshot": {
       "env": "SCREENSHOT_PROVIDER",
