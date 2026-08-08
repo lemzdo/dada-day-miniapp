@@ -41,7 +41,8 @@ test('any historical count plus two current requests fails', () => {
 });
 
 test('a new run replaces stale blocker state instead of inheriting its count', async () => {
-  const original = async (options) => ({ result: { data: { options } } });
+  const calls = [];
+  const original = async (options) => { calls.push(options); return { result: { data: { options } } }; };
   const oldWrapper = () => Promise.reject(new Error('stale blocker'));
   const previousWx = globalThis.wx;
   const previousGuard = globalThis.__d1dAcceptanceSingleRequestGuard;
@@ -61,14 +62,43 @@ test('a new run replaces stale blocker state instead of inheriting its count', a
     });
     assert.equal(installed.acceptanceRunId, 'new-run');
     assert.equal(globalThis.__d1dAcceptanceSingleRequestGuard.capturedRequestCount, 0);
+    await globalThis.wx.cloud.callFunction({ name: 'generateOutfit', data: { acceptanceRunId: 'new-run' } });
     await globalThis.wx.cloud.callFunction({ name: 'generateOutfit', data: {} });
-    await assert.rejects(globalThis.wx.cloud.callFunction({ name: 'generateOutfit', data: {} }), { code: 'FINAL_SINGLE_REQUEST_VIOLATION' });
+    const state = globalThis.__d1dAcceptanceSingleRequestGuard;
+    assert.equal(state.explicitRequestCount, 1);
+    assert.equal(state.ordinaryRequestCount, 1);
+    assert.equal(state.contaminated, true);
+    assert.equal(calls.length, 2);
     const reset = await resetAcceptanceSingleRequestGuard(mini);
     assert.equal(reset.businessStorageTouched, false);
     assert.equal(globalThis.__d1dAcceptanceSingleRequestGuard, undefined);
     assert.deepEqual(businessStorage, { todaySnapshot: 'preserved', identity: 'preserved' });
     assert.equal(globalThis.wx.cloud.callFunction, original);
   } finally {
+    if (previousWx === undefined) delete globalThis.wx;
+    else globalThis.wx = previousWx;
+    if (previousGuard === undefined) delete globalThis.__d1dAcceptanceSingleRequestGuard;
+    else globalThis.__d1dAcceptanceSingleRequestGuard = previousGuard;
+  }
+});
+
+test('ordinary Today, weather, and scene requests always pass through without a user-visible error', async () => {
+  const calls = [];
+  const original = async (options) => { calls.push(options); return { ok: true }; };
+  const previousWx = globalThis.wx;
+  const previousGuard = globalThis.__d1dAcceptanceSingleRequestGuard;
+  globalThis.wx = { cloud: { callFunction: original } };
+  try {
+    const mini = { evaluate: (fn, value) => Promise.resolve(fn(value)) };
+    await installAcceptanceSingleRequestGuard(mini, { acceptanceRunId: 'run-observer', baselineCumulativeRequestCount: 10 });
+    await assert.doesNotReject(globalThis.wx.cloud.callFunction({ name: 'generateOutfit', data: { trigger: 'weather' } }));
+    await assert.doesNotReject(globalThis.wx.cloud.callFunction({ name: 'generateOutfit', data: { trigger: 'scene' } }));
+    await assert.doesNotReject(globalThis.wx.cloud.callFunction({ name: 'getWeather', data: {} }));
+    assert.equal(calls.length, 3);
+    assert.equal(globalThis.__d1dAcceptanceSingleRequestGuard.contaminated, true);
+  } finally {
+    const mini = { evaluate: (fn, value) => Promise.resolve(fn(value)) };
+    await resetAcceptanceSingleRequestGuard(mini);
     if (previousWx === undefined) delete globalThis.wx;
     else globalThis.wx = previousWx;
     if (previousGuard === undefined) delete globalThis.__d1dAcceptanceSingleRequestGuard;

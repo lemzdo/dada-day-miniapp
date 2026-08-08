@@ -178,10 +178,13 @@ async function installAcceptanceSingleRequestGuard(mini, { acceptanceRunId, base
       { target: globalObject.cloudHelper, name: 'cloudHelper.callFunction' },
     ];
     const registry = {
-      marker: 'd1d-acceptance-single-request-v2',
+      marker: 'd1d-acceptance-single-request-observer-v3',
       acceptanceRunId: options.acceptanceRunId,
       baselineCumulativeRequestCount: Number(options.baselineCumulativeRequestCount) || 0,
       capturedRequestCount: 0,
+      explicitRequestCount: 0,
+      ordinaryRequestCount: 0,
+      contaminated: false,
       targets: {},
     };
     targets.forEach((entry) => {
@@ -190,12 +193,18 @@ async function installAcceptanceSingleRequestGuard(mini, { acceptanceRunId, base
       const wrapper = function acceptanceSingleRequestCallFunction(callOptions = {}) {
         if (callOptions.name !== 'generateOutfit') return original.apply(this, arguments);
         registry.capturedRequestCount += 1;
-        if (registry.capturedRequestCount > 1) {
-          const error = new Error('acceptance run captured more than one generateOutfit request');
-          error.code = 'FINAL_SINGLE_REQUEST_VIOLATION';
-          return Promise.reject(error);
+        const requestData = callOptions.data && typeof callOptions.data === 'object' ? callOptions.data : {};
+        const isExplicitAcceptanceRequest = requestData.acceptanceRunId === registry.acceptanceRunId;
+        if (isExplicitAcceptanceRequest) registry.explicitRequestCount += 1;
+        else {
+          registry.ordinaryRequestCount += 1;
+          registry.contaminated = true;
         }
-        const data = { ...(callOptions.data || {}), performanceDiagnostics: true };
+        // Observing and annotating an explicit acceptance request must never
+        // alter or reject ordinary product requests.
+        const data = isExplicitAcceptanceRequest
+          ? { ...requestData, performanceDiagnostics: true }
+          : requestData;
         return Promise.resolve(original.call(this, { ...callOptions, data }));
       };
       try {
@@ -214,6 +223,9 @@ async function installAcceptanceSingleRequestGuard(mini, { acceptanceRunId, base
       acceptanceRunId: registry.acceptanceRunId,
       baselineCumulativeRequestCount: registry.baselineCumulativeRequestCount,
       capturedRequestCount: registry.capturedRequestCount,
+      explicitRequestCount: registry.explicitRequestCount,
+      ordinaryRequestCount: registry.ordinaryRequestCount,
+      contaminated: registry.contaminated,
       installedTargets: Object.keys(registry.targets),
     };
   }, { acceptanceRunId, baselineCumulativeRequestCount: Number(baselineCumulativeRequestCount) || 0 });
@@ -231,6 +243,9 @@ async function readAcceptanceSingleRequestGuard(mini) {
       acceptanceRunId: guard.acceptanceRunId,
       baselineCumulativeRequestCount: guard.baselineCumulativeRequestCount,
       capturedRequestCount: guard.capturedRequestCount,
+      explicitRequestCount: guard.explicitRequestCount,
+      ordinaryRequestCount: guard.ordinaryRequestCount,
+      contaminated: guard.contaminated === true,
       installedTargets: Object.keys(guard.targets || {}),
     };
   });
