@@ -217,6 +217,10 @@ async function installAcceptanceSingleRequestGuard(mini, { acceptanceRunId, base
       explicitRequestCount: 0,
       ordinaryRequestCount: 0,
       contaminated: false,
+      activeGenerateOutfitCalls: 0,
+      lastGenerateOutfitSettledAt: null,
+      quiescenceStartedAt: Date.now(),
+      quiescenceWindowMs: 1200,
       targets: {},
     };
     targets.forEach((entry) => {
@@ -225,6 +229,8 @@ async function installAcceptanceSingleRequestGuard(mini, { acceptanceRunId, base
       const wrapper = function acceptanceSingleRequestCallFunction(callOptions = {}) {
         if (callOptions.name !== 'generateOutfit') return original.apply(this, arguments);
         registry.capturedRequestCount += 1;
+        registry.activeGenerateOutfitCalls += 1;
+        registry.quiescenceStartedAt = null;
         const requestData = callOptions.data && typeof callOptions.data === 'object' ? callOptions.data : {};
         const isExplicitAcceptanceRequest = requestData.acceptanceRunId === registry.acceptanceRunId;
         if (isExplicitAcceptanceRequest) registry.explicitRequestCount += 1;
@@ -237,7 +243,29 @@ async function installAcceptanceSingleRequestGuard(mini, { acceptanceRunId, base
         const data = isExplicitAcceptanceRequest
           ? { ...requestData, performanceDiagnostics: true }
           : requestData;
-        return Promise.resolve(original.call(this, { ...callOptions, data }));
+        let result;
+        try {
+          result = original.call(this, { ...callOptions, data });
+        } catch (error) {
+          registry.activeGenerateOutfitCalls = Math.max(0, registry.activeGenerateOutfitCalls - 1);
+          registry.lastGenerateOutfitSettledAt = Date.now();
+          if (registry.activeGenerateOutfitCalls === 0) registry.quiescenceStartedAt = registry.lastGenerateOutfitSettledAt;
+          throw error;
+        }
+        return Promise.resolve(result).then(
+          (value) => {
+            registry.activeGenerateOutfitCalls = Math.max(0, registry.activeGenerateOutfitCalls - 1);
+            registry.lastGenerateOutfitSettledAt = Date.now();
+            if (registry.activeGenerateOutfitCalls === 0) registry.quiescenceStartedAt = registry.lastGenerateOutfitSettledAt;
+            return value;
+          },
+          (error) => {
+            registry.activeGenerateOutfitCalls = Math.max(0, registry.activeGenerateOutfitCalls - 1);
+            registry.lastGenerateOutfitSettledAt = Date.now();
+            if (registry.activeGenerateOutfitCalls === 0) registry.quiescenceStartedAt = registry.lastGenerateOutfitSettledAt;
+            throw error;
+          },
+        );
       };
       try {
         Object.defineProperty(wrapper, '__d1dAcceptanceWrapper', { configurable: false, value: true });
@@ -280,6 +308,10 @@ async function readAcceptanceSingleRequestGuard(mini) {
       explicitRequestCount: guard.explicitRequestCount,
       ordinaryRequestCount: guard.ordinaryRequestCount,
       contaminated: guard.contaminated === true,
+      activeGenerateOutfitCalls: guard.activeGenerateOutfitCalls || 0,
+      lastGenerateOutfitSettledAt: guard.lastGenerateOutfitSettledAt || null,
+      quiescenceStartedAt: guard.quiescenceStartedAt || null,
+      quiescenceWindowMs: guard.quiescenceWindowMs || 1200,
       installedTargets: Object.keys(guard.targets || {}),
     };
   });
