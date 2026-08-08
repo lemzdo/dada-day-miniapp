@@ -130,6 +130,8 @@ function classifyFailure(code, message, details = {}) {
 
 const ACCEPTANCE_GUARD_KEY = '__d1dAcceptanceSingleRequestGuard';
 const TODAY_PERFORMANCE_LEDGER_KEY = 'today:performance-ledger:v1';
+const ACCEPTANCE_WRAPPER_MARKER = '__d1dAcceptanceWrapper';
+const ACCEPTANCE_ORIGINAL_MARKER = '__d1dOriginalCallFunction';
 
 function assertAcceptanceSingleRequest({ baselineCumulativeRequestCount, finalCumulativeRequestCount, capturedRequestCount }) {
   const baseline = Number(baselineCumulativeRequestCount) || 0;
@@ -163,6 +165,34 @@ async function installAcceptanceSingleRequestGuard(mini, { acceptanceRunId, base
   if (!acceptanceRunId) throw classifyFailure('ACCEPTANCE_GUARD_INSTALL_FAILED', 'acceptanceRunId is required');
   return mini.evaluate((options) => {
     const globalObject = typeof globalThis === 'object' ? globalThis : {};
+    const unwrap = (target) => {
+      let changed = false;
+      for (let attempt = 0; attempt < 16; attempt += 1) {
+        const fn = target?.callFunction;
+        if (typeof fn !== 'function') break;
+        if (fn.__d1dAcceptanceWrapper === true && typeof fn.__d1dOriginalCallFunction === 'function') {
+          target.callFunction = fn.__d1dOriginalCallFunction;
+          changed = true;
+          continue;
+        }
+        const tracker = target.__recommendationV61RunnerCapture;
+        if (tracker?.wrapper === fn && typeof tracker.originalCallFunction === 'function') {
+          target.callFunction = tracker.originalCallFunction;
+          try { delete target.__recommendationV61RunnerCapture; } catch {}
+          changed = true;
+          continue;
+        }
+        const blocker = globalObject.__recommendationV61RunnerResetBlocker;
+        const entry = blocker?.targets && Object.values(blocker.targets).find((item) => item?.target === target && item?.blocker === fn);
+        if (entry?.original && typeof entry.original === 'function') {
+          target.callFunction = entry.original;
+          changed = true;
+          continue;
+        }
+        break;
+      }
+      return changed;
+    };
     const previous = globalObject.__d1dAcceptanceSingleRequestGuard;
     if (previous?.targets && typeof previous.targets === 'object') {
       Object.values(previous.targets).forEach((entry) => {
@@ -177,6 +207,8 @@ async function installAcceptanceSingleRequestGuard(mini, { acceptanceRunId, base
       { target: globalObject.taro?.cloud, name: 'taro.cloud.callFunction' },
       { target: globalObject.cloudHelper, name: 'cloudHelper.callFunction' },
     ];
+    targets.forEach((entry) => unwrap(entry.target));
+    try { delete globalObject.__d1dFinalFullCompute; } catch {}
     const registry = {
       marker: 'd1d-acceptance-single-request-observer-v3',
       acceptanceRunId: options.acceptanceRunId,
@@ -208,6 +240,8 @@ async function installAcceptanceSingleRequestGuard(mini, { acceptanceRunId, base
         return Promise.resolve(original.call(this, { ...callOptions, data }));
       };
       try {
+        Object.defineProperty(wrapper, '__d1dAcceptanceWrapper', { configurable: false, value: true });
+        Object.defineProperty(wrapper, '__d1dOriginalCallFunction', { configurable: false, value: original });
         entry.target.callFunction = wrapper;
         registry.targets[entry.name] = { target: entry.target, original, wrapper };
       } catch {}
@@ -257,18 +291,37 @@ async function resetAcceptanceSingleRequestGuard(mini) {
   }
   return mini.evaluate(() => {
     const globalObject = typeof globalThis === 'object' ? globalThis : {};
-    const guard = globalObject.__d1dAcceptanceSingleRequestGuard;
     let restoredTargetCount = 0;
-    guard?.targets && Object.values(guard.targets).forEach((entry) => {
-      try {
-        if (entry.target && entry.target.callFunction === entry.wrapper) {
-          entry.target.callFunction = entry.original;
+    const targets = [
+      { target: globalObject.wx?.cloud, name: 'wx.cloud.callFunction' },
+      { target: globalObject.Taro?.cloud, name: 'Taro.cloud.callFunction' },
+      { target: globalObject.taro?.cloud, name: 'taro.cloud.callFunction' },
+      { target: globalObject.cloudHelper, name: 'cloudHelper.callFunction' },
+    ];
+    targets.forEach((entry) => {
+      const target = entry.target;
+      if (!target) return;
+      for (let attempt = 0; attempt < 16; attempt += 1) {
+        const fn = target?.callFunction;
+        if (typeof fn !== 'function') break;
+        if (fn.__d1dAcceptanceWrapper === true && typeof fn.__d1dOriginalCallFunction === 'function') {
+          target.callFunction = fn.__d1dOriginalCallFunction;
           restoredTargetCount += 1;
+          continue;
         }
-      } catch {}
+        const tracker = target.__recommendationV61RunnerCapture;
+        if (tracker?.wrapper === fn && typeof tracker.originalCallFunction === 'function') {
+          target.callFunction = tracker.originalCallFunction;
+          try { delete target.__recommendationV61RunnerCapture; } catch {}
+          restoredTargetCount += 1;
+          continue;
+        }
+        break;
+      }
     });
+    try { delete globalObject.__d1dFinalFullCompute; } catch {}
     try { delete globalObject.__d1dAcceptanceSingleRequestGuard; } catch {}
-    return { reset: true, restoredTargetCount, businessStorageTouched: false };
+    return { reset: true, restoredTargetCount, businessStorageTouched: false, legacyDiagnosticKeyRemoved: true };
   });
 }
 

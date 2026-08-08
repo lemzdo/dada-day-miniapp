@@ -128,3 +128,27 @@ test('reset acceptance guard restores only callFunction and does not clear busin
     else globalThis.__d1dAcceptanceSingleRequestGuard = previousGuard;
   }
 });
+
+test('cleanup unwraps multiple marked acceptance layers back to the real original', async () => {
+  const original = async () => ({ ok: true });
+  const layer = (next) => {
+    const wrapper = async (...args) => next(...args);
+    Object.defineProperty(wrapper, '__d1dAcceptanceWrapper', { value: true });
+    Object.defineProperty(wrapper, '__d1dOriginalCallFunction', { value: next });
+    return wrapper;
+  };
+  const previousWx = globalThis.wx;
+  const previousGuard = globalThis.__d1dAcceptanceSingleRequestGuard;
+  globalThis.wx = { cloud: { callFunction: layer(layer(original)) } };
+  try {
+    const mini = { evaluate: (fn, value) => Promise.resolve(fn(value)) };
+    const result = await resetAcceptanceSingleRequestGuard(mini);
+    assert.ok(result.restoredTargetCount >= 2);
+    assert.equal(globalThis.wx.cloud.callFunction, original);
+  } finally {
+    if (previousWx === undefined) delete globalThis.wx;
+    else globalThis.wx = previousWx;
+    if (previousGuard === undefined) delete globalThis.__d1dAcceptanceSingleRequestGuard;
+    else globalThis.__d1dAcceptanceSingleRequestGuard = previousGuard;
+  }
+});
