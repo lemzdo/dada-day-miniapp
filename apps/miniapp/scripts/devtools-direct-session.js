@@ -128,6 +128,135 @@ function classifyFailure(code, message, details = {}) {
   return Object.assign(new Error(message), { code, details });
 }
 
+const ACCEPTANCE_GUARD_KEY = '__d1dAcceptanceSingleRequestGuard';
+const TODAY_PERFORMANCE_LEDGER_KEY = 'today:performance-ledger:v1';
+
+function assertAcceptanceSingleRequest({ baselineCumulativeRequestCount, finalCumulativeRequestCount, capturedRequestCount }) {
+  const baseline = Number(baselineCumulativeRequestCount) || 0;
+  const final = Number(finalCumulativeRequestCount) || 0;
+  const captured = Number(capturedRequestCount) || 0;
+  if (captured !== 1 || final - baseline !== 1) {
+    throw classifyFailure(
+      'FINAL_SINGLE_REQUEST_VIOLATION',
+      'acceptance run must capture exactly one request and increase cumulative count by one',
+      { baselineCumulativeRequestCount: baseline, finalCumulativeRequestCount: final, capturedRequestCount: captured },
+    );
+  }
+  return { baselineCumulativeRequestCount: baseline, finalCumulativeRequestCount: final, capturedRequestCount: captured };
+}
+
+async function readAcceptanceCumulativeRequestCount(mini) {
+  if (!mini || typeof mini.evaluate !== 'function') {
+    throw classifyFailure('ACCEPTANCE_LEDGER_READ_FAILED', 'automator session has no evaluate()');
+  }
+  return mini.evaluate(() => {
+    const ledger = globalThis.wx?.getStorageSync?.('today:performance-ledger:v1');
+    const count = (record) => Math.max(0, Number(record?.generateOutfitRequestCount) || 0);
+    return count(ledger?.active) + (Array.isArray(ledger?.history) ? ledger.history.reduce((total, record) => total + count(record), 0) : 0);
+  });
+}
+
+async function installAcceptanceSingleRequestGuard(mini, { acceptanceRunId, baselineCumulativeRequestCount } = {}) {
+  if (!mini || typeof mini.evaluate !== 'function') {
+    throw classifyFailure('ACCEPTANCE_GUARD_INSTALL_FAILED', 'automator session has no evaluate()');
+  }
+  if (!acceptanceRunId) throw classifyFailure('ACCEPTANCE_GUARD_INSTALL_FAILED', 'acceptanceRunId is required');
+  return mini.evaluate((options) => {
+    const globalObject = typeof globalThis === 'object' ? globalThis : {};
+    const previous = globalObject.__d1dAcceptanceSingleRequestGuard;
+    if (previous?.targets && typeof previous.targets === 'object') {
+      Object.values(previous.targets).forEach((entry) => {
+        try {
+          if (entry.target && entry.target.callFunction === entry.wrapper) entry.target.callFunction = entry.original;
+        } catch {}
+      });
+    }
+    const targets = [
+      { target: globalObject.wx?.cloud, name: 'wx.cloud.callFunction' },
+      { target: globalObject.Taro?.cloud, name: 'Taro.cloud.callFunction' },
+      { target: globalObject.taro?.cloud, name: 'taro.cloud.callFunction' },
+      { target: globalObject.cloudHelper, name: 'cloudHelper.callFunction' },
+    ];
+    const registry = {
+      marker: 'd1d-acceptance-single-request-v2',
+      acceptanceRunId: options.acceptanceRunId,
+      baselineCumulativeRequestCount: Number(options.baselineCumulativeRequestCount) || 0,
+      capturedRequestCount: 0,
+      targets: {},
+    };
+    targets.forEach((entry) => {
+      if (!entry.target || typeof entry.target.callFunction !== 'function') return;
+      const original = entry.target.callFunction;
+      const wrapper = function acceptanceSingleRequestCallFunction(callOptions = {}) {
+        if (callOptions.name !== 'generateOutfit') return original.apply(this, arguments);
+        registry.capturedRequestCount += 1;
+        if (registry.capturedRequestCount > 1) {
+          const error = new Error('acceptance run captured more than one generateOutfit request');
+          error.code = 'FINAL_SINGLE_REQUEST_VIOLATION';
+          return Promise.reject(error);
+        }
+        const data = { ...(callOptions.data || {}), performanceDiagnostics: true };
+        return Promise.resolve(original.call(this, { ...callOptions, data }));
+      };
+      try {
+        entry.target.callFunction = wrapper;
+        registry.targets[entry.name] = { target: entry.target, original, wrapper };
+      } catch {}
+    });
+    Object.defineProperty(globalObject, '__d1dAcceptanceSingleRequestGuard', {
+      configurable: true,
+      enumerable: false,
+      writable: true,
+      value: registry,
+    });
+    return {
+      marker: registry.marker,
+      acceptanceRunId: registry.acceptanceRunId,
+      baselineCumulativeRequestCount: registry.baselineCumulativeRequestCount,
+      capturedRequestCount: registry.capturedRequestCount,
+      installedTargets: Object.keys(registry.targets),
+    };
+  }, { acceptanceRunId, baselineCumulativeRequestCount: Number(baselineCumulativeRequestCount) || 0 });
+}
+
+async function readAcceptanceSingleRequestGuard(mini) {
+  if (!mini || typeof mini.evaluate !== 'function') {
+    throw classifyFailure('ACCEPTANCE_GUARD_READ_FAILED', 'automator session has no evaluate()');
+  }
+  return mini.evaluate(() => {
+    const guard = globalThis.__d1dAcceptanceSingleRequestGuard;
+    if (!guard || typeof guard !== 'object') return null;
+    return {
+      marker: guard.marker,
+      acceptanceRunId: guard.acceptanceRunId,
+      baselineCumulativeRequestCount: guard.baselineCumulativeRequestCount,
+      capturedRequestCount: guard.capturedRequestCount,
+      installedTargets: Object.keys(guard.targets || {}),
+    };
+  });
+}
+
+async function resetAcceptanceSingleRequestGuard(mini) {
+  if (!mini || typeof mini.evaluate !== 'function') {
+    throw classifyFailure('ACCEPTANCE_GUARD_RESET_FAILED', 'automator session has no evaluate()');
+  }
+  return mini.evaluate(() => {
+    const globalObject = typeof globalThis === 'object' ? globalThis : {};
+    const guard = globalObject.__d1dAcceptanceSingleRequestGuard;
+    let restoredTargetCount = 0;
+    guard?.targets && Object.values(guard.targets).forEach((entry) => {
+      try {
+        if (entry.target && entry.target.callFunction === entry.wrapper) {
+          entry.target.callFunction = entry.original;
+          restoredTargetCount += 1;
+        }
+      } catch {}
+    });
+    try { delete globalObject.__d1dAcceptanceSingleRequestGuard; } catch {}
+    return { reset: true, restoredTargetCount, businessStorageTouched: false };
+  });
+}
+
 function loadAutomator(deps = {}) {
   if (deps.automator) return deps.automator;
   const packagePath = require.resolve('miniprogram-automator/package.json', { paths: [path.resolve(__dirname, '../..'), process.cwd()] });
@@ -242,5 +371,12 @@ module.exports = {
   unwrapCloudResponse,
   extractPerformanceLedger,
   summarizeCloudResponse,
+  ACCEPTANCE_GUARD_KEY,
+  TODAY_PERFORMANCE_LEDGER_KEY,
+  assertAcceptanceSingleRequest,
+  readAcceptanceCumulativeRequestCount,
+  installAcceptanceSingleRequestGuard,
+  readAcceptanceSingleRequestGuard,
+  resetAcceptanceSingleRequestGuard,
   unicodeInputPreflight,
 };
