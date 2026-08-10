@@ -72,6 +72,14 @@ const ELIGIBILITY_REASON_CATALOG = Object.freeze([
     '天气偏凉时，长袖运动上衣配运动裤，穿去运动更合适。', matchSportCoolLongSet),
   definition('SPORT_DRESS_SHOES', 'sport', 'category', 2, false, null, ['dress', 'sport_shoe'],
     '运动连衣裙配运动鞋，穿这身去运动正合适。', matchSportDressShoes),
+  definition('HOME_V4_EVIDENCE_SUPPORTED', 'home', 'scene_evidence', 9, false, null, ['category'],
+    '这套结构轻松，居家活动和临时出门都方便。', matchCompositionCore),
+  definition('WORK_V4_EVIDENCE_SUPPORTED', 'work', 'scene_evidence', 9, false, null, ['category'],
+    '这套结构完整，日常通勤穿着自然。', matchCompositionCore),
+  definition('DATE_V4_EVIDENCE_SUPPORTED', 'date', 'scene_evidence', 9, false, null, ['category'],
+    '这套有清楚的搭配关系，日常约会穿着自然。', matchCompositionCore),
+  definition('SPORT_V4_EVIDENCE_SUPPORTED', 'sport', 'scene_evidence', 9, false, null, ['category'],
+    '这套活动结构轻便，适合散步和日常轻运动。', matchCompositionCore),
 ]);
 
 const ELIGIBILITY_REASON_BY_CODE = new Map(ELIGIBILITY_REASON_CATALOG.map((entry) => [entry.reasonCode, entry]));
@@ -131,7 +139,9 @@ function collectEligibilityReasonCandidates({ scene, weather, visibleFacts, scen
       subjectItemIds,
       supportingFactIds,
       relationFactIds,
-      sourceRule: 'sceneEligibilityV3',
+      sourceRule: sceneResult.sceneEvidenceVersion ? 'sceneEvidenceV4' : 'sceneEligibilityV3',
+      sourceVersion: sceneResult.sceneEvidenceVersion || '',
+      sourceFingerprint: sceneResult.sceneEvidenceFingerprint || '',
       sourceRuleReasons: uniqueStrings([
         ...(sceneResult.acceptReasons || []),
         `WEATHER_BAND_${band.toUpperCase()}`,
@@ -198,6 +208,8 @@ function cloneEligibilityReason(value) {
     supportingFactIds: uniqueStrings(value.supportingFactIds),
     relationFactIds: uniqueStrings(value.relationFactIds),
     sourceRule: readString(value.sourceRule),
+    sourceVersion: readString(value.sourceVersion),
+    sourceFingerprint: readString(value.sourceFingerprint),
     sourceRuleReasons: uniqueStrings(value.sourceRuleReasons),
     evidence: (Array.isArray(value.evidence) ? value.evidence : []).map((record) => ({ ...record })),
     text: readString(value.text),
@@ -223,6 +235,8 @@ function toCoreEligibilityPayload(value, context = {}) {
     supportingFactIds: reason.supportingFactIds.slice(),
     relationFactIds: reason.relationFactIds.slice(),
     sourceRule: reason.sourceRule,
+    sourceVersion: reason.sourceVersion,
+    sourceFingerprint: reason.sourceFingerprint,
     sourceRuleReasons: reason.sourceRuleReasons.slice(),
   };
 }
@@ -240,6 +254,8 @@ function fromCoreEligibilityPayload(value) {
     supportingFactIds: uniqueStrings(value.supportingFactIds),
     relationFactIds: uniqueStrings(value.relationFactIds),
     sourceRule: readString(value.sourceRule),
+    sourceVersion: readString(value.sourceVersion),
+    sourceFingerprint: readString(value.sourceFingerprint),
     sourceRuleReasons: uniqueStrings(value.sourceRuleReasons),
     evidence: (Array.isArray(value.coreEligibilityEvidence) ? value.coreEligibilityEvidence : [])
       .map((record) => ({ ...record })),
@@ -353,6 +369,15 @@ function matchWorkBaselinePresentable(items) {
   const onepieceWithShoes = matchTwo(items, ['onepiece'], ['category'], ['shoes'], ['category']);
   if (onepieceWithShoes) return onepieceWithShoes;
   return matchThree(items, ['top'], ['category'], ['bottom'], ['category'], ['shoes'], ['category']);
+}
+function matchCompositionCore(items) {
+  const onepieceWithShoes = matchTwo(items, ['onepiece'], ['category'], ['shoes'], ['category']);
+  if (onepieceWithShoes) return onepieceWithShoes;
+  const separatesWithShoes = matchThree(items, ['top'], ['category'], ['bottom'], ['category'], ['shoes'], ['category']);
+  if (separatesWithShoes) return separatesWithShoes;
+  const onepiece = matchOne(items, ['onepiece'], ['category']);
+  if (onepiece) return onepiece;
+  return matchTwo(items, ['top'], ['category'], ['bottom'], ['category']);
 }
 function matchDatePatternTopSimpleSupport(items) {
   const matched = matchThree(items, ['top'], ['pattern_visible'], ['bottom'], ['solid_color', 'simple_style'], ['shoes'], ['simple_style', 'outing_shoe']);
@@ -489,7 +514,9 @@ function buildRelationEvidence({ scene, matched, sceneResult, supportingFactIds 
     subjectItemIds: uniqueStrings(matched.subjectItemIds),
     supportingFactIds: uniqueStrings(supportingFactIds),
     source: 'scene_rule',
-    sourceRule: 'sceneEligibilityV3',
+    sourceRule: sceneResult.sceneEvidenceVersion ? 'sceneEvidenceV4' : 'sceneEligibilityV3',
+    sourceVersion: sceneResult.sceneEvidenceVersion || '',
+    sourceFingerprint: sceneResult.sceneEvidenceFingerprint || '',
     sourceRuleReasons: uniqueStrings(sceneResult.acceptReasons),
     confidence: sceneResult.sceneStrength === 'strong' ? 1 : 0.9,
     authorized: true,

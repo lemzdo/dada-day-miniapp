@@ -45,7 +45,7 @@ const {
 let EVIDENCE_DIR = process.env.EVIDENCE_DIR;
 let AUTOMATOR_MODULE_PATH = process.env.MINIPROGRAM_AUTOMATOR_PATH;
 const WINDOWS_CAPTURE_HELPER = path.join(__dirname, 'windows-devtools-capture.ps1');
-const EXPECTED_CLOUD_BUILD = 'generateOutfit-recommendation-count-contract-authority-20260803';
+const EXPECTED_CLOUD_BUILD = 'generateOutfit-scene-evidence-v4-20260810';
 const EXPECTED_QA_VERSION = 'qa-batch-audit-v6-1-semantic-presentation';
 const PRESENTATION_EVIDENCE_MODE = 'sanitized_v1';
 const PRESENTATION_EVIDENCE_VERSION = 'presentation-evidence-v3';

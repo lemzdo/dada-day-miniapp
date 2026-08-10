@@ -19,6 +19,10 @@ const {
   DECISION_VALUE_GATE_VERSION,
   evaluateDecisionValue,
 } = require('../cloudfunctions/generateOutfit/services/copyNaturalnessGate');
+const {
+  SCENE_EVIDENCE_FINGERPRINT,
+  SCENE_EVIDENCE_VERSION,
+} = require('../cloudfunctions/generateOutfit/services/sceneEvidenceRegistryV4');
 
 const REPOSITORY_ROOT = path.resolve(__dirname, '..', '..', '..');
 const ARTIFACT_ROOT = path.join(REPOSITORY_ROOT, 'artifacts', 'today-copy-naturalness-acceptance');
@@ -129,6 +133,7 @@ function auditFinalTodayCopy(scene, data, uiCards) {
   const failures = [];
   const sceneClauses = [];
   const cardDiagnostics = [];
+  const sceneAcceptance = data?.debug?.sceneEvidenceAcceptance || null;
   let genericSceneFallbackCount = 0;
   let lowValueFinalReasonCount = 0;
   let omittedLowValueClauseCount = 0;
@@ -136,6 +141,14 @@ function auditFinalTodayCopy(scene, data, uiCards) {
   let bindingCorrectnessCount = 0;
   let naturalnessCount = 0;
   let decisionValueCount = 0;
+  if (data?.meta?.sceneEvidenceVersion !== SCENE_EVIDENCE_VERSION
+    || data?.meta?.sceneEvidenceFingerprint !== SCENE_EVIDENCE_FINGERPRINT) {
+    failures.push('scene_evidence_meta_version');
+  }
+  if (sceneAcceptance?.version !== SCENE_EVIDENCE_VERSION
+    || sceneAcceptance?.fingerprint !== SCENE_EVIDENCE_FINGERPRINT) {
+    failures.push('scene_evidence_diagnostic_version');
+  }
   if (outfits.length < 8) failures.push(`returned_card_count:${outfits.length}`);
   if (uiReasons.length < 8) failures.push(`ui_reason_count:${uiReasons.length}`);
   outfits.forEach((outfit, index) => {
@@ -213,7 +226,40 @@ function auditFinalTodayCopy(scene, data, uiCards) {
     bindingCorrectnessCount,
     naturalnessCount,
     decisionValueCount,
+    sceneEvidence: sceneAcceptance,
+    finalSceneFitScores: outfits.map((outfit) => Number(outfit?.scores?.sceneFitScore ?? outfit?.scores?.sceneMatch) || 0),
   };
+}
+
+function buildCrossSceneComparisons(scenes) {
+  const byOutfitKey = new Map();
+  for (const scene of Array.isArray(scenes) ? scenes : []) {
+    for (const candidate of scene?.sceneEvidence?.candidates || []) {
+      if (!candidate?.outfitKey) continue;
+      const entries = byOutfitKey.get(candidate.outfitKey) || [];
+      entries.push({
+        scene: scene.scene,
+        rank: candidate.rank,
+        sceneFitScore: candidate.sceneFitScore,
+        selected: candidate.selected === true,
+        positiveFamilies: candidate.positiveFamilies || [],
+        negativeFamilies: candidate.negativeFamilies || [],
+      });
+      byOutfitKey.set(candidate.outfitKey, entries);
+    }
+  }
+  return [...byOutfitKey.entries()]
+    .filter(([, entries]) => entries.length >= 2)
+    .map(([outfitKey, entries]) => ({
+      outfitKey,
+      scenes: entries.sort((left, right) => SCENES.indexOf(left.scene) - SCENES.indexOf(right.scene)),
+      sceneFitSpread: Math.max(...entries.map((entry) => entry.sceneFitScore))
+        - Math.min(...entries.map((entry) => entry.sceneFitScore)),
+    }))
+    .sort((left, right) => right.sceneFitSpread - left.sceneFitSpread
+      || right.scenes.length - left.scenes.length
+      || left.outfitKey.localeCompare(right.outfitKey))
+    .slice(0, 12);
 }
 
 function summarizeNaturalnessMetrics(scenes) {
@@ -339,6 +385,7 @@ async function runAcceptance() {
       passed: scenes.every((scene) => scene.passed && scene.samples.length >= 8),
       scenes,
       metrics: summarizeNaturalnessMetrics(scenes),
+      crossSceneComparisons: buildCrossSceneComparisons(scenes),
     };
     fs.mkdirSync(artifactDirectory, { recursive: true });
     fs.writeFileSync(path.join(artifactDirectory, 'acceptance.json'), `${JSON.stringify(result, null, 2)}\n`, 'utf8');
@@ -369,6 +416,7 @@ module.exports = {
   OLD_EDITORIAL_COPY,
   SCENES,
   auditFinalTodayCopy,
+  buildCrossSceneComparisons,
   runAcceptance,
   summarizeNaturalnessMetrics,
 };

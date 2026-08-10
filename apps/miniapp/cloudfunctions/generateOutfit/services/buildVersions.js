@@ -1,5 +1,10 @@
-const CLOUD_BUILD_VERSION = 'generateOutfit-recommendation-count-contract-authority-20260803';
-const CANDIDATE_POOL_ENGINE_VERSION = 'generateOutfit-recommendation-v6-1-title-invariant-fix-20260724';
+const {
+  SCENE_EVIDENCE_FINGERPRINT,
+  SCENE_EVIDENCE_VERSION,
+} = require('./sceneEvidenceRegistryV4');
+
+const CLOUD_BUILD_VERSION = 'generateOutfit-scene-evidence-v4-20260810';
+const CANDIDATE_POOL_ENGINE_VERSION = `generateOutfit-scene-evidence-v4-${SCENE_EVIDENCE_FINGERPRINT}`;
 const REASON_CATALOG_VERSION = 'eligibility-reason-v6';
 const AI_REVIEW_VERSION = 'stylist-review-v3';
 
@@ -8,4 +13,6 @@ module.exports = {
   CANDIDATE_POOL_ENGINE_VERSION,
   CLOUD_BUILD_VERSION,
   REASON_CATALOG_VERSION,
+  SCENE_EVIDENCE_FINGERPRINT,
+  SCENE_EVIDENCE_VERSION,
 };

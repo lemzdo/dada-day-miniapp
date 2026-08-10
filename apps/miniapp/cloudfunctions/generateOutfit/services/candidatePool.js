@@ -286,6 +286,9 @@ function compactEligibilityResult(value, kind) {
       eligible: value.eligible === true,
       hardRejected: value.hardRejected === true,
       sceneStrength: readString(value.sceneStrength),
+      sceneFitScore: finiteNumber(value.sceneFitScore),
+      sceneEvidenceVersion: readString(value.sceneEvidenceVersion),
+      sceneEvidenceFingerprint: readString(value.sceneEvidenceFingerprint),
     }),
     acceptReasons: uniqueStrings(value.acceptReasons),
     rejectReasons: uniqueStrings(value.rejectReasons),
@@ -301,7 +304,7 @@ function compactEligibilityResult(value, kind) {
 function compactScoreComponents(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   const allowed = [
-    'total', 'weatherAdaptation', 'colorHarmony', 'styleUnity', 'sceneMatch',
+    'total', 'weatherAdaptation', 'colorHarmony', 'styleUnity', 'sceneMatch', 'sceneFitScore',
     'freshness', 'preference', 'aesthetic', 'reusePenalty', 'composition',
     'comfort', 'coolness', 'fashion', 'warmth',
   ];

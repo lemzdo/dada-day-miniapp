@@ -17,7 +17,7 @@ const SNAPSHOT_REVIEW_PATH = path.join(QA_DIR, 'recommendation-copy-contract-v1-
 
 test('four synthetic Contract requests use one wardrobe weather and scene each', () => {
   const batches = buildSyntheticContractBatchSummaries();
-  const expectedAccepted = { home: 4, work: 4, date: 1, sport: 4 };
+  const expectedAccepted = { home: 4, work: 4, date: 4, sport: 4 };
   for (const scene of ['home', 'work', 'date', 'sport']) {
     const batch = batches[scene];
     assert.equal(batch.requestedCount, 4, scene);

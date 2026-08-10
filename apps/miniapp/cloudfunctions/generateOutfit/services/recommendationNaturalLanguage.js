@@ -130,6 +130,14 @@ const SCENE_VALUE_SLOTS = Object.freeze([
     ({ model }) => `天气偏凉时，${itemName(model, 'top', '长袖运动上衣')}配${itemName(model, 'bottom', '运动裤')}，运动前能多挡一层`),
   sceneSlot('scene.sport-dress-shoes', 'sport', ['SPORT_DRESS_SHOES'], [['dress', 'sport_shoe']],
     ({ model }) => `${itemName(model, 'onepiece', '连衣裙')}配${itemName(model, 'shoes', '运动鞋')}，运动时走动更方便`),
+  sceneSlot('scene.v4-home-supported', 'home', ['HOME_V4_EVIDENCE_SUPPORTED'], [['category']],
+    () => '这套结构轻松，居家活动和临时出门都方便'),
+  sceneSlot('scene.v4-work-supported', 'work', ['WORK_V4_EVIDENCE_SUPPORTED'], [['category']],
+    () => '这套结构完整，日常通勤穿着自然'),
+  sceneSlot('scene.v4-date-supported', 'date', ['DATE_V4_EVIDENCE_SUPPORTED'], [['category']],
+    () => '这套有清楚的搭配关系，日常约会穿着自然'),
+  sceneSlot('scene.v4-sport-supported', 'sport', ['SPORT_V4_EVIDENCE_SUPPORTED'], [['category']],
+    () => '这套活动结构轻便，适合散步和日常轻运动'),
 ]);
 
 const BENEFIT_SLOTS = Object.freeze([

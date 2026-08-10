@@ -91,9 +91,17 @@ test('a new run replaces stale blocker state instead of inheriting its count', a
     assert.equal(capture.originalRequestData.scene, '居家');
     assert.equal(capture.originalRequestData.performanceDiagnostics, undefined);
     assert.equal(capture.sentRequestData.performanceDiagnostics, true);
-    assert.deepEqual(capture.requestDiff.map((entry) => entry.path), ['$.performanceDiagnostics']);
+    assert.equal(capture.sentRequestData.diagnostics, true);
+    assert.equal(capture.sentRequestData.debugRecommendationAudit, true);
+    assert.deepEqual(capture.requestDiff.map((entry) => entry.path), [
+      '$.performanceDiagnostics',
+      '$.diagnostics',
+      '$.debugRecommendationAudit',
+    ]);
     assert.equal(calls[0].data.scene, '居家');
     assert.equal(calls[0].data.performanceDiagnostics, true);
+    assert.equal(calls[0].data.diagnostics, true);
+    assert.equal(calls[0].data.debugRecommendationAudit, true);
     const reset = await resetAcceptanceSingleRequestGuard(mini);
     assert.equal(reset.businessStorageTouched, false);
     assert.equal(globalThis.__d1dAcceptanceSingleRequestGuard, undefined);

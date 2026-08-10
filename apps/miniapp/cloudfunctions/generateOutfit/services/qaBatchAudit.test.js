@@ -14,7 +14,10 @@ const {
   serializedBytes,
 } = require('./qaBatchAudit');
 const { adaptCompositionCandidate, hydrateCanonicalScore } = require('./canonicalCandidate');
-const { isRecommendationQaAuditEnabled } = require('./qaAuditControl');
+const {
+  isRecommendationQaAuditEnabled,
+  isSceneEvidenceAcceptanceAuditEnabled,
+} = require('./qaAuditControl');
 
 function makeCandidate(id, options = {}) {
   const item = {
@@ -215,6 +218,20 @@ test('QA helper returns no audit until request and server switches are both enab
   assert.equal(isRecommendationQaAuditEnabled(false, 'true'), false);
   assert.equal(isRecommendationQaAuditEnabled(true, 'false'), false);
   assert.equal(isRecommendationQaAuditEnabled(true, 'true'), true);
+});
+
+test('scene evidence acceptance audit requires the exact four-scene diagnostic handshake', () => {
+  const base = {
+    diagnostics: true,
+    performanceDiagnostics: true,
+    debugRecommendationAudit: true,
+    acceptanceRunId: 'today-copy-naturalness-20260810093000-home',
+    captureId: 'copy-naturalness-home-a1b2c3',
+  };
+  assert.equal(isSceneEvidenceAcceptanceAuditEnabled(base), true);
+  assert.equal(isSceneEvidenceAcceptanceAuditEnabled({ ...base, diagnostics: false }), false);
+  assert.equal(isSceneEvidenceAcceptanceAuditEnabled({ ...base, acceptanceRunId: 'manual-home' }), false);
+  assert.equal(isSceneEvidenceAcceptanceAuditEnabled({ ...base, captureId: 'copy-naturalness-work-a1b2c3' }), false);
 });
 
 test('standalone client QA builder retains the v6 contract', () => {

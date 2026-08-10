@@ -295,7 +295,7 @@ function inspectRelationEvidence({ factId, relation, candidate, context, definit
   })) flags.push(COPY_RISK_FLAGS.CLAIM_FACT_NOT_EVIDENCED);
 
   if (relation.fact === 'work_eligible') {
-    if (record.sourceRule !== 'sceneEligibilityV3' || record.authorized === false) {
+    if (!['sceneEligibilityV3', 'sceneEvidenceV4'].includes(record.sourceRule) || record.authorized === false) {
       flags.push(COPY_RISK_FLAGS.EVIDENCE_SOURCE_TOO_WEAK);
     }
   } else if (relation.fact === 'color_coordinated') {

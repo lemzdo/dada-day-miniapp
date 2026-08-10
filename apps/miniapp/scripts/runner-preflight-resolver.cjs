@@ -11,7 +11,7 @@ const DEVTOOLS_LISTENER_PORTS = Object.freeze([52849, 9420]);
 const SCREENSHOT_PROVIDER = 'windows-native-primary-screen';
 const PRESENTATION_EVIDENCE_MODE = 'sanitized_v1';
 const PRESENTATION_EVIDENCE_VERSION = 'presentation-evidence-v3';
-const EXPECTED_CLOUD_BUILD = 'generateOutfit-recommendation-count-contract-authority-20260803';
+const EXPECTED_CLOUD_BUILD = 'generateOutfit-scene-evidence-v4-20260810';
 const EXPECTED_QA_VERSION = 'qa-batch-audit-v6-1-semantic-presentation';
 
 const SCRIPT_ROOT = __dirname;

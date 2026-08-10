@@ -226,7 +226,7 @@ test('sport rejects ordinary onepiece even when paired with running shoes', () =
   assert.equal(results.length, 0);
 });
 
-test('sport onepiece remains unmapped until a fixed eligibility reason exists', () => {
+test('sport onepiece with explicit sport facts uses the fixed V4 explanation path', () => {
   const wardrobe = [
     item('tennis-dress', 'onepiece', { subcategory: 'tennis athletic dress', sceneTags: ['sport'], styleTags: ['tennis', 'sport'] }),
     item('training-shoe', 'shoes', { subcategory: 'training shoes', sceneTags: ['sport'], styleTags: ['sport'] }),
@@ -234,8 +234,9 @@ test('sport onepiece remains unmapped until a fixed eligibility reason exists', 
 
   const results = candidatesFor('sport', 22, wardrobe, { maxResults: 8 });
 
-  assert.equal(results.length, 0);
-  assert.equal(results.debug.rejectReasonCounts.UNMAPPED_ELIGIBILITY_PATH > 0, true);
+  assert.equal(results.length, 1);
+  assert.equal(results.debug.rejectReasonCounts.UNMAPPED_ELIGIBILITY_PATH, undefined);
+  assert.equal(results[0].eligibilityReason.code, 'SPORT_V4_EVIDENCE_SUPPORTED');
 });
 
 test('sport does not pass ordinary separates only because shoes are athletic', () => {
@@ -261,10 +262,10 @@ test('work rejects pure home outfits instead of retitling the home pool', () => 
 
   assert.equal(results.length, 0);
   assert.equal(results.limited, true);
-  assert.match(results.debug.limitedReason, /work_scene_eligible/);
+  assert.match(results.debug.limitedReason, /work_scene_hard_conflict/);
 });
 
-test('date rejects ordinary tee shorts sneakers that only have color facts', () => {
+test('date keeps ordinary tee shorts sneakers as a negative-ranked candidate', () => {
   const wardrobe = [
     item('daily-tee', 'top', { subcategory: '白色T恤', sceneTags: ['日常'], styleTags: ['休闲'], color: '白色' }),
     item('daily-shorts', 'bottom', { subcategory: '灰色短裤', sceneTags: ['日常'], styleTags: ['休闲'], color: '灰色' }),
@@ -273,9 +274,9 @@ test('date rejects ordinary tee shorts sneakers that only have color facts', () 
 
   const results = candidatesFor('约会', 26, wardrobe, { maxResults: 8 });
 
-  assert.equal(results.length, 0);
-  assert.equal(results.limited, true);
-  assert.match(results.debug.limitedReason, /date_scene_eligible/);
+  assert.equal(results.length, 1);
+  assert.equal(results[0].eligibility.scene.hardRejected, false);
+  assert.ok(results[0].eligibility.scene.warnings.includes('DATE_CASUAL_NO_INTENT_NEGATIVE'));
 });
 
 test('final batch caps repeated core top bottom shoes scene intent and archetype when inventory allows', () => {

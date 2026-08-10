@@ -218,7 +218,7 @@ function selectCanonicalCandidateBatch(candidates = [], limit = 8) {
       .sort((left, right) => right.evaluation.utility - left.evaluation.utility
         || right.evaluation.baseQuality - left.evaluation.baseQuality
         || readItemSignature(left.candidate).localeCompare(readItemSignature(right.candidate)));
-    const chosen = ranked.find((entry) => canSelectConfidence(entry.candidate, selected));
+    const chosen = ranked[0];
     if (!chosen) break;
     chosen.candidate.batchSelection = {
       ...chosen.evaluation,
@@ -233,14 +233,6 @@ function selectCanonicalCandidateBatch(candidates = [], limit = 8) {
   }
 
   return selected;
-}
-
-function canSelectConfidence(candidate, selected) {
-  if (candidate?.sceneEligibility?.sceneStrength !== 'low') return true;
-  const selectedNonLow = selected.some((entry) => entry?.sceneEligibility?.sceneStrength !== 'low');
-  if (!selectedNonLow) return false;
-  const lowCount = selected.filter((entry) => entry?.sceneEligibility?.sceneStrength === 'low').length;
-  return lowCount < 2;
 }
 
 function evaluateSetContribution(candidate, selected, bestQuality, comparableCandidates = []) {

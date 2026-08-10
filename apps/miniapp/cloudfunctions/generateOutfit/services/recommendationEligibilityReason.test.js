@@ -64,7 +64,9 @@ test('every eligible scene rule result carries a catalog-backed reason code and 
     assert.ok(result.eligibilityReason.code, scene);
     assert.ok(result.eligibilityReason.subjectItemIds.length > 0, scene);
     assert.ok(result.eligibilityReason.supportingFactIds.length > 0, scene);
-    assert.equal(result.eligibilityReason.sourceRule, 'sceneEligibilityV3', scene);
+    assert.equal(result.eligibilityReason.sourceRule, 'sceneEvidenceV4', scene);
+    assert.equal(result.eligibilityReason.sourceVersion, 'scene-evidence-v4', scene);
+    assert.match(result.eligibilityReason.sourceFingerprint, /^[0-9a-f]{20}$/, scene);
     assert.ok(result.eligibilityReason.sourceRuleReasons.length > 0, scene);
     assert.equal(validateEligibilityReasonPayload(result.eligibilityReason, { scene, weather }), true, scene);
   }
@@ -76,8 +78,8 @@ test('catalog is unique and has complete v6 four-scene inventory', () => {
   assert.equal(assertEligibilityReasonCatalogCoverage(codes), true);
   assert.deepEqual(getEligibilityReasonCatalogInventory(), {
     version: 'eligibility-reason-v6',
-    total: 34,
-    scenes: { home: 13, work: 7, date: 7, sport: 7 },
+    total: 38,
+    scenes: { home: 14, work: 8, date: 8, sport: 8 },
   });
 });
 
@@ -184,14 +186,14 @@ test('work simple trio, controlled pattern and sport dress matchers enforce all 
   ]).includes('SPORT_DRESS_SHOES'), false);
 });
 
-test('an otherwise scene-eligible but unmapped path is diagnosed and never returned eligible without a code', () => {
+test('formal home core is rejected by hard evidence rather than explanation coverage', () => {
   const result = evaluateSceneEligibilityV3({
     scene: 'home',
     weather: { temp: 22 },
     items: [item('formal-dress', 'onepiece', '修身礼服')],
   });
   assert.equal(result.eligible, false);
-  assert.ok(result.rejectReasons.includes('UNMAPPED_ELIGIBILITY_PATH'));
-  assert.equal(result.eligibilityDiagnostic.code, 'UNMAPPED_ELIGIBILITY_PATH');
+  assert.ok(result.rejectReasons.includes('HOME_SPECIAL_PURPOSE_CONFLICT'));
+  assert.equal(result.rejectReasons.includes('UNMAPPED_ELIGIBILITY_PATH'), false);
   assert.equal(result.eligibilityReason, undefined);
 });

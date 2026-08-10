@@ -8,6 +8,9 @@ test('performance ledger contract keeps production disabled and records a bounde
   assert.match(source, /isRecommendationDiagnosticEnvironment/);
   assert.match(source, /NOT_OBSERVED/);
   assert.match(source, /TODAY_PERFORMANCE_LEDGER_SCHEMA_VERSION = 3/);
+  assert.match(source, /PUBLISH_DEBOUNCE_MS = 250/);
+  assert.match(source, /publishNow\(\)/);
+  assert.match(source, /stage === 'finalCardCount' \|\| stage === 'snapshotRejectReason'/);
   assert.match(source, /restoreDispatchAttempt/);
   assert.match(source, /restoreFunctionEntered/);
   assert.match(source, /authContextCurrentResult/);

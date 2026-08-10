@@ -130,13 +130,8 @@ function deriveSceneEligibilityFacts(item = {}, visibleFactItem = null, options 
     ...(hasFact('home_shoe') ? ['visible:home_shoe'] : []),
     ...(hasCapability('indoor') ? ['capability:indoor'] : []),
   ]);
-  const sportTopEvidence = wearability.category === 'top'
-    && (sportSignals.length > 0 || hasFact('sport_top'));
   const sportCompatibleTop = wearability.category === 'top'
     && (wearability.isTshirtLike || hasFact('short_sleeve') || hasFact('sleeveless'));
-  const sportBottomEvidence = wearability.category === 'bottom'
-    && (sportSignals.length > 0 || hasFact('sport_bottom'));
-  const sportApparelEvidence = sportTopEvidence || sportBottomEvidence || wearability.isSportDress;
   const polishEvidence = uniqueStrings([
     ...(wearability.isFormalLike ? ['formal_like'] : []),
     ...(hasFact('shirt') ? ['visible:shirt'] : []),
@@ -148,6 +143,14 @@ function deriveSceneEligibilityFacts(item = {}, visibleFactItem = null, options 
     ...(Number.isFinite(formalityLevel) && formalityLevel >= 3 ? ['aesthetic:formality'] : []),
   ]);
   const explicitSceneTags = readStringArray(item.sceneTags);
+  const canonical = deriveCanonicalSceneFacts(item, wearability, visibleFacts);
+  const hasControlledSportSignal = canonical.specialStyles.includes('sport')
+    || hasCapability('formal_training')
+    || hasCapability('light_activity')
+    || hasFact('sport_top')
+    || hasFact('sport_bottom');
+  const sportTopEvidenceV4 = wearability.category === 'top' && hasControlledSportSignal;
+  const sportBottomEvidenceV4 = wearability.category === 'bottom' && hasControlledSportSignal;
 
   return {
     ...wearability,
@@ -164,11 +167,207 @@ function deriveSceneEligibilityFacts(item = {}, visibleFactItem = null, options 
       && (wearability.isHomeShoe || wearability.isSlipperLike || wearability.isCrocsLike
         || ((hasFact('outing_shoe') || hasCapability('commute')) && !wearability.isSportShoe && !hasFact('sport_shoe'))),
     casualShortsTee: wearability.isTshirtLike || hasFact('short_sleeve'),
-    sportApparelEvidence,
+    sportApparelEvidence: sportTopEvidenceV4 || sportBottomEvidenceV4 || wearability.isSportDress,
     sportCompatibleTop,
-    sportBottomEvidence,
+    sportBottomEvidence: sportBottomEvidenceV4,
     polishEvidence,
+    ...canonical,
   };
+}
+
+function deriveCanonicalSceneFacts(item, wearability, visibleFacts) {
+  const controlledStyleTags = readStringArray(item.styleTags || item.style);
+  const controlledSceneTags = readStringArray(item.sceneTags);
+  const controlledCategoryText = [
+    item.category, item.subcategory, item.subCategory, item.type, item.shoeType, item.footwearType,
+  ].map(readString).filter(Boolean).join(' ');
+  const controlledStyleText = controlledStyleTags.join(' ');
+  const controlledSceneText = controlledSceneTags.join(' ');
+  const controlledText = `${controlledCategoryText} ${controlledStyleText}`;
+  const controlledActivityText = `${controlledText} ${controlledSceneText}`;
+  const specialStyles = uniqueStrings([
+    ...(/正装|正式|商务|formal|business|suit|blazer|西装|礼服/i.test(controlledText) ? ['formal'] : []),
+    ...(/家居|居家|homewear|loungewear/i.test(controlledText) ? ['homewear'] : []),
+    ...(/睡衣|睡袍|sleepwear|pajama|pyjama/i.test(controlledText) ? ['sleepwear'] : []),
+    ...(/lolita|洛丽塔/i.test(controlledText) ? ['lolita'] : []),
+    ...(/cosplay|角色服/i.test(controlledText) ? ['cosplay'] : []),
+    ...(/舞台|演出|表演|performance|stage/i.test(controlledText) ? ['performance'] : []),
+    ...(/运动|训练|瑜伽|跑步|健身|sport|athletic|training|yoga|running|gym/i.test(controlledActivityText) ? ['sport'] : []),
+    ...(/休闲|日常|casual|relaxed/i.test(controlledActivityText) ? ['casual'] : []),
+    ...(/泳装|游泳|swimwear|专业用途|特殊用途|special.?purpose/i.test(controlledText) ? ['special-purpose'] : []),
+  ]);
+  const canonicalSubtype = normalizeCanonicalSubtype(controlledCategoryText);
+  const colorFacts = normalizeCanonicalColors(item);
+  const patternFact = deriveControlledPatternFact(item, controlledStyleTags);
+  const canonicalFacts = uniqueStrings([
+    `category:${wearability.category}`,
+    ...(canonicalSubtype ? [`subcategory:${canonicalSubtype}`] : []),
+    ...specialStyles.map((style) => `style:${style}`),
+    ...colorFacts.map((color) => `color:${color.family}`),
+    ...(patternFact ? [`pattern:${patternFact.canonicalFact}`] : []),
+    ...visibleFacts,
+  ]);
+  const isFormalShoe = wearability.category === 'shoes' && /商务皮鞋|正装皮鞋|德比鞋|牛津鞋|formal shoe|business shoe|oxford|derby/i.test(controlledText);
+  const isHighHeel = wearability.category === 'shoes' && /高跟|high heel|pump/i.test(controlledText);
+  const isDressShoe = wearability.category === 'shoes' && /礼服鞋|宴会鞋|dress shoe|evening shoe/i.test(controlledText);
+  const isOpenOrUnsafeShoe = wearability.category === 'shoes' && /拖鞋|凉拖|洞洞鞋|家居鞋|高跟|礼服鞋|slipper|slide|crocs|high heel/i.test(controlledText);
+  const isFormalDress = wearability.category === 'onepiece' && specialStyles.includes('formal');
+  const isSuitCore = wearability.category === 'outerwear'
+    && (canonicalSubtype === 'blazer' || /西装|suit|blazer/i.test(controlledCategoryText));
+  const isFormalTop = wearability.category === 'top' && specialStyles.includes('formal');
+  const isComplexStyle = /华丽|繁复|复杂|高装饰|ornate|elaborate|complex/i.test(controlledStyleText);
+
+  return {
+    canonicalCategory: wearability.category,
+    canonicalSubtype,
+    canonicalFacts,
+    colorFacts,
+    patternFact,
+    specialStyles,
+    isFormalCore: isSuitCore,
+    isFormalDress,
+    isFormalTop,
+    isFormalShoe,
+    isHighHeel,
+    isDressShoe,
+    isOpenOrUnsafeShoe,
+    isHomewear: specialStyles.includes('homewear'),
+    isSleepwear: specialStyles.includes('sleepwear'),
+    isLolita: specialStyles.includes('lolita'),
+    isCosplay: specialStyles.includes('cosplay'),
+    isPerformance: specialStyles.includes('performance'),
+    isSwimwear: /泳装|游泳|swimwear/i.test(controlledText),
+    isSpecialPurpose: specialStyles.includes('special-purpose'),
+    isProfessionalTraining: /专业训练|竞赛|比赛服|professional training|competition/i.test(controlledText),
+    isCasual: specialStyles.includes('casual') || visibleFacts.has('casual_style'),
+    isSimple: visibleFacts.has('simple_style') || /简洁|简约|基础|minimal|simple|clean|basic/i.test(controlledStyleText),
+    isLoose: visibleFacts.has('loose_fit') || /宽松|loose|relaxed|oversize/i.test(controlledStyleText),
+    isStructured: visibleFacts.has('straight_cut') || /挺括|利落|结构|直筒|structured|straight/i.test(controlledStyleText),
+    isComplexStyle,
+    isShirt: wearability.category === 'top' && /衬衫|衬衣|shirt/i.test(controlledCategoryText),
+    isKnit: wearability.category === 'top' && /针织|毛衣|knit|sweater/i.test(controlledCategoryText),
+    isSweatshirt: wearability.category === 'top' && /卫衣|hoodie|sweatshirt/i.test(controlledCategoryText),
+    isDenim: wearability.category === 'bottom' && /牛仔|denim|jeans/i.test(`${controlledCategoryText} ${readString(item.material)}`),
+    isExplicitSportTop: wearability.category === 'top' && specialStyles.includes('sport'),
+    isExplicitSportBottom: wearability.category === 'bottom' && specialStyles.includes('sport'),
+    isSportCompatibleBottom: wearability.category === 'bottom' && (wearability.isShorts || specialStyles.includes('sport') || /运动裤|卫裤|jogger|track pants/i.test(controlledCategoryText)),
+    isSportApparel: ['top', 'bottom', 'skirt', 'onepiece', 'outerwear'].includes(wearability.category) && specialStyles.includes('sport'),
+  };
+}
+
+function normalizeCanonicalSubtype(value) {
+  const text = readString(value).toLowerCase();
+  const mappings = [
+    [/t恤|t-shirt|tshirt|\btee\b/i, 'tshirt'], [/polo/i, 'polo'], [/衬衫|衬衣|shirt/i, 'shirt'],
+    [/卫衣|hoodie|sweatshirt/i, 'sweatshirt'], [/毛衣|sweater/i, 'sweater'], [/针织|knit/i, 'knit'],
+    [/短裤|shorts/i, 'shorts'], [/西裤|dress pants|suit pants/i, 'tailored_pants'], [/牛仔|denim|jeans/i, 'denim_pants'],
+    [/运动裤|卫裤|track pants|jogger/i, 'sport_pants'], [/休闲长裤|长裤|casual pants|trouser/i, 'casual_pants'],
+    [/连衣裙|dress/i, 'dress'], [/西装|blazer|suit/i, 'blazer'], [/风衣|trench/i, 'trench'],
+    [/大衣|overcoat/i, 'coat'], [/羽绒|down/i, 'down_jacket'], [/运动外套|sport jacket|track jacket/i, 'sport_jacket'],
+    [/运动鞋|sneaker|running shoe|training shoe/i, 'sport_shoe'], [/商务皮鞋|business shoe|oxford|derby/i, 'business_shoe'],
+    [/高跟|high heel|pump/i, 'high_heel'], [/礼服鞋|dress shoe|evening shoe/i, 'dress_shoe'],
+    [/靴|boot/i, 'boots'], [/拖鞋|slipper|slide/i, 'slipper'],
+  ];
+  return mappings.find(([pattern]) => pattern.test(text))?.[1] || '';
+}
+
+function normalizeCanonicalColors(item = {}) {
+  return normalizeColors(item).flatMap((entry) => {
+    const name = readString(entry.name || entry.color);
+    const hex = normalizeHex(entry.hex || entry.value);
+    const family = canonicalColorFamily(name, hex);
+    if (!family) return [];
+    return [{
+      sourceField: Array.isArray(item.colorPalette) && item.colorPalette.length > 0 ? 'colorPalette' : 'colors',
+      sourceValue: name || hex,
+      family,
+      isNeutral: ['black', 'white', 'gray', 'beige', 'brown', 'navy'].includes(family),
+      isBright: ['red', 'orange', 'yellow', 'pink', 'purple', 'green', 'blue'].includes(family) && !/浅|灰|暗|淡|light|muted|pastel/i.test(name),
+      mappingRule: hex ? 'canonical-color-hex-hsl-v1' : 'canonical-color-controlled-name-v1',
+    }];
+  });
+}
+
+function canonicalColorFamily(name, hex) {
+  const text = readString(name).toLowerCase().replace(/\s+/g, '');
+  const explicit = [
+    [/灰蓝|蓝灰|雾霾蓝|steelblue|slateblue/i, 'blue'], [/浅绿|灰绿|墨绿|军绿|olive|green/i, 'green'],
+    [/藏青|海军蓝|navy/i, 'navy'], [/米白|象牙|奶油|ivory|cream/i, 'white'], [/卡其|米色|杏色|beige|khaki/i, 'beige'],
+    [/咖|棕|褐|camel|brown/i, 'brown'], [/黑|black/i, 'black'], [/白|white/i, 'white'], [/灰|gray|grey/i, 'gray'],
+    [/蓝|blue/i, 'blue'], [/绿|green/i, 'green'], [/红|red/i, 'red'], [/粉|pink/i, 'pink'],
+    [/紫|purple|violet/i, 'purple'], [/橙|orange/i, 'orange'], [/黄|yellow/i, 'yellow'],
+  ].find(([pattern]) => pattern.test(text));
+  if (explicit) return explicit[1];
+  return hex ? familyFromHex(hex) : '';
+}
+
+function familyFromHex(hex) {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return '';
+  const max = Math.max(rgb.r, rgb.g, rgb.b);
+  const min = Math.min(rgb.r, rgb.g, rgb.b);
+  const lightness = (max + min) / 510;
+  const saturation = max === min ? 0 : (max - min) / (255 - Math.abs(max + min - 255));
+  if (lightness <= 0.16) return 'black';
+  if (lightness >= 0.9 && saturation <= 0.2) return 'white';
+  if (saturation <= 0.12) return 'gray';
+  const hue = hueFromRgb(rgb);
+  if (hue < 15 || hue >= 345) return 'red';
+  if (hue < 45) return lightness < 0.45 ? 'brown' : 'orange';
+  if (hue < 70) return 'yellow';
+  if (hue < 165) return 'green';
+  if (hue < 255) return lightness < 0.32 ? 'navy' : 'blue';
+  if (hue < 290) return 'purple';
+  if (hue < 345) return 'pink';
+  return '';
+}
+
+function normalizeHex(value) {
+  const text = readString(value).toLowerCase();
+  if (/^#[0-9a-f]{6}$/.test(text)) return text;
+  if (/^#[0-9a-f]{3}$/.test(text)) return `#${text[1]}${text[1]}${text[2]}${text[2]}${text[3]}${text[3]}`;
+  return '';
+}
+
+function hexToRgb(value) {
+  const hex = normalizeHex(value);
+  if (!hex) return null;
+  return { r: parseInt(hex.slice(1, 3), 16), g: parseInt(hex.slice(3, 5), 16), b: parseInt(hex.slice(5, 7), 16) };
+}
+
+function hueFromRgb({ r, g, b }) {
+  const red = r / 255;
+  const green = g / 255;
+  const blue = b / 255;
+  const max = Math.max(red, green, blue);
+  const min = Math.min(red, green, blue);
+  const delta = max - min;
+  if (delta === 0) return 0;
+  if (max === red) return 60 * (((green - blue) / delta) % 6 + 6) % 360;
+  if (max === green) return 60 * ((blue - red) / delta + 2);
+  return 60 * ((red - green) / delta + 4);
+}
+
+function deriveControlledPatternFact(item, styleTags) {
+  const rawPattern = readString(item.pattern || item.patternType || item.aestheticFeatures?.patternType);
+  const direct = normalizePattern(rawPattern);
+  if (direct) return { sourceField: 'patternType', sourceValue: rawPattern, canonicalFact: direct, mappingRule: 'controlled-pattern-field-v1' };
+  for (const tag of styleTags) {
+    const mapped = normalizePattern(tag);
+    if (mapped) return { sourceField: 'styleTags', sourceValue: tag, canonicalFact: mapped, mappingRule: 'controlled-style-pattern-map-v1' };
+  }
+  return null;
+}
+
+function normalizePattern(value) {
+  const text = readString(value).toLowerCase();
+  if (/^(纯色|solid|plain)$/.test(text)) return 'solid';
+  if (/^(印花|印花图案|print|printed)$/.test(text)) return 'print';
+  if (/^(条纹|stripe|striped)$/.test(text)) return 'stripe';
+  if (/^(格纹|格子|plaid|check|checked)$/.test(text)) return 'plaid';
+  if (/^(波点|polka dot|dots?)$/.test(text)) return 'polka_dot';
+  if (/^(碎花|floral)$/.test(text)) return 'floral';
+  return '';
 }
 
 function deriveConfirmableSceneTags(item = {}) {

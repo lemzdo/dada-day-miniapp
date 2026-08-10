@@ -4,6 +4,7 @@ import { isRecommendationDiagnosticEnvironment } from '@/lib/cloud';
 export const TODAY_PERFORMANCE_LEDGER_KEY = 'today:performance-ledger:v1';
 export const TODAY_PERFORMANCE_LEDGER_SCHEMA_VERSION = 3;
 const HISTORY_LIMIT = 5;
+const PUBLISH_DEBOUNCE_MS = 250;
 
 export type TodayPerformanceExecutionMode = 'HOT' | 'COLD' | 'UNKNOWN';
 export type TodayRestoreReturnReason =
@@ -60,6 +61,7 @@ let active: TodayPerformanceLedgerRecord | null = null;
 let history: TodayPerformanceLedgerRecord[] = [];
 let enabledState: boolean | undefined;
 const listeners = new Set<(snapshot: TodayPerformanceLedgerSnapshot) => void>();
+let publishTimer: ReturnType<typeof setTimeout> | undefined;
 
 function now() {
   const perf = (globalThis as { performance?: { now?: () => number } }).performance;
@@ -79,8 +81,12 @@ function emptySnapshot(): TodayPerformanceLedgerSnapshot {
   return { active: null, history: [] };
 }
 
-function publish() {
+function publishNow() {
   if (!isEnabled() || !active) return;
+  if (publishTimer !== undefined) {
+    clearTimeout(publishTimer);
+    publishTimer = undefined;
+  }
   const snapshot = { active: { ...active, stages: { ...active.stages }, durations: { ...active.durations } }, history: history.map((item) => ({ ...item, stages: { ...item.stages }, durations: { ...item.durations } })) };
   for (const listener of listeners) listener(snapshot);
   try {
@@ -88,6 +94,15 @@ function publish() {
   } catch {
     // Diagnostics must never affect the page.
   }
+}
+
+function publish() {
+  if (!isEnabled() || !active) return;
+  if (publishTimer !== undefined) return;
+  publishTimer = setTimeout(() => {
+    publishTimer = undefined;
+    publishNow();
+  }, PUBLISH_DEBOUNCE_MS);
 }
 
 export function readTodayPerformanceLedger(): TodayPerformanceLedgerSnapshot {
@@ -174,7 +189,8 @@ export function markTodayPerformanceStage(stage: TodayPerformanceStage, value?: 
   if (stage === 'finalCardCount' && typeof value === 'number') active.finalCardCount = value;
   if (stage === 'executionMode' && (value === 'HOT' || value === 'COLD')) active.executionMode = value;
   if (stage === 'locationPermissionResolved') markTodayPerformanceDuration('permissionUserWaitMs', 'locationPermissionPromptStart', 'locationPermissionResolved');
-  publish();
+  if (stage === 'finalCardCount' || stage === 'snapshotRejectReason') publishNow();
+  else publish();
 }
 
 export function markTodayPerformanceDuration(name: string, startStage: TodayPerformanceStage, endStage: TodayPerformanceStage) {
@@ -198,9 +214,8 @@ export function completeTodayPerformanceRun() {
   markTodayPerformanceDuration('onShowToFirstImage', 'todayOnShow', 'firstImageLoaded');
   markTodayPerformanceDuration('request', 'generateOutfitRequestStart', 'generateOutfitResponseEnd');
   markTodayPerformanceDuration('permissionUserWaitMs', 'locationPermissionPromptStart', 'locationPermissionResolved');
-  publish();
   history = [current, ...history.filter((item) => item.runId !== current.runId)].slice(0, HISTORY_LIMIT);
-  publish();
+  publishNow();
 }
 
 export function resetTodayPerformanceLedgerForTest() {
@@ -208,4 +223,6 @@ export function resetTodayPerformanceLedgerForTest() {
   history = [];
   enabledState = undefined;
   listeners.clear();
+  if (publishTimer !== undefined) clearTimeout(publishTimer);
+  publishTimer = undefined;
 }

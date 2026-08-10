@@ -142,7 +142,8 @@ test('a fact-bound work baseline reason stays accepted while an enhanced Claim r
   assert.equal(withEligibility.todayClaimId, 'W01-02');
   const relationEvidence = withEligibility.todayClaim.evidenceSources
     .find((entry) => entry.factId === 'outfit:work_eligible');
-  assert.equal(relationEvidence.sourceRule, 'sceneEligibilityV3');
+  assert.equal(relationEvidence.sourceRule, 'sceneEvidenceV4');
+  assert.equal(relationEvidence.sourceVersion, 'scene-evidence-v4');
   assert.deepEqual(relationEvidence.subjectItemIds, ['top-pattern', 'bottom-solid', 'shoes-simple']);
   assert.ok(relationEvidence.supportingFactIds.length > 0);
 });

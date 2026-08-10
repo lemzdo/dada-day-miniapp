@@ -205,7 +205,7 @@ function matchRelationRequirement(requirement, relationFacts) {
 function relationMeetsMinimum(record, minimumLevel) {
   if (!record.authorized || !record.subjectItemIds.length || !record.supportingFactIds.length) return false;
   if (record.fact === 'work_eligible') return minimumLevel === 'A'
-    && record.sourceRule === 'sceneEligibilityV3';
+    && ['sceneEligibilityV3', 'sceneEvidenceV4'].includes(record.sourceRule);
   if (record.fact === 'color_coordinated') return record.relationRule === 'same_normalized_color_group'
     && record.confidence >= 0.8;
   return false;

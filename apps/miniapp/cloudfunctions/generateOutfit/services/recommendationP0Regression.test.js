@@ -245,7 +245,7 @@ test('P0 replay: 20 guard PASS and eight enhancement REJECT outcomes still retur
   assert.equal(availability.limitedReason, null);
 });
 
-test('real generateOutfit pipeline preserves eligibility reasons from 25 raw candidates through finalization', () => {
+test('real generateOutfit pipeline preserves V4 eligibility reasons from 25 candidates through finalization', () => {
   const internals = loadGenerateOutfitInternals();
   const weather = { temp: 22, weather: 'clear' };
   const recommendations = internals.generateRuleRecommendations({
@@ -267,10 +267,10 @@ test('real generateOutfit pipeline preserves eligibility reasons from 25 raw can
   });
 
   assert.equal(recommendations.debug.candidateCount, 25);
-  assert.equal(recommendations.debug.guardAcceptedCount, 20);
-  assert.equal(recommendations.debug.guardRejectedCount, 5);
+  assert.equal(recommendations.debug.guardAcceptedCount, 25);
+  assert.equal(recommendations.debug.guardRejectedCount, 0);
   assert.equal(recommendations.debug.sceneRejectedCount, 0);
-  assert.equal(recommendations.debug.rejectReasonCounts.UNMAPPED_ELIGIBILITY_PATH, 5);
+  assert.equal(recommendations.debug.rejectReasonCounts.UNMAPPED_ELIGIBILITY_PATH || 0, 0);
   assert.equal(recommendations.length, 8);
 
   const tempOutfits = recommendations.map((recommendation, index) => internals.toTempOutfit(recommendation, {
@@ -321,7 +321,12 @@ test('real generateOutfit pipeline preserves eligibility reasons from 25 raw can
   assert.equal(finalized.coreReasonCoverageGapCount, 0);
   assert.equal(
     Object.entries(finalized.coreReasonCodeCounts)
-      .every(([code, count]) => ['SPORT_COMPLETE_SET', 'SPORT_LIGHT_ACTIVITY_SET'].includes(code) && count > 0),
+      .every(([code, count]) => [
+        'SPORT_COMPLETE_SET',
+        'SPORT_LIGHT_ACTIVITY_SET',
+        'SPORT_DRESS_SHOES',
+        'SPORT_V4_EVIDENCE_SUPPORTED',
+      ].includes(code) && count > 0),
     true,
   );
   assert.equal(finalized.finalRecommendationCount, 8);
@@ -499,7 +504,7 @@ test('sport full compute and five consecutive pool hits keep equivalent canonica
   assert.equal(allVisibleKeys.size, 48);
 });
 
-test('sport candidate pool returns a full batch, legal tail, then an empty exhausted batch', () => {
+test('sport candidate pool returns full batches, a legal tail, then an empty exhausted batch', () => {
   const internals = loadGenerateOutfitInternals();
   const clothes = buildTwentyFiveCandidateSportWardrobe();
   const weather = { temp: 22, weather: 'clear' };
@@ -528,12 +533,15 @@ test('sport candidate pool returns a full batch, legal tail, then an empty exhau
 
   const full = next();
   exclusions.push(...full.map((candidate) => candidate.outfitKey));
+  const secondFull = next();
+  exclusions.push(...secondFull.map((candidate) => candidate.outfitKey));
   const tail = next();
   exclusions.push(...tail.map((candidate) => candidate.outfitKey));
   const exhausted = next();
 
   assert.equal(full.length, 8);
-  assert.equal(tail.length, 4);
+  assert.equal(secondFull.length, 8);
+  assert.equal(tail.length, 1);
   assert.equal(tail.countContract.tailBatchAuthorized, true);
   assert.equal(exhausted.length, 0);
   assert.equal(exhausted.countContract.poolExhaustedAfterConsume, true);
@@ -550,10 +558,11 @@ test('real composition candidates keep roles, score, reasons, copy, and QA on on
 
   assert.ok(recommendations.length > 0);
   for (const candidate of recommendations) {
-    assert.ok(candidate.itemsByRole.top);
-    assert.ok(candidate.itemsByRole.bottom);
+    const hasTwoPiece = Boolean(candidate.itemsByRole.top && candidate.itemsByRole.bottom);
+    const hasOnePiece = Boolean(candidate.itemsByRole.onepiece);
+    assert.equal(hasTwoPiece || hasOnePiece, true);
     assert.ok(candidate.itemsByRole.shoes);
-    assert.equal(candidate.archetype, 'top+bottom+shoes');
+    assert.equal(['top+bottom+shoes', 'onepiece+shoes'].includes(candidate.archetype), true);
     assert.ok(candidate.totalScore > 0);
     assert.ok(candidate.eligibilityReasonCandidates.length > 0);
     assert.ok(candidate.eligibilityReason?.code);
@@ -595,7 +604,7 @@ test('real composition candidates keep roles, score, reasons, copy, and QA on on
     assert.equal(outfit.eligibilityReason.code, candidate.eligibilityReason.code);
     assert.ok(outfit.copyContract.todayReason.trim());
   }
-  assert.ok(qa.finalCards.every((card) => card.itemAliases.length === 3));
+  assert.ok(qa.finalCards.every((card) => [2, 3].includes(card.itemAliases.length)));
   assert.ok(qa.finalCards.every((card) => card.score > 0 && card.reasonCode));
 });
 

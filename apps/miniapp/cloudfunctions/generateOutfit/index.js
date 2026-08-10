@@ -77,7 +77,11 @@ const {
   createCompositionItemFacts,
 } = require('./services/outfitCompositionV1');
 const { buildOutfitCardViewModel } = require('./services/outfitCardViewModel');
-const { applyWearabilityAndSceneEligibility, normalizeScene } = require('./services/sceneEligibilityV3');
+const {
+  applyWearabilityAndSceneEligibility,
+  evaluateOptionalItemPolicy,
+  normalizeScene,
+} = require('./services/sceneEligibilityV3');
 const { buildItemFactsContext } = require('./services/itemFactsContext');
 const {
   createCandidateCore,
@@ -111,12 +115,17 @@ const {
   PRESENTATION_EVIDENCE_VERSION,
   serializedBytes: serializedPresentationEvidenceBytes,
 } = require('./services/presentationEvidence');
-const { isRecommendationQaAuditEnabled } = require('./services/qaAuditControl');
+const {
+  isRecommendationQaAuditEnabled,
+  isSceneEvidenceAcceptanceAuditEnabled,
+} = require('./services/qaAuditControl');
 const {
   AI_REVIEW_VERSION,
   CANDIDATE_POOL_ENGINE_VERSION,
   CLOUD_BUILD_VERSION,
   REASON_CATALOG_VERSION,
+  SCENE_EVIDENCE_FINGERPRINT,
+  SCENE_EVIDENCE_VERSION,
 } = require('./services/buildVersions');
 const {
   buildCandidatePoolIdentity,
@@ -258,6 +267,8 @@ function buildTransportProbeResult(handlerStartedAt) {
     transportProbe: true,
     ledgerVersion: SERVER_LEDGER_VERSION,
     cloudBuildVersion: CLOUD_BUILD_VERSION,
+    sceneEvidenceVersion: SCENE_EVIDENCE_VERSION,
+    sceneEvidenceFingerprint: SCENE_EVIDENCE_FINGERPRINT,
     moduleLoadedAt: MODULE_LOADED_AT,
     moduleAgeMs,
     moduleInstanceId: MODULE_INSTANCE_ID,
@@ -343,9 +354,10 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
   const weatherMode = weather.mode;
   const weatherSnapshot = toWeatherSnapshot(weather);
   const presentationEvidenceEnabled = isPresentationEvidenceMode(event.presentationEvidenceMode);
-  const performanceOnlyDiagnostics = event.performanceDiagnostics === true;
-  const debugRecommendationAudit = !performanceOnlyDiagnostics
-    && isRecommendationQaAuditEnabled(event.debugRecommendationAudit, process.env.RECOMMENDATION_QA_AUDIT_ENABLED);
+  const sceneEvidenceAcceptanceAudit = isSceneEvidenceAcceptanceAuditEnabled(event);
+  const performanceOnlyDiagnostics = event.performanceDiagnostics === true && !sceneEvidenceAcceptanceAudit;
+  const debugRecommendationAudit = sceneEvidenceAcceptanceAudit || (!performanceOnlyDiagnostics
+    && isRecommendationQaAuditEnabled(event.debugRecommendationAudit, process.env.RECOMMENDATION_QA_AUDIT_ENABLED));
   const identityStartedAt = Date.now();
   const candidatePoolIdentity = buildCandidatePoolIdentity({
     openid: OPENID,
@@ -548,6 +560,8 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
     selectedCount: recommendations.length,
     limitedReason: recommendations.debug?.limitedReason || '',
     cloudBuildVersion: CLOUD_BUILD_VERSION,
+    sceneEvidenceVersion: SCENE_EVIDENCE_VERSION,
+    sceneEvidenceFingerprint: SCENE_EVIDENCE_FINGERPRINT,
     PRESENTATION_FACT_MODEL_BUILD,
     executionMode,
     candidatePoolIdentityHash: candidatePoolIdentity.identityHash,
@@ -811,6 +825,9 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
     diagnostics,
     execution: debug,
   });
+  if (debugRecommendationAudit) {
+    debug.sceneEvidenceAcceptance = buildSceneEvidenceAcceptanceDiagnostics(recommendations);
+  }
   if (presentationEvidenceEnabled) {
     attachPresentationEvidenceDebug(debug, {
       auditId: diagnostics.auditId,
@@ -850,6 +867,8 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
         PRESENTATION_FACT_MODEL_BUILD,
         reasonCatalogVersion: REASON_CATALOG_VERSION,
         aiReviewVersion: AI_REVIEW_VERSION,
+        sceneEvidenceVersion: SCENE_EVIDENCE_VERSION,
+        sceneEvidenceFingerprint: SCENE_EVIDENCE_FINGERPRINT,
       },
     });
     return finalizeResult.response;
@@ -878,6 +897,8 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
       PRESENTATION_FACT_MODEL_BUILD,
       reasonCatalogVersion: REASON_CATALOG_VERSION,
       aiReviewVersion: AI_REVIEW_VERSION,
+      sceneEvidenceVersion: SCENE_EVIDENCE_VERSION,
+      sceneEvidenceFingerprint: SCENE_EVIDENCE_FINGERPRINT,
     },
     },
   });
@@ -901,6 +922,79 @@ function buildRecommendationResponseData(sceneContract, data) {
     sceneKey: sceneContract.sceneKey,
     scene: sceneContract.scene,
   };
+}
+
+function buildSceneEvidenceAcceptanceDiagnostics(recommendations = []) {
+  const debug = recommendations?.debug || {};
+  const accepted = Array.isArray(debug._auditGuardAcceptedCandidates)
+    ? debug._auditGuardAcceptedCandidates
+    : [];
+  const rejected = Array.isArray(debug._auditGuardRejectedCandidates)
+    ? debug._auditGuardRejectedCandidates
+    : [];
+  const ranked = accepted.map((candidate) => {
+    const sceneResult = candidate?.sceneEligibility || candidate?.eligibility?.scene || {};
+    const evidence = Array.isArray(sceneResult.sceneEvidence) ? sceneResult.sceneEvidence : [];
+    return {
+      outfitKey: candidate?.outfitKey || candidate?.selectionSignatures?.itemSignature || '',
+      sceneFitScore: Number(sceneResult.sceneFitScore ?? candidate?.sceneFitScore) || 0,
+      rankingScore: Number(candidate?.rankingScore) || 0,
+      positiveFamilies: uniqueSorted(evidence
+        .filter((entry) => /_POSITIVE$/.test(String(entry?.severity || '')))
+        .map((entry) => entry.evidenceFamily)),
+      negativeFamilies: uniqueSorted(evidence
+        .filter((entry) => entry?.severity === 'NEGATIVE_SIGNAL')
+        .map((entry) => entry.evidenceFamily)),
+      evidenceIds: uniqueSorted(evidence.map((entry) => entry?.id)),
+    };
+  }).sort((left, right) => right.rankingScore - left.rankingScore
+    || right.sceneFitScore - left.sceneFitScore
+    || left.outfitKey.localeCompare(right.outfitKey));
+  const selectedKeys = new Set((Array.isArray(recommendations) ? recommendations : [])
+    .map((candidate) => candidate?.outfitKey)
+    .filter(Boolean));
+  const scores = ranked.map((candidate) => candidate.sceneFitScore).sort((left, right) => left - right);
+  const hardRejected = rejected.filter((entry) => entry?.rejectionStage === 'scene_hard_conflict');
+  const wearabilityRejected = rejected.filter((entry) => entry?.rejectionStage === 'wearability_guard');
+  return {
+    version: SCENE_EVIDENCE_VERSION,
+    fingerprint: SCENE_EVIDENCE_FINGERPRINT,
+    generated: Number(debug.candidateCount) || accepted.length + rejected.length,
+    eligible: accepted.length,
+    hardRejected: hardRejected.length,
+    wearabilityRejected: wearabilityRejected.length,
+    selected: selectedKeys.size,
+    sceneFitDistribution: {
+      min: scores[0] ?? null,
+      median: scores.length > 0 ? scores[Math.floor((scores.length - 1) / 2)] : null,
+      max: scores[scores.length - 1] ?? null,
+      buckets: {
+        low: scores.filter((score) => score < 4).length,
+        neutral: scores.filter((score) => score >= 4 && score < 6).length,
+        positive: scores.filter((score) => score >= 6 && score < 8).length,
+        strong: scores.filter((score) => score >= 8).length,
+      },
+    },
+    topEvidenceFamilies: countRankedValues(ranked.flatMap((candidate) => candidate.positiveFamilies)),
+    negativeFamilies: countRankedValues(ranked.flatMap((candidate) => candidate.negativeFamilies)),
+    candidates: ranked.map((candidate, index) => ({
+      ...candidate,
+      rank: index + 1,
+      selected: selectedKeys.has(candidate.outfitKey),
+    })),
+  };
+}
+
+function countRankedValues(values) {
+  const counts = new Map();
+  for (const value of values.filter(Boolean)) counts.set(value, (counts.get(value) || 0) + 1);
+  return [...counts.entries()]
+    .map(([family, count]) => ({ family, count }))
+    .sort((left, right) => right.count - left.count || left.family.localeCompare(right.family));
+}
+
+function uniqueSorted(values) {
+  return [...new Set(values.filter((value) => typeof value === 'string' && value))].sort();
 }
 
 // Persistence keeps the full fact-bearing snapshot. The recommendation response
@@ -4482,6 +4576,7 @@ function selectUsefulOptional(items, kind, sceneKey, coreItems) {
   const coreColors = new Set(coreItems.flatMap((item) => normalizeColors(item).map((color) => color?.name).filter(Boolean)));
   return (Array.isArray(items) ? items : [])
     .filter((item) => kind === 'outerwear' ? isUsefulOuterwear(item) : isUsefulAccessory(item))
+    .filter((item) => evaluateOptionalItemPolicy(sceneKey, [item]).kept.length === 1)
     .filter((item) => kind !== 'accessory' || accessoryAddsValue(item, coreColors, sceneKey))
     .map((item) => ({ item, score: scoreOptionalItem(item, kind, sceneKey, coreColors) }))
     .sort((left, right) => right.score - left.score || String(left.item._id).localeCompare(String(right.item._id)))
@@ -4612,11 +4707,11 @@ function generateRuleRecommendations({
   const guardResult = applyWearabilityAndSceneEligibility(candidates, {
     scene,
     weather: normalizedWeather,
+    recommendationProfile,
     itemFactsContext,
     sourceItemById,
     instrumentation: testInstrumentation,
   });
-  assertEligibilityReasons(guardResult.accepted, { node: 'afterGuard', scene, weather: normalizedWeather });
   timings.eligibilityMs = Date.now() - eligibilityStartedAt;
   timings.wearabilitySceneEligibilityMs = timings.eligibilityMs;
   const exclusionStartedAt = Date.now();
@@ -4633,6 +4728,7 @@ function generateRuleRecommendations({
       const scoreInput = candidate.derivedFacts || resolveCandidateSourceItems(candidate, itemFactsContext, sourceItemById);
       const scoredCandidate = scoreCandidate(scoreInput, {
         scene,
+        sceneFitScore: candidate.sceneEligibility?.sceneFitScore ?? candidate.sceneFitScore,
         tempConfig,
         weather: normalizedWeather,
         recommendationProfile,
@@ -4957,9 +5053,10 @@ function readSelectedOutfitItemIds(candidate) {
 function buildRankingScore(rec) {
   const scores = rec.scores || {};
   const weather = Number(scores.weatherAdaptation || 0);
-  const scene = Number(scores.sceneMatch || 0);
+  const scene = Number(scores.sceneFitScore ?? scores.sceneMatch ?? 0);
   const total = Number(scores.total || 0);
-  const base = weather * 0.38 + scene * 0.32 + total * 0.3;
+  const weatherPenalty = Number(rec.eligibility?.weather?.penalty || 0);
+  const base = weather * 0.38 + scene * 0.32 + total * 0.3 - weatherPenalty;
   const identity = String(rec.outfitKey || rec.selectionSignatures?.itemSignature || signature(rec.itemIds || []));
   const jitter = (stableRankHash(identity) / 0xffffffff - 0.5) * 0.45;
   return base + jitter;
@@ -5100,12 +5197,10 @@ function scoreCandidate(itemsOrDerivedFacts, context, { includePresentation = tr
   recordInstrumentationMetric(context.instrumentation, 'scoreCandidateNormalizeColors');
   const colors = items.flatMap((item) => normalizeColors(item));
   const styles = items.flatMap((item) => readArray(item.styleTags));
-  const scenes = items.flatMap((item) => readArray(item.sceneTags));
   const weatherAdaptation = scoreWeather(items, context.tempConfig);
   const colorHarmony = scoreColorHarmony(colors, context.recommendationProfile.colorPreference);
   const styleUnity = scoreStyleUnity(styles, context.recommendationProfile.styleTags);
-  const sceneMatchInfo = getSceneMatchInfo(scenes, context.scene);
-  const sceneMatch = sceneMatchInfo.score;
+  const sceneMatch = normalizeScore(context.sceneFitScore ?? 5);
   const freshness = scoreFreshness(items);
   const preference = scorePreference(items, styles, context.recommendationProfile);
   const warmth = scoreWarmth(items);
@@ -5131,11 +5226,12 @@ function scoreCandidate(itemsOrDerivedFacts, context, { includePresentation = tr
     warmth,
     coolness,
     sceneMatch,
+    sceneFitScore: sceneMatch,
     colorHarmony,
   });
 
   const result = {
-    matchedScene: sceneMatchInfo.matchedScene,
+    matchedScene: sceneMatch > 5 ? normalizeScene(context.scene) : '',
     scores,
   };
   if (!includePresentation) return result;
@@ -5150,12 +5246,10 @@ function scoreCandidate(itemsOrDerivedFacts, context, { includePresentation = tr
 function scoreCandidateDerivedFacts(derivedFacts, context) {
   const colors = derivedFacts.normalizedColors;
   const styles = derivedFacts.styles;
-  const scenes = derivedFacts.scenes;
   const weatherAdaptation = scoreWeatherFromDerivedFacts(derivedFacts, context.tempConfig);
   const colorHarmony = scoreColorHarmony(colors, context.recommendationProfile.colorPreference);
   const styleUnity = scoreStyleUnity(styles, context.recommendationProfile.styleTags);
-  const sceneMatchInfo = getSceneMatchInfo(scenes, context.scene);
-  const sceneMatch = sceneMatchInfo.score;
+  const sceneMatch = normalizeScore(context.sceneFitScore ?? 5);
   const freshness = scoreFreshnessFromDerivedFacts(derivedFacts);
   const preference = scorePreferenceFromDerivedFacts(derivedFacts, context.recommendationProfile);
   const warmth = derivedFacts.warmth;
@@ -5181,11 +5275,12 @@ function scoreCandidateDerivedFacts(derivedFacts, context) {
     warmth,
     coolness,
     sceneMatch,
+    sceneFitScore: sceneMatch,
     colorHarmony,
   });
 
   return {
-    matchedScene: sceneMatchInfo.matchedScene,
+    matchedScene: sceneMatch > 5 ? normalizeScene(context.scene) : '',
     scores,
   };
 }
@@ -5238,23 +5333,6 @@ function scoreStyleUnity(styles, preferredStyles) {
   if (!preferredStyles.length) return unity;
   const matchRatio = styles.filter((style) => preferredStyles.includes(style)).length / Math.max(styles.length, 1);
   return round1(unity * 0.65 + (5 + matchRatio * 5) * 0.35);
-}
-
-function getSceneMatchInfo(scenes, scene) {
-  if (!scene) return { score: 7, matchedScene: '' };
-  if (!scenes.length) return { score: 5, matchedScene: '' };
-  if (scenes.includes(scene)) return { score: 9, matchedScene: scene };
-  const related = {
-    上班: ['开会', '正式', '通勤'],
-    开会: ['上班', '正式', '通勤'],
-    约会: ['聚会', '逛街'],
-    逛街: ['约会', '出游', '日常'],
-    出游: ['逛街', '运动', '日常'],
-    居家: ['日常', '休闲'],
-    运动: ['出游', '休闲'],
-  };
-  const matchedScene = scenes.find((item) => (related[scene] || []).includes(item)) || '';
-  return matchedScene ? { score: 7, matchedScene } : { score: 5, matchedScene: '' };
 }
 
 function scoreFreshness(items) {
@@ -5487,7 +5565,9 @@ function readColorText(item) {
 
 function classifyColor(value) {
   if (!value) return 'neutral';
-  if (['黑', '白', '灰', '米', '棕'].some((name) => value.includes(name))) return 'neutral';
+  const colorName = String(value).trim().toLowerCase();
+  if (/灰蓝|蓝灰|雾霾蓝|浅绿|灰绿|墨绿|steelblue|slateblue|olive|green|blue/.test(colorName)) return 'vivid';
+  if (/黑|白|纯灰|中灰|深灰|浅灰|米白|米色|卡其|棕|咖|藏青|black|white|gray|grey|beige|khaki|brown|navy/.test(colorName)) return 'neutral';
   if (!value.startsWith('#') || value.length < 7) return 'vivid';
 
   const r = parseInt(value.slice(1, 3), 16) / 255;
@@ -5576,6 +5656,7 @@ function sanitizeScores(scores) {
     warmth: normalizeScore(scores.warmth),
     coolness: normalizeScore(scores.coolness),
     sceneMatch: normalizeScore(scores.sceneMatch),
+    sceneFitScore: normalizeScore(scores.sceneFitScore ?? scores.sceneMatch),
     colorHarmony: normalizeScore(scores.colorHarmony),
   };
 }
@@ -5849,6 +5930,7 @@ if (process.env.NODE_ENV === 'test') {
   exports.__test = {
     PRESENTATION_FACT_MODEL_BUILD,
     buildRecommendationResponseData,
+    buildSceneEvidenceAcceptanceDiagnostics,
     projectRecommendationResponseOutfits,
     buildOutfitSaveData,
     buildOutfitReferenceUpdatePayload,
@@ -5869,6 +5951,8 @@ if (process.env.NODE_ENV === 'test') {
     measureRecommendationResponseFields,
     normalizeOutfitPayload,
     generateRuleRecommendations,
+    buildRankingScore,
+    scoreCandidate,
     assertEligibilityReasons,
     toEligibilityReasonDiagnostic,
     toTempOutfit,

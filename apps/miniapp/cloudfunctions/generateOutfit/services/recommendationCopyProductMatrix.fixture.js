@@ -280,7 +280,7 @@ function sourcePolicyForClaim(claim) {
     ...requirement.anyOf,
   ]))];
   return facts.map((fact) => {
-    if (fact === 'work_eligible') return 'work_eligible=scene_rule:sceneEligibilityV3+item support';
+    if (fact === 'work_eligible') return 'work_eligible=scene_rule:sceneEvidenceV4+item support';
     if (fact === 'color_coordinated') return 'color_coordinated=relation_rule+two item color facts';
     const policy = getFactAuthorizationPolicy(fact);
     return policy.policy === 'visible'
@@ -326,7 +326,7 @@ function renderVoiceReviewMarkdown() {
     '',
     '| reason code | 场景 | eligibility path | required visible facts | 固定文案 | 允许的旧字段来源 | 与增强 Claim 的关系 |',
     '| --- | --- | --- | --- | --- | --- | --- |',
-    ...ELIGIBILITY_REASON_CATALOG.map((entry) => `| ${entry.reasonCode} | ${SCENE_LABELS[entry.scene]} | sceneEligibilityV3 → ${entry.reasonCode}${entry.weatherCondition ? ` (${entry.weatherCondition})` : ''} | ${entry.requiredVisibleFacts.join('<br>')} | ${entry.text} | ${entry.requiredVisibleFacts.map(legacyFieldsForEligibilityFact).join('<br>')}；无法追溯时 source=legacy_snapshot | qualification-core 增强 Claim 可替代 Today；secondary/detail 仅进详情 |`),
+    ...ELIGIBILITY_REASON_CATALOG.map((entry) => `| ${entry.reasonCode} | ${SCENE_LABELS[entry.scene]} | sceneEvidenceV4 → ${entry.reasonCode}${entry.weatherCondition ? ` (${entry.weatherCondition})` : ''} | ${entry.requiredVisibleFacts.join('<br>')} | ${entry.text} | ${entry.requiredVisibleFacts.map(legacyFieldsForEligibilityFact).join('<br>')}；无法追溯时 source=legacy_snapshot | qualification-core 增强 Claim 可替代 Today；secondary/detail 仅进详情 |`),
     '',
     '双向断言：每个 `eligible=true` 结果必须有 reason code；每个运行时 reason code 必须存在于本 Catalog。无法映射时输出 `UNMAPPED_ELIGIBILITY_PATH`，不得返回空理由卡片。',
     '',
@@ -335,7 +335,7 @@ function renderVoiceReviewMarkdown() {
     '- 基础资格理由是每条 `new_recommendation` 的必填层，不依赖增强 Claim。',
     '- `qualification core` 增强 Claim 通过 Gate 后可替代 Today 基础理由；`secondary value` 只能进入详情。',
     '- `W01-04`、`D01-06` 与 `W04-01` 为 `detail helper`，不能独立满足场景准入。',
-    '- `outfit:work_eligible` 只复用 `sceneEligibilityV3`，并保留 subject、sourceRule、supportingFactIds。',
+    '- `outfit:work_eligible` 复用 `sceneEvidenceV4`，并保留 subject、sourceRule、sourceVersion、supportingFactIds。',
     '- `outfit:color_coordinated` 由两个当前 outfit item 的颜色事实和 relation rule 共同支持。',
     '- 已删除且无替代：`W02-02`、`W04-02`、`S01-04`、`S02-04`。',
     '',

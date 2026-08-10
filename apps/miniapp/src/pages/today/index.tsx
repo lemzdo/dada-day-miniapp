@@ -596,6 +596,8 @@ export default function TodayPage() {
         trigger,
         ...(acceptanceDiagnostics ? {
           performanceDiagnostics: true,
+          diagnostics: true,
+          debugRecommendationAudit: true,
           acceptanceRunId: acceptanceDiagnostics.acceptanceRunId,
           captureId: acceptanceDiagnostics.captureId,
         } : {}),

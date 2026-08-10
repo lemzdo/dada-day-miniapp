@@ -263,6 +263,8 @@ async function installAcceptanceSingleRequestGuard(mini, { acceptanceRunId, capt
               acceptanceRunId: registry.acceptanceRunId,
               captureId: registry.captureId,
               performanceDiagnostics: true,
+              diagnostics: true,
+              debugRecommendationAudit: true,
             }
           : requestData;
         const clone = (value) => {

@@ -71,18 +71,18 @@ Today reason non-empty: true
       "weather": "晴"
     },
     "reliableOnlyFactsPresent": false,
-    "outfitEligible": false,
-    "eligibilityReasonCode": null,
-    "coreEligibilityReason": "",
-    "todayReason": "",
-    "todayReasonSource": "",
-    "enhancedReason": null,
+    "outfitEligible": true,
+    "eligibilityReasonCode": "DATE_V4_EVIDENCE_SUPPORTED",
+    "coreEligibilityReason": "这套有清楚的搭配关系，日常约会穿着自然。",
+    "todayReason": "这件上衣图案比较抢眼，裤子和鞋子简单一点就好，不会显得太花。",
+    "todayReasonSource": "enhanced_qualification_core",
+    "enhancedReason": "这件上衣图案比较抢眼，裤子和鞋子简单一点就好，不会显得太花。",
     "detailExplanation": null,
-    "coreReasonAcceptedCount": 0,
-    "enhancedReasonAcceptedCount": 0,
+    "coreReasonAcceptedCount": 1,
+    "enhancedReasonAcceptedCount": 1,
     "coreReasonCoverageGapCount": 0,
-    "finalRecommendationCount": 0,
-    "todayReasonNonEmpty": false,
+    "finalRecommendationCount": 1,
+    "todayReasonNonEmpty": true,
     "legacyEvidenceOnly": true
   },
   "sport": {
@@ -109,7 +109,7 @@ Today reason non-empty: true
 }
 ```
 
-eligibility reason coverage: 3/3；所有 final recommendation 的 Today reason 非空：false。
+eligibility reason coverage: 4/4；所有 final recommendation 的 Today reason 非空：true。
 
 选择规则：qualification-core 增强 Claim 通过 Gate 时替代首页基础理由；没有增强 Claim 时使用 coreEligibilityReason；secondary value 与 detail helper 只进入详情补充。`COPY_EVIDENCE_INSUFFICIENT` 仅统计增强不足，不隐藏首页理由。
 
@@ -911,7 +911,7 @@ finalRecommendationCount: 0
 - coreReasonAcceptedCount: 4
 - enhancedReasonAcceptedCount: 3
 - coreReasonCoverageGapCount: 0
-- coreReasonCodeCounts: `{"WORK_SHIRT_STRAIGHT_PANTS":1,"WORK_PATTERN_TOP_SOLID_BOTTOM":1,"WORK_SIMPLE_DRESS_SHOES":1,"WORK_BASELINE_PRESENTABLE":1}`
+- coreReasonCodeCounts: `{"WORK_SHIRT_STRAIGHT_PANTS":1,"WORK_BASELINE_PRESENTABLE":2,"WORK_SIMPLE_DRESS_SHOES":1}`
 - enhancementRejectReasonCounts: `{"COPY_EVIDENCE_INSUFFICIENT":1}`
 - final Today reason 全部非空: true
 
@@ -1239,12 +1239,15 @@ finalRecommendationCount: 0
             "item:w-straight:straight_cut"
           ],
           "source": "scene_rule",
-          "sourceRule": "sceneEligibilityV3",
+          "sourceRule": "sceneEvidenceV4",
+          "sourceVersion": "scene-evidence-v4",
+          "sourceFingerprint": "12d2dcc4982868e2f398",
           "sourceRuleReasons": [
-            "WORK_QUALIFIED_SHOE",
-            "WORK_POLISHED_SIGNAL"
+            "WORK_STRUCTURED_SET",
+            "WORK_DAILY_LONG_PANTS_SET",
+            "WORK_COMPLETE_DAILY_SET"
           ],
-          "confidence": 0.9,
+          "confidence": 1,
           "authorized": true
         }
       ],
@@ -1449,10 +1452,12 @@ finalRecommendationCount: 0
             "item:w-shoes:category",
             "item:w-shoes:simple_style"
           ],
-          "sourceRule": "sceneEligibilityV3",
+          "sourceRule": "sceneEvidenceV4",
+          "sourceVersion": "scene-evidence-v4",
+          "sourceFingerprint": "12d2dcc4982868e2f398",
           "sourceRuleReasons": [
-            "WORK_QUALIFIED_SHOE",
-            "WORK_POLISHED_SIGNAL"
+            "WORK_DAILY_LONG_PANTS_SET",
+            "WORK_COMPLETE_DAILY_SET"
           ],
           "source": "scene_rule",
           "confidence": 0.9,
@@ -1466,24 +1471,34 @@ finalRecommendationCount: 0
       },
       "todayReason": "这件上衣图案比较明显，配纯色裤子就不会显得太花，上班穿也合适。",
       "todayReasonSource": "enhanced_qualification_core",
-      "coreEligibilityReason": "有图案的上衣配纯色裤子，穿去上班也合适，整身看着不会太花。",
-      "coreEligibilityReasonCode": "WORK_PATTERN_TOP_SOLID_BOTTOM",
+      "coreEligibilityReason": "这套衣物搭配完整，日常通勤比较稳妥。",
+      "coreEligibilityReasonCode": "WORK_BASELINE_PRESENTABLE",
       "coreEligibilityEvidence": [
         {
-          "factId": "item:w-pattern-top:pattern_visible",
+          "factId": "item:w-pattern-top:category",
           "itemId": "w-pattern-top",
-          "fact": "pattern_visible",
-          "value": "印花",
+          "fact": "category",
+          "value": "top",
           "source": "legacy_snapshot",
           "confidence": 1,
           "authorized": true,
           "sourceDetail": "legacy-visible-fact-adapter"
         },
         {
-          "factId": "item:w-solid:solid_color",
+          "factId": "item:w-solid:category",
           "itemId": "w-solid",
-          "fact": "solid_color",
-          "value": "纯色",
+          "fact": "category",
+          "value": "bottom",
+          "source": "legacy_snapshot",
+          "confidence": 1,
+          "authorized": true,
+          "sourceDetail": "legacy-visible-fact-adapter"
+        },
+        {
+          "factId": "item:w-shoes:category",
+          "itemId": "w-shoes",
+          "fact": "category",
+          "value": "shoes",
           "source": "legacy_snapshot",
           "confidence": 1,
           "authorized": true,
@@ -1495,17 +1510,21 @@ finalRecommendationCount: 0
           "fact": "work_eligible",
           "subjectItemIds": [
             "w-pattern-top",
-            "w-solid"
+            "w-solid",
+            "w-shoes"
           ],
           "supportingFactIds": [
-            "item:w-pattern-top:pattern_visible",
-            "item:w-solid:solid_color"
+            "item:w-pattern-top:category",
+            "item:w-solid:category",
+            "item:w-shoes:category"
           ],
           "source": "scene_rule",
-          "sourceRule": "sceneEligibilityV3",
+          "sourceRule": "sceneEvidenceV4",
+          "sourceVersion": "scene-evidence-v4",
+          "sourceFingerprint": "12d2dcc4982868e2f398",
           "sourceRuleReasons": [
-            "WORK_QUALIFIED_SHOE",
-            "WORK_POLISHED_SIGNAL"
+            "WORK_DAILY_LONG_PANTS_SET",
+            "WORK_COMPLETE_DAILY_SET"
           ],
           "confidence": 0.9,
           "authorized": true
@@ -1663,13 +1682,15 @@ finalRecommendationCount: 0
             "item:w-shoes:category",
             "item:w-shoes:simple_style"
           ],
-          "sourceRule": "sceneEligibilityV3",
+          "sourceRule": "sceneEvidenceV4",
+          "sourceVersion": "scene-evidence-v4",
+          "sourceFingerprint": "12d2dcc4982868e2f398",
           "sourceRuleReasons": [
-            "WORK_QUALIFIED_SHOE",
-            "WORK_POLISHED_SIGNAL"
+            "WORK_SIMPLE_ONEPIECE",
+            "WORK_COMPLETE_DAILY_SET"
           ],
           "source": "scene_rule",
-          "confidence": 0.9,
+          "confidence": 1,
           "authorized": true,
           "relationRule": ""
         }
@@ -1737,12 +1758,14 @@ finalRecommendationCount: 0
             "item:w-shoes:outing_shoe"
           ],
           "source": "scene_rule",
-          "sourceRule": "sceneEligibilityV3",
+          "sourceRule": "sceneEvidenceV4",
+          "sourceVersion": "scene-evidence-v4",
+          "sourceFingerprint": "12d2dcc4982868e2f398",
           "sourceRuleReasons": [
-            "WORK_QUALIFIED_SHOE",
-            "WORK_POLISHED_SIGNAL"
+            "WORK_SIMPLE_ONEPIECE",
+            "WORK_COMPLETE_DAILY_SET"
           ],
-          "confidence": 0.9,
+          "confidence": 1,
           "authorized": true
         }
       ],
@@ -1951,10 +1974,12 @@ finalRecommendationCount: 0
             "item:w-shoes:category"
           ],
           "source": "scene_rule",
-          "sourceRule": "sceneEligibilityV3",
+          "sourceRule": "sceneEvidenceV4",
+          "sourceVersion": "scene-evidence-v4",
+          "sourceFingerprint": "12d2dcc4982868e2f398",
           "sourceRuleReasons": [
-            "WORK_QUALIFIED_SHOE",
-            "WORK_POLISHED_SIGNAL"
+            "WORK_DAILY_LONG_PANTS_SET",
+            "WORK_COMPLETE_DAILY_SET"
           ],
           "confidence": 0.9,
           "authorized": true
@@ -1981,15 +2006,15 @@ finalRecommendationCount: 0
 - weather: `{"temp":22,"weather":"晴"}`
 - scene: `date`
 - requestedCount: 4
-- acceptedCount: 1
-- 最终 API 返回数量: 1
-- copyAcceptedCount: 1
+- acceptedCount: 4
+- 最终 API 返回数量: 4
+- copyAcceptedCount: 4
 - copyHiddenCount: 0
-- coreReasonAcceptedCount: 1
-- enhancedReasonAcceptedCount: 1
+- coreReasonAcceptedCount: 4
+- enhancedReasonAcceptedCount: 3
 - coreReasonCoverageGapCount: 0
-- coreReasonCodeCounts: `{"DATE_PATTERN_DRESS_SIMPLE_SHOES":1}`
-- enhancementRejectReasonCounts: `{}`
+- coreReasonCodeCounts: `{"DATE_V4_EVIDENCE_SUPPORTED":3,"DATE_PATTERN_DRESS_SIMPLE_SHOES":1}`
+- enhancementRejectReasonCounts: `{"COPY_EVIDENCE_INSUFFICIENT":1}`
 - final Today reason 全部非空: true
 
 ```json
@@ -2236,29 +2261,138 @@ finalRecommendationCount: 0
           ]
         }
       ],
-      "claimId": null,
-      "subjectItemIds": [],
-      "requiredFactIds": [],
-      "evidenceFactIds": [],
-      "evidenceSources": [],
-      "slotBindings": {},
-      "todayReason": "",
-      "todayReasonSource": "core_eligibility",
-      "coreEligibilityReason": "",
-      "coreEligibilityReasonCode": "",
-      "coreEligibilityEvidence": [],
-      "enhancedReason": null,
-      "enhancementRejectReasons": [
-        "COPY_EVIDENCE_INSUFFICIENT"
+      "claimId": "D01-01",
+      "subjectItemIds": [
+        "d-pattern-top",
+        "d-simple-bottom",
+        "d-simple-shoes"
       ],
-      "detailExplanation": null,
-      "detailDisplay": "hidden",
-      "gateResult": "REJECT",
-      "riskFlags": [
-        "CORE_REASON_COVERAGE_GAP"
+      "requiredFactIds": [
+        "item:d-pattern-top:pattern_visible",
+        "item:d-simple-bottom:pants",
+        "item:d-simple-bottom:simple_style",
+        "item:d-simple-shoes:simple_style"
       ],
-      "copyDisplay": "hidden",
-      "includedInFinalApiArray": false
+      "evidenceFactIds": [
+        "item:d-pattern-top:pattern_visible",
+        "item:d-simple-bottom:pants",
+        "item:d-simple-bottom:simple_style",
+        "item:d-simple-shoes:simple_style"
+      ],
+      "evidenceSources": [
+        {
+          "factId": "item:d-pattern-top:pattern_visible",
+          "itemId": "d-pattern-top",
+          "fact": "pattern_visible",
+          "value": "印花",
+          "source": "visual_inference",
+          "confidence": 0.95,
+          "authorized": true
+        },
+        {
+          "factId": "item:d-simple-bottom:pants",
+          "itemId": "d-simple-bottom",
+          "fact": "pants",
+          "value": true,
+          "source": "visual_inference",
+          "confidence": 0.95,
+          "authorized": true
+        },
+        {
+          "factId": "item:d-simple-bottom:simple_style",
+          "itemId": "d-simple-bottom",
+          "fact": "simple_style",
+          "value": "简洁",
+          "source": "visual_inference",
+          "confidence": 0.95,
+          "authorized": true
+        },
+        {
+          "factId": "item:d-simple-shoes:simple_style",
+          "itemId": "d-simple-shoes",
+          "fact": "simple_style",
+          "value": "简洁",
+          "source": "visual_inference",
+          "confidence": 0.95,
+          "authorized": true
+        }
+      ],
+      "slotBindings": {
+        "top": "d-pattern-top",
+        "bottom": "d-simple-bottom",
+        "shoes": "d-simple-shoes"
+      },
+      "todayReason": "这件上衣图案比较抢眼，裤子和鞋子简单一点就好，不会显得太花。",
+      "todayReasonSource": "enhanced_qualification_core",
+      "coreEligibilityReason": "这套有清楚的搭配关系，日常约会穿着自然。",
+      "coreEligibilityReasonCode": "DATE_V4_EVIDENCE_SUPPORTED",
+      "coreEligibilityEvidence": [
+        {
+          "factId": "item:d-pattern-top:category",
+          "itemId": "d-pattern-top",
+          "fact": "category",
+          "value": "top",
+          "source": "legacy_snapshot",
+          "confidence": 1,
+          "authorized": true,
+          "sourceDetail": "legacy-visible-fact-adapter"
+        },
+        {
+          "factId": "item:d-simple-bottom:category",
+          "itemId": "d-simple-bottom",
+          "fact": "category",
+          "value": "bottom",
+          "source": "legacy_snapshot",
+          "confidence": 1,
+          "authorized": true,
+          "sourceDetail": "legacy-visible-fact-adapter"
+        },
+        {
+          "factId": "item:d-simple-shoes:category",
+          "itemId": "d-simple-shoes",
+          "fact": "category",
+          "value": "shoes",
+          "source": "legacy_snapshot",
+          "confidence": 1,
+          "authorized": true,
+          "sourceDetail": "legacy-visible-fact-adapter"
+        },
+        {
+          "relationFactId": "outfit:date_eligible",
+          "factId": "outfit:date_eligible",
+          "fact": "date_eligible",
+          "subjectItemIds": [
+            "d-pattern-top",
+            "d-simple-bottom",
+            "d-simple-shoes"
+          ],
+          "supportingFactIds": [
+            "item:d-pattern-top:category",
+            "item:d-simple-bottom:category",
+            "item:d-simple-shoes:category"
+          ],
+          "source": "scene_rule",
+          "sourceRule": "sceneEvidenceV4",
+          "sourceVersion": "scene-evidence-v4",
+          "sourceFingerprint": "12d2dcc4982868e2f398",
+          "sourceRuleReasons": [
+            "DATE_PATTERN_FOCAL_SUPPORT",
+            "DATE_SIMPLE_COMPLETE",
+            "DATE_COMPLETE_CORE",
+            "DATE_COLOR_COORDINATED"
+          ],
+          "confidence": 1,
+          "authorized": true
+        }
+      ],
+      "enhancedReason": "这件上衣图案比较抢眼，裤子和鞋子简单一点就好，不会显得太花。",
+      "enhancementRejectReasons": [],
+      "detailExplanation": "这件上衣面料比较软，贴身穿也舒服。",
+      "detailDisplay": "visible",
+      "gateResult": "PASS",
+      "riskFlags": [],
+      "copyDisplay": "visible",
+      "includedInFinalApiArray": true
     },
     {
       "outfitId": "qa-date-fixed-claim-v1-2",
@@ -2376,29 +2510,126 @@ finalRecommendationCount: 0
           ]
         }
       ],
-      "claimId": null,
-      "subjectItemIds": [],
-      "requiredFactIds": [],
-      "evidenceFactIds": [],
-      "evidenceSources": [],
-      "slotBindings": {},
-      "todayReason": "",
-      "todayReasonSource": "core_eligibility",
-      "coreEligibilityReason": "",
-      "coreEligibilityReasonCode": "",
-      "coreEligibilityEvidence": [],
-      "enhancedReason": null,
-      "enhancementRejectReasons": [
-        "COPY_EVIDENCE_INSUFFICIENT"
+      "claimId": "D01-03",
+      "subjectItemIds": [
+        "d-bright-top",
+        "d-basic-bottom",
+        "d-simple-shoes"
       ],
+      "requiredFactIds": [
+        "item:d-bright-top:bright_color",
+        "item:d-basic-bottom:basic_color",
+        "item:d-simple-shoes:basic_color"
+      ],
+      "evidenceFactIds": [
+        "item:d-bright-top:bright_color",
+        "item:d-basic-bottom:basic_color",
+        "item:d-simple-shoes:basic_color"
+      ],
+      "evidenceSources": [
+        {
+          "factId": "item:d-bright-top:bright_color",
+          "itemId": "d-bright-top",
+          "fact": "bright_color",
+          "value": "鲜红色",
+          "source": "visual_inference",
+          "confidence": 0.95,
+          "authorized": true
+        },
+        {
+          "factId": "item:d-basic-bottom:basic_color",
+          "itemId": "d-basic-bottom",
+          "fact": "basic_color",
+          "value": "黑色",
+          "source": "visual_inference",
+          "confidence": 0.95,
+          "authorized": true
+        },
+        {
+          "factId": "item:d-simple-shoes:basic_color",
+          "itemId": "d-simple-shoes",
+          "fact": "basic_color",
+          "value": "黑色",
+          "source": "visual_inference",
+          "confidence": 0.95,
+          "authorized": true
+        }
+      ],
+      "slotBindings": {
+        "top": "d-bright-top",
+        "bottom": "d-basic-bottom",
+        "shoes": "d-simple-shoes"
+      },
+      "todayReason": "上衣颜色已经够亮了，裤子和鞋子用基础色就好。",
+      "todayReasonSource": "enhanced_qualification_core",
+      "coreEligibilityReason": "这套有清楚的搭配关系，日常约会穿着自然。",
+      "coreEligibilityReasonCode": "DATE_V4_EVIDENCE_SUPPORTED",
+      "coreEligibilityEvidence": [
+        {
+          "factId": "item:d-bright-top:category",
+          "itemId": "d-bright-top",
+          "fact": "category",
+          "value": "top",
+          "source": "legacy_snapshot",
+          "confidence": 1,
+          "authorized": true,
+          "sourceDetail": "legacy-visible-fact-adapter"
+        },
+        {
+          "factId": "item:d-basic-bottom:category",
+          "itemId": "d-basic-bottom",
+          "fact": "category",
+          "value": "bottom",
+          "source": "legacy_snapshot",
+          "confidence": 1,
+          "authorized": true,
+          "sourceDetail": "legacy-visible-fact-adapter"
+        },
+        {
+          "factId": "item:d-simple-shoes:category",
+          "itemId": "d-simple-shoes",
+          "fact": "category",
+          "value": "shoes",
+          "source": "legacy_snapshot",
+          "confidence": 1,
+          "authorized": true,
+          "sourceDetail": "legacy-visible-fact-adapter"
+        },
+        {
+          "relationFactId": "outfit:date_eligible",
+          "factId": "outfit:date_eligible",
+          "fact": "date_eligible",
+          "subjectItemIds": [
+            "d-bright-top",
+            "d-basic-bottom",
+            "d-simple-shoes"
+          ],
+          "supportingFactIds": [
+            "item:d-bright-top:category",
+            "item:d-basic-bottom:category",
+            "item:d-simple-shoes:category"
+          ],
+          "source": "scene_rule",
+          "sourceRule": "sceneEvidenceV4",
+          "sourceVersion": "scene-evidence-v4",
+          "sourceFingerprint": "12d2dcc4982868e2f398",
+          "sourceRuleReasons": [
+            "DATE_SIMPLE_COMPLETE",
+            "DATE_COMPLETE_CORE",
+            "DATE_COLOR_COORDINATED"
+          ],
+          "confidence": 0.9,
+          "authorized": true
+        }
+      ],
+      "enhancedReason": "上衣颜色已经够亮了，裤子和鞋子用基础色就好。",
+      "enhancementRejectReasons": [],
       "detailExplanation": null,
       "detailDisplay": "hidden",
-      "gateResult": "REJECT",
-      "riskFlags": [
-        "CORE_REASON_COVERAGE_GAP"
-      ],
-      "copyDisplay": "hidden",
-      "includedInFinalApiArray": false
+      "gateResult": "PASS",
+      "riskFlags": [],
+      "copyDisplay": "visible",
+      "includedInFinalApiArray": true
     },
     {
       "outfitId": "qa-date-fixed-claim-v1-3",
@@ -2603,10 +2834,14 @@ finalRecommendationCount: 0
             "item:d-simple-shoes:outing_shoe"
           ],
           "source": "scene_rule",
-          "sourceRule": "sceneEligibilityV3",
+          "sourceRule": "sceneEvidenceV4",
+          "sourceVersion": "scene-evidence-v4",
+          "sourceFingerprint": "12d2dcc4982868e2f398",
           "sourceRuleReasons": [
-            "DATE_FRIENDLY_SIGNAL",
-            "DATE_CLEAN_COMPLETE"
+            "DATE_PATTERN_FOCAL_SUPPORT",
+            "DATE_ONEPIECE_COMPLETE",
+            "DATE_COMPLETE_CORE",
+            "DATE_COLOR_COORDINATED"
           ],
           "confidence": 1,
           "authorized": true
@@ -2737,23 +2972,77 @@ finalRecommendationCount: 0
       "evidenceFactIds": [],
       "evidenceSources": [],
       "slotBindings": {},
-      "todayReason": "",
+      "todayReason": "这套有清楚的搭配关系，日常约会穿着自然。",
       "todayReasonSource": "core_eligibility",
-      "coreEligibilityReason": "",
-      "coreEligibilityReasonCode": "",
-      "coreEligibilityEvidence": [],
+      "coreEligibilityReason": "这套有清楚的搭配关系，日常约会穿着自然。",
+      "coreEligibilityReasonCode": "DATE_V4_EVIDENCE_SUPPORTED",
+      "coreEligibilityEvidence": [
+        {
+          "factId": "item:d-soft-top:category",
+          "itemId": "d-soft-top",
+          "fact": "category",
+          "value": "top",
+          "source": "legacy_snapshot",
+          "confidence": 1,
+          "authorized": true,
+          "sourceDetail": "legacy-visible-fact-adapter"
+        },
+        {
+          "factId": "item:d-flex-bottom:category",
+          "itemId": "d-flex-bottom",
+          "fact": "category",
+          "value": "bottom",
+          "source": "legacy_snapshot",
+          "confidence": 1,
+          "authorized": true,
+          "sourceDetail": "legacy-visible-fact-adapter"
+        },
+        {
+          "factId": "item:d-plain-shoes:category",
+          "itemId": "d-plain-shoes",
+          "fact": "category",
+          "value": "shoes",
+          "source": "legacy_snapshot",
+          "confidence": 1,
+          "authorized": true,
+          "sourceDetail": "legacy-visible-fact-adapter"
+        },
+        {
+          "relationFactId": "outfit:date_eligible",
+          "factId": "outfit:date_eligible",
+          "fact": "date_eligible",
+          "subjectItemIds": [
+            "d-soft-top",
+            "d-flex-bottom",
+            "d-plain-shoes"
+          ],
+          "supportingFactIds": [
+            "item:d-soft-top:category",
+            "item:d-flex-bottom:category",
+            "item:d-plain-shoes:category"
+          ],
+          "source": "scene_rule",
+          "sourceRule": "sceneEvidenceV4",
+          "sourceVersion": "scene-evidence-v4",
+          "sourceFingerprint": "12d2dcc4982868e2f398",
+          "sourceRuleReasons": [
+            "DATE_COMPLETE_CORE",
+            "DATE_COLOR_COORDINATED"
+          ],
+          "confidence": 0.9,
+          "authorized": true
+        }
+      ],
       "enhancedReason": null,
       "enhancementRejectReasons": [
         "COPY_EVIDENCE_INSUFFICIENT"
       ],
-      "detailExplanation": null,
-      "detailDisplay": "hidden",
-      "gateResult": "REJECT",
-      "riskFlags": [
-        "CORE_REASON_COVERAGE_GAP"
-      ],
-      "copyDisplay": "hidden",
-      "includedInFinalApiArray": false
+      "detailExplanation": "这件上衣面料比较软，贴身穿也舒服。",
+      "detailDisplay": "visible",
+      "gateResult": "PASS",
+      "riskFlags": [],
+      "copyDisplay": "visible",
+      "includedInFinalApiArray": true
     }
   ]
 }
@@ -3133,10 +3422,13 @@ finalRecommendationCount: 0
             "item:s-shoes:sport_shoe"
           ],
           "source": "scene_rule",
-          "sourceRule": "sceneEligibilityV3",
+          "sourceRule": "sceneEvidenceV4",
+          "sourceVersion": "scene-evidence-v4",
+          "sourceFingerprint": "12d2dcc4982868e2f398",
           "sourceRuleReasons": [
-            "SPORT_SHOE",
-            "SPORT_APPAREL"
+            "SPORT_EXPLICIT_SET",
+            "SPORT_DAILY_LIGHT_SET",
+            "SPORT_CASUAL_ACTIVITY"
           ],
           "confidence": 1,
           "authorized": true
@@ -3415,10 +3707,13 @@ finalRecommendationCount: 0
             "item:s-shoes:sport_shoe"
           ],
           "source": "scene_rule",
-          "sourceRule": "sceneEligibilityV3",
+          "sourceRule": "sceneEvidenceV4",
+          "sourceVersion": "scene-evidence-v4",
+          "sourceFingerprint": "12d2dcc4982868e2f398",
           "sourceRuleReasons": [
-            "SPORT_SHOE",
-            "SPORT_APPAREL"
+            "SPORT_EXPLICIT_SET",
+            "SPORT_DAILY_LIGHT_SET",
+            "SPORT_CASUAL_ACTIVITY"
           ],
           "confidence": 1,
           "authorized": true
@@ -3697,10 +3992,13 @@ finalRecommendationCount: 0
             "item:s-shoes:sport_shoe"
           ],
           "source": "scene_rule",
-          "sourceRule": "sceneEligibilityV3",
+          "sourceRule": "sceneEvidenceV4",
+          "sourceVersion": "scene-evidence-v4",
+          "sourceFingerprint": "12d2dcc4982868e2f398",
           "sourceRuleReasons": [
-            "SPORT_SHOE",
-            "SPORT_APPAREL"
+            "SPORT_EXPLICIT_SET",
+            "SPORT_DAILY_LIGHT_SET",
+            "SPORT_CASUAL_ACTIVITY"
           ],
           "confidence": 1,
           "authorized": true
@@ -3899,10 +4197,13 @@ finalRecommendationCount: 0
             "item:s-shoes:sport_shoe"
           ],
           "source": "scene_rule",
-          "sourceRule": "sceneEligibilityV3",
+          "sourceRule": "sceneEvidenceV4",
+          "sourceVersion": "scene-evidence-v4",
+          "sourceFingerprint": "12d2dcc4982868e2f398",
           "sourceRuleReasons": [
-            "SPORT_SHOE",
-            "SPORT_APPAREL"
+            "SPORT_EXPLICIT_SET",
+            "SPORT_DAILY_LIGHT_SET",
+            "SPORT_CASUAL_ACTIVITY"
           ],
           "confidence": 1,
           "authorized": true
@@ -4150,18 +4451,141 @@ fixture 沿用仓库识别与组合测试的原始 wardrobe schema；不是生�
       "sceneEligibility": {
         "eligible": true,
         "hardRejected": false,
+        "canEnterScene": true,
         "penalty": 0,
         "acceptReasons": [
-          "HOME_RELAXED_ALLOWED"
+          "HOME_RELAXED_CORE",
+          "HOME_SIMPLE_TWO_PIECE",
+          "HOME_COLOR_SUPPORT"
         ],
         "rejectReasons": [],
         "warnings": [],
-        "sceneStrength": "medium",
+        "sceneStrength": "strong",
+        "sceneFitScore": 9.7,
+        "sceneFitContribution": 4.7,
+        "sceneFitContributionByFamily": {
+          "casual_structure": 1.5,
+          "color_coordination": 0.6,
+          "home_comfort": 2.6
+        },
+        "sceneEvidence": [
+          {
+            "id": "HOME_RELAXED_CORE",
+            "scene": "home",
+            "evidenceFamily": "home_comfort",
+            "requiredFacts": [
+              "casual_or_loose",
+              "simple_core"
+            ],
+            "authorization": "controlled_fit_style_category",
+            "severity": "STRONG_POSITIVE",
+            "explanationValue": 9,
+            "rankingContribution": 2.6,
+            "hardConflict": false,
+            "version": "scene-evidence-v4",
+            "explanationCodes": [
+              "HOME_LOOSE_TWO_PIECE",
+              "HOME_LOOSE_DRESS"
+            ],
+            "subjectItemIds": [
+              "raw-home-top",
+              "raw-home-bottom"
+            ],
+            "supportingFacts": [
+              "category:top",
+              "style:homewear",
+              "style:casual",
+              "color:black",
+              "basic_color",
+              "casual_style",
+              "category",
+              "color",
+              "loose_fit",
+              "category:bottom",
+              "subcategory:casual_pants",
+              "long_pants"
+            ]
+          },
+          {
+            "id": "HOME_SIMPLE_TWO_PIECE",
+            "scene": "home",
+            "evidenceFamily": "casual_structure",
+            "requiredFacts": [
+              "top",
+              "bottom"
+            ],
+            "authorization": "canonical_category",
+            "severity": "MEDIUM_POSITIVE",
+            "explanationValue": 7,
+            "rankingContribution": 1.5,
+            "hardConflict": false,
+            "version": "scene-evidence-v4",
+            "explanationCodes": [
+              "HOME_TSHIRT_LOOSE_PANTS",
+              "HOME_SHORT_SLEEVE_LONG_PANTS",
+              "HOME_TOP_LONG_PANTS",
+              "HOME_V4_EVIDENCE_SUPPORTED"
+            ],
+            "subjectItemIds": [
+              "raw-home-top",
+              "raw-home-bottom"
+            ],
+            "supportingFacts": [
+              "category:top",
+              "style:homewear",
+              "style:casual",
+              "color:black",
+              "basic_color",
+              "casual_style",
+              "category",
+              "color",
+              "loose_fit",
+              "category:bottom",
+              "subcategory:casual_pants",
+              "long_pants"
+            ]
+          },
+          {
+            "id": "HOME_COLOR_SUPPORT",
+            "scene": "home",
+            "evidenceFamily": "color_coordination",
+            "requiredFacts": [
+              "canonical_color_relation"
+            ],
+            "authorization": "canonical_color_family",
+            "severity": "WEAK_POSITIVE",
+            "explanationValue": 3,
+            "rankingContribution": 0.6,
+            "hardConflict": false,
+            "version": "scene-evidence-v4",
+            "explanationCodes": [],
+            "subjectItemIds": [
+              "raw-home-top",
+              "raw-home-bottom"
+            ],
+            "supportingFacts": [
+              "canonical_color_relation"
+            ]
+          }
+        ],
+        "sceneEvidenceVersion": "scene-evidence-v4",
+        "sceneEvidenceFingerprint": "12d2dcc4982868e2f398",
         "evidence": [
           {
             "itemId": "raw-home-top",
             "category": "top",
             "normalizedType": "宽松家居上衣 宽松家居上衣 top",
+            "canonicalFacts": [
+              "category:top",
+              "style:homewear",
+              "style:casual",
+              "color:black",
+              "basic_color",
+              "casual_style",
+              "category",
+              "color",
+              "loose_fit"
+            ],
             "evidence": [
               "customName:宽松家居上衣",
               "subcategory:宽松家居上衣",
@@ -4176,6 +4600,19 @@ fixture 沿用仓库识别与组合测试的原始 wardrobe schema；不是生�
             "itemId": "raw-home-bottom",
             "category": "bottom",
             "normalizedType": "宽松家居长裤 宽松家居长裤 bottom",
+            "canonicalFacts": [
+              "category:bottom",
+              "subcategory:casual_pants",
+              "style:homewear",
+              "style:casual",
+              "color:black",
+              "basic_color",
+              "casual_style",
+              "category",
+              "color",
+              "long_pants",
+              "loose_fit"
+            ],
             "evidence": [
               "customName:宽松家居长裤",
               "subcategory:宽松家居长裤",
@@ -4293,9 +4730,13 @@ fixture 沿用仓库识别与组合测试的原始 wardrobe schema；不是生�
             "item:raw-home-bottom:loose_fit"
           ],
           "relationFactIds": [],
-          "sourceRule": "sceneEligibilityV3",
+          "sourceRule": "sceneEvidenceV4",
+          "sourceVersion": "scene-evidence-v4",
+          "sourceFingerprint": "12d2dcc4982868e2f398",
           "sourceRuleReasons": [
-            "HOME_RELAXED_ALLOWED",
+            "HOME_RELAXED_CORE",
+            "HOME_SIMPLE_TWO_PIECE",
+            "HOME_COLOR_SUPPORT",
             "WEATHER_BAND_MILD",
             "ELIGIBILITY_REASON_HOME_LOOSE_TWO_PIECE"
           ],
@@ -4635,19 +5076,169 @@ fixture 沿用仓库识别与组合测试的原始 wardrobe schema；不是生�
       "sceneEligibility": {
         "eligible": true,
         "hardRejected": false,
+        "canEnterScene": true,
         "penalty": 0,
         "acceptReasons": [
-          "WORK_QUALIFIED_SHOE",
-          "WORK_POLISHED_SIGNAL"
+          "WORK_STRUCTURED_SET",
+          "WORK_DAILY_LONG_PANTS_SET",
+          "WORK_COMPLETE_DAILY_SET"
         ],
         "rejectReasons": [],
         "warnings": [],
-        "sceneStrength": "high",
+        "sceneStrength": "strong",
+        "sceneFitScore": 8.2,
+        "sceneFitContribution": 3.2,
+        "sceneFitContributionByFamily": {
+          "completeness": 0.6,
+          "work_structure": 2.6
+        },
+        "sceneEvidence": [
+          {
+            "id": "WORK_STRUCTURED_SET",
+            "scene": "work",
+            "evidenceFamily": "work_structure",
+            "requiredFacts": [
+              "structured_top_or_shirt",
+              "long_pants",
+              "outing_shoe"
+            ],
+            "authorization": "controlled_category_structure_footwear",
+            "severity": "STRONG_POSITIVE",
+            "explanationValue": 10,
+            "rankingContribution": 2.6,
+            "hardConflict": false,
+            "version": "scene-evidence-v4",
+            "explanationCodes": [
+              "WORK_SHIRT_STRAIGHT_PANTS",
+              "WORK_SIMPLE_TOP_PANTS_SHOES"
+            ],
+            "subjectItemIds": [
+              "raw-work-shirt",
+              "raw-work-bottom",
+              "raw-work-shoes"
+            ],
+            "supportingFacts": [
+              "category:top",
+              "subcategory:shirt",
+              "color:white",
+              "pattern:solid",
+              "basic_color",
+              "category",
+              "color",
+              "shirt",
+              "simple_style",
+              "solid_color",
+              "category:bottom",
+              "color:black",
+              "long_pants",
+              "straight_cut",
+              "category:shoes",
+              "outing_shoe"
+            ]
+          },
+          {
+            "id": "WORK_DAILY_LONG_PANTS_SET",
+            "scene": "work",
+            "evidenceFamily": "work_structure",
+            "requiredFacts": [
+              "daily_top",
+              "long_pants",
+              "outing_shoe"
+            ],
+            "authorization": "controlled_category_length_footwear",
+            "severity": "MEDIUM_POSITIVE",
+            "explanationValue": 7,
+            "rankingContribution": 1.5,
+            "hardConflict": false,
+            "version": "scene-evidence-v4",
+            "explanationCodes": [
+              "WORK_SIMPLE_TOP_PANTS_SHOES"
+            ],
+            "subjectItemIds": [
+              "raw-work-shirt",
+              "raw-work-bottom",
+              "raw-work-shoes"
+            ],
+            "supportingFacts": [
+              "category:top",
+              "subcategory:shirt",
+              "color:white",
+              "pattern:solid",
+              "basic_color",
+              "category",
+              "color",
+              "shirt",
+              "simple_style",
+              "solid_color",
+              "category:bottom",
+              "color:black",
+              "long_pants",
+              "straight_cut",
+              "category:shoes",
+              "outing_shoe"
+            ]
+          },
+          {
+            "id": "WORK_COMPLETE_DAILY_SET",
+            "scene": "work",
+            "evidenceFamily": "completeness",
+            "requiredFacts": [
+              "complete_core"
+            ],
+            "authorization": "canonical_composition",
+            "severity": "WEAK_POSITIVE",
+            "explanationValue": 4,
+            "rankingContribution": 0.6,
+            "hardConflict": false,
+            "version": "scene-evidence-v4",
+            "explanationCodes": [
+              "WORK_BASELINE_PRESENTABLE",
+              "WORK_V4_EVIDENCE_SUPPORTED"
+            ],
+            "subjectItemIds": [
+              "raw-work-shirt",
+              "raw-work-bottom",
+              "raw-work-shoes"
+            ],
+            "supportingFacts": [
+              "category:top",
+              "subcategory:shirt",
+              "color:white",
+              "pattern:solid",
+              "basic_color",
+              "category",
+              "color",
+              "shirt",
+              "simple_style",
+              "solid_color",
+              "category:bottom",
+              "color:black",
+              "long_pants",
+              "straight_cut",
+              "category:shoes",
+              "outing_shoe"
+            ]
+          }
+        ],
+        "sceneEvidenceVersion": "scene-evidence-v4",
+        "sceneEvidenceFingerprint": "12d2dcc4982868e2f398",
         "evidence": [
           {
             "itemId": "raw-work-shirt",
             "category": "top",
             "normalizedType": "白色衬衫 白色衬衫 top",
+            "canonicalFacts": [
+              "category:top",
+              "subcategory:shirt",
+              "color:white",
+              "pattern:solid",
+              "basic_color",
+              "category",
+              "color",
+              "shirt",
+              "simple_style",
+              "solid_color"
+            ],
             "evidence": [
               "customName:白色衬衫",
               "subcategory:白色衬衫",
@@ -4665,6 +5256,18 @@ fixture 沿用仓库识别与组合测试的原始 wardrobe schema；不是生�
             "itemId": "raw-work-bottom",
             "category": "bottom",
             "normalizedType": "黑色直筒裤 黑色直筒裤 bottom",
+            "canonicalFacts": [
+              "category:bottom",
+              "color:black",
+              "pattern:solid",
+              "basic_color",
+              "category",
+              "color",
+              "long_pants",
+              "simple_style",
+              "solid_color",
+              "straight_cut"
+            ],
             "evidence": [
               "customName:黑色直筒裤",
               "subcategory:黑色直筒裤",
@@ -4682,6 +5285,15 @@ fixture 沿用仓库识别与组合测试的原始 wardrobe schema；不是生�
             "itemId": "raw-work-shoes",
             "category": "shoes",
             "normalizedType": "黑色乐福鞋 黑色乐福鞋 shoes",
+            "canonicalFacts": [
+              "category:shoes",
+              "color:black",
+              "basic_color",
+              "category",
+              "color",
+              "outing_shoe",
+              "simple_style"
+            ],
             "evidence": [
               "customName:黑色乐福鞋",
               "subcategory:黑色乐福鞋",
@@ -4837,7 +5449,6 @@ fixture 沿用仓库识别与组合测试的原始 wardrobe schema；不是生�
             ]
           }
         ],
-        "sceneConfidence": "high",
         "eligibilityReason": {
           "code": "WORK_SHIRT_STRAIGHT_PANTS",
           "family": "category",
@@ -4854,10 +5465,13 @@ fixture 沿用仓库识别与组合测试的原始 wardrobe schema；不是生�
           "relationFactIds": [
             "outfit:work_eligible"
           ],
-          "sourceRule": "sceneEligibilityV3",
+          "sourceRule": "sceneEvidenceV4",
+          "sourceVersion": "scene-evidence-v4",
+          "sourceFingerprint": "12d2dcc4982868e2f398",
           "sourceRuleReasons": [
-            "WORK_QUALIFIED_SHOE",
-            "WORK_POLISHED_SIGNAL",
+            "WORK_STRUCTURED_SET",
+            "WORK_DAILY_LONG_PANTS_SET",
+            "WORK_COMPLETE_DAILY_SET",
             "WEATHER_BAND_MILD",
             "ELIGIBILITY_REASON_WORK_SHIRT_STRAIGHT_PANTS"
           ],
@@ -4895,12 +5509,15 @@ fixture 沿用仓库识别与组合测试的原始 wardrobe schema；不是生�
                 "item:raw-work-bottom:straight_cut"
               ],
               "source": "scene_rule",
-              "sourceRule": "sceneEligibilityV3",
+              "sourceRule": "sceneEvidenceV4",
+              "sourceVersion": "scene-evidence-v4",
+              "sourceFingerprint": "12d2dcc4982868e2f398",
               "sourceRuleReasons": [
-                "WORK_QUALIFIED_SHOE",
-                "WORK_POLISHED_SIGNAL"
+                "WORK_STRUCTURED_SET",
+                "WORK_DAILY_LONG_PANTS_SET",
+                "WORK_COMPLETE_DAILY_SET"
               ],
-              "confidence": 0.9,
+              "confidence": 1,
               "authorized": true
             }
           ],
@@ -4933,13 +5550,16 @@ fixture 沿用仓库识别与组合测试的原始 wardrobe schema；不是生�
             "item:raw-work-shoes:category",
             "item:raw-work-shoes:simple_style"
           ],
-          "sourceRule": "sceneEligibilityV3",
+          "sourceRule": "sceneEvidenceV4",
+          "sourceVersion": "scene-evidence-v4",
+          "sourceFingerprint": "12d2dcc4982868e2f398",
           "sourceRuleReasons": [
-            "WORK_QUALIFIED_SHOE",
-            "WORK_POLISHED_SIGNAL"
+            "WORK_STRUCTURED_SET",
+            "WORK_DAILY_LONG_PANTS_SET",
+            "WORK_COMPLETE_DAILY_SET"
           ],
           "source": "scene_rule",
-          "confidence": 0.9,
+          "confidence": 1,
           "authorized": true
         }
       ],
@@ -5233,19 +5853,225 @@ fixture 沿用仓库识别与组合测试的原始 wardrobe schema；不是生�
       "sceneEligibility": {
         "eligible": true,
         "hardRejected": false,
+        "canEnterScene": true,
         "penalty": 0,
         "acceptReasons": [
-          "DATE_FRIENDLY_SIGNAL",
-          "DATE_CLEAN_COMPLETE"
+          "DATE_PATTERN_FOCAL_SUPPORT",
+          "DATE_BRIGHT_FOCAL_SUPPORT",
+          "DATE_SIMPLE_COMPLETE",
+          "DATE_COMPLETE_CORE",
+          "DATE_COLOR_COORDINATED"
         ],
         "rejectReasons": [],
         "warnings": [],
         "sceneStrength": "strong",
+        "sceneFitScore": 8.9,
+        "sceneFitContribution": 3.9,
+        "sceneFitContributionByFamily": {
+          "color_coordination": 0.6,
+          "completeness": 0.7,
+          "date_intent": 2.6
+        },
+        "sceneEvidence": [
+          {
+            "id": "DATE_PATTERN_FOCAL_SUPPORT",
+            "scene": "date",
+            "evidenceFamily": "date_intent",
+            "requiredFacts": [
+              "pattern_focal",
+              "simple_support"
+            ],
+            "authorization": "controlled_pattern_and_style",
+            "severity": "STRONG_POSITIVE",
+            "explanationValue": 10,
+            "rankingContribution": 2.6,
+            "hardConflict": false,
+            "version": "scene-evidence-v4",
+            "explanationCodes": [
+              "DATE_PATTERN_TOP_SIMPLE_SUPPORT",
+              "DATE_PATTERN_DRESS_SIMPLE_SHOES"
+            ],
+            "subjectItemIds": [
+              "raw-date-top",
+              "raw-date-bottom"
+            ],
+            "supportingFacts": [
+              "category:top",
+              "color:red",
+              "pattern:print",
+              "category",
+              "color",
+              "pattern_visible",
+              "category:bottom",
+              "color:black",
+              "pattern:solid",
+              "basic_color",
+              "long_pants",
+              "simple_style",
+              "solid_color",
+              "straight_cut"
+            ]
+          },
+          {
+            "id": "DATE_BRIGHT_FOCAL_SUPPORT",
+            "scene": "date",
+            "evidenceFamily": "date_intent",
+            "requiredFacts": [
+              "bright_focal",
+              "neutral_support"
+            ],
+            "authorization": "canonical_color_family",
+            "severity": "STRONG_POSITIVE",
+            "explanationValue": 9,
+            "rankingContribution": 2.6,
+            "hardConflict": false,
+            "version": "scene-evidence-v4",
+            "explanationCodes": [
+              "DATE_BRIGHT_TOP_BASIC_SUPPORT",
+              "DATE_BRIGHT_SHOES_BASIC_CLOTHES"
+            ],
+            "subjectItemIds": [
+              "raw-date-top",
+              "raw-date-bottom"
+            ],
+            "supportingFacts": [
+              "category:top",
+              "color:red",
+              "pattern:print",
+              "category",
+              "color",
+              "pattern_visible",
+              "category:bottom",
+              "color:black",
+              "pattern:solid",
+              "basic_color",
+              "long_pants",
+              "simple_style",
+              "solid_color",
+              "straight_cut"
+            ]
+          },
+          {
+            "id": "DATE_SIMPLE_COMPLETE",
+            "scene": "date",
+            "evidenceFamily": "completeness",
+            "requiredFacts": [
+              "simple_complete"
+            ],
+            "authorization": "controlled_style_composition",
+            "severity": "MEDIUM_POSITIVE",
+            "explanationValue": 7,
+            "rankingContribution": 1.5,
+            "hardConflict": false,
+            "version": "scene-evidence-v4",
+            "explanationCodes": [
+              "DATE_SIMPLE_COMPLETE"
+            ],
+            "subjectItemIds": [
+              "raw-date-top",
+              "raw-date-bottom",
+              "raw-date-shoes"
+            ],
+            "supportingFacts": [
+              "category:top",
+              "color:red",
+              "pattern:print",
+              "category",
+              "color",
+              "pattern_visible",
+              "category:bottom",
+              "color:black",
+              "pattern:solid",
+              "basic_color",
+              "long_pants",
+              "simple_style",
+              "solid_color",
+              "straight_cut",
+              "category:shoes",
+              "outing_shoe"
+            ]
+          },
+          {
+            "id": "DATE_COMPLETE_CORE",
+            "scene": "date",
+            "evidenceFamily": "completeness",
+            "requiredFacts": [
+              "complete_core"
+            ],
+            "authorization": "canonical_composition",
+            "severity": "WEAK_POSITIVE",
+            "explanationValue": 4,
+            "rankingContribution": 0.6,
+            "hardConflict": false,
+            "version": "scene-evidence-v4",
+            "explanationCodes": [
+              "DATE_V4_EVIDENCE_SUPPORTED"
+            ],
+            "subjectItemIds": [
+              "raw-date-top",
+              "raw-date-bottom",
+              "raw-date-shoes"
+            ],
+            "supportingFacts": [
+              "category:top",
+              "color:red",
+              "pattern:print",
+              "category",
+              "color",
+              "pattern_visible",
+              "category:bottom",
+              "color:black",
+              "pattern:solid",
+              "basic_color",
+              "long_pants",
+              "simple_style",
+              "solid_color",
+              "straight_cut",
+              "category:shoes",
+              "outing_shoe"
+            ]
+          },
+          {
+            "id": "DATE_COLOR_COORDINATED",
+            "scene": "date",
+            "evidenceFamily": "color_coordination",
+            "requiredFacts": [
+              "canonical_color_relation"
+            ],
+            "authorization": "canonical_color_family",
+            "severity": "WEAK_POSITIVE",
+            "explanationValue": 3,
+            "rankingContribution": 0.6,
+            "hardConflict": false,
+            "version": "scene-evidence-v4",
+            "explanationCodes": [
+              "DATE_COLOR_COORDINATED"
+            ],
+            "subjectItemIds": [
+              "raw-date-top",
+              "raw-date-bottom",
+              "raw-date-shoes"
+            ],
+            "supportingFacts": [
+              "canonical_color_relation"
+            ]
+          }
+        ],
+        "sceneEvidenceVersion": "scene-evidence-v4",
+        "sceneEvidenceFingerprint": "12d2dcc4982868e2f398",
         "evidence": [
           {
             "itemId": "raw-date-top",
             "category": "top",
             "normalizedType": "印花上衣 印花上衣 top",
+            "canonicalFacts": [
+              "category:top",
+              "color:red",
+              "pattern:print",
+              "category",
+              "color",
+              "pattern_visible"
+            ],
             "evidence": [
               "customName:印花上衣",
               "subcategory:印花上衣",
@@ -5261,6 +6087,18 @@ fixture 沿用仓库识别与组合测试的原始 wardrobe schema；不是生�
             "itemId": "raw-date-bottom",
             "category": "bottom",
             "normalizedType": "黑色直筒裤 黑色直筒裤 bottom",
+            "canonicalFacts": [
+              "category:bottom",
+              "color:black",
+              "pattern:solid",
+              "basic_color",
+              "category",
+              "color",
+              "long_pants",
+              "simple_style",
+              "solid_color",
+              "straight_cut"
+            ],
             "evidence": [
               "customName:黑色直筒裤",
               "subcategory:黑色直筒裤",
@@ -5277,6 +6115,15 @@ fixture 沿用仓库识别与组合测试的原始 wardrobe schema；不是生�
             "itemId": "raw-date-shoes",
             "category": "shoes",
             "normalizedType": "黑色单鞋 黑色单鞋 shoes",
+            "canonicalFacts": [
+              "category:shoes",
+              "color:black",
+              "basic_color",
+              "category",
+              "color",
+              "outing_shoe",
+              "simple_style"
+            ],
             "evidence": [
               "customName:黑色单鞋",
               "subcategory:黑色单鞋",
@@ -5448,10 +6295,15 @@ fixture 沿用仓库识别与组合测试的原始 wardrobe schema；不是生�
           "relationFactIds": [
             "outfit:date_eligible"
           ],
-          "sourceRule": "sceneEligibilityV3",
+          "sourceRule": "sceneEvidenceV4",
+          "sourceVersion": "scene-evidence-v4",
+          "sourceFingerprint": "12d2dcc4982868e2f398",
           "sourceRuleReasons": [
-            "DATE_FRIENDLY_SIGNAL",
-            "DATE_CLEAN_COMPLETE",
+            "DATE_PATTERN_FOCAL_SUPPORT",
+            "DATE_BRIGHT_FOCAL_SUPPORT",
+            "DATE_SIMPLE_COMPLETE",
+            "DATE_COMPLETE_CORE",
+            "DATE_COLOR_COORDINATED",
             "WEATHER_BAND_MILD",
             "ELIGIBILITY_REASON_DATE_PATTERN_TOP_SIMPLE_SUPPORT"
           ],
@@ -5523,10 +6375,15 @@ fixture 沿用仓库识别与组合测试的原始 wardrobe schema；不是生�
                 "item:raw-date-shoes:outing_shoe"
               ],
               "source": "scene_rule",
-              "sourceRule": "sceneEligibilityV3",
+              "sourceRule": "sceneEvidenceV4",
+              "sourceVersion": "scene-evidence-v4",
+              "sourceFingerprint": "12d2dcc4982868e2f398",
               "sourceRuleReasons": [
-                "DATE_FRIENDLY_SIGNAL",
-                "DATE_CLEAN_COMPLETE"
+                "DATE_PATTERN_FOCAL_SUPPORT",
+                "DATE_BRIGHT_FOCAL_SUPPORT",
+                "DATE_SIMPLE_COMPLETE",
+                "DATE_COMPLETE_CORE",
+                "DATE_COLOR_COORDINATED"
               ],
               "confidence": 1,
               "authorized": true
@@ -5863,19 +6720,163 @@ fixture 沿用仓库识别与组合测试的原始 wardrobe schema；不是生�
       "sceneEligibility": {
         "eligible": true,
         "hardRejected": false,
+        "canEnterScene": true,
         "penalty": 0,
         "acceptReasons": [
-          "SPORT_SHOE",
-          "SPORT_APPAREL"
+          "SPORT_EXPLICIT_SET",
+          "SPORT_DAILY_LIGHT_SET",
+          "SPORT_CASUAL_ACTIVITY"
         ],
         "rejectReasons": [],
         "warnings": [],
         "sceneStrength": "strong",
+        "sceneFitScore": 8.2,
+        "sceneFitContribution": 3.2,
+        "sceneFitContributionByFamily": {
+          "casual_structure": 0.6,
+          "sport_structure": 2.6
+        },
+        "sceneEvidence": [
+          {
+            "id": "SPORT_EXPLICIT_SET",
+            "scene": "sport",
+            "evidenceFamily": "sport_structure",
+            "requiredFacts": [
+              "sport_top",
+              "sport_bottom",
+              "sport_shoe"
+            ],
+            "authorization": "controlled_sport_fact",
+            "severity": "STRONG_POSITIVE",
+            "explanationValue": 10,
+            "rankingContribution": 2.6,
+            "hardConflict": false,
+            "version": "scene-evidence-v4",
+            "explanationCodes": [
+              "SPORT_COMPLETE_SET"
+            ],
+            "subjectItemIds": [
+              "raw-sport-top",
+              "raw-sport-bottom",
+              "raw-sport-shoes"
+            ],
+            "supportingFacts": [
+              "category:top",
+              "style:sport",
+              "color:black",
+              "basic_color",
+              "category",
+              "color",
+              "sport_top",
+              "category:bottom",
+              "subcategory:casual_pants",
+              "long_pants",
+              "sport_bottom",
+              "category:shoes",
+              "subcategory:sport_shoe",
+              "outing_shoe",
+              "sport_shoe"
+            ]
+          },
+          {
+            "id": "SPORT_DAILY_LIGHT_SET",
+            "scene": "sport",
+            "evidenceFamily": "sport_structure",
+            "requiredFacts": [
+              "casual_activity_top",
+              "activity_bottom",
+              "sport_shoe"
+            ],
+            "authorization": "controlled_category_sport_footwear",
+            "severity": "MEDIUM_POSITIVE",
+            "explanationValue": 8,
+            "rankingContribution": 1.5,
+            "hardConflict": false,
+            "version": "scene-evidence-v4",
+            "explanationCodes": [
+              "SPORT_LIGHT_ACTIVITY_SET",
+              "SPORT_HOT_SHORT_SLEEVE_SHORTS"
+            ],
+            "subjectItemIds": [
+              "raw-sport-top",
+              "raw-sport-bottom",
+              "raw-sport-shoes"
+            ],
+            "supportingFacts": [
+              "category:top",
+              "style:sport",
+              "color:black",
+              "basic_color",
+              "category",
+              "color",
+              "sport_top",
+              "category:bottom",
+              "subcategory:casual_pants",
+              "long_pants",
+              "sport_bottom",
+              "category:shoes",
+              "subcategory:sport_shoe",
+              "outing_shoe",
+              "sport_shoe"
+            ]
+          },
+          {
+            "id": "SPORT_CASUAL_ACTIVITY",
+            "scene": "sport",
+            "evidenceFamily": "casual_structure",
+            "requiredFacts": [
+              "simple_activity_structure",
+              "closed_shoe"
+            ],
+            "authorization": "controlled_category_footwear",
+            "severity": "WEAK_POSITIVE",
+            "explanationValue": 4,
+            "rankingContribution": 0.6,
+            "hardConflict": false,
+            "version": "scene-evidence-v4",
+            "explanationCodes": [
+              "SPORT_V4_EVIDENCE_SUPPORTED"
+            ],
+            "subjectItemIds": [
+              "raw-sport-top",
+              "raw-sport-bottom",
+              "raw-sport-shoes"
+            ],
+            "supportingFacts": [
+              "category:top",
+              "style:sport",
+              "color:black",
+              "basic_color",
+              "category",
+              "color",
+              "sport_top",
+              "category:bottom",
+              "subcategory:casual_pants",
+              "long_pants",
+              "sport_bottom",
+              "category:shoes",
+              "subcategory:sport_shoe",
+              "outing_shoe",
+              "sport_shoe"
+            ]
+          }
+        ],
+        "sceneEvidenceVersion": "scene-evidence-v4",
+        "sceneEvidenceFingerprint": "12d2dcc4982868e2f398",
         "evidence": [
           {
             "itemId": "raw-sport-top",
             "category": "top",
             "normalizedType": "运动训练上衣 运动训练上衣 top",
+            "canonicalFacts": [
+              "category:top",
+              "style:sport",
+              "color:black",
+              "basic_color",
+              "category",
+              "color",
+              "sport_top"
+            ],
             "evidence": [
               "customName:运动训练上衣",
               "subcategory:运动训练上衣",
@@ -5892,6 +6893,17 @@ fixture 沿用仓库识别与组合测试的原始 wardrobe schema；不是生�
             "itemId": "raw-sport-bottom",
             "category": "bottom",
             "normalizedType": "运动长裤 运动长裤 bottom",
+            "canonicalFacts": [
+              "category:bottom",
+              "subcategory:casual_pants",
+              "style:sport",
+              "color:black",
+              "basic_color",
+              "category",
+              "color",
+              "long_pants",
+              "sport_bottom"
+            ],
             "evidence": [
               "customName:运动长裤",
               "subcategory:运动长裤",
@@ -5908,6 +6920,17 @@ fixture 沿用仓库识别与组合测试的原始 wardrobe schema；不是生�
             "itemId": "raw-sport-shoes",
             "category": "shoes",
             "normalizedType": "系带运动鞋 系带运动鞋 shoes",
+            "canonicalFacts": [
+              "category:shoes",
+              "subcategory:sport_shoe",
+              "style:sport",
+              "color:black",
+              "basic_color",
+              "category",
+              "color",
+              "outing_shoe",
+              "sport_shoe"
+            ],
             "evidence": [
               "customName:系带运动鞋",
               "subcategory:系带运动鞋",
@@ -6080,10 +7103,13 @@ fixture 沿用仓库识别与组合测试的原始 wardrobe schema；不是生�
           "relationFactIds": [
             "outfit:sport_eligible"
           ],
-          "sourceRule": "sceneEligibilityV3",
+          "sourceRule": "sceneEvidenceV4",
+          "sourceVersion": "scene-evidence-v4",
+          "sourceFingerprint": "12d2dcc4982868e2f398",
           "sourceRuleReasons": [
-            "SPORT_SHOE",
-            "SPORT_APPAREL",
+            "SPORT_EXPLICIT_SET",
+            "SPORT_DAILY_LIGHT_SET",
+            "SPORT_CASUAL_ACTIVITY",
             "WEATHER_BAND_MILD",
             "ELIGIBILITY_REASON_SPORT_COMPLETE_SET"
           ],
@@ -6133,10 +7159,13 @@ fixture 沿用仓库识别与组合测试的原始 wardrobe schema；不是生�
                 "item:raw-sport-shoes:sport_shoe"
               ],
               "source": "scene_rule",
-              "sourceRule": "sceneEligibilityV3",
+              "sourceRule": "sceneEvidenceV4",
+              "sourceVersion": "scene-evidence-v4",
+              "sourceFingerprint": "12d2dcc4982868e2f398",
               "sourceRuleReasons": [
-                "SPORT_SHOE",
-                "SPORT_APPAREL"
+                "SPORT_EXPLICIT_SET",
+                "SPORT_DAILY_LIGHT_SET",
+                "SPORT_CASUAL_ACTIVITY"
               ],
               "confidence": 1,
               "authorized": true

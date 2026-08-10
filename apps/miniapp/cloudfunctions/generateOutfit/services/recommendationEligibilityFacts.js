@@ -124,7 +124,9 @@ function adaptItem(item, index) {
   const sleeve = fieldText(item.sleeveLength, item.sleeve, item.aestheticFeatures?.sleeveLength);
   const pantsLength = fieldText(item.pantsLength, item.trouserLength, item.aestheticFeatures?.pantsLength, item.aestheticFeatures?.length);
   const fit = fieldText(item.fit, item.silhouette, item.aestheticFeatures?.fit, item.aestheticFeatures?.silhouette);
-  const rawPattern = readFirstString(item.pattern, item.patternType, item.aestheticFeatures?.patternType);
+  const rawPatternField = readFirstString(item.pattern, item.patternType, item.aestheticFeatures?.patternType);
+  const controlledStylePattern = readControlledStylePattern(item.styleTags || item.style);
+  const rawPattern = rawPatternField || controlledStylePattern;
   const patternLabel = mapPatternLabel(rawPattern);
   const color = readColor(item);
   const shoeType = fieldText(item.shoeType, item.aestheticFeatures?.shoeType, item.subCategory, item.subcategory, item.type, item.customName, item.name);
@@ -168,15 +170,13 @@ function adaptItem(item, index) {
   }
   if (/宽松|不贴身|loose|relaxed|oversize|wide/i.test(fit)) addDerived('loose_fit', fit, ['fit', 'silhouette']);
   if (/直筒|straight/i.test(`${fit} ${name}`)) addDerived('straight_cut', fit || name, ['fit', 'silhouette', 'subCategory']);
-  if (patternLabel) addDerived('pattern_visible', rawPattern, ['pattern', 'patternType']);
+  if (patternLabel) addDerived('pattern_visible', rawPattern, rawPatternField ? ['pattern', 'patternType'] : ['styleTags']);
   if (['solid', 'plain', '纯色'].includes(normalizeEnum(rawPattern))) addDerived('solid_color', rawPattern, ['pattern', 'patternType']);
   if (color && BASIC_COLOR_PATTERN.test(color)) addDerived('basic_color', color, ['color', 'colorPalette']);
   if (/简洁|简约|基础|minimal|simple|clean|basic/i.test(combinedStyle)) addDerived('simple_style', combinedStyle, ['styleTags', 'style', 'subCategory']);
   if (/休闲|日常|居家|casual|relaxed|home/i.test(combinedStyle)) addDerived('casual_style', combinedStyle, ['styleTags', 'sceneTags', 'style']);
   if (category === 'top' && (
     /运动|训练|瑜伽|跑步|健身|sport|athletic|training|yoga|running|gym/i.test(combinedStyle)
-    || legacyVisibleTraits.tshirt
-    || hasFact(records, 'sleeveless')
   )) {
     addDerived('sport_top', combinedStyle, ['styleTags', 'sceneTags', 'subCategory']);
   }
@@ -309,6 +309,11 @@ function readColor(item) {
   if (direct) return direct;
   const colors = Array.isArray(item.colorPalette) ? item.colorPalette : Array.isArray(item.colors) ? item.colors : [];
   return colors.map((entry) => readString(typeof entry === 'string' ? entry : entry?.name || entry?.color)).filter(Boolean).join(' / ');
+}
+
+function readControlledStylePattern(value) {
+  const tags = Array.isArray(value) ? value : typeof value === 'string' ? value.split(/[,/，、]/) : [];
+  return tags.map(readString).find((tag) => /^(印花|条纹|格纹|格子|波点|碎花|print|printed|stripe|striped|plaid|check|checked|polka dot|floral)$/i.test(tag)) || '';
 }
 
 function fieldText(...values) {

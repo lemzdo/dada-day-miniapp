@@ -80,9 +80,10 @@ function buildOutfitCandidatesV1({
   if (returnRawCandidates) return rawCandidates;
 
   const guardResult = guardCandidates
-    ? applyWearabilityAndSceneEligibility(rawCandidates, {
+      ? applyWearabilityAndSceneEligibility(rawCandidates, {
         scene: normalizedScene,
         weather: weatherContext.weather,
+        recommendationProfile,
         itemFactsContext,
       })
     : { accepted: rawCandidates, rejected: [], debug: {} };
