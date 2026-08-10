@@ -5,6 +5,7 @@ const test = require('node:test');
 const {
   assertAcceptanceSingleRequest,
   installAcceptanceSingleRequestGuard,
+  readAcceptanceCapture,
   resetAcceptanceSingleRequestGuard,
 } = require('./devtools-direct-session');
 
@@ -13,7 +14,7 @@ test('historical cumulative count 0 plus one current request passes', () => {
     baselineCumulativeRequestCount: 0,
     finalCumulativeRequestCount: 1,
     capturedRequestCount: 1,
-  }), { baselineCumulativeRequestCount: 0, finalCumulativeRequestCount: 1, capturedRequestCount: 1 });
+  }), { baselineCumulativeRequestCount: 0, finalCumulativeRequestCount: 1, cumulativeDelta: 1, capturedRequestCount: 1 });
 });
 
 test('historical cumulative count 2 plus one current request passes', () => {
@@ -30,6 +31,15 @@ test('historical cumulative count 10 plus one current request passes', () => {
     finalCumulativeRequestCount: 11,
     capturedRequestCount: 1,
   }));
+});
+
+test('bounded ledger history rollover does not invalidate one observer-captured request', () => {
+  const result = assertAcceptanceSingleRequest({
+    baselineCumulativeRequestCount: 18,
+    finalCumulativeRequestCount: 15,
+    capturedRequestCount: 1,
+  });
+  assert.equal(result.cumulativeDelta, -3);
 });
 
 test('any historical count plus two current requests fails', () => {
@@ -58,17 +68,32 @@ test('a new run replaces stale blocker state instead of inheriting its count', a
     const mini = { evaluate: (fn, value) => Promise.resolve(fn(value)) };
     const installed = await installAcceptanceSingleRequestGuard(mini, {
       acceptanceRunId: 'new-run',
+      captureId: 'new-capture',
       baselineCumulativeRequestCount: 10,
     });
     assert.equal(installed.acceptanceRunId, 'new-run');
     assert.equal(globalThis.__d1dAcceptanceSingleRequestGuard.capturedRequestCount, 0);
-    await globalThis.wx.cloud.callFunction({ name: 'generateOutfit', data: { acceptanceRunId: 'new-run' } });
+    await globalThis.wx.cloud.callFunction({
+      name: 'generateOutfit',
+      data: { acceptanceRunId: 'new-run', captureId: 'new-capture', scene: '居家' },
+    });
     await globalThis.wx.cloud.callFunction({ name: 'generateOutfit', data: {} });
     const state = globalThis.__d1dAcceptanceSingleRequestGuard;
     assert.equal(state.explicitRequestCount, 1);
+    assert.equal(state.capturedRequestCount, 1);
+    assert.equal(state.observedRequestCount, 2);
     assert.equal(state.ordinaryRequestCount, 1);
     assert.equal(state.contaminated, true);
     assert.equal(calls.length, 2);
+    const capture = await readAcceptanceCapture(mini);
+    assert.equal(capture.captureId, 'new-capture');
+    assert.equal(capture.status, 'fulfilled');
+    assert.equal(capture.originalRequestData.scene, '居家');
+    assert.equal(capture.originalRequestData.performanceDiagnostics, undefined);
+    assert.equal(capture.sentRequestData.performanceDiagnostics, true);
+    assert.deepEqual(capture.requestDiff.map((entry) => entry.path), ['$.performanceDiagnostics']);
+    assert.equal(calls[0].data.scene, '居家');
+    assert.equal(calls[0].data.performanceDiagnostics, true);
     const reset = await resetAcceptanceSingleRequestGuard(mini);
     assert.equal(reset.businessStorageTouched, false);
     assert.equal(globalThis.__d1dAcceptanceSingleRequestGuard, undefined);

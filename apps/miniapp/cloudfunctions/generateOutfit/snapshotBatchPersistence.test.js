@@ -331,6 +331,12 @@ test('snapshot persistence round-trips are explicit for all-new, all-existing, a
 
 test('all-existing recommendation snapshots use one read and controlled parallel owned-field updates', async () => {
   const bases = buildBases(8);
+  bases.forEach((base, index) => {
+    base.presentationPlan = {
+      planId: `plan-${index}`,
+      factModel: { facts: Array.from({ length: 24 }, (_, factIndex) => `fact-${factIndex}-${'x'.repeat(80)}`) },
+    };
+  });
   const clothingIds = [...new Set(bases.flatMap((base) => base.clothingIds))];
   const clothes = clothingIds.map((_id) => ({ _id, _openid: 'snapshot-batch-user', status: 'active' }));
   const { database, operations, outfits } = createBatchDatabase(clothes, { allowConcurrentWrites: true, writeDelayMs: 2 });
@@ -365,7 +371,10 @@ test('all-existing recommendation snapshots use one read and controlled parallel
   assert.equal(counts.writes, 8);
   assert.equal(counts.snapshot.dbRoundTrips, 9);
   assert.equal(counts.snapshot.writeRoundTrips, 8);
-  assert.ok(operations.maxConcurrentWrites > 1);
+  assert.equal(counts.snapshot.maxConcurrency, 8);
+  assert.equal(operations.maxConcurrentWrites, 8);
+  assert.ok(counts.snapshot.inputPayloadBytes > counts.snapshot.payloadBytes * 10);
+  assert.ok(counts.snapshot.payloadBytes < 10 * 1024);
   assert.deepEqual(
     Object.fromEntries(Object.keys(userState).map((key) => [key, outfits[0][key]])),
     userState,

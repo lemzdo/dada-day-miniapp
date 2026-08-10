@@ -145,6 +145,31 @@ interface ClientImageTiming {
   timeoutId?: ReturnType<typeof setTimeout>;
 }
 
+interface TodayFullComputeAcceptanceRequest {
+  acceptanceRunId: string;
+  captureId: string;
+}
+
+interface TodayDiagnosticsBridge {
+  marker: 'd1d-today-production-handler-v1';
+  ready: boolean;
+  sceneKey: SceneKey;
+  triggerFullCompute: (request: TodayFullComputeAcceptanceRequest) => Promise<boolean>;
+}
+
+function isTodayDiagnosticsRuntime() {
+  if (isRecommendationDiagnosticEnvironment()) return true;
+  try {
+    const runtimeWx = (globalThis as typeof globalThis & {
+      wx?: { getAccountInfoSync?: () => { miniProgram?: { envVersion?: string } } };
+    }).wx;
+    const envVersion = runtimeWx?.getAccountInfoSync?.().miniProgram?.envVersion;
+    return envVersion === 'develop' || envVersion === 'trial';
+  } catch {
+    return false;
+  }
+}
+
 interface TodayRestoreSnapshot {
   version: 3;
   copyContractVersion: typeof COPY_CONTRACT_VERSION;
@@ -463,6 +488,7 @@ export default function TodayPage() {
     silent = false,
     trigger = 'unknown',
     requestKind = 'initial',
+    acceptanceDiagnostics,
   }: {
     intentId: string
     sceneKey: SceneKey
@@ -472,6 +498,7 @@ export default function TodayPage() {
     silent?: boolean
     trigger?: string
     requestKind?: 'initial' | 'refresh'
+    acceptanceDiagnostics?: TodayFullComputeAcceptanceRequest
   }): Promise<boolean> {
     const inputSignature = getRecommendationInputSignature({
       sceneKey,
@@ -501,6 +528,7 @@ export default function TodayPage() {
           silent,
           trigger,
           requestKind,
+          acceptanceDiagnostics,
         });
       },
     });
@@ -520,6 +548,7 @@ export default function TodayPage() {
     silent = false,
     trigger = 'unknown',
     requestKind = 'initial',
+    acceptanceDiagnostics,
   }: {
     intent: RecommendationIntent
     requestContext: RecommendationRequestContext
@@ -528,6 +557,7 @@ export default function TodayPage() {
     silent?: boolean
     trigger?: string
     requestKind?: 'initial' | 'refresh'
+    acceptanceDiagnostics?: TodayFullComputeAcceptanceRequest
   }): Promise<boolean> {
     const seq = requestContext.requestSeq;
     const scene = requestContext.sceneLabel;
@@ -558,6 +588,11 @@ export default function TodayPage() {
         auditId,
         weatherMode,
         trigger,
+        ...(acceptanceDiagnostics ? {
+          performanceDiagnostics: true,
+          acceptanceRunId: acceptanceDiagnostics.acceptanceRunId,
+          captureId: acceptanceDiagnostics.captureId,
+        } : {}),
         ...(weather ? { weather } : {}),
         ...(excludedOutfitKeys.length > 0 ? { excludedOutfitKeys } : {}),
       });
@@ -2078,6 +2113,38 @@ export default function TodayPage() {
   });
   const isFavoriteBusy = operation === 'favorite';
   const isWearBusy = operation === 'wear';
+
+  useEffect(() => {
+    if (!isTodayDiagnosticsRuntime()) return undefined;
+    const diagnosticsGlobal = globalThis as typeof globalThis & {
+      __d1dTodayDiagnostics?: TodayDiagnosticsBridge;
+    };
+    const bridge: TodayDiagnosticsBridge = {
+      marker: 'd1d-today-production-handler-v1',
+      ready: Boolean(isAuthenticated && runtimeKey && !loading && !operation),
+      sceneKey: selectedSceneKeyRef.current,
+      triggerFullCompute: async (request) => {
+        if (!request?.acceptanceRunId || !request?.captureId) {
+          throw new Error('acceptanceRunId and captureId are required');
+        }
+        if (loading || operation) throw new Error('Today recommendation handler is busy');
+        return requestRecommendations({
+          intentId: nextRecommendationIntentId('retry'),
+          sceneKey: selectedSceneKeyRef.current,
+          weather: currentWeatherRef.current,
+          weatherMode: currentWeatherModeRef.current,
+          trigger: 'retry',
+          acceptanceDiagnostics: request,
+        });
+      },
+    };
+    diagnosticsGlobal.__d1dTodayDiagnostics = bridge;
+    return () => {
+      if (diagnosticsGlobal.__d1dTodayDiagnostics === bridge) {
+        delete diagnosticsGlobal.__d1dTodayDiagnostics;
+      }
+    };
+  });
 
   useEffect(() => {
     markTodayPerformanceStage('reactCommitAfterOutfits');

@@ -255,8 +255,23 @@ test('eight-card normal response keeps raw fact carriers out of the business pay
       copyContractVersion: 'recommendation-copy-contract-v3',
       voiceBankVersion: 'xiaoda-fixed-claim-catalog-v2',
       gateResult: 'PASS', riskFlags: [], todayReason: 'reason',
-      coreEligibilityEvidence: rawFacts,
+      coreEligibilityReason: '居家放松适配',
+      coreEligibilityReasonCode: 'HOME_COMFORT',
+      coreEligibilityEvidence: [{
+        factId: `fact-${index}`,
+        itemId: `top-${index}`,
+        fact: 'sceneTags',
+        value: ['home'],
+        source: 'structured_ai',
+        confidence: 0.9,
+        sourceDetail: 'internal-only',
+      }],
+      todayEvidenceSources: rawFacts,
+      detailEvidenceSources: rawFacts,
+      selectedDifferentiator: { evidenceFactIds: rawFacts },
     },
+    presentationPlan: { factModel: { facts: rawFacts }, selectedDifferentiator: rawFacts },
+    selectedDifferentiator: { evidenceFactIds: rawFacts },
     aestheticEvaluation: {
       version: 1, engineVersion: 'aesthetic-compat-v1', score: 8, coverage: 1,
       dimensions: {}, evidence: rawFacts,
@@ -269,6 +284,15 @@ test('eight-card normal response keeps raw fact carriers out of the business pay
   assert.equal(Object.hasOwn(projected[0], 'itemsSnapshot'), false);
   assert.equal(Object.hasOwn(projected[0].items[0], 'factRecords'), false);
   assert.equal(Object.hasOwn(projected[0], 'coreEligibilityEvidence'), false);
+  assert.equal(Object.hasOwn(projected[0], 'presentationPlan'), false);
+  assert.equal(Object.hasOwn(projected[0], 'selectedDifferentiator'), false);
+  assert.equal(Object.hasOwn(projected[0].copyContract, 'todayEvidenceSources'), false);
+  assert.equal(Object.hasOwn(projected[0].copyContract, 'selectedDifferentiator'), false);
+  assert.equal(Object.hasOwn(projected[0].copyContract.coreEligibilityEvidence[0], 'sourceDetail'), false);
+  assert.equal(projected[0].copyContract.coreEligibilityEvidence[0].factId, `fact-0`);
+  assert.deepEqual(Object.keys(projected[0].contentPlan).sort(), [
+    'items', 'primaryBenefit', 'sceneIntent', 'version',
+  ]);
   assert.equal(Object.hasOwn(projected[0].aestheticEvaluation, 'evidence'), false);
   const largest = internals.measureRecommendationResponseBreakdown(normal, 10);
   assert.equal(largest[0].path, 'response.outfits');

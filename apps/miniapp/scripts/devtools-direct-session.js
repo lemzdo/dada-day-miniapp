@@ -137,14 +137,18 @@ function assertAcceptanceSingleRequest({ baselineCumulativeRequestCount, finalCu
   const baseline = Number(baselineCumulativeRequestCount) || 0;
   const final = Number(finalCumulativeRequestCount) || 0;
   const captured = Number(capturedRequestCount) || 0;
-  if (captured !== 1 || final - baseline !== 1) {
+  const cumulativeDelta = final - baseline;
+  // The Today ledger has bounded history, so a lifecycle rollover can prune
+  // old runs and make the aggregate decrease. It remains useful for detecting
+  // an unexpected increase greater than the one observer-captured request.
+  if (captured !== 1 || cumulativeDelta > 1) {
     throw classifyFailure(
       'FINAL_SINGLE_REQUEST_VIOLATION',
       'acceptance run must capture exactly one request and increase cumulative count by one',
       { baselineCumulativeRequestCount: baseline, finalCumulativeRequestCount: final, capturedRequestCount: captured },
     );
   }
-  return { baselineCumulativeRequestCount: baseline, finalCumulativeRequestCount: final, capturedRequestCount: captured };
+  return { baselineCumulativeRequestCount: baseline, finalCumulativeRequestCount: final, cumulativeDelta, capturedRequestCount: captured };
 }
 
 async function readAcceptanceCumulativeRequestCount(mini) {
@@ -154,11 +158,17 @@ async function readAcceptanceCumulativeRequestCount(mini) {
   return mini.evaluate(() => {
     const ledger = globalThis.wx?.getStorageSync?.('today:performance-ledger:v1');
     const count = (record) => Math.max(0, Number(record?.generateOutfitRequestCount) || 0);
-    return count(ledger?.active) + (Array.isArray(ledger?.history) ? ledger.history.reduce((total, record) => total + count(record), 0) : 0);
+    const records = [ledger?.active, ...(Array.isArray(ledger?.history) ? ledger.history : [])].filter(Boolean);
+    const countsByRunId = new Map();
+    records.forEach((record, index) => {
+      const runId = typeof record?.runId === 'string' && record.runId ? record.runId : `anonymous:${index}`;
+      countsByRunId.set(runId, Math.max(countsByRunId.get(runId) || 0, count(record)));
+    });
+    return [...countsByRunId.values()].reduce((total, value) => total + value, 0);
   });
 }
 
-async function installAcceptanceSingleRequestGuard(mini, { acceptanceRunId, baselineCumulativeRequestCount } = {}) {
+async function installAcceptanceSingleRequestGuard(mini, { acceptanceRunId, captureId, baselineCumulativeRequestCount } = {}) {
   if (!mini || typeof mini.evaluate !== 'function') {
     throw classifyFailure('ACCEPTANCE_GUARD_INSTALL_FAILED', 'automator session has no evaluate()');
   }
@@ -212,8 +222,10 @@ async function installAcceptanceSingleRequestGuard(mini, { acceptanceRunId, base
     const registry = {
       marker: 'd1d-acceptance-single-request-observer-v3',
       acceptanceRunId: options.acceptanceRunId,
+      captureId: options.captureId || options.acceptanceRunId,
       baselineCumulativeRequestCount: Number(options.baselineCumulativeRequestCount) || 0,
       capturedRequestCount: 0,
+      observedRequestCount: 0,
       explicitRequestCount: 0,
       ordinaryRequestCount: 0,
       contaminated: false,
@@ -221,6 +233,7 @@ async function installAcceptanceSingleRequestGuard(mini, { acceptanceRunId, base
       lastGenerateOutfitSettledAt: null,
       quiescenceStartedAt: Date.now(),
       quiescenceWindowMs: 1200,
+      capture: null,
       targets: {},
     };
     targets.forEach((entry) => {
@@ -228,12 +241,16 @@ async function installAcceptanceSingleRequestGuard(mini, { acceptanceRunId, base
       const original = entry.target.callFunction;
       const wrapper = function acceptanceSingleRequestCallFunction(callOptions = {}) {
         if (callOptions.name !== 'generateOutfit') return original.apply(this, arguments);
-        registry.capturedRequestCount += 1;
+        registry.observedRequestCount += 1;
         registry.activeGenerateOutfitCalls += 1;
         registry.quiescenceStartedAt = null;
         const requestData = callOptions.data && typeof callOptions.data === 'object' ? callOptions.data : {};
-        const isExplicitAcceptanceRequest = requestData.acceptanceRunId === registry.acceptanceRunId;
-        if (isExplicitAcceptanceRequest) registry.explicitRequestCount += 1;
+        const isExplicitAcceptanceRequest = requestData.acceptanceRunId === registry.acceptanceRunId
+          && requestData.captureId === registry.captureId;
+        if (isExplicitAcceptanceRequest) {
+          registry.explicitRequestCount += 1;
+          registry.capturedRequestCount += 1;
+        }
         else {
           registry.ordinaryRequestCount += 1;
           registry.contaminated = true;
@@ -241,12 +258,61 @@ async function installAcceptanceSingleRequestGuard(mini, { acceptanceRunId, base
         // Observing and annotating an explicit acceptance request must never
         // alter or reject ordinary product requests.
         const data = isExplicitAcceptanceRequest
-          ? { ...requestData, performanceDiagnostics: true }
+          ? {
+              ...requestData,
+              acceptanceRunId: registry.acceptanceRunId,
+              captureId: registry.captureId,
+              performanceDiagnostics: true,
+            }
           : requestData;
+        const clone = (value) => {
+          try { return JSON.parse(JSON.stringify(value)); } catch { return null; }
+        };
+        const diff = [];
+        const compare = (left, right, currentPath = '$') => {
+          if (Object.is(left, right)) return;
+          const leftObject = left && typeof left === 'object';
+          const rightObject = right && typeof right === 'object';
+          if (!leftObject || !rightObject || Array.isArray(left) !== Array.isArray(right)) {
+            diff.push({ path: currentPath, before: clone(left), after: clone(right) });
+            return;
+          }
+          const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
+          keys.forEach((key) => compare(left[key], right[key], `${currentPath}.${key}`));
+        };
+        let capture = null;
+        if (isExplicitAcceptanceRequest) {
+          const originalRequestData = clone(requestData);
+          const sentRequestData = clone(data);
+          compare(originalRequestData, sentRequestData);
+          capture = {
+            acceptanceRunId: registry.acceptanceRunId,
+            captureId: registry.captureId,
+            auditId: typeof requestData.auditId === 'string' ? requestData.auditId : null,
+            target: entry.name,
+            originalRequestData,
+            sentRequestData,
+            requestDiff: diff,
+            immediatelyBeforeCallFunction: Date.now(),
+            callFunctionPromiseResolved: null,
+            settledAt: null,
+            status: 'pending',
+            rawResponse: null,
+            error: null,
+          };
+          if (registry.capture) registry.contaminated = true;
+          registry.capture = capture;
+        }
         let result;
         try {
           result = original.call(this, { ...callOptions, data });
         } catch (error) {
+          if (capture) {
+            capture.callFunctionPromiseResolved = Date.now();
+            capture.settledAt = capture.callFunctionPromiseResolved;
+            capture.status = 'rejected';
+            capture.error = String(error?.stack || error?.message || error);
+          }
           registry.activeGenerateOutfitCalls = Math.max(0, registry.activeGenerateOutfitCalls - 1);
           registry.lastGenerateOutfitSettledAt = Date.now();
           if (registry.activeGenerateOutfitCalls === 0) registry.quiescenceStartedAt = registry.lastGenerateOutfitSettledAt;
@@ -254,12 +320,24 @@ async function installAcceptanceSingleRequestGuard(mini, { acceptanceRunId, base
         }
         return Promise.resolve(result).then(
           (value) => {
+            if (capture) {
+              capture.callFunctionPromiseResolved = Date.now();
+              capture.settledAt = capture.callFunctionPromiseResolved;
+              capture.status = 'fulfilled';
+              capture.rawResponse = clone(value);
+            }
             registry.activeGenerateOutfitCalls = Math.max(0, registry.activeGenerateOutfitCalls - 1);
             registry.lastGenerateOutfitSettledAt = Date.now();
             if (registry.activeGenerateOutfitCalls === 0) registry.quiescenceStartedAt = registry.lastGenerateOutfitSettledAt;
             return value;
           },
           (error) => {
+            if (capture) {
+              capture.callFunctionPromiseResolved = Date.now();
+              capture.settledAt = capture.callFunctionPromiseResolved;
+              capture.status = 'rejected';
+              capture.error = String(error?.stack || error?.message || error);
+            }
             registry.activeGenerateOutfitCalls = Math.max(0, registry.activeGenerateOutfitCalls - 1);
             registry.lastGenerateOutfitSettledAt = Date.now();
             if (registry.activeGenerateOutfitCalls === 0) registry.quiescenceStartedAt = registry.lastGenerateOutfitSettledAt;
@@ -283,6 +361,7 @@ async function installAcceptanceSingleRequestGuard(mini, { acceptanceRunId, base
     return {
       marker: registry.marker,
       acceptanceRunId: registry.acceptanceRunId,
+      captureId: registry.captureId,
       baselineCumulativeRequestCount: registry.baselineCumulativeRequestCount,
       capturedRequestCount: registry.capturedRequestCount,
       explicitRequestCount: registry.explicitRequestCount,
@@ -290,7 +369,7 @@ async function installAcceptanceSingleRequestGuard(mini, { acceptanceRunId, base
       contaminated: registry.contaminated,
       installedTargets: Object.keys(registry.targets),
     };
-  }, { acceptanceRunId, baselineCumulativeRequestCount: Number(baselineCumulativeRequestCount) || 0 });
+  }, { acceptanceRunId, captureId: captureId || acceptanceRunId, baselineCumulativeRequestCount: Number(baselineCumulativeRequestCount) || 0 });
 }
 
 async function readAcceptanceSingleRequestGuard(mini) {
@@ -303,8 +382,10 @@ async function readAcceptanceSingleRequestGuard(mini) {
     return {
       marker: guard.marker,
       acceptanceRunId: guard.acceptanceRunId,
+      captureId: guard.captureId,
       baselineCumulativeRequestCount: guard.baselineCumulativeRequestCount,
       capturedRequestCount: guard.capturedRequestCount,
+      observedRequestCount: guard.observedRequestCount || 0,
       explicitRequestCount: guard.explicitRequestCount,
       ordinaryRequestCount: guard.ordinaryRequestCount,
       contaminated: guard.contaminated === true,
@@ -314,6 +395,17 @@ async function readAcceptanceSingleRequestGuard(mini) {
       quiescenceWindowMs: guard.quiescenceWindowMs || 1200,
       installedTargets: Object.keys(guard.targets || {}),
     };
+  });
+}
+
+async function readAcceptanceCapture(mini) {
+  if (!mini || typeof mini.evaluate !== 'function') {
+    throw classifyFailure('ACCEPTANCE_CAPTURE_READ_FAILED', 'automator session has no evaluate()');
+  }
+  return mini.evaluate(() => {
+    const capture = globalThis.__d1dAcceptanceSingleRequestGuard?.capture;
+    if (!capture || typeof capture !== 'object') return null;
+    return JSON.parse(JSON.stringify(capture));
   });
 }
 
@@ -409,13 +501,23 @@ async function acquireTodayPage(session) {
   return { page, route: finalRoute };
 }
 
-function startKnownDevTools({ spawn = childProcess.spawn, cliPath = DEFAULT_CLI, project = DEFAULT_PROJECT, servicePort = SERVICE_PORT, automatorPort = AUTOMATOR_PORT } = {}) {
-  const child = spawn(cliPath, ['auto', '--project', project, '--port', String(servicePort), '--auto-port', String(automatorPort)], {
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: true,
-  });
-  child.unref?.();
+function startKnownDevTools({ spawn = childProcess.spawn, spawnSync = childProcess.spawnSync, cliPath = DEFAULT_CLI, project = DEFAULT_PROJECT, servicePort = SERVICE_PORT, automatorPort = AUTOMATOR_PORT } = {}) {
+  const cliArgs = ['auto', '--project', project, '--port', String(servicePort), '--auto-port', String(automatorPort)];
+  const powershellQuote = (value) => `'${String(value).replaceAll("'", "''")}'`;
+  const startScript = `$cliPath=${powershellQuote(cliPath)};$cliArgs=@(${cliArgs.map(powershellQuote).join(',')});Start-Process -FilePath $cliPath -ArgumentList $cliArgs -WindowStyle Hidden`;
+  const command = process.platform === 'win32' ? 'powershell.exe' : cliPath;
+  const args = process.platform === 'win32'
+    ? ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(startScript, 'utf16le').toString('base64')]
+    : cliArgs;
+  if (process.platform === 'win32') {
+    const started = spawnSync(command, args, { encoding: 'utf8', windowsHide: true });
+    if (started?.error || Number(started?.status) !== 0) {
+      throw classifyFailure('DEVTOOLS_START_FAILED', errorText(started?.error || started?.stderr || `PowerShell exit ${started?.status}`));
+    }
+  } else {
+    const child = spawn(command, args, { detached: true, stdio: 'ignore' });
+    child.unref?.();
+  }
   return { cliPath, project, servicePort, automatorPort };
 }
 
@@ -477,6 +579,7 @@ module.exports = {
   readAcceptanceCumulativeRequestCount,
   installAcceptanceSingleRequestGuard,
   readAcceptanceSingleRequestGuard,
+  readAcceptanceCapture,
   resetAcceptanceSingleRequestGuard,
   unicodeInputPreflight,
 };

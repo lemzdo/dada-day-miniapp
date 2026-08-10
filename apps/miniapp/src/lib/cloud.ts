@@ -125,6 +125,7 @@ const CACHE_TTL = {
 
 export const WEATHER_CACHE_KEY = 'd1d:lastWeather';
 export const GENERATE_OUTFIT_PERFORMANCE_ARTIFACT_KEY = 'generateOutfit:performance-ledger:v1';
+export const GENERATE_OUTFIT_ACCEPTANCE_TRANSPORT_KEY = 'generateOutfit:acceptance-transport:v1';
 
 export function initCloud() {
   if (!taroCloud) {
@@ -702,6 +703,19 @@ export async function generateCloudOutfit(params: RecommendRequest = {}) {
       ...transport,
       generateOutfitWrapperStart,
       generateOutfitWrapperEnd: Date.now(),
+    });
+  }
+  if (typeof params.acceptanceRunId === 'string' && typeof params.captureId === 'string') {
+    const acceptanceTransport = getCloudResponseTransportDiagnostics(result);
+    Taro.setStorageSync(GENERATE_OUTFIT_ACCEPTANCE_TRANSPORT_KEY, {
+      acceptanceRunId: params.acceptanceRunId,
+      captureId: params.captureId,
+      auditId: requestPayload.auditId,
+      ...(acceptanceTransport ?? {}),
+      clientTotalMs: acceptanceTransport?.immediatelyBeforeCallFunction !== undefined
+        && acceptanceTransport.callFunctionPromiseResolved !== undefined
+        ? acceptanceTransport.callFunctionPromiseResolved - acceptanceTransport.immediatelyBeforeCallFunction
+        : undefined,
     });
   }
   if (params.diagnostics === true || params.performanceDiagnostics === true) {

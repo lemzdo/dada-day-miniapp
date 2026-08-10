@@ -5,9 +5,29 @@ const { parseNetstatListeners, summarizeLedger, isHot, classification } = requir
 const {
   ensureDevToolsDirectSession,
   extractPerformanceLedger,
+  readAcceptanceCumulativeRequestCount,
   summarizeCloudResponse,
   unicodeInputPreflight,
 } = require('./devtools-direct-session');
+
+test('acceptance cumulative count does not double-count the active run mirrored in history', async () => {
+  const previousWx = globalThis.wx;
+  globalThis.wx = {
+    getStorageSync: () => ({
+      active: { runId: 'current', generateOutfitRequestCount: 3 },
+      history: [
+        { runId: 'current', generateOutfitRequestCount: 3 },
+        { runId: 'older', generateOutfitRequestCount: 2 },
+      ],
+    }),
+  };
+  try {
+    const count = await readAcceptanceCumulativeRequestCount({ evaluate: async (callback) => callback() });
+    assert.equal(count, 5);
+  } finally {
+    globalThis.wx = previousWx;
+  }
+});
 
 test('accepts IPv4 wildcard and IPv6 listeners', () => {
   const rows = parseNetstatListeners('TCP    0.0.0.0:9420    0.0.0.0:0    LISTENING    123\nTCP    [::]:9420    [::]:0    LISTENING    456', 9420);
@@ -21,13 +41,34 @@ test('classifies a live snapshot as automator hot path', () => {
   assert.equal(classification(summary.firstImageMs), 'SNAPSHOT_HOTLOAD_OPTIMIZED');
 });
 
+test('normalizes runtime timestamp and string markers for a real HOT ledger', () => {
+  const summary = summarizeLedger({
+    active: {
+      runId: 'runtime-run',
+      ledgerSchemaVersion: 3,
+      finalCardCount: 8,
+      generateOutfitRequestCount: 0,
+      complete: true,
+      stages: {
+        snapshotFound: 2080.2,
+        snapshotValid: 'true',
+        snapshotRejectReason: 'NOT_OBSERVED',
+        snapshotCardCount: 8,
+      },
+      durations: { onShowToFirstCard: 120 },
+    },
+  });
+  assert.equal(isHot(summary), true);
+  assert.equal(summary.snapshotRejectReason, '');
+});
+
 test('preserves a real snapshot rejection', () => {
   const summary = summarizeLedger({ active: { runId: 'run', ledgerSchemaVersion: 3, finalCardCount: 8, generateOutfitRequestCount: 1, stages: { snapshotFound: false, snapshotValid: false, snapshotRejectReason: 'FINGERPRINT' }, durations: {} } });
   assert.equal(isHot(summary), false);
   assert.equal(summary.snapshotRejectReason, 'FINGERPRINT');
 });
 
-function directDeps({ service = true, automator = true, mini, connectError, spawn } = {}) {
+function directDeps({ service = true, automator = true, mini, connectError, spawn, spawnSync } = {}) {
   const listeners = {
     52849: service ? [{ address: '127.0.0.1', port: 52849, pid: 11 }] : [],
     9420: automator ? [{ address: '0.0.0.0', port: 9420, pid: 22 }] : [],
@@ -36,6 +77,7 @@ function directDeps({ service = true, automator = true, mini, connectError, spaw
     readListeners: (port) => listeners[port],
     tcpProbe: async () => ({ ok: true }),
     spawn: spawn || (() => ({ unref() {} })),
+    spawnSync: spawnSync || (() => ({ status: 0, stderr: '' })),
     automator: {
       version: '0.12.1',
       packageRoot: 'fake-automator',
@@ -77,13 +119,30 @@ test('existing DevTools ports never start cli auto again', async () => {
 
 test('only-down ports start cli once and then attach', async () => {
   let spawnCount = 0;
-  const deps = directDeps({ service: false, automator: false, spawn: () => {
+  let spawnedCommand = '';
+  let spawnedArgs = [];
+  const captureStart = (command, args) => {
     spawnCount += 1;
+    spawnedCommand = command;
+    spawnedArgs = args;
     deps.readListeners = (port) => [{ address: port === 9420 ? '::' : '0.0.0.0', port, pid: 99 }];
-    return { unref() {} };
-  } });
+    return process.platform === 'win32' ? { status: 0, stderr: '' } : { unref() {} };
+  };
+  const deps = directDeps({
+    service: false,
+    automator: false,
+    spawn: captureStart,
+    spawnSync: captureStart,
+  });
   const session = await ensureDevToolsDirectSession({ deps, pollMs: 1, waitMs: 50 });
   assert.equal(spawnCount, 1);
+  if (process.platform === 'win32') {
+    assert.equal(spawnedCommand, 'powershell.exe');
+    const encodedIndex = spawnedArgs.indexOf('-EncodedCommand');
+    const startScript = Buffer.from(spawnedArgs[encodedIndex + 1], 'base64').toString('utf16le');
+    assert.match(startScript, /Start-Process/);
+    assert.match(startScript, /--auto-port/);
+  }
   session.mini.disconnect();
 });
 

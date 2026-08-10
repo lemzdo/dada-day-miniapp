@@ -3,6 +3,11 @@
   "extends": ["eslint:recommended"],
   "env": { "es6": true, "browser": true, "node": true },
   "parserOptions": { "ecmaVersion": 2022, "sourceType": "module" },
-  "rules": { "no-unused-vars": "warn", "no-console": "warn" },
+  "globals": { "globalThis": "writable", "wx": "readonly" },
+  "rules": {
+    "no-unused-vars": "warn",
+    "no-empty": ["error", { "allowEmptyCatch": true }],
+    "no-console": "warn"
+  },
   "ignorePatterns": ["dist", "node_modules", ".taro"]
 }

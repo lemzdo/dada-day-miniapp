@@ -1,5 +1,6 @@
 const cloud = require('wx-server-sdk');
 const crypto = require('crypto');
+const { isDeepStrictEqual } = require('node:util');
 const MODULE_LOADED_AT = Date.now();
 const MODULE_INSTANCE_ID = crypto.randomBytes(4).toString('hex');
 const SERVER_LEDGER_VERSION = 'generateOutfit-phase-ledger-v2';
@@ -922,11 +923,7 @@ function projectRecommendationResponseOutfits(outfits) {
     const projected = pickPublicOutfitFields(outfit);
     projected.snapshotItems = snapshotItems;
     if (projected.contentPlan && typeof projected.contentPlan === 'object') {
-      projected.contentPlan = { ...projected.contentPlan };
-      delete projected.contentPlan.presentationFactSignature;
-      delete projected.contentPlan.defaultCopy;
-      delete projected.contentPlan.defaultTodayReason;
-      delete projected.contentPlan.defaultDetailExplanation;
+      projected.contentPlan = projectPublicContentPlan(projected.contentPlan);
     }
     if (projected.aestheticEvaluation && typeof projected.aestheticEvaluation === 'object') {
       projected.aestheticEvaluation = { ...projected.aestheticEvaluation };
@@ -953,15 +950,9 @@ const PUBLIC_OUTFIT_RESPONSE_FIELDS = [
   'favoritedAt', 'favoriteOutfitId', 'wornAt', 'wornDate', 'isFavorite', 'isWornToday',
   'todayHistoryId', 'historyId', 'lastWornAt', 'recommendationBatchId', 'generatedAt',
   'styleTags', 'createdAt', 'updatedAt', 'reason', 'reasoning', 'reasonVersion', 'copyContract',
-  'copyContractVersion', 'voiceBankVersion', 'todayClaim', 'todayClaimId', 'todayAction',
-  'todayDimension', 'todayEvidenceIds', 'todayRequiredFactIds', 'todayEvidenceSources',
-  'todaySentenceClusterId', 'todaySubjectItemId', 'todaySubjectItemIds', 'todaySlotBindings',
-  'todayReasonSource', 'enhancedReason', 'detailClaim', 'detailClaimId', 'detailAction',
-  'detailDimension', 'detailEvidenceIds', 'detailRequiredFactIds', 'detailEvidenceSources',
-  'detailSentenceClusterId', 'detailSubjectItemId', 'detailSubjectItemIds', 'detailSlotBindings',
-  'riskFlags', 'copyGateResult', 'copyRiskFlags', 'copyDisplay', 'defaultCopyHidden',
-  'copyFinalizationMode', 'aestheticEvaluation', 'contentPlan', 'selectedDifferentiator',
-  'presentationPlan', 'items', 'snapshotItems', 'outfitKind', 'outfitReferenceStage',
+  'copyContractVersion', 'voiceBankVersion', 'riskFlags', 'copyGateResult', 'copyRiskFlags',
+  'copyDisplay', 'defaultCopyHidden', 'copyFinalizationMode', 'aestheticEvaluation',
+  'contentPlan', 'items', 'snapshotItems', 'outfitKind', 'outfitReferenceStage',
 ];
 
 function pickPublicOutfitFields(outfit) {
@@ -977,12 +968,48 @@ function pickPublicOutfitFields(outfit) {
 }
 
 function projectPublicCopyContract(contract) {
-  const projected = { ...contract };
+  const projected = {};
   for (const field of [
-    'factEvidence', 'factRecords', 'factsWithSource', 'coreEligibilityEvidence',
-    'eligibilityEvidence', 'evidence', 'evidenceFacts', 'sourceFacts', 'facts',
-    'presentationFactSignature', 'internalFactSignature', 'debug', 'audit',
-  ]) delete projected[field];
+    'copyContractVersion', 'voiceBankVersion', 'gateResult', 'copyDisplay', 'todayReason',
+    'todayReasonSource', 'coreEligibilityReason', 'coreEligibilityReasonCode',
+    'coreEligibilitySubjectItemIds', 'coreEligibilitySupportingFactIds',
+    'coreEligibilityRelationFactIds', 'coreEligibilitySourceRule',
+    'coreEligibilitySourceRuleReasons', 'enhancedReason', 'enhancementRejectReasons',
+    'todayClaim', 'todayClaimId', 'todayAction', 'todayDimension', 'todaySentenceClusterId',
+    'todaySubjectItemId', 'todaySubjectItemIds', 'todaySlotBindings', 'detailExplanation',
+    'detailClaim', 'detailClaimId', 'detailAction', 'detailDimension',
+    'detailSentenceClusterId', 'detailSubjectItemId', 'detailSubjectItemIds',
+    'detailSlotBindings', 'riskFlags', 'qualification', 'primaryRelationCode',
+    'unsupportedClaimCount',
+  ]) {
+    if (Object.prototype.hasOwnProperty.call(contract, field)) projected[field] = contract[field];
+  }
+  projected.coreEligibilityEvidence = (Array.isArray(contract.coreEligibilityEvidence)
+    ? contract.coreEligibilityEvidence
+    : []).map(projectPublicEligibilityEvidence);
+  return projected;
+}
+
+function projectPublicEligibilityEvidence(evidence) {
+  if (!evidence || typeof evidence !== 'object') return evidence;
+  const projected = {};
+  for (const field of [
+    'factId', 'relationFactId', 'itemId', 'fact', 'value', 'subjectItemIds',
+    'supportingFactIds', 'source', 'confidence', 'authorized',
+  ]) {
+    if (Object.prototype.hasOwnProperty.call(evidence, field)) projected[field] = evidence[field];
+  }
+  return projected;
+}
+
+function projectPublicContentPlan(contentPlan) {
+  const projected = {};
+  for (const field of [
+    'version', 'sceneIntent', 'items', 'observations', 'primaryBenefit',
+    'secondaryBenefit', 'suggestion',
+  ]) {
+    if (Object.prototype.hasOwnProperty.call(contentPlan, field)) projected[field] = contentPlan[field];
+  }
   return projected;
 }
 
@@ -1502,7 +1529,11 @@ function buildRecommendationPerformanceLedger(diagnostics, budget, responseData)
     cardCompilationStartDelayMs: candidateGeneration && cardCompilation
       ? Math.max(0, cardCompilation.startAt - candidateGeneration.endAt)
       : 0,
-    snapshotPersistence: compactPerformanceNumbers(diagnostics.snapshotPersistence),
+    snapshotPersistence: compactPerformanceNumbers({
+      ...diagnostics.snapshotPersistence,
+      ...diagnostics.snapshotPersistence?.snapshot,
+      durationMs: phaseByName.get('snapshotPersistence')?.duration,
+    }),
     candidatePoolPersistence: compactPerformanceNumbers({
       saveMs: diagnostics.timings?.candidatePoolSaveMs,
       planMs: diagnostics.timings?.candidatePoolPlanMs,
@@ -3705,7 +3736,7 @@ function buildOutfitSaveData(base, { outfitKey, now, patch, current }) {
   const userTitle = readTitle(current?.userTitle) || readTitle(base.userTitle);
   const aestheticEvaluation = normalizeAestheticEvaluationForStorage(base.aestheticEvaluation || current?.aestheticEvaluation);
 
-  return {
+  const data = {
     title,
     userTitle,
     displayTitle: getDisplayTitle({ userTitle, title }, `${base.scene || current?.scene || '今日'}搭配`),
@@ -3745,6 +3776,8 @@ function buildOutfitSaveData(base, { outfitKey, now, patch, current }) {
     ...reviewFields,
     updatedAt: now,
   };
+  data.recommendationContentHash = buildRecommendationContentHash(data);
+  return data;
 }
 
 function buildOutfitReferenceUpdatePayload(data) {
@@ -3781,7 +3814,11 @@ async function upsertRecommendationOutfitsBatch({
       dbRoundTrips: 0,
       writeRoundTrips: 0,
       logicalWrites: 0,
+      inputPayloadBytes: 0,
       payloadBytes: 0,
+      existingRecordCount: 0,
+      newRecordCount: 0,
+      maxConcurrency: 0,
       },
     });
   }
@@ -3792,7 +3829,7 @@ async function upsertRecommendationOutfitsBatch({
   if (snapshot) {
     snapshot.inputPreparationMs = Date.now() - inputStartedAt;
     const serializationStartedAt = Date.now();
-    snapshot.payloadBytes = serializedBytes(records);
+    snapshot.inputPayloadBytes = serializedBytes(records);
     snapshot.serializationMs = Date.now() - serializationStartedAt;
   }
 
@@ -3823,6 +3860,8 @@ async function upsertRecommendationOutfitsBatch({
       if (snapshot) {
         snapshot.queryReadMs += Date.now() - existingReadStartedAt;
         snapshot.dbRoundTrips += 1;
+        snapshot.existingRecordCount = records.length;
+        snapshot.maxConcurrency = Math.min(RECOMMENDATION_REFERENCE_UPDATE_CONCURRENCY, records.length);
       }
       let saved;
       try {
@@ -3891,6 +3930,11 @@ async function upsertRecommendationOutfitsBatch({
       snapshot.dbRoundTrips += 1;
     }
     const existingByKey = buildOutfitRecordMap(existingResponse.data);
+    if (snapshot) {
+      snapshot.existingRecordCount = existingByKey.size;
+      snapshot.newRecordCount = Math.max(0, records.length - existingByKey.size);
+      snapshot.maxConcurrency = 1;
+    }
 
     const saved = [];
     const pendingUpdates = [];
@@ -4010,13 +4054,32 @@ const RECOMMENDATION_OWNED_REFERENCE_FIELDS = [
   'eligibility', 'eligibilityReason', 'scores', 'aestheticEvaluation', 'scoreExplanations',
   'generationType', 'source', 'recommendationBatchId', 'generatedAt', 'styleTags', 'reason',
   'reasoning', 'reasonVersion', 'presentationPlan', 'copyContract', 'copyContractVersion',
-  'voiceBankVersion', 'selectedDifferentiator', 'contentPlan', 'updatedAt',
+  'voiceBankVersion', 'selectedDifferentiator', 'contentPlan', 'recommendationContentHash', 'updatedAt',
 ];
+const RECOMMENDATION_REFERENCE_UPDATE_CONCURRENCY = 8;
+const RECOMMENDATION_REFERENCE_VOLATILE_FIELDS = new Set([
+  'recommendationBatchId', 'generatedAt', 'recommendationContentHash', 'updatedAt',
+]);
 
-function buildRecommendationOwnedReferenceUpdatePayload(data) {
-  const payload = {};
+function buildRecommendationContentHash(data) {
+  const stable = {};
   for (const field of RECOMMENDATION_OWNED_REFERENCE_FIELDS) {
-    if (Object.prototype.hasOwnProperty.call(data || {}, field)) payload[field] = data[field];
+    if (RECOMMENDATION_REFERENCE_VOLATILE_FIELDS.has(field)) continue;
+    if (Object.prototype.hasOwnProperty.call(data || {}, field)) stable[field] = data[field];
+  }
+  return sha256(JSON.stringify(stable));
+}
+
+function buildRecommendationOwnedReferenceUpdatePayload(data, current) {
+  const payload = {};
+  const sameContent = typeof data?.recommendationContentHash === 'string'
+    && data.recommendationContentHash.length > 0
+    && current?.recommendationContentHash === data.recommendationContentHash;
+  for (const field of RECOMMENDATION_OWNED_REFERENCE_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(data || {}, field)) continue;
+    if (sameContent && !RECOMMENDATION_REFERENCE_VOLATILE_FIELDS.has(field)) continue;
+    if (current && isDeepStrictEqual(current[field], data[field])) continue;
+    payload[field] = data[field];
   }
   return buildOutfitReferenceUpdatePayload(payload);
 }
@@ -4043,11 +4106,12 @@ async function updateExistingRecommendationReferences({
       const item = pending[index];
       if (operationCounts) operationCounts.writes += 1;
       const writeStartedAt = Date.now();
+      const updatePayload = buildRecommendationOwnedReferenceUpdatePayload(item.data, item.current);
       try {
         // Keep each update independent; the production SDK supplies the I/O
         // yield that lets the worker window overlap network round trips.
         await db.collection('outfits').doc(item.current._id).update({
-          data: buildRecommendationOwnedReferenceUpdatePayload(item.data),
+          data: updatePayload,
         });
       } catch (error) {
         throw annotateOutfitReferenceCause(error, {
@@ -4063,12 +4127,14 @@ async function updateExistingRecommendationReferences({
         operationCounts.snapshot.writeRoundTrips += 1;
         operationCounts.snapshot.dbRoundTrips += 1;
         operationCounts.snapshot.logicalWrites += 1;
-        operationCounts.snapshot.payloadBytes += serializedBytes(item.data);
+        operationCounts.snapshot.payloadBytes += serializedBytes(updatePayload);
       }
       saved[index] = { ...item.current, ...item.data };
     }
   };
-  await Promise.all(Array.from({ length: Math.min(3, pending.length) }, () => worker()));
+  await Promise.all(Array.from({
+    length: Math.min(RECOMMENDATION_REFERENCE_UPDATE_CONCURRENCY, pending.length),
+  }, () => worker()));
   return saved;
 }
 

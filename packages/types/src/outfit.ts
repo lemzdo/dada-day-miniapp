@@ -817,6 +817,10 @@ export interface RecommendRequest {
   diagnostics?: boolean;
   /** Return only the anonymous performance ledger without deep QA payloads. */
   performanceDiagnostics?: boolean;
+  /** Correlates a dev-only production-path acceptance run. */
+  acceptanceRunId?: string;
+  /** Correlates request, response, and ignored acceptance artifacts. */
+  captureId?: string;
   presentationEvidenceMode?: RecommendationPresentationEvidenceMode;
   auditId?: string;
   /** Client-side trigger descriptor (e.g. 'initial', 'refresh', 'scene'). Used by the cloud function to distinguish initial_request from refresh_without_pool_id. */
