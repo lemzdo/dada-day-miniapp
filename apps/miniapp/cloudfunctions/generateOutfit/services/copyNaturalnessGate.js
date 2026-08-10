@@ -1,6 +1,7 @@
 const { findHumanCopyPolicyViolations } = require('./humanCopyPolicy');
 const {
   BENEFIT_SLOTS,
+  DECISION_VALUE_CATEGORIES,
   DETAIL_RELATION_SLOTS,
   NATURAL_LANGUAGE_PLAN_VERSION,
   RELATION_SLOTS,
@@ -11,6 +12,14 @@ const {
 const COPY_NATURALNESS_GATE_VERSION = 'copy-naturalness-gate-v1';
 const COPY_NATURALNESS_PASS = 'PASS';
 const COPY_NATURALNESS_REJECT = 'REJECT';
+const DECISION_VALUE_GATE_VERSION = 'decision-value-gate-v1';
+const DECISION_VALUE_PASS = 'PASS';
+const DECISION_VALUE_REJECT = 'REJECT';
+
+const DECISION_VALUE_FLAGS = Object.freeze({
+  INVALID_PLAN: 'INVALID_PLAN',
+  LOW_VALUE_FINAL_REASON: 'LOW_VALUE_FINAL_REASON',
+});
 
 const COPY_NATURALNESS_FLAGS = Object.freeze({
   INVALID_PLAN: 'INVALID_PLAN',
@@ -25,15 +34,16 @@ const COPY_NATURALNESS_FLAGS = Object.freeze({
   GENERIC_EDITORIAL_TAIL: 'GENERIC_EDITORIAL_TAIL',
   SYSTEM_CHECKLIST_TONE: 'SYSTEM_CHECKLIST_TONE',
   NO_INCREMENTAL_INFORMATION: 'NO_INCREMENTAL_INFORMATION',
+  LOW_VALUE_FINAL_REASON: 'LOW_VALUE_FINAL_REASON',
   LANGUAGE_POLICY_VIOLATION: 'LANGUAGE_POLICY_VIOLATION',
   TEXT_COMPOSITION_MISMATCH: 'TEXT_COMPOSITION_MISMATCH',
 });
 
 const EDITORIAL_TAILS = /(?:配色简洁|整体协调|更显质感|整体更完整|整体利落|画面清爽|视觉重点清楚|整体更清楚)[。！]?$/u;
-const MECHANICAL_SCENE = /适合(?:居家|通勤|约会|日常|运动|轻运动).{0,4}(?:场景)?/u;
+const MECHANICAL_SCENE = /适合(?:居家|通勤|约会|日常|运动|轻运动).{0,4}(?:场景)?|(?:宅家时|日常通勤|约会时|日常轻运动)可以直接这样穿/u;
 const SYSTEM_CHECKLIST_TONE = /(?:已经配齐|已经配上|唯一有明确事实|已经配成上下装|已经配成一身)/u;
 const SCENE_SEMANTIC_TOKENS = Object.freeze({
-  home: Object.freeze(['宅家', '居家']),
+  home: Object.freeze(['宅家', '居家', '在家']),
   work: Object.freeze(['通勤', '上班']),
   date: Object.freeze(['约会']),
   sport: Object.freeze(['轻运动']),
@@ -91,7 +101,43 @@ function evaluateCopyNaturalness(planValue) {
     clause.evidenceFactIds.forEach((factId) => usedEvidence.add(factId));
     clause.authorizationIds.forEach((authorizationId) => usedAuthorizations.add(authorizationId));
   }
+  if (plan.surface === 'today' && evaluateNormalizedDecisionValue(plan).result !== DECISION_VALUE_PASS) {
+    flags.push(COPY_NATURALNESS_FLAGS.LOW_VALUE_FINAL_REASON);
+  }
   return flags.length > 0 ? reject(flags) : pass();
+}
+
+function evaluateDecisionValue(planValue) {
+  const plan = normalizePlan(planValue);
+  if (!plan) return rejectDecisionValue([DECISION_VALUE_FLAGS.INVALID_PLAN], []);
+  return evaluateNormalizedDecisionValue(plan);
+}
+
+function evaluateNormalizedDecisionValue(plan) {
+  const clauses = plan.clauses.map((clause) => {
+    const definition = findTemplateDefinition(plan.surface, clause);
+    return {
+      slot: clause.slot,
+      templateId: clause.templateId,
+      category: definition?.decisionValue || DECISION_VALUE_CATEGORIES.FACTUAL_BUT_LOW_VALUE,
+    };
+  });
+  const categories = uniqueStrings(clauses.map((clause) => clause.category));
+  const meaningfulCategories = new Set([
+    DECISION_VALUE_CATEGORIES.MEANINGFUL_RELATION,
+    DECISION_VALUE_CATEGORIES.MEANINGFUL_SCENE_EVIDENCE,
+    DECISION_VALUE_CATEGORIES.MEANINGFUL_BENEFIT,
+  ]);
+  if (categories.some((category) => meaningfulCategories.has(category))) {
+    return {
+      version: DECISION_VALUE_GATE_VERSION,
+      result: DECISION_VALUE_PASS,
+      riskFlags: [],
+      categories,
+      clauses,
+    };
+  }
+  return rejectDecisionValue([DECISION_VALUE_FLAGS.LOW_VALUE_FINAL_REASON], clauses);
 }
 
 function normalizePlan(value) {
@@ -148,6 +194,16 @@ function reject(flags) {
   return { version: COPY_NATURALNESS_GATE_VERSION, result: COPY_NATURALNESS_REJECT, riskFlags: uniqueStrings(flags) };
 }
 
+function rejectDecisionValue(flags, clauses) {
+  return {
+    version: DECISION_VALUE_GATE_VERSION,
+    result: DECISION_VALUE_REJECT,
+    riskFlags: uniqueStrings(flags),
+    categories: uniqueStrings(clauses.map((clause) => clause.category)),
+    clauses,
+  };
+}
+
 function readString(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
@@ -161,5 +217,11 @@ module.exports = {
   COPY_NATURALNESS_GATE_VERSION,
   COPY_NATURALNESS_PASS,
   COPY_NATURALNESS_REJECT,
+  DECISION_VALUE_CATEGORIES,
+  DECISION_VALUE_FLAGS,
+  DECISION_VALUE_GATE_VERSION,
+  DECISION_VALUE_PASS,
+  DECISION_VALUE_REJECT,
+  evaluateDecisionValue,
   evaluateCopyNaturalness,
 };

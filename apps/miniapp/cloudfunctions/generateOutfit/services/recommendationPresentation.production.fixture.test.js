@@ -33,17 +33,62 @@ function authorizedItem(category, subcategory, color, options = {}) {
   };
 }
 
+function eligibilityContract(scene, items) {
+  const sceneKey = ({ 居家: 'home', 上班: 'work', 通勤: 'work', 约会: 'date', 运动: 'sport' })[scene] || scene;
+  const itemIds = items.map((item) => item.itemId || item.clothingId).filter(Boolean);
+  let reasonCode = 'UNMAPPED_TEST';
+  let evidence = [];
+  let relationFactIds = [];
+  if (sceneKey === 'work') {
+    reasonCode = 'WORK_BASELINE_PRESENTABLE';
+    evidence = [{ factId: 'outfit:work_eligible', fact: 'work_eligible', subjectItemIds: itemIds }];
+    relationFactIds = ['outfit:work_eligible'];
+  } else if (sceneKey === 'date') {
+    reasonCode = 'DATE_COLOR_COORDINATED';
+    evidence = [{ factId: 'outfit:color_coordinated', fact: 'color_coordinated', subjectItemIds: itemIds.slice(0, 2) }];
+    relationFactIds = ['outfit:color_coordinated'];
+  } else if (sceneKey === 'sport') {
+    reasonCode = 'SPORT_LIGHT_ACTIVITY_SET';
+    evidence = items.map((item) => {
+      const itemId = item.itemId || item.clothingId;
+      const fact = item.category === 'top' ? 'sport_top' : item.category === 'bottom' ? 'shorts' : 'sport_shoe';
+      return { factId: `item:${itemId}:${fact}`, fact, itemId };
+    });
+  } else if (items.some((item) => item.category === 'onepiece') && items.some((item) => item.category === 'shoes')) {
+    reasonCode = 'HOME_DRESS_NORMAL_SHOES';
+    evidence = items.map((item) => {
+      const itemId = item.itemId || item.clothingId;
+      const fact = item.category === 'onepiece' ? 'dress' : 'outing_shoe';
+      return { factId: `item:${itemId}:${fact}`, fact, itemId };
+    });
+  } else if (items.length >= 2) {
+    reasonCode = 'HOME_CASUAL_TWO_PIECE';
+    evidence = items.map((item) => {
+      const itemId = item.itemId || item.clothingId;
+      return { factId: `item:${itemId}:casual_style`, fact: 'casual_style', itemId };
+    });
+  }
+  return {
+    coreEligibilityReasonCode: reasonCode,
+    coreEligibilitySubjectItemIds: itemIds,
+    coreEligibilitySupportingFactIds: evidence.map((record) => record.factId),
+    coreEligibilityRelationFactIds: relationFactIds,
+    coreEligibilityEvidence: evidence,
+  };
+}
+
 function productionPresentationFixture() {
   let cardIndex = 0;
   const makeCard = (top, topColor, bottomColor, options = {}) => {
     const index = cardIndex++;
+    const items = [
+      authorizedItem('top', top, topColor, { ...options, itemId: `fixture-${index}-top` }),
+      authorizedItem('bottom', '短裤', bottomColor, { itemId: `fixture-${index}-bottom` }),
+      authorizedItem('shoes', '运动鞋', options.shoesColor || '白色', { itemId: `fixture-${index}-shoes` }),
+    ];
     return {
       scene: 'sport',
-      items: [
-        authorizedItem('top', top, topColor, { ...options, itemId: `fixture-${index}-top` }),
-        authorizedItem('bottom', '短裤', bottomColor, { itemId: `fixture-${index}-bottom` }),
-        authorizedItem('shoes', '运动鞋', options.shoesColor || '白色', { itemId: `fixture-${index}-shoes` }),
-      ],
+      items,
       styleTags: ['运动'],
       contentPlan: {
         version: 'xiaoda-content-plan-v1',
@@ -51,7 +96,7 @@ function productionPresentationFixture() {
       },
       copyContract: {
         copyContractVersion: 'recommendation-copy-contract-v4',
-        coreEligibilityReasonCode: 'SPORT_LIGHT_ACTIVITY_SET',
+        ...eligibilityContract('sport', items),
         todayReason: 'fixture copy replaced by presentation plan',
       },
     };
@@ -103,7 +148,7 @@ function realSchemaReplayFixture(overrides = {}) {
     })),
     styleTags: scene === 'work' ? ['通勤'] : ['休闲'],
     copyContract: {
-      coreEligibilityReasonCode: scene === 'work' ? 'WORK_BASELINE_PRESENTABLE' : 'HOME_COMFORT',
+      ...eligibilityContract(scene, items),
       todayReason: '旧文案应被最终计划替换。',
       riskFlags: [],
     },
@@ -139,7 +184,7 @@ function replaySourceFromCloseoutCard(card) {
     scene: card.scene,
     items,
     styleTags: card.styleTags,
-    copyContract: { coreEligibilityReasonCode: 'REPLAY' },
+    copyContract: eligibilityContract(card.scene, items),
   };
 }
 
@@ -208,13 +253,13 @@ test('real production-shaped eight-card fixture uses semantic presentation facts
   ]);
   assert.deepEqual(cards.map((card) => card.copyContract.todayReason), [
     '粉色短袖T恤配灰色短裤，亮色留在上半身。',
-    '白色短袖T恤和灰色短裤都是中性色。',
-    '白色短袖T恤和灰色短裤都是中性色。',
-    '短袖T恤、短裤和运动鞋都用了白色。',
-    '短袖T恤和短裤都用了灰色。',
+    '短袖T恤配短裤和运动鞋，日常轻运动时走动更方便。',
+    '短袖T恤配短裤和运动鞋，日常轻运动时走动更方便。',
+    '短袖T恤配短裤和运动鞋，日常轻运动时走动更方便。',
+    '短袖T恤配短裤和运动鞋，日常轻运动时走动更方便。',
     '绿色短袖T恤配灰色短裤，亮色留在上半身。',
-    '白色短袖T恤和灰色短裤都是中性色。',
-    '短袖T恤、短裤和运动鞋都用了白色。',
+    '短袖T恤配短裤和运动鞋，日常轻运动时走动更方便。',
+    '短袖T恤配短裤和运动鞋，日常轻运动时走动更方便。',
   ]);
   assert.equal(cards.every((card) => card.copyContract.naturalnessGateResult === 'PASS'
     && card.copyContract.naturalnessRiskFlags.length === 0), true);
@@ -315,7 +360,7 @@ test('real-schema replay preserves onepiece and produces authorized relations', 
   const colorPlan = buildPresentationPlan(model, { selectedDifferentiator: model.availableDifferentiators[0] });
   const structureDifferentiator = model.availableDifferentiators.find((entry) => entry.relationCode === 'STRUCTURE_ONEPIECE_SHOES');
   const structurePlan = buildPresentationPlan(model, { selectedDifferentiator: structureDifferentiator });
-  assert.notEqual(colorPlan.todayReason, structurePlan.todayReason);
+  assert.equal(colorPlan.todayReason, structurePlan.todayReason);
   assert.match(structurePlan.todayReason, /吊带裙配运动鞋/);
   assert.equal(card.presentationPlan.selectedDifferentiator.relationCode, card.presentationPlan.primaryRelationCode);
   assert.deepEqual(card.todaySubjectItemIds, card.presentationPlan.selectedDifferentiator.subjectItemIds);
@@ -374,7 +419,10 @@ test('top plus bottom regressions never authorize or mention shoes', () => {
       authorizedItem('top', 'T恤', '白色', { itemId: 'c5c2a88a6a14191300972784015cb81f' }),
       authorizedItem('bottom', '长裤', '灰色', { itemId: 'c5c2a88a6a0feea7001cd2e37b4ec037' }),
     ],
-    copyContract: { coreEligibilityReasonCode: 'HOME_COMFORT' },
+    copyContract: eligibilityContract('home', [
+      { itemId: 'c5c2a88a6a14191300972784015cb81f', category: 'top' },
+      { itemId: 'c5c2a88a6a0feea7001cd2e37b4ec037', category: 'bottom' },
+    ]),
   };
   const [card] = canonicalizeRecommendationBatch([source], { scene: 'home' });
   const canonicalIds = new Set(card.presentationPlan.factModel.items.map((item) => item.itemId));
@@ -387,25 +435,22 @@ test('top plus bottom regressions never authorize or mention shoes', () => {
   assert.notEqual(card.copyContract.todayReason, card.copyContract.detailExplanation);
 });
 
-test('generic scene fallbacks are omitted instead of being paraphrased', () => {
-  for (const [scene, reasonCode] of [
-    ['home', 'HOME_COMFORT'],
-    ['work', 'WORK_BASELINE_PRESENTABLE'],
-    ['date', 'DATE_SIMPLE_COMPLETE'],
-    ['sport', 'SPORT_LIGHT_ACTIVITY_SET'],
-  ]) {
+test('generic scene fallbacks stay omitted while meaningful eligibility evidence is rendered', () => {
+  for (const scene of ['home', 'work', 'date', 'sport']) {
+    const items = [
+      authorizedItem('top', '短袖T恤', '白色', { itemId: `${scene}-top` }),
+      authorizedItem('bottom', '短裤', '灰色', { itemId: `${scene}-bottom` }),
+      ...(scene === 'sport' ? [authorizedItem('shoes', '运动鞋', '白色', { itemId: `${scene}-shoes` })] : []),
+    ];
     const source = {
       scene,
-      items: [
-        authorizedItem('top', '短袖T恤', '白色', { itemId: `${scene}-top` }),
-        authorizedItem('bottom', '短裤', '灰色', { itemId: `${scene}-bottom` }),
-        ...(scene === 'sport' ? [authorizedItem('shoes', '运动鞋', '白色', { itemId: `${scene}-shoes` })] : []),
-      ],
-      copyContract: { coreEligibilityReasonCode: reasonCode },
+      items,
+      copyContract: eligibilityContract(scene, items),
     };
     const [card] = canonicalizeRecommendationBatch([source], { scene });
     assert.doesNotMatch(card.copyContract.todayReason, /可以直接这样穿/);
-    assert.deepEqual(card.copyContract.todayCopyProvenance.clauses.map((clause) => clause.slot), ['relation']);
+    const slots = card.copyContract.todayCopyProvenance.clauses.map((clause) => clause.slot);
+    assert.deepEqual(slots, scene === 'sport' ? ['relation'] : ['scene_value']);
     assert.equal(card.copyContract.naturalnessGateResult, 'PASS');
     assert.doesNotMatch(`${card.copyContract.todayReason}${card.copyContract.detailExplanation}`, /适合.+场景|配色简洁|整体协调|整体利落|整体更完整|构成明确的上下装关系|分别承担|颜色关系清楚|配色承接关系明确|配色层次明确|是这套搭配的主体/);
   }

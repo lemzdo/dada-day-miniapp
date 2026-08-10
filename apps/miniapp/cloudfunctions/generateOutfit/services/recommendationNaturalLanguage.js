@@ -1,16 +1,23 @@
 const NATURAL_LANGUAGE_PLAN_VERSION = 'recommendation-natural-language-v1';
 
+const DECISION_VALUE_CATEGORIES = Object.freeze({
+  FACTUAL_BUT_LOW_VALUE: 'FACTUAL_BUT_LOW_VALUE',
+  MEANINGFUL_RELATION: 'MEANINGFUL_RELATION',
+  MEANINGFUL_SCENE_EVIDENCE: 'MEANINGFUL_SCENE_EVIDENCE',
+  MEANINGFUL_BENEFIT: 'MEANINGFUL_BENEFIT',
+});
+
 const RELATION_SLOTS = Object.freeze({
   SAME_COLOR_ALL_ROLES: relationSlot('relation.same-color-all', ({ model, relation }) => {
     const names = relation.roles.map((role) => itemName(model, role, '单品'));
     const color = itemForRole(model, relation.roles[0])?.normalizedColor || '';
     return `${joinChinese(names)}都用了${color || '同一个颜色'}`;
-  }),
+  }, DECISION_VALUE_CATEGORIES.FACTUAL_BUT_LOW_VALUE),
   SAME_COLOR_TOP_BOTTOM: relationSlot('relation.same-color-top-bottom', ({ model }) => {
     const top = itemForRole(model, 'top');
     const bottom = itemForRole(model, 'bottom');
     return `${itemName(model, 'top', '上衣')}和${itemName(model, 'bottom', '下装')}都用了${top?.normalizedColor || bottom?.normalizedColor || '同一个颜色'}`;
-  }),
+  }, DECISION_VALUE_CATEGORIES.FACTUAL_BUT_LOW_VALUE),
   COLOR_ECHO_TOP_SHOES: relationSlot('relation.color-echo-top-shoes', ({ model }) => (
     `${itemLabel(model, 'top', '上衣')}和${itemLabel(model, 'shoes', '鞋子')}用同色呼应`
   )),
@@ -34,33 +41,96 @@ const RELATION_SLOTS = Object.freeze({
   )),
   NEUTRAL_COLOR_BRIDGE: relationSlot('relation.neutral-pair', ({ model, relation }) => (
     `${itemLabel(model, relation.roles[0], '单品')}和${itemLabel(model, relation.roles[1], '单品')}都是中性色`
-  )),
-  SINGLE_COLOR_FALLBACK: relationSlot('relation.single-color', ({ model, relation }) => (
-    `${itemLabel(model, relation.roles[0], '这件单品')}定下了这身的主色`
-  )),
+  ), DECISION_VALUE_CATEGORIES.FACTUAL_BUT_LOW_VALUE),
+  SINGLE_COLOR_FALLBACK: relationSlot('relation.single-color', ({ model, relation }) => {
+    const color = itemForRole(model, relation.roles[0])?.normalizedColor || '这个颜色';
+    return `${itemLabel(model, relation.roles[0], '这件单品')}定下主色，其他单品沿用${color}或相近颜色就好`;
+  }),
   STRUCTURE_ONEPIECE_OUTERWEAR: relationSlot('relation.onepiece-outerwear', ({ model }) => (
     `${itemName(model, 'onepiece', '连衣裙')}放在里面，${itemName(model, 'outerwear', '外套')}叠在外面`
   )),
   STRUCTURE_ONEPIECE_SHOES: relationSlot('relation.onepiece-shoes', ({ model }) => (
     `${itemName(model, 'onepiece', '连衣裙')}配${itemName(model, 'shoes', '鞋子')}`
-  )),
+  ), DECISION_VALUE_CATEGORIES.FACTUAL_BUT_LOW_VALUE),
   STRUCTURE_ONEPIECE_ONLY: relationSlot('relation.onepiece-only', ({ model }) => (
     `${itemName(model, 'onepiece', '连衣裙')}单穿就能成一身`
   )),
   STRUCTURE_SINGLE_ITEM: relationSlot('relation.single-item', ({ model, relation }) => (
     `这次先穿${itemName(model, relation.roles[0], '这件单品')}`
-  )),
+  ), DECISION_VALUE_CATEGORIES.FACTUAL_BUT_LOW_VALUE),
   STRUCTURE_TOP_BOTTOM: relationSlot('relation.top-bottom', ({ model }) => (
     `${itemName(model, 'top', '上衣')}配${itemName(model, 'bottom', '下装')}`
-  )),
+  ), DECISION_VALUE_CATEGORIES.FACTUAL_BUT_LOW_VALUE),
 });
 
-const SCENE_VALUE_SLOTS = Object.freeze({
-  home: sceneSlot('scene.home-direct', '宅家时可以直接这样穿', false),
-  work: sceneSlot('scene.work-direct', '日常通勤可以直接这样穿', false),
-  date: sceneSlot('scene.date-direct', '约会时可以直接这样穿', false),
-  sport: sceneSlot('scene.sport-direct', '日常轻运动可以直接这样穿', false),
-});
+const SCENE_VALUE_SLOTS = Object.freeze([
+  sceneSlot('scene.home-sleeveless-shorts', 'home',
+    ['HOME_HOT_SLEEVELESS_SHORTS', 'HOME_SLEEVELESS_SHORTS'], [['sleeveless', 'shorts']],
+    ({ model }) => `${itemName(model, 'top', '无袖上衣')}配${itemName(model, 'bottom', '短裤')}，在家穿不会裹得太多`),
+  sceneSlot('scene.home-short-sleeve-shorts', 'home',
+    ['HOME_HOT_SHORT_SLEEVE_SHORTS', 'HOME_SHORT_SLEEVE_SHORTS'], [['short_sleeve', 'shorts']],
+    ({ model }) => `${itemName(model, 'top', '短袖')}配${itemName(model, 'bottom', '短裤')}，在家穿不会裹得太多`),
+  sceneSlot('scene.home-pattern-solid', 'home', ['HOME_PATTERN_TOP_SOLID_BOTTOM'], [['pattern_visible', 'solid_color']],
+    ({ model }) => `${itemLabel(model, 'top', '印花上衣')}留住图案，${itemLabel(model, 'bottom', '纯色下装')}不再加图案，在家穿也不会显得太花`),
+  sceneSlot('scene.home-loose-two-piece', 'home', ['HOME_LOOSE_TWO_PIECE', 'HOME_TSHIRT_LOOSE_PANTS'], [['loose_fit']],
+    () => '宽松版型给在家坐着和走动留了余量'),
+  sceneSlot('scene.home-quick-outing', 'home', ['HOME_SHORT_SLEEVE_LONG_PANTS', 'HOME_TOP_LONG_PANTS'],
+    [['short_sleeve', 'long_pants'], ['category', 'long_pants']], () => '上衣配长裤，在家穿着轻松，临时下楼也不用换一身'),
+  sceneSlot('scene.home-loose-dress', 'home', ['HOME_LOOSE_DRESS'], [['dress', 'loose_fit']],
+    ({ model }) => `${itemName(model, 'onepiece', '连衣裙')}版型宽松，给在家坐着和走动留了余量`),
+  sceneSlot('scene.home-dress-shoes', 'home', ['HOME_DRESS_NORMAL_SHOES'], [['dress', 'outing_shoe']],
+    ({ model }) => `${itemName(model, 'onepiece', '连衣裙')}配${itemName(model, 'shoes', '日常鞋')}，临时出门不用再换一身`),
+  sceneSlot('scene.home-cool-long-sleeve', 'home', ['HOME_COOL_LONG_SLEEVE'], [['long_sleeve', 'category']],
+    ({ model }) => `天气偏凉时，${itemName(model, 'top', '长袖上衣')}在家穿能多挡一层`),
+  sceneSlot('scene.home-casual', 'home', ['HOME_CASUAL_TWO_PIECE'], [['casual_style']],
+    ({ model }) => `${joinChinese(outfitItemNames(model))}都偏休闲，在家就不用再加正式单品`),
+
+  sceneSlot('scene.work-shirt-straight', 'work', ['WORK_SHIRT_STRAIGHT_PANTS'], [['shirt', 'straight_cut']],
+    ({ model }) => `${itemName(model, 'top', '衬衫')}配${itemName(model, 'bottom', '直筒裤')}，线条利落，上班不用再加复杂单品`),
+  sceneSlot('scene.work-pattern-solid', 'work', ['WORK_PATTERN_TOP_SOLID_BOTTOM'], [['pattern_visible', 'solid_color']],
+    ({ model }) => `${itemLabel(model, 'top', '印花上衣')}留住图案，${itemLabel(model, 'bottom', '纯色下装')}不再加图案，上班穿不会显得太花`),
+  sceneSlot('scene.work-simple-dress', 'work', ['WORK_SIMPLE_DRESS_SHOES'], [['dress', 'simple_style', 'outing_shoe']],
+    ({ model }) => `${itemName(model, 'onepiece', '连衣裙')}和${itemName(model, 'shoes', '鞋子')}都简洁，上班不用再补复杂配饰`),
+  sceneSlot('scene.work-simple-set', 'work', ['WORK_SIMPLE_TOP_PANTS_SHOES'], [['simple_style', 'long_pants', 'outing_shoe']],
+    ({ model }) => `${joinChinese(outfitItemNames(model))}都简洁，上班不用再补复杂配饰`),
+  sceneSlot('scene.work-baseline', 'work', ['WORK_BASELINE_PRESENTABLE'], [['work_eligible']],
+    ({ model }) => `${joinChinese(outfitItemNames(model))}组成一套，上班出门不用临时补搭`),
+  sceneSlot('scene.work-hot', 'work', ['WORK_HOT_SHORT_SLEEVE_PANTS'], [['short_sleeve', 'long_pants']],
+    ({ model }) => `${itemName(model, 'top', '短袖')}配${itemName(model, 'bottom', '长裤')}，温度高时上班不会裹得太多`),
+  sceneSlot('scene.work-cool', 'work', ['WORK_COOL_LONG_SLEEVE_PANTS'], [['long_sleeve', 'long_pants']],
+    ({ model }) => `天气偏凉时，${itemName(model, 'top', '长袖')}和${itemName(model, 'bottom', '长裤')}上班能多挡一层`),
+
+  sceneSlot('scene.date-pattern-top', 'date', ['DATE_PATTERN_TOP_SIMPLE_SUPPORT'], [['pattern_visible', 'solid_color', 'simple_style']],
+    ({ model }) => `${itemLabel(model, 'top', '印花上衣')}负责图案，其他单品保持简单，约会时不用再加新图案`),
+  sceneSlot('scene.date-pattern-dress', 'date', ['DATE_PATTERN_DRESS_SIMPLE_SHOES'], [['dress', 'pattern_visible', 'simple_style']],
+    ({ model }) => `${itemLabel(model, 'onepiece', '印花连衣裙')}负责图案，鞋子保持简单，约会时不用再加新图案`),
+  sceneSlot('scene.date-bright-top', 'date', ['DATE_BRIGHT_TOP_BASIC_SUPPORT'], [['bright_color', 'basic_color']],
+    ({ model }) => `${itemLabel(model, 'top', '亮色上衣')}留住颜色重点，约会时其他单品沿用基础色就好`),
+  sceneSlot('scene.date-bright-shoes', 'date', ['DATE_BRIGHT_SHOES_BASIC_CLOTHES'], [['bright_color', 'basic_color']],
+    ({ model }) => `${itemLabel(model, 'shoes', '亮色鞋子')}留住颜色重点，约会时衣服保持基础色就好`),
+  sceneSlot('scene.date-color-coordinated', 'date', ['DATE_COLOR_COORDINATED'], [['color_coordinated']],
+    ({ model }) => `${itemLabel(model, 'top', '上衣')}和${itemLabel(model, 'bottom', '下装')}用同色呼应，约会穿搭的配色更连贯`),
+  sceneSlot('scene.date-simple-dress', 'date', ['DATE_SIMPLE_DRESS_SHOES'], [['dress', 'simple_style', 'outing_shoe']],
+    ({ model }) => `${itemName(model, 'onepiece', '连衣裙')}和${itemName(model, 'shoes', '鞋子')}都简洁，约会时不用再加复杂细节`),
+  sceneSlot('scene.date-simple-set', 'date', ['DATE_SIMPLE_COMPLETE'], [['simple_style', 'outing_shoe']],
+    ({ model }) => `${joinChinese(outfitItemNames(model))}都简洁，约会时不用再加复杂细节`),
+
+  sceneSlot('scene.sport-complete', 'sport', ['SPORT_COMPLETE_SET'], [['sport_top', 'sport_bottom', 'sport_shoe']],
+    ({ model }) => `${joinChinese(outfitItemNames(model))}照顾到活动需要，运动时走动更方便`),
+  sceneSlot('scene.sport-light', 'sport', ['SPORT_LIGHT_ACTIVITY_SET'],
+    [['sport_top', 'shorts', 'sport_shoe'], ['category', 'sport_bottom', 'sport_shoe']],
+    ({ model }) => `${itemName(model, 'top', '上衣')}配${itemName(model, 'bottom', '活动下装')}和${itemName(model, 'shoes', '运动鞋')}，日常轻运动时走动更方便`),
+  sceneSlot('scene.sport-hot-sleeveless', 'sport', ['SPORT_HOT_SLEEVELESS_SHORTS'], [['sleeveless', 'shorts', 'sport_bottom', 'sport_shoe']],
+    ({ model }) => `${itemName(model, 'top', '无袖上衣')}配${itemName(model, 'bottom', '运动短裤')}，运动时不会裹得太多`),
+  sceneSlot('scene.sport-hot-short-sleeve', 'sport', ['SPORT_HOT_SHORT_SLEEVE_SHORTS'], [['short_sleeve', 'shorts', 'sport_bottom', 'sport_shoe']],
+    ({ model }) => `${itemName(model, 'top', '短袖')}配${itemName(model, 'bottom', '运动短裤')}，运动时不会裹得太多`),
+  sceneSlot('scene.sport-cool-outerwear', 'sport', ['SPORT_COOL_OUTERWEAR'], [['sport_outerwear', 'sport_shoe']],
+    ({ model }) => `天气偏凉时，${itemName(model, 'outerwear', '运动外套')}能在运动前先挡一层`),
+  sceneSlot('scene.sport-cool-long-set', 'sport', ['SPORT_COOL_LONG_SET'], [['long_sleeve', 'sport_top', 'long_pants', 'sport_bottom', 'sport_shoe']],
+    ({ model }) => `天气偏凉时，${itemName(model, 'top', '长袖运动上衣')}配${itemName(model, 'bottom', '运动裤')}，运动前能多挡一层`),
+  sceneSlot('scene.sport-dress-shoes', 'sport', ['SPORT_DRESS_SHOES'], [['dress', 'sport_shoe']],
+    ({ model }) => `${itemName(model, 'onepiece', '连衣裙')}配${itemName(model, 'shoes', '运动鞋')}，运动时走动更方便`),
+]);
 
 const BENEFIT_SLOTS = Object.freeze([
   benefitSlot('benefit.less-bundled-home', ['HOME_HOT_SLEEVELESS_SHORTS', 'HOME_SLEEVELESS_SHORTS'], ['sleeveless', 'shorts'], '无袖上衣和短裤不会裹得太多'),
@@ -116,14 +186,18 @@ function buildNaturalTodayCopyPlan(model = {}, relation = {}) {
   const relationDefinition = RELATION_SLOTS[relation?.relationCode];
   if (!relationDefinition) return emptyPlan('today', model, relation);
   const relationClause = buildRelationClause(relationDefinition, model, relation);
-  const clauses = hasIncrementalInformation(relationDefinition) ? [relationClause] : [];
   const qualification = normalizeQualification(model?.qualification);
-  const sceneDefinition = qualification.reasonCode ? SCENE_VALUE_SLOTS[model?.scene] : null;
-  if (sceneDefinition && hasIncrementalInformation(sceneDefinition)) {
-    clauses.push(buildSceneClause(sceneDefinition, model, relation, qualification));
-  }
+  const sceneDefinition = SCENE_VALUE_SLOTS.find((entry) => entry.scene === model?.scene
+    && entry.reasonCodes.includes(qualification.reasonCode));
+  const sceneClause = sceneDefinition && hasIncrementalInformation(sceneDefinition)
+    ? buildSceneClause(sceneDefinition, model, relation, qualification)
+    : null;
+  const hasMeaningfulRelation = hasIncrementalInformation(relationDefinition)
+    && relationDefinition.decisionValue !== DECISION_VALUE_CATEGORIES.FACTUAL_BUT_LOW_VALUE;
+  const clauses = hasMeaningfulRelation ? [relationClause] : [];
+  if (!hasMeaningfulRelation && sceneClause) clauses.push(sceneClause);
   const benefitDefinition = BENEFIT_SLOTS.find((entry) => entry.reasonCodes.includes(qualification.reasonCode));
-  const benefitClause = benefitDefinition && hasIncrementalInformation(benefitDefinition)
+  const benefitClause = !sceneClause && benefitDefinition && hasIncrementalInformation(benefitDefinition)
     ? buildBenefitClause(benefitDefinition, model, relation, qualification, clauses)
     : null;
   if (benefitClause) clauses.push(benefitClause);
@@ -165,15 +239,19 @@ function buildRelationClause(definition, model, relation) {
 }
 
 function buildSceneClause(definition, model, relation, qualification) {
+  const facts = new Set(qualification.evidence.map((record) => record.fact));
+  const matchedFacts = definition.requiredFactOptions.find((option) => option.every((fact) => facts.has(fact)));
+  if (!matchedFacts) return null;
+  const evidence = qualification.evidence.filter((record) => matchedFacts.includes(record.fact));
   return clauseRecord({
     slot: 'scene_value',
     templateId: definition.id,
-    text: definition.text,
+    text: definition.render({ model, relation, qualification }),
     informationKey: `scene:${model.scene}:${qualification.reasonCode}`,
     subjectItemIds: qualification.subjectItemIds.length > 0
       ? qualification.subjectItemIds
       : relation.subjectItemIds,
-    evidenceFactIds: qualification.relationFactIds,
+    evidenceFactIds: evidence.map((record) => record.factId),
     authorizationIds: [`eligibility:${qualification.reasonCode}`],
     relationCode: relation.relationCode,
     scene: model.scene,
@@ -260,10 +338,23 @@ function hasIncrementalInformation(definition) {
   return definition?.incrementalInformation === true;
 }
 
-function relationSlot(id, render) { return Object.freeze({ id, slot: 'relation', render, incrementalInformation: true }); }
-function detailSlot(id, render) { return Object.freeze({ id, slot: 'relation', render, incrementalInformation: true }); }
-function sceneSlot(id, text, incrementalInformation = true) {
-  return Object.freeze({ id, slot: 'scene_value', text, incrementalInformation });
+function relationSlot(id, render, decisionValue = DECISION_VALUE_CATEGORIES.MEANINGFUL_RELATION) {
+  return Object.freeze({ id, slot: 'relation', render, decisionValue, incrementalInformation: true });
+}
+function detailSlot(id, render) {
+  return Object.freeze({ id, slot: 'relation', render, decisionValue: DECISION_VALUE_CATEGORIES.MEANINGFUL_RELATION, incrementalInformation: true });
+}
+function sceneSlot(id, scene, reasonCodes, requiredFactOptions, render) {
+  return Object.freeze({
+    id,
+    slot: 'scene_value',
+    scene,
+    reasonCodes: Object.freeze(reasonCodes),
+    requiredFactOptions: Object.freeze(requiredFactOptions.map((option) => Object.freeze(option))),
+    render,
+    decisionValue: DECISION_VALUE_CATEGORIES.MEANINGFUL_SCENE_EVIDENCE,
+    incrementalInformation: true,
+  });
 }
 function benefitSlot(id, reasonCodes, requiredFacts, text) {
   return Object.freeze({
@@ -272,6 +363,7 @@ function benefitSlot(id, reasonCodes, requiredFacts, text) {
     reasonCodes: Object.freeze(reasonCodes),
     requiredFacts: Object.freeze(requiredFacts),
     text,
+    decisionValue: DECISION_VALUE_CATEGORIES.MEANINGFUL_BENEFIT,
     incrementalInformation: true,
   });
 }
@@ -288,6 +380,12 @@ function itemName(model, role, fallback) {
 function itemLabel(model, role, fallback) {
   const item = itemForRole(model, role);
   return `${item?.normalizedColor || ''}${item?.canonicalSubtype || item?.canonicalName || fallback}`;
+}
+
+function outfitItemNames(model) {
+  return (Array.isArray(model?.items) ? model.items : [])
+    .map((item) => item?.canonicalSubtype || item?.canonicalName)
+    .filter(Boolean);
 }
 
 function joinChinese(values) {
@@ -311,6 +409,7 @@ function uniqueStrings(values) {
 
 module.exports = {
   BENEFIT_SLOTS,
+  DECISION_VALUE_CATEGORIES,
   DETAIL_RELATION_SLOTS,
   NATURAL_LANGUAGE_PLAN_VERSION,
   RELATION_SLOTS,

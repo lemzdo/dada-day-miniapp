@@ -15,6 +15,10 @@ const {
   unwrapCloudResponse,
 } = require('./devtools-direct-session');
 const { validateProductionRequest } = require('./today-full-compute-acceptance');
+const {
+  DECISION_VALUE_GATE_VERSION,
+  evaluateDecisionValue,
+} = require('../cloudfunctions/generateOutfit/services/copyNaturalnessGate');
 
 const REPOSITORY_ROOT = path.resolve(__dirname, '..', '..', '..');
 const ARTIFACT_ROOT = path.join(REPOSITORY_ROOT, 'artifacts', 'today-copy-naturalness-acceptance');
@@ -24,7 +28,12 @@ const COPY_CONTRACT_VERSION = 'recommendation-copy-contract-v4';
 const NATURALNESS_GATE_VERSION = 'copy-naturalness-gate-v1';
 const OLD_EDITORIAL_COPY = /中性色过渡|适合.+场景|配色简洁|整体协调|整体利落|整体更完整|更显质感|已经配齐|已经配上|唯一有明确事实|已经配成上下装|已经配成一身/;
 const GENERIC_SCENE_FALLBACK = /(?:宅家时|日常通勤|约会时|日常轻运动)可以直接这样穿/;
-const SCENE_SEMANTIC_TOKENS = Object.freeze({ home: '宅家', work: '通勤', date: '约会', sport: '轻运动' });
+const SCENE_SEMANTIC_PATTERNS = Object.freeze({
+  home: /宅家|居家|在家/g,
+  work: /通勤|上班/g,
+  date: /约会/g,
+  sport: /轻运动|去运动|运动时/g,
+});
 
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
@@ -119,8 +128,14 @@ function auditFinalTodayCopy(scene, data, uiCards) {
   const canonicalReasons = outfits.map((outfit) => String(outfit?.copyContract?.todayReason || '').trim());
   const failures = [];
   const sceneClauses = [];
+  const cardDiagnostics = [];
   let genericSceneFallbackCount = 0;
+  let lowValueFinalReasonCount = 0;
   let omittedLowValueClauseCount = 0;
+  let factCorrectnessCount = 0;
+  let bindingCorrectnessCount = 0;
+  let naturalnessCount = 0;
+  let decisionValueCount = 0;
   if (outfits.length < 8) failures.push(`returned_card_count:${outfits.length}`);
   if (uiReasons.length < 8) failures.push(`ui_reason_count:${uiReasons.length}`);
   outfits.forEach((outfit, index) => {
@@ -128,28 +143,58 @@ function auditFinalTodayCopy(scene, data, uiCards) {
     const provenance = contract.todayCopyProvenance || {};
     const clauses = Array.isArray(provenance.clauses) ? provenance.clauses : [];
     const clothingIds = new Set((Array.isArray(outfit?.clothingIds) ? outfit.clothingIds : []).map(String));
+    const decisionValue = evaluateDecisionValue(provenance);
+    const factCorrect = Number(contract.unsupportedClaimCount) === 0;
+    const subjectBindingCorrect = clauses.every((clause) => Array.isArray(clause.subjectItemIds)
+      && clause.subjectItemIds.every((id) => clothingIds.has(String(id))));
+    const uiBindingCorrect = uiReasons[index] === canonicalReasons[index];
+    const naturalnessPass = contract.naturalnessGateVersion === NATURALNESS_GATE_VERSION
+      && contract.naturalnessGateResult === 'PASS'
+      && Array.isArray(contract.naturalnessRiskFlags)
+      && contract.naturalnessRiskFlags.length === 0;
     if (![scene, SCENE_TAGS[scene]].includes(outfit.scene)) failures.push(`scene:${index}`);
     if (outfit.copyContractVersion !== COPY_CONTRACT_VERSION || contract.copyContractVersion !== COPY_CONTRACT_VERSION) failures.push(`contract:${index}`);
-    if (contract.naturalnessGateVersion !== NATURALNESS_GATE_VERSION || contract.naturalnessGateResult !== 'PASS') failures.push(`naturalness:${index}`);
-    if (!Array.isArray(contract.naturalnessRiskFlags) || contract.naturalnessRiskFlags.length > 0) failures.push(`naturalness_flags:${index}`);
+    if (!naturalnessPass) failures.push(`naturalness:${index}`);
     if (clauses.length === 0 || provenance.text !== contract.todayReason) failures.push(`provenance:${index}`);
     if (OLD_EDITORIAL_COPY.test(contract.todayReason || '')) failures.push(`editorial_copy:${index}`);
     if (GENERIC_SCENE_FALLBACK.test(contract.todayReason || '')) {
       genericSceneFallbackCount += 1;
       failures.push(`generic_scene_fallback:${index}`);
     }
-    if (countText(contract.todayReason || '', SCENE_SEMANTIC_TOKENS[scene]) > 1) failures.push(`repeated_scene_semantics:${index}`);
-    if (Number(contract.unsupportedClaimCount) !== 0) failures.push(`unsupported:${index}`);
+    if (countSceneSemantics(contract.todayReason || '', scene) > 1) failures.push(`repeated_scene_semantics:${index}`);
+    if (!factCorrect) failures.push(`unsupported:${index}`);
+    if (!subjectBindingCorrect) failures.push(`subject_binding:${index}`);
+    if (!uiBindingCorrect) failures.push(`ui_binding:${index}`);
+    if (decisionValue.version !== DECISION_VALUE_GATE_VERSION || decisionValue.result !== 'PASS') {
+      lowValueFinalReasonCount += 1;
+      failures.push(`decision_value:${index}`);
+    }
+    if (factCorrect) factCorrectnessCount += 1;
+    if (subjectBindingCorrect && uiBindingCorrect) bindingCorrectnessCount += 1;
+    if (naturalnessPass) naturalnessCount += 1;
+    if (decisionValue.result === 'PASS') decisionValueCount += 1;
     const emittedSceneClauses = clauses.filter((clause) => clause.slot === 'scene_value');
     sceneClauses.push(...emittedSceneClauses.map((clause) => String(clause.text || '').trim()).filter(Boolean));
     if (contract.coreEligibilityReasonCode && emittedSceneClauses.length === 0) omittedLowValueClauseCount += 1;
+    cardDiagnostics.push({
+      index,
+      todayReason: String(contract.todayReason || '').trim(),
+      coreEligibilityReasonCode: String(contract.coreEligibilityReasonCode || '').trim(),
+      coreEligibilitySubjectItemIds: contract.coreEligibilitySubjectItemIds || [],
+      coreEligibilitySupportingFactIds: contract.coreEligibilitySupportingFactIds || [],
+      coreEligibilityRelationFactIds: contract.coreEligibilityRelationFactIds || [],
+      coreEligibilitySourceRule: contract.coreEligibilitySourceRule || '',
+      coreEligibilitySourceRuleReasons: contract.coreEligibilitySourceRuleReasons || [],
+      coreEligibilityEvidence: contract.coreEligibilityEvidence || [],
+      clauses,
+      decisionValue,
+      factCorrect,
+      bindingCorrect: subjectBindingCorrect && uiBindingCorrect,
+      naturalnessPass,
+    });
     for (const clause of clauses) {
-      if (!Array.isArray(clause.subjectItemIds) || clause.subjectItemIds.some((id) => !clothingIds.has(String(id)))) failures.push(`subject_binding:${index}`);
       if (clause.slot === 'benefit' && (!Array.isArray(clause.evidenceFactIds) || clause.evidenceFactIds.length === 0)) failures.push(`benefit_evidence:${index}`);
     }
-  });
-  canonicalReasons.slice(0, uiReasons.length).forEach((reason, index) => {
-    if (uiReasons[index] !== reason) failures.push(`ui_binding:${index}`);
   });
   return {
     scene,
@@ -160,8 +205,14 @@ function auditFinalTodayCopy(scene, data, uiCards) {
     samples: uiReasons.slice(0, 8),
     finalCopies: uiReasons,
     sceneClauses,
+    cardDiagnostics,
     genericSceneFallbackCount,
+    lowValueFinalReasonCount,
     omittedLowValueClauseCount,
+    factCorrectnessCount,
+    bindingCorrectnessCount,
+    naturalnessCount,
+    decisionValueCount,
   };
 }
 
@@ -171,15 +222,24 @@ function summarizeNaturalnessMetrics(scenes) {
   const sceneClauses = entries.flatMap((scene) => Array.isArray(scene.sceneClauses) ? scene.sceneClauses : []);
   const totalCardCount = finalCopies.length;
   const genericSceneFallbackCount = entries.reduce((sum, scene) => sum + Number(scene.genericSceneFallbackCount || 0), 0);
+  const lowValueFinalReasonCount = entries.reduce((sum, scene) => sum + Number(scene.lowValueFinalReasonCount || 0), 0);
   const omittedLowValueClauseCount = entries.reduce((sum, scene) => sum + Number(scene.omittedLowValueClauseCount || 0), 0);
   return {
     totalCardCount,
     emittedSceneClauseCount: sceneClauses.length,
     exactSceneClauseDuplicateRate: duplicateRate(sceneClauses),
     exactFullCopyDuplicateRate: duplicateRate(finalCopies),
+    fullReasonDuplicateRate: duplicateRate(finalCopies),
     genericSceneFallbackCount,
     genericSceneFallbackUsageRate: totalCardCount > 0 ? genericSceneFallbackCount / totalCardCount : 0,
+    genericSceneFallbackRate: totalCardCount > 0 ? genericSceneFallbackCount / totalCardCount : 0,
+    lowValueFinalReasonCount,
+    lowValueFinalReasonRate: totalCardCount > 0 ? lowValueFinalReasonCount / totalCardCount : 0,
     omittedLowValueClauseCount,
+    factCorrectnessCount: entries.reduce((sum, scene) => sum + Number(scene.factCorrectnessCount || 0), 0),
+    bindingCorrectnessCount: entries.reduce((sum, scene) => sum + Number(scene.bindingCorrectnessCount || 0), 0),
+    naturalnessCount: entries.reduce((sum, scene) => sum + Number(scene.naturalnessCount || 0), 0),
+    decisionValueCount: entries.reduce((sum, scene) => sum + Number(scene.decisionValueCount || 0), 0),
   };
 }
 
@@ -188,8 +248,8 @@ function duplicateRate(values) {
   return list.length > 0 ? (list.length - new Set(list).size) / list.length : 0;
 }
 
-function countText(value, token) {
-  return token ? String(value).split(token).length - 1 : 0;
+function countSceneSemantics(value, scene) {
+  return (String(value).match(SCENE_SEMANTIC_PATTERNS[scene]) || []).length;
 }
 
 async function captureScene(session, scene, runId) {

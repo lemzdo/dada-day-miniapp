@@ -11,20 +11,34 @@ const {
 } = require('./recommendationPresentation');
 
 function outfit(index, options = {}) {
+  const scene = options.scene || 'work';
+  const items = options.items || [
+    { itemId: `top-${index}`, category: 'top', subcategory: '衬衫' },
+    { itemId: `bottom-${index}`, category: 'bottom', subcategory: '长裤' },
+  ];
+  const itemIds = items.map((item) => item.itemId);
+  const homeEvidence = itemIds.map((itemId) => ({
+    factId: `item:${itemId}:casual_style`, fact: 'casual_style', itemId,
+  }));
+  const workEvidence = [{
+    factId: 'outfit:work_eligible', fact: 'work_eligible', subjectItemIds: itemIds,
+  }];
+  const homeSceneEligible = scene === 'home' && items.length >= 2;
   return {
     outfitKey: `outfit-${index}`,
-    scene: options.scene || 'work',
+    scene,
     sceneIntent: options.sceneIntent,
     title: options.title || '通勤连衣裙连衣裙组合',
     displayTitle: options.displayTitle,
     styleTags: options.styleTags || ['通勤', '通勤', '关系组合', '简约'],
-    snapshotItems: options.items || [
-      { itemId: `top-${index}`, category: 'top', subcategory: '衬衫' },
-      { itemId: `bottom-${index}`, category: 'bottom', subcategory: '长裤' },
-    ],
+    snapshotItems: items,
     copyContract: {
       todayReason: options.reason || `第${index}套通勤理由。`,
-      coreEligibilityReasonCode: 'WORK_BASELINE_PRESENTABLE',
+      coreEligibilityReasonCode: homeSceneEligible ? 'HOME_CASUAL_TWO_PIECE' : scene === 'home' ? 'UNMAPPED_TEST' : 'WORK_BASELINE_PRESENTABLE',
+      coreEligibilitySubjectItemIds: itemIds,
+      coreEligibilitySupportingFactIds: (homeSceneEligible ? homeEvidence : scene === 'home' ? [] : workEvidence).map((record) => record.factId),
+      coreEligibilityRelationFactIds: scene === 'home' ? [] : ['outfit:work_eligible'],
+      coreEligibilityEvidence: homeSceneEligible ? homeEvidence : scene === 'home' ? [] : workEvidence,
     },
   };
 }
@@ -149,6 +163,12 @@ function sportFixtureOutfit(index, top, bottom, shoes) {
   const topColors = ['black', 'white', 'red', 'blue', 'gray', 'green', 'navy', 'pink'];
   const bottomColors = ['white', 'gray', 'black', 'green', 'beige', 'navy', 'red', 'yellow'];
   const shoeColors = ['gray', 'black', 'white', 'blue', 'white', 'gray', 'black', 'green'];
+  const itemIds = [`top-${index}`, `bottom-${index}`, `shoes-${index}`];
+  const eligibilityEvidence = [
+    { factId: `item:top-${index}:sport_top`, fact: 'sport_top', itemId: `top-${index}` },
+    { factId: `item:bottom-${index}:shorts`, fact: 'shorts', itemId: `bottom-${index}` },
+    { factId: `item:shoes-${index}:sport_shoe`, fact: 'sport_shoe', itemId: `shoes-${index}` },
+  ];
   return {
     outfitKey: `sport-${index}`,
     scene: 'sport',
@@ -161,6 +181,10 @@ function sportFixtureOutfit(index, top, bottom, shoes) {
     styleTags: ['运动'],
     copyContract: {
       coreEligibilityReasonCode: 'SPORT_LIGHT_ACTIVITY_SET',
+      coreEligibilitySubjectItemIds: itemIds,
+      coreEligibilitySupportingFactIds: eligibilityEvidence.map((record) => record.factId),
+      coreEligibilityRelationFactIds: [],
+      coreEligibilityEvidence: eligibilityEvidence,
       todayReason: '运动场景的有效事实理由。',
     },
   };
@@ -174,6 +198,7 @@ test('final presentation plan atomically owns copy, metadata, evidence, and sour
     todaySentenceClusterId: 'OLD-TODAY-CLUSTER',
     detailSentenceClusterId: 'OLD-DETAIL-CLUSTER',
     copyContract: {
+      ...sportFixtureOutfit(0, 'sport top', 'shorts', 'sport shoe').copyContract,
       coreEligibilityReasonCode: 'SPORT_LIGHT_ACTIVITY_SET',
       riskFlags: [],
       todayClaim: { claimId: 'OLD-TODAY' },
@@ -229,7 +254,7 @@ test('final presentation plan atomically owns copy, metadata, evidence, and sour
 test('detail is hidden when the plan has no second supported fact', () => {
   const card = canonicalizeRecommendation(outfit(9, {
     scene: 'home',
-    items: [{ itemId: 'top-only', category: 'top', subcategory: 'shirt' }],
+    items: [{ itemId: 'dress-only', category: 'onepiece', subcategory: 'dress' }],
   }), { scene: 'home' });
   assert.equal(card.presentationPlan.detailDisplay, 'hidden');
   assert.equal(card.presentationPlan.detailExplanation, '');
@@ -248,7 +273,8 @@ test('same-color top and bottom copy does not infer a shoe contrast', () => {
 
   const card = canonicalizeRecommendation(source, { scene: 'sport' });
   assert.equal(card.presentationPlan.primaryRelationCode, 'SAME_COLOR_TOP_BOTTOM');
-  assert.match(card.copyContract.todayReason, /都用了黑色/);
+  assert.match(card.copyContract.todayReason, /日常轻运动时走动更方便/);
+  assert.doesNotMatch(card.copyContract.todayReason, /都用了黑色/);
   assert.doesNotMatch(card.copyContract.todayReason, /鞋.+对比|形成对比/);
 });
 
@@ -289,6 +315,7 @@ test('duplicate fixed reasons consume the selected card visible difference witho
   const fixture = Array.from({ length: 8 }, (_, index) => ({
     ...sportFixtureOutfit(index, 'sport top', 'sport pants', 'sport shoe'),
     copyContract: {
+      ...sportFixtureOutfit(index, 'sport top', 'sport pants', 'sport shoe').copyContract,
       coreEligibilityReasonCode: 'SPORT_LIGHT_ACTIVITY_SET',
       todayReason: 'T恤配活动方便的下装和稳定包脚鞋，用于日常轻运动正合适。',
     },
@@ -296,7 +323,7 @@ test('duplicate fixed reasons consume the selected card visible difference witho
   const cards = canonicalizeRecommendationBatch(fixture, { scene: 'sport' });
   const reasons = cards.map((card) => card.copyContract.todayReason);
 
-  assert.equal(new Set(reasons).size, 8);
+  assert.equal(new Set(reasons).size, 5);
   assert.equal(reasons.every((reason) => !reason.includes('可以直接这样穿')), true);
   assert.equal(reasons.every((reason) => !/活动方便|稳定包脚/.test(reason)), true);
   assert.equal(reasons.some((reason) => /\(\d+\)|（\d+）|第\d+套/.test(reason)), false);

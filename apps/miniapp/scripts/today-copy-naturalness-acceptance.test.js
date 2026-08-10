@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 
 const { SCENES, auditFinalTodayCopy, summarizeNaturalnessMetrics } = require('./today-copy-naturalness-acceptance');
 
-function outfit(scene, index, todayReason = '白色上衣和灰色下装都是中性色。') {
+function outfit(scene, index, todayReason = '粉色上衣配灰色下装，亮色留在上半身。') {
   const topId = `${scene}-top-${index}`;
   const bottomId = `${scene}-bottom-${index}`;
   return {
@@ -19,11 +19,23 @@ function outfit(scene, index, todayReason = '白色上衣和灰色下装都是�
       naturalnessGateResult: 'PASS',
       naturalnessRiskFlags: [],
       todayCopyProvenance: {
+        version: 'recommendation-natural-language-v1',
+        surface: 'today',
+        scene,
+        relationCode: 'TOP_ACCENT_WITH_NEUTRAL_BOTTOM',
+        compositionPattern: 'relation',
         text: todayReason,
         clauses: [{
           slot: 'relation',
+          templateId: 'relation.accent-neutral',
+          text: todayReason.replace(/。$/, ''),
+          informationKey: 'relation:TOP_ACCENT_WITH_NEUTRAL_BOTTOM',
           subjectItemIds: [topId, bottomId],
           evidenceFactIds: [`item:${topId}:color`, `item:${bottomId}:color`],
+          authorizationIds: [],
+          relationCode: 'TOP_ACCENT_WITH_NEUTRAL_BOTTOM',
+          scene,
+          source: 'presentation_relation',
         }],
       },
     },
@@ -39,6 +51,8 @@ test('real Today audit requires eight cards per scene and compares final UI text
     assert.equal(result.passed, true, scene);
     assert.equal(result.samples.length, 8);
     assert.equal(result.genericSceneFallbackCount, 0);
+    assert.equal(result.lowValueFinalReasonCount, 0);
+    assert.equal(result.decisionValueCount, 8);
     assert.equal(result.omittedLowValueClauseCount, 8);
   }
 });
@@ -69,11 +83,14 @@ test('naturalness metrics measure exact repetition without random wording', () =
       finalCopies: ['A。', 'A。', 'B。', 'C。'],
       sceneClauses: [],
       genericSceneFallbackCount: 0,
+      lowValueFinalReasonCount: 0,
       omittedLowValueClauseCount: 4,
     },
   ]);
   assert.equal(metrics.exactSceneClauseDuplicateRate, 0);
   assert.equal(metrics.exactFullCopyDuplicateRate, 0.25);
   assert.equal(metrics.genericSceneFallbackUsageRate, 0);
+  assert.equal(metrics.lowValueFinalReasonRate, 0);
+  assert.equal(metrics.fullReasonDuplicateRate, 0.25);
   assert.equal(metrics.omittedLowValueClauseCount, 4);
 });

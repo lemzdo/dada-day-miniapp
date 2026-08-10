@@ -192,7 +192,7 @@ test('relation binding reports MATCH and MISMATCH while a single item keeps a gr
   const withRelation = canonicalizeRecommendation({
     scene: 'sport',
     items: [
-      { itemId: 'top-1', category: 'top', subcategory: 'T恤', factRecords: [{ fact: 'color', value: 'black', authorized: true }] },
+      { itemId: 'top-1', category: 'top', subcategory: 'T恤', factRecords: [{ fact: 'color', value: 'red', authorized: true }] },
       { itemId: 'bottom-1', category: 'bottom', subcategory: '短裤', factRecords: [{ fact: 'color', value: 'white', authorized: true }] },
     ],
     copyContract: { coreEligibilityReasonCode: 'SPORT_LIGHT_ACTIVITY_SET', riskFlags: [] },
@@ -212,12 +212,12 @@ test('relation binding reports MATCH and MISMATCH while a single item keeps a gr
 
   const withoutRelation = canonicalizeRecommendation({
     scene: 'home',
-    items: [{ itemId: 'top-2', category: 'top', subcategory: 'T恤' }],
+    items: [{ itemId: 'dress-2', category: 'onepiece', subcategory: '连衣裙' }],
     copyContract: { coreEligibilityReasonCode: 'HOME_COMFORT', riskFlags: [] },
-    contentPlan: { version: 'xiaoda-content-plan-v1', sceneIntent: 'home:indoor_relax', primaryBenefit: 'ease', items: [{ id: 'top-2', slot: 'top' }] },
+    contentPlan: { version: 'xiaoda-content-plan-v1', sceneIntent: 'home:indoor_relax', primaryBenefit: 'ease', items: [{ id: 'dress-2', slot: 'onepiece' }] },
   }, { scene: 'home' });
   const groundedSingleItem = buildPresentationEvidence({ scene: 'home', finalCards: [withoutRelation], countContract }).cards[0];
-  assert.equal(groundedSingleItem.primaryRelationCode, 'STRUCTURE_SINGLE_ITEM');
+  assert.equal(groundedSingleItem.primaryRelationCode, 'STRUCTURE_ONEPIECE_ONLY');
   assert.equal(groundedSingleItem.binding.relationBindingStatus, 'MATCH');
   assert.equal(groundedSingleItem.binding.relationCodesEqual, true);
 });

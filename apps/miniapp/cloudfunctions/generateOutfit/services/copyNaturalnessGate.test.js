@@ -3,6 +3,9 @@ const assert = require('node:assert/strict');
 
 const {
   COPY_NATURALNESS_FLAGS,
+  DECISION_VALUE_CATEGORIES,
+  DECISION_VALUE_FLAGS,
+  evaluateDecisionValue,
   evaluateCopyNaturalness,
 } = require('./copyNaturalnessGate');
 const { buildNaturalTodayCopyPlan, joinClauses } = require('./recommendationNaturalLanguage');
@@ -40,39 +43,57 @@ function clone(value) {
 
 function insertGenericScene(planValue) {
   const plan = clone(planValue);
-  const relation = plan.clauses.find((clause) => clause.slot === 'relation');
-  const sceneClause = {
-    slot: 'scene_value',
-    templateId: 'scene.home-direct',
-    text: '宅家时可以直接这样穿',
-    informationKey: 'scene:home:HOME_HOT_SHORT_SLEEVE_SHORTS',
-    subjectItemIds: ['top-1', 'bottom-1'],
-    evidenceFactIds: ['outfit:home_eligible'],
-    authorizationIds: ['eligibility:HOME_HOT_SHORT_SLEEVE_SHORTS'],
-    relationCode: relation.relationCode,
-    scene: 'home',
-    source: 'core_eligibility',
-  };
-  const relationIndex = plan.clauses.indexOf(relation);
-  plan.clauses.splice(relationIndex + 1, 0, sceneClause);
-  plan.compositionPattern = plan.clauses.map((clause) => clause.slot).join('>');
+  plan.clauses.find((clause) => clause.slot === 'scene_value').text = '宅家时可以直接这样穿';
   plan.text = joinClauses(plan.clauses);
   return plan;
 }
 
-test('COPY_NATURALNESS_GATE accepts grounded relation and new benefit evidence without a forced scene clause', () => {
+function prependGroundedRelation(planValue) {
+  const plan = clone(planValue);
+  const sceneClause = plan.clauses.find((entry) => entry.slot === 'scene_value');
+  plan.clauses.unshift({
+    ...clone(sceneClause),
+    slot: 'relation',
+    templateId: 'relation.neutral-pair',
+    text: '白色短袖T恤和灰色短裤都是中性色',
+    informationKey: 'relation:NEUTRAL_COLOR_BRIDGE',
+    evidenceFactIds: ['item:top-1:color', 'item:bottom-1:color'],
+    authorizationIds: [],
+    source: 'presentation_relation',
+  });
+  plan.compositionPattern = plan.clauses.map((entry) => entry.slot).join('>');
+  plan.text = joinClauses(plan.clauses);
+  return plan;
+}
+
+function replaceSceneWithBenefit(planValue) {
+  const plan = prependGroundedRelation(planValue);
+  const clause = plan.clauses.find((entry) => entry.slot === 'scene_value');
+  clause.slot = 'benefit';
+  clause.templateId = 'benefit.less-bundled-home-short-sleeve';
+  clause.text = '短袖和短裤不会裹得太多';
+  clause.informationKey = 'benefit:benefit.less-bundled-home-short-sleeve';
+  clause.source = 'core_eligibility_benefit';
+  clause.authorizationIds = ['eligibility:HOME_HOT_SHORT_SLEEVE_SHORTS'];
+  plan.compositionPattern = plan.clauses.map((entry) => entry.slot).join('>');
+  plan.text = joinClauses(plan.clauses);
+  return plan;
+}
+
+test('COPY_NATURALNESS_GATE replaces a low-value relation with meaningful scene evidence', () => {
   const plan = validPlan();
-  assert.equal(plan.compositionPattern, 'relation>benefit');
-  assert.equal(plan.clauses.some((clause) => clause.slot === 'scene_value'), false);
+  assert.equal(plan.compositionPattern, 'scene_value');
+  assert.equal(plan.clauses.some((clause) => clause.slot === 'scene_value'), true);
   assert.equal(evaluateCopyNaturalness(plan).result, 'PASS');
+  assert.deepEqual(evaluateDecisionValue(plan).categories, [
+    DECISION_VALUE_CATEGORIES.MEANINGFUL_SCENE_EVIDENCE,
+  ]);
 });
 
 test('COPY_NATURALNESS_GATE rejects the reported editorial composition even with populated provenance', () => {
-  const plan = insertGenericScene(validPlan());
-  plan.clauses = plan.clauses.slice(0, 3);
+  const plan = insertGenericScene(prependGroundedRelation(validPlan()));
   plan.clauses[0].text = '白色短袖T恤与灰色短裤用中性色过渡';
-  plan.clauses[1].text = '适合居家场景';
-  plan.clauses[2].text = '配色简洁';
+  plan.clauses[1].text = '适合居家场景，配色简洁';
   plan.text = joinClauses(plan.clauses);
   const result = evaluateCopyNaturalness(plan);
   assert.equal(result.result, 'REJECT');
@@ -81,7 +102,7 @@ test('COPY_NATURALNESS_GATE rejects the reported editorial composition even with
 });
 
 test('COPY_NATURALNESS_GATE rejects a benefit that repeats relation evidence', () => {
-  const plan = clone(validPlan());
+  const plan = replaceSceneWithBenefit(validPlan());
   const benefitClause = plan.clauses.find((clause) => clause.slot === 'benefit');
   benefitClause.evidenceFactIds = plan.clauses[0].evidenceFactIds.slice();
   const result = evaluateCopyNaturalness(plan);
@@ -106,12 +127,11 @@ test('COPY_NATURALNESS_GATE rejects scene copy without eligibility authorization
   const result = evaluateCopyNaturalness(plan);
   assert.equal(result.result, 'REJECT');
   assert.ok(result.riskFlags.includes(COPY_NATURALNESS_FLAGS.MECHANICAL_SCENE_RESTATEMENT));
-  assert.ok(result.riskFlags.includes(COPY_NATURALNESS_FLAGS.NO_INCREMENTAL_INFORMATION));
 });
 
 test('COPY_NATURALNESS_GATE rejects system checklist phrasing even when provenance is complete', () => {
   const plan = validPlan();
-  plan.clauses.find((clause) => clause.slot === 'benefit').text = '活动用的下装和鞋已经配上';
+  plan.clauses.find((clause) => clause.slot === 'scene_value').text = '活动用的下装和鞋已经配上';
   plan.text = joinClauses(plan.clauses);
   assert.deepEqual(evaluateCopyNaturalness(plan), {
     version: 'copy-naturalness-gate-v1',
@@ -121,17 +141,42 @@ test('COPY_NATURALNESS_GATE rejects system checklist phrasing even when provenan
 });
 
 test('COPY_NATURALNESS_GATE rejects repeated scene semantics across scene and benefit slots', () => {
-  const plan = insertGenericScene(validPlan());
-  plan.clauses.find((clause) => clause.slot === 'benefit').text = '宅家时短袖和短裤不会裹得太多';
+  const plan = validPlan();
+  const benefit = clone(plan.clauses.find((clause) => clause.slot === 'scene_value'));
+  benefit.slot = 'benefit';
+  benefit.templateId = 'benefit.less-bundled-home-short-sleeve';
+  benefit.text = '在家时短袖和短裤不会裹得太多';
+  benefit.informationKey = 'benefit:benefit.less-bundled-home-short-sleeve';
+  benefit.evidenceFactIds = ['item:top-1:benefit'];
+  benefit.source = 'core_eligibility_benefit';
+  plan.clauses.push(benefit);
+  plan.compositionPattern = plan.clauses.map((clause) => clause.slot).join('>');
   plan.text = joinClauses(plan.clauses);
   const result = evaluateCopyNaturalness(plan);
   assert.equal(result.result, 'REJECT');
   assert.ok(result.riskFlags.includes('DUPLICATE_INFORMATION'));
 });
 
-test('COPY_NATURALNESS_GATE positively rejects a known slot with no incremental information', () => {
-  const plan = insertGenericScene(validPlan());
+test('COPY_NATURALNESS_GATE preserves NO_INCREMENTAL_INFORMATION for a template without metadata', () => {
+  const plan = validPlan();
+  plan.clauses[0].templateId = 'relation.unregistered';
   const result = evaluateCopyNaturalness(plan);
   assert.equal(result.result, 'REJECT');
   assert.ok(result.riskFlags.includes(COPY_NATURALNESS_FLAGS.NO_INCREMENTAL_INFORMATION));
+});
+
+test('DECISION_VALUE_GATE rejects a factual relation when it is the whole final reason', () => {
+  const plan = validPlan();
+  plan.clauses = [{
+    ...plan.clauses[0],
+    templateId: 'relation.top-bottom',
+    text: '短袖T恤配短裤',
+  }];
+  plan.compositionPattern = 'relation';
+  plan.text = joinClauses(plan.clauses);
+  const decision = evaluateDecisionValue(plan);
+  assert.equal(decision.result, 'REJECT');
+  assert.deepEqual(decision.categories, [DECISION_VALUE_CATEGORIES.FACTUAL_BUT_LOW_VALUE]);
+  assert.deepEqual(decision.riskFlags, [DECISION_VALUE_FLAGS.LOW_VALUE_FINAL_REASON]);
+  assert.ok(evaluateCopyNaturalness(plan).riskFlags.includes(COPY_NATURALNESS_FLAGS.LOW_VALUE_FINAL_REASON));
 });

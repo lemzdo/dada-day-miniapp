@@ -1,9 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { evaluateCopyNaturalness } = require('./copyNaturalnessGate');
+const { evaluateCopyNaturalness, evaluateDecisionValue } = require('./copyNaturalnessGate');
 const {
   BENEFIT_SLOTS,
+  DECISION_VALUE_CATEGORIES,
   DETAIL_RELATION_SLOTS,
   RELATION_SLOTS,
   SAFE_FALLBACK,
@@ -16,14 +17,14 @@ const { CLAIM_CATALOG, SAFE_FALLBACK_CLUSTERS } = require('./xiaodaVoiceBankV2')
 const BANNED_EDITORIAL_COPY = /中性色过渡|适合(?:居家|通勤|约会|日常|运动|轻运动).{0,4}(?:场景)?|配色简洁|整体协调|整体利落|整体更完整|更显质感|已经配齐|已经配上|唯一有明确事实|已经配成上下装|已经配成一身/;
 
 const CASES = [
-  matrixCase('home-neutral-two-piece', 'home', 'top+bottom', 'neutral', 'NEUTRAL_COLOR_BRIDGE', ['top', 'bottom']),
+  matrixCase('home-neutral-two-piece', 'home', 'top+bottom', 'neutral', 'NEUTRAL_COLOR_BRIDGE', ['top', 'bottom'], benefit('HOME_SHORT_SLEEVE_SHORTS', ['short_sleeve', 'shorts'])),
   matrixCase('home-basic-benefit', 'home', '基础款两件', 'same', 'SAME_COLOR_TOP_BOTTOM', ['top', 'bottom'], benefit('HOME_HOT_SHORT_SLEEVE_SHORTS', ['short_sleeve', 'shorts'])),
   matrixCase('work-three-piece-benefit', 'work', 'top+bottom+shoes', 'contrast', 'DISTINCT_TOP_BOTTOM_COLOR', ['top', 'bottom'], benefit('WORK_SHIRT_STRAIGHT_PANTS', ['shirt', 'straight_cut'])),
-  matrixCase('work-patterned-top', 'work', '图案上衣', 'none', 'SUBTYPE_FEATURE_PRINT', ['top']),
-  matrixCase('date-onepiece', 'date', 'onepiece', 'same', 'COLOR_ECHO_ONEPIECE_SHOES', ['onepiece', 'shoes']),
+  matrixCase('work-patterned-top', 'work', '图案上衣', 'none', 'SUBTYPE_FEATURE_PRINT', ['top'], benefit('WORK_PATTERN_TOP_SOLID_BOTTOM', ['pattern_visible', 'solid_color'])),
+  matrixCase('date-onepiece', 'date', 'onepiece', 'same', 'COLOR_ECHO_ONEPIECE_SHOES', ['onepiece', 'shoes'], benefit('DATE_SIMPLE_DRESS_SHOES', ['dress', 'simple_style', 'outing_shoe'])),
   matrixCase('date-layer-no-color-relation', 'date', 'layer', 'none', 'STRUCTURE_ONEPIECE_OUTERWEAR', ['onepiece', 'outerwear']),
   matrixCase('sport-complete-benefit', 'sport', 'top+bottom+shoes', 'same', 'SAME_COLOR_ALL_ROLES', ['top', 'bottom', 'shoes'], benefit('SPORT_COMPLETE_SET', ['sport_top', 'sport_bottom', 'sport_shoe'])),
-  matrixCase('sport-structure-without-color', 'sport', 'top+bottom', 'none', 'STRUCTURE_TOP_BOTTOM', ['top', 'bottom']),
+  matrixCase('sport-structure-without-color', 'sport', 'top+bottom+shoes', 'none', 'STRUCTURE_TOP_BOTTOM', ['top', 'bottom'], benefit('SPORT_LIGHT_ACTIVITY_SET', ['sport_top', 'shorts', 'sport_shoe'])),
   matrixCase('home-onepiece-safe-structure', 'home', 'onepiece', 'none', 'STRUCTURE_ONEPIECE_ONLY', ['onepiece']),
   matrixCase('date-analogous-colors', 'date', 'top+bottom', 'analogous', 'DISTINCT_TOP_BOTTOM_COLOR', ['top', 'bottom']),
   matrixCase('work-accent-neutral', 'work', 'top+bottom', 'contrast', 'TOP_ACCENT_WITH_NEUTRAL_BOTTOM', ['top', 'bottom']),
@@ -37,13 +38,17 @@ test('naturalness combination matrix covers every requested axis and passes stru
     const todayPlan = buildNaturalTodayCopyPlan(model, relation);
     const detailPlan = buildNaturalDetailCopyPlan(model, relation);
     const todayGate = evaluateCopyNaturalness(todayPlan);
+    const decisionGate = evaluateDecisionValue(todayPlan);
     const detailGate = evaluateCopyNaturalness(detailPlan);
     assert.equal(todayGate.result, 'PASS', `${entry.id}: ${todayGate.riskFlags.join(',')}`);
+    assert.equal(decisionGate.result, 'PASS', `${entry.id} decision: ${decisionGate.riskFlags.join(',')}`);
     assert.equal(detailGate.result, 'PASS', `${entry.id} detail: ${detailGate.riskFlags.join(',')}`);
     assert.doesNotMatch(`${todayPlan.text}${detailPlan.text}`, BANNED_EDITORIAL_COPY, entry.id);
     assert.equal(todayPlan.clauses[0].relationCode, entry.relationCode);
     assert.equal(todayPlan.clauses.every((clause) => clause.subjectItemIds.length > 0), true);
-    assert.equal(todayPlan.clauses.some((clause) => clause.slot === 'benefit'), Boolean(entry.benefit));
+    const expectsScene = Boolean(entry.benefit)
+      && RELATION_SLOTS[entry.relationCode].decisionValue === DECISION_VALUE_CATEGORIES.FACTUAL_BUT_LOW_VALUE;
+    assert.equal(todayPlan.clauses.some((clause) => clause.slot === 'scene_value'), expectsScene);
     coverage.scenes.add(entry.scene);
     coverage.structures.add(entry.structure);
     coverage.colors.add(entry.colorMode);
@@ -52,10 +57,11 @@ test('naturalness combination matrix covers every requested axis and passes stru
   assert.deepEqual([...coverage.scenes].sort(), ['date', 'home', 'sport', 'work']);
   assert.equal(['top+bottom', 'top+bottom+shoes', 'onepiece', '基础款两件', '图案上衣', 'layer'].every((value) => coverage.structures.has(value)), true);
   assert.equal(['neutral', 'same', 'analogous', 'contrast', 'none'].every((value) => coverage.colors.has(value)), true);
-  assert.deepEqual([...coverage.clauseCounts].sort(), [1, 2]);
-  assert.equal(CASES.every((entry) => {
+  assert.deepEqual([...coverage.clauseCounts].sort(), [1]);
+  assert.equal(CASES.filter((entry) => entry.benefit
+    && RELATION_SLOTS[entry.relationCode].decisionValue === DECISION_VALUE_CATEGORIES.FACTUAL_BUT_LOW_VALUE).every((entry) => {
     const { model, relation } = buildInputs(entry);
-    return !buildNaturalTodayCopyPlan(model, relation).clauses.some((clause) => clause.slot === 'scene_value');
+    return buildNaturalTodayCopyPlan(model, relation).clauses.some((clause) => clause.slot === 'scene_value');
   }), true);
 });
 
@@ -73,7 +79,8 @@ test('missing relation has no generic sentence fallback', () => {
 test('relation, scene, benefit, detail, and Voice Bank inventories are complete and free of old editorial tails', () => {
   const relationCodes = new Set(CASES.map((entry) => entry.relationCode));
   assert.equal([...relationCodes].every((code) => RELATION_SLOTS[code] && DETAIL_RELATION_SLOTS[code]), true);
-  assert.deepEqual(Object.keys(SCENE_VALUE_SLOTS).sort(), ['date', 'home', 'sport', 'work']);
+  assert.deepEqual([...new Set(SCENE_VALUE_SLOTS.map((entry) => entry.scene))].sort(), ['date', 'home', 'sport', 'work']);
+  assert.equal(SCENE_VALUE_SLOTS.every((entry) => entry.reasonCodes.length > 0 && entry.requiredFactOptions.length > 0), true);
   assert.equal(BENEFIT_SLOTS.length > 0, true);
   assert.equal(CLAIM_CATALOG.length > 0, true);
   assert.equal(CLAIM_CATALOG.every((entry) => entry.requirements.length > 0 && !BANNED_EDITORIAL_COPY.test(entry.text)), true);
