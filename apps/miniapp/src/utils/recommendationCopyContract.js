@@ -1,5 +1,6 @@
-const COPY_CONTRACT_VERSION = 'recommendation-copy-contract-v3';
+const COPY_CONTRACT_VERSION = 'recommendation-copy-contract-v4';
 const VOICE_BANK_VERSION = 'xiaoda-fixed-claim-catalog-v2';
+const COPY_NATURALNESS_GATE_VERSION = 'copy-naturalness-gate-v1';
 
 const DEFAULT_COPY_FIELDS = [
   'reason',
@@ -47,6 +48,11 @@ const DEFAULT_COPY_FIELDS = [
   'primaryInsightCode',
   'evidenceCodes',
   'validatorRejectReasons',
+  'todayCopyProvenance',
+  'detailCopyProvenance',
+  'naturalnessGateVersion',
+  'naturalnessGateResult',
+  'naturalnessRiskFlags',
 ];
 
 const FALLBACK_REVIEW_SOURCES = new Set([
@@ -62,7 +68,12 @@ function hasCurrentDefaultCopy(outfit) {
     && typeof outfit.copyContract.todayReason === 'string'
     && Boolean(outfit.copyContract.todayReason.trim())
     && Array.isArray(outfit.copyContract.riskFlags)
-    && outfit.copyContract.riskFlags.length === 0;
+    && outfit.copyContract.riskFlags.length === 0
+    && outfit.copyContract.naturalnessGateVersion === COPY_NATURALNESS_GATE_VERSION
+    && outfit.copyContract.naturalnessGateResult === 'PASS'
+    && Array.isArray(outfit.copyContract.naturalnessRiskFlags)
+    && outfit.copyContract.naturalnessRiskFlags.length === 0
+    && isPlainObject(outfit.copyContract.todayCopyProvenance);
 }
 
 function hasCurrentCopyContract(outfit) {
@@ -238,6 +249,7 @@ function isPlainObject(value) {
 
 module.exports = {
   COPY_CONTRACT_VERSION,
+  COPY_NATURALNESS_GATE_VERSION,
   VOICE_BANK_VERSION,
   getSavedSnapshotDefaultCopy,
   hasCurrentCopyContract,

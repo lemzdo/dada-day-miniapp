@@ -248,7 +248,7 @@ test('same-color top and bottom copy does not infer a shoe contrast', () => {
 
   const card = canonicalizeRecommendation(source, { scene: 'sport' });
   assert.equal(card.presentationPlan.primaryRelationCode, 'SAME_COLOR_TOP_BOTTOM');
-  assert.match(card.copyContract.todayReason, /顺色衔接/);
+  assert.match(card.copyContract.todayReason, /都用了黑色/);
   assert.doesNotMatch(card.copyContract.todayReason, /鞋.+对比|形成对比/);
 });
 
@@ -297,7 +297,7 @@ test('duplicate fixed reasons consume the selected card visible difference witho
   const reasons = cards.map((card) => card.copyContract.todayReason);
 
   assert.equal(new Set(reasons).size, 8);
-  assert.equal(reasons.every((reason) => reason.includes('适合日常轻运动')), true);
+  assert.equal(reasons.every((reason) => reason.includes('日常轻运动可以直接这样穿')), true);
   assert.equal(reasons.every((reason) => !/活动方便|稳定包脚/.test(reason)), true);
   assert.equal(reasons.some((reason) => /\(\d+\)|（\d+）|第\d+套/.test(reason)), false);
 });

@@ -78,7 +78,7 @@ type ResolvedCloudCacheScope =
 
 const taroCloud = (Taro as CloudTaro).cloud;
 const cloudResponseCache = new Map<string, { expiresAt: number; data: unknown }>();
-const GENERATE_OUTFIT_CACHE_NAMESPACE = 'generateOutfit:recommendation-copy-contract-v3';
+const GENERATE_OUTFIT_CACHE_NAMESPACE = 'generateOutfit:recommendation-copy-contract-v4';
 interface CloudInflightRequest<T = unknown> {
   promise: Promise<T>;
   invalidated: boolean;

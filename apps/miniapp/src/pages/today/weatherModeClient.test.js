@@ -26,5 +26,6 @@ test('client cloud request always receives an audit id for V6 lifecycle correlat
   const source = fs.readFileSync(path.join(ROOT, 'lib/cloud.ts'), 'utf8');
   assert.match(source, /CLIENT_BUILD_VERSION = 'miniapp-xiaoda-copy-v4-20260716'/);
   assert.match(source, /auditId: params\.auditId \|\| createRecommendationAuditId\('cloud'\)/);
-  assert.match(source, /return callCachedCloudFunction<RecommendResponse>\(/);
+  assert.match(source, /const result = await callCachedCloudFunction<RecommendResponse>\(/);
+  assert.match(source, /return result;/);
 });

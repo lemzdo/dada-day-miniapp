@@ -255,8 +255,32 @@ export type RecommendationLimitedReason =
 export type RecommendationMissingRole = 'top' | 'bottom' | 'onepiece' | 'shoes';
 export type RecommendationMissingFact = 'sport_activity_top' | 'sport_activity_bottom' | 'sport_stable_shoe';
 
+export interface RecommendationCopyClauseProvenance {
+  slot: 'relation' | 'scene_value' | 'benefit';
+  templateId: string;
+  text: string;
+  informationKey: string;
+  subjectItemIds: string[];
+  evidenceFactIds: string[];
+  authorizationIds: string[];
+  relationCode: string | null;
+  scene: string;
+  source: 'presentation_relation' | 'core_eligibility' | 'core_eligibility_benefit';
+}
+
+export interface RecommendationCopyProvenance {
+  version: 'recommendation-natural-language-v1';
+  surface: 'today' | 'detail';
+  scene: string;
+  relationCode: string | null;
+  compositionPattern: string;
+  clauses: RecommendationCopyClauseProvenance[];
+  text: string;
+  fallbackStrategy: string;
+}
+
 export interface RecommendationCopyContract {
-  copyContractVersion: 'recommendation-copy-contract-v3';
+  copyContractVersion: 'recommendation-copy-contract-v4';
   voiceBankVersion: 'xiaoda-fixed-claim-catalog-v2';
   gateResult: 'PASS' | 'REJECT';
   copyDisplay?: 'visible' | 'hidden';
@@ -300,6 +324,11 @@ export interface RecommendationCopyContract {
   presentationFactSignature?: string;
   primaryRelationCode?: string | null;
   unsupportedClaimCount?: number;
+  todayCopyProvenance?: RecommendationCopyProvenance;
+  detailCopyProvenance?: RecommendationCopyProvenance | null;
+  naturalnessGateVersion?: 'copy-naturalness-gate-v1';
+  naturalnessGateResult?: 'PASS' | 'REJECT';
+  naturalnessRiskFlags?: string[];
 }
 
 export interface XiaodaContentPlanItem {
@@ -653,6 +682,11 @@ export interface Outfit {
   copyDisplay?: 'visible' | 'hidden';
   defaultCopyHidden?: boolean;
   copyFinalizationMode?: 'new_recommendation' | 'saved_snapshot';
+  todayCopyProvenance?: RecommendationCopyProvenance;
+  detailCopyProvenance?: RecommendationCopyProvenance | null;
+  naturalnessGateVersion?: RecommendationCopyContract['naturalnessGateVersion'];
+  naturalnessGateResult?: RecommendationCopyContract['naturalnessGateResult'];
+  naturalnessRiskFlags?: string[];
   qualification?: RecommendationCopyContract['qualification'];
   outfitItemRoles?: XiaodaContentPlanItem[];
   contentPlan?: XiaodaContentPlan;

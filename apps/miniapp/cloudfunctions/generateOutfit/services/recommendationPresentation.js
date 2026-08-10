@@ -12,6 +12,7 @@ const {
   buildPresentationPlan,
   readPresentationPlan,
 } = require('./presentationFactModel');
+const { evaluateCopyNaturalness } = require('./copyNaturalnessGate');
 
 const SCENE_PREFIX = Object.freeze({
   home: '居家',
@@ -45,6 +46,13 @@ function canonicalizeRecommendation(outfit, { scene, model, selectedDifferentiat
     ? assignPresentationDifferentiators([factModel])[0]
     : selectedDifferentiator;
   const plan = buildPresentationPlan(factModel, { selectedDifferentiator: assignedDifferentiator });
+  if (plan.naturalnessGateResult !== 'PASS'
+    || (plan.detailNaturalnessGateResult && plan.detailNaturalnessGateResult !== 'PASS')) {
+    throw new Error(`copy naturalness gate failed: ${[
+      ...(plan.naturalnessRiskFlags || []),
+      ...(plan.detailNaturalnessRiskFlags || []),
+    ].join(',')}`);
+  }
   const tags = canonicalizeTags(outfit.styleTags, sceneKey);
   const next = {
     ...outfit,
@@ -520,6 +528,10 @@ function assertFinalPresentation(outfits) {
     const existingPlan = readPresentationPlan(outfit);
     const model = existingPlan?.factModel || buildPresentationFactModel(outfit);
     const plan = existingPlan || buildPresentationPlan(model);
+    const todayNaturalness = evaluateCopyNaturalness(plan.reasonClaim?.copyPlan);
+    const detailNaturalness = plan.detailClaim?.copyPlan
+      ? evaluateCopyNaturalness(plan.detailClaim.copyPlan)
+      : null;
     const canonicalTitle = typeof outfit.title === 'string' ? outfit.title.trim() : '';
     const displayTitle = typeof outfit.displayTitle === 'string' ? outfit.displayTitle.trim() : '';
     if (!title || !canonicalTitle || !displayTitle || title !== canonicalTitle || title !== displayTitle
@@ -549,6 +561,14 @@ function assertFinalPresentation(outfits) {
         || contentPlan.defaultTodayReason !== plan.todayReason
         || copyContract.detailExplanation !== plan.detailExplanation
         || contentPlan.defaultDetailExplanation !== plan.detailExplanation
+        || copyContract.naturalnessGateVersion !== plan.naturalnessGateVersion
+        || copyContract.naturalnessGateResult !== 'PASS'
+        || !Array.isArray(copyContract.naturalnessRiskFlags)
+        || copyContract.naturalnessRiskFlags.length > 0
+        || todayNaturalness.result !== 'PASS'
+        || (detailNaturalness && detailNaturalness.result !== 'PASS')
+        || JSON.stringify(copyContract.todayCopyProvenance) !== JSON.stringify(plan.todayCopyProvenance)
+        || JSON.stringify(copyContract.detailCopyProvenance) !== JSON.stringify(plan.detailCopyProvenance)
         || !surfaceMetadataMatchesPlan(outfit, plan)
         || !surfaceMetadataMatchesPlan(copyContract, plan)
         || !surfaceMetadataMatchesPlan(contentPlan, plan)) {

@@ -49,7 +49,7 @@ test('public content-plan functions remain structural and create no default sent
 
 test('content plan copies canonical Contract text byte-for-byte without suggestions', () => {
   const canonicalCopy = {
-    copyContractVersion: 'recommendation-copy-contract-v3',
+    copyContractVersion: 'recommendation-copy-contract-v4',
     voiceBankVersion: 'xiaoda-fixed-claim-catalog-v2',
     todayReason: '衬衫配直筒裤，上班穿比较利落。',
     detailExplanation: '这条裤子弹性不错，坐着办公久一点也不容易勒。',

@@ -1,8 +1,16 @@
 const { adaptLegacyVisibleFactItem } = require('./recommendationEligibilityFacts');
+const {
+  COPY_NATURALNESS_GATE_VERSION,
+  evaluateCopyNaturalness,
+} = require('./copyNaturalnessGate');
+const {
+  buildNaturalDetailCopyPlan,
+  buildNaturalTodayCopyPlan,
+} = require('./recommendationNaturalLanguage');
 
-const PRESENTATION_FACT_MODEL_VERSION = 'presentation-fact-model-v3';
-const PRESENTATION_FACT_MODEL_BUILD = 'presentation-fact-model-20260805-r2';
-const PRESENTATION_PLAN_VERSION = 'presentation-plan-v3';
+const PRESENTATION_FACT_MODEL_VERSION = 'presentation-fact-model-v4';
+const PRESENTATION_FACT_MODEL_BUILD = 'presentation-fact-model-20260810-naturalness-r1';
+const PRESENTATION_PLAN_VERSION = 'presentation-plan-v4';
 const PRESENTATION_PLAN_SOURCE = 'presentation_plan';
 
 const ROLE_ORDER = Object.freeze(['onepiece', 'top', 'bottom', 'outerwear', 'shoes']);
@@ -57,6 +65,8 @@ const RELATION_PRIORITY = Object.freeze([
   'SINGLE_COLOR_FALLBACK',
   'STRUCTURE_ONEPIECE_OUTERWEAR',
   'STRUCTURE_ONEPIECE_SHOES',
+  'STRUCTURE_ONEPIECE_ONLY',
+  'STRUCTURE_SINGLE_ITEM',
   'STRUCTURE_TOP_BOTTOM',
 ]);
 
@@ -77,11 +87,13 @@ function buildPresentationFactModel(selectedCandidate = {}) {
     .filter(Boolean)
     .sort((left, right) => roleIndex(left.role) - roleIndex(right.role) || left.canonicalSubtype.localeCompare(right.canonicalSubtype));
   const relations = buildRelations(normalizedItems);
+  const qualification = buildPresentationQualification(source);
   const semanticSignature = normalizedItems.length > 0
     ? stableSerialize({
         scene,
         items: normalizedItems.map(toSignatureItem),
         relations: relations.map((relation) => relation.relationCode),
+        qualificationReasonCode: qualification.reasonCode,
       })
     : '';
   return {
@@ -93,6 +105,7 @@ function buildPresentationFactModel(selectedCandidate = {}) {
     presentationFactSignature: semanticSignature,
     availableDifferentiators: relations.map(toDifferentiator),
     primaryRelationCode: relations[0]?.relationCode || null,
+    qualification,
     unsupportedClaims: Array.isArray(source.unsupportedClaims) ? source.unsupportedClaims.slice() : [],
   };
 }
@@ -122,6 +135,8 @@ function buildPresentationPlan(model = {}, options = {}) {
   const titleConcept = buildTitleConcept(source);
   const reasonClaim = buildReasonClaim(source, primaryRelation);
   const detailClaim = detailRelation ? buildDetailClaim(source, detailRelation) : null;
+  const naturalnessGate = reasonClaim.naturalnessGate;
+  const detailNaturalnessGate = detailClaim?.naturalnessGate || null;
   const todayMetadata = buildSurfaceMetadata(source, primaryRelation);
   const detailMetadata = detailRelation ? buildSurfaceMetadata(source, detailRelation) : emptySurfaceMetadata();
   return {
@@ -153,7 +168,14 @@ function buildPresentationPlan(model = {}, options = {}) {
       ? source.availableDifferentiators.length : 0,
     reasonClaim,
     detailClaim,
-    sceneConclusion: buildSceneConclusion(source.scene),
+    todayCopyProvenance: reasonClaim.copyPlan,
+    detailCopyProvenance: detailClaim?.copyPlan || null,
+    naturalnessGateVersion: COPY_NATURALNESS_GATE_VERSION,
+    naturalnessGateResult: naturalnessGate.result,
+    naturalnessRiskFlags: naturalnessGate.riskFlags,
+    detailNaturalnessGateResult: detailNaturalnessGate?.result || null,
+    detailNaturalnessRiskFlags: detailNaturalnessGate?.riskFlags || [],
+    sceneConclusion: reasonClaim.copyPlan.clauses.find((clause) => clause.slot === 'scene_value')?.text || '',
     unsupportedClaims: Array.isArray(source.unsupportedClaims) ? source.unsupportedClaims.slice() : [],
   };
 }
@@ -218,6 +240,11 @@ function applyPresentationPlan(outfit, model, plan) {
   next.reasoning = detail || reason;
   next.todayReasonSource = PRESENTATION_PLAN_SOURCE;
   next.primaryRelationCode = canonicalPlan.primaryRelationCode;
+  next.todayCopyProvenance = canonicalPlan.todayCopyProvenance;
+  next.detailCopyProvenance = canonicalPlan.detailCopyProvenance;
+  next.naturalnessGateVersion = canonicalPlan.naturalnessGateVersion;
+  next.naturalnessGateResult = canonicalPlan.naturalnessGateResult;
+  next.naturalnessRiskFlags = canonicalPlan.naturalnessRiskFlags.slice();
   next.selectedDifferentiator = cloneDifferentiator(canonicalPlan.selectedDifferentiator);
   Object.assign(next, buildSurfacePatch(canonicalPlan, {
     todayEvidenceSources,
@@ -244,6 +271,11 @@ function applyPresentationPlan(outfit, model, plan) {
     primaryRelationCode: canonicalPlan.primaryRelationCode,
     selectedDifferentiator: cloneDifferentiator(canonicalPlan.selectedDifferentiator),
     unsupportedClaimCount: Array.isArray(canonicalPlan.unsupportedClaims) ? canonicalPlan.unsupportedClaims.length : 0,
+    todayCopyProvenance: canonicalPlan.todayCopyProvenance,
+    detailCopyProvenance: canonicalPlan.detailCopyProvenance,
+    naturalnessGateVersion: canonicalPlan.naturalnessGateVersion,
+    naturalnessGateResult: canonicalPlan.naturalnessGateResult,
+    naturalnessRiskFlags: canonicalPlan.naturalnessRiskFlags.slice(),
   };
   const existingContentPlan = asObject(next.contentPlan);
   const existingDefaultCopy = asObject(existingContentPlan.defaultCopy);
@@ -263,6 +295,11 @@ function applyPresentationPlan(outfit, model, plan) {
     detailDisplay: canonicalPlan.detailDisplay,
     defaultTodayReason: reason,
     defaultDetailExplanation: detail,
+    todayCopyProvenance: canonicalPlan.todayCopyProvenance,
+    detailCopyProvenance: canonicalPlan.detailCopyProvenance,
+    naturalnessGateVersion: canonicalPlan.naturalnessGateVersion,
+    naturalnessGateResult: canonicalPlan.naturalnessGateResult,
+    naturalnessRiskFlags: canonicalPlan.naturalnessRiskFlags.slice(),
     defaultCopy: {
       ...existingDefaultCopy,
       todayReason: reason,
@@ -308,144 +345,28 @@ function buildTitleConcept(model) {
 }
 
 function buildReasonClaim(model, relation) {
-  const items = Array.isArray(model?.items) ? model.items : [];
-  const byRole = new Map(items.map((item) => [item.role, item]));
-  const top = byRole.get('top');
-  const bottom = byRole.get('bottom');
-  const onepiece = byRole.get('onepiece');
-  const outerwear = byRole.get('outerwear');
-  const shoes = byRole.get('shoes');
-  const topName = top?.canonicalSubtype || top?.canonicalName || '上衣';
-  const bottomName = bottom?.canonicalSubtype || bottom?.canonicalName || '下装';
-  const onepieceName = onepiece?.canonicalSubtype || onepiece?.canonicalName || '连衣裙';
-  const outerwearName = outerwear?.canonicalSubtype || outerwear?.canonicalName || '外套';
-  const shoesName = shoes?.canonicalSubtype || shoes?.canonicalName || '鞋子';
-  const topColor = top?.normalizedColor || '';
-  const bottomColor = bottom?.normalizedColor || '';
-  const onepieceColor = onepiece?.normalizedColor || '';
-  const shoesColor = shoes?.normalizedColor || '';
-  const sceneConclusion = buildSceneConclusion(model?.scene);
-  const sceneBenefit = buildSceneBenefit(model, relation);
-  const finish = `${sceneConclusion}，${sceneBenefit}。`;
-  let text;
-  switch (relation.relationCode) {
-    case 'SAME_COLOR_ALL_ROLES':
-      text = `${joinChineseLabels(relation.roles.map((role) => relationItemLabel(model, role, '单品')))}同色统一，${finish}`;
-      break;
-    case 'COLOR_ECHO_TOP_SHOES':
-      text = `${topColor || ''}${topName}与${shoesColor || ''}${shoesName}用同色呼应，${finish}`;
-      break;
-    case 'COLOR_ECHO_ONEPIECE_SHOES':
-      text = `${onepieceColor || ''}${onepieceName}与${shoesColor || ''}${shoesName}用同色呼应，${finish}`;
-      break;
-    case 'COLOR_ECHO_BOTTOM_SHOES':
-      text = `${bottomColor || ''}${bottomName}与${shoesColor || ''}${shoesName}用同色呼应，${finish}`;
-      break;
-    case 'SUBTYPE_FEATURE_PRINT':
-      text = `${relationItemLabel(model, relation.roles?.[0], '印花单品')}的印花是视觉重点，${finish}`;
-      break;
-    case 'PATTERN_SOLID_BALANCE':
-      text = `${relationItemLabel(model, relation.roles?.[0], '印花单品')}配${relationItemLabel(model, relation.roles?.[1], '纯色单品')}，${finish}`;
-      break;
-    case 'TOP_ACCENT_WITH_NEUTRAL_BOTTOM':
-      text = `${topColor || ''}${topName}配${bottomColor || ''}${bottomName}，亮色突出重点，${finish}`;
-      break;
-    case 'SAME_COLOR_TOP_BOTTOM':
-      text = `${topColor || ''}${topName}与${bottomColor || ''}${bottomName}顺色衔接，${finish}`;
-      break;
-    case 'DISTINCT_TOP_BOTTOM_COLOR':
-      text = `${topColor || ''}${topName}与${bottomColor || ''}${bottomName}用不同颜色区分，${finish}`;
-      break;
-    case 'NEUTRAL_COLOR_BRIDGE':
-      text = `${relationItemLabel(model, relation.roles?.[0], '单品')}与${relationItemLabel(model, relation.roles?.[1], '单品')}用中性色过渡，${finish}`;
-      break;
-    case 'STRUCTURE_ONEPIECE_OUTERWEAR':
-      text = `${onepieceName}配${outerwearName}叠出内外层次，${finish}`;
-      break;
-    case 'STRUCTURE_ONEPIECE_SHOES':
-      text = `${onepieceName}配${shoesName}衔接裙装与鞋履，${finish}`;
-      break;
-    case 'STRUCTURE_TOP_BOTTOM':
-      text = `${topName}配${bottomName}组成上下装，轮廓清楚，${finish}`;
-      break;
-    default:
-      text = `${relationItemLabel(model, items[0]?.role, '当前单品')}是视觉重点，${finish}`;
-      break;
-  }
+  const copyPlan = buildNaturalTodayCopyPlan(model, relation);
+  const naturalnessGate = evaluateCopyNaturalness(copyPlan);
   return {
     relationCode: relation.relationCode,
-    text: compactText(text),
+    text: copyPlan.text,
     supportedBy: relation.authorizedValues.slice(),
     semanticSkeleton: relation.semanticSkeleton || '',
     todayExpressionIntent: relation.todayExpressionIntent || '',
+    copyPlan,
+    naturalnessGate,
   };
 }
 
 function buildDetailClaim(model, relation) {
-  const items = Array.isArray(model?.items) ? model.items : [];
-  const byRole = new Map(items.map((item) => [item.role, item]));
-  const label = (role, fallback) => {
-    const item = byRole.get(role);
-    return `${item?.normalizedColor || ''}${item?.canonicalSubtype || item?.canonicalName || fallback}`;
-  };
-  const top = label('top', '上衣');
-  const bottom = label('bottom', '下装');
-  const onepiece = label('onepiece', '连衣裙');
-  const outerwear = label('outerwear', '外套');
-  const shoes = label('shoes', '鞋子');
-  const patternedRole = relation.roles?.[0];
-  const patterned = label(patternedRole, '单品');
-  let text = '';
-  switch (relation.relationCode) {
-    case 'SAME_COLOR_ALL_ROLES':
-      text = `${joinChineseLabels(relation.roles.map((role) => label(role, '单品')))}延续同一色系，视觉连贯感更强。`;
-      break;
-    case 'SAME_COLOR_TOP_BOTTOM':
-      text = `${top}与${bottom}延续同一色系，上下装的色块衔接更顺。`;
-      break;
-    case 'COLOR_ECHO_TOP_SHOES':
-      text = `${top}和${shoes}用同色落下呼应点，整体更有连贯感。`;
-      break;
-    case 'COLOR_ECHO_ONEPIECE_SHOES':
-      text = `${onepiece}和${shoes}用同色落下呼应点，裙装到鞋履的视觉更连贯。`;
-      break;
-    case 'COLOR_ECHO_BOTTOM_SHOES':
-      text = `${bottom}和${shoes}用同色落下呼应点，下装到鞋履的视觉更连贯。`;
-      break;
-    case 'TOP_ACCENT_WITH_NEUTRAL_BOTTOM':
-      text = `${top}以亮色形成视觉重点，${bottom}用中性色承接，配色主次更清楚。`;
-      break;
-    case 'DISTINCT_TOP_BOTTOM_COLOR':
-      text = `${top}与${bottom}用不同颜色拉开区分，配色层次更清楚。`;
-      break;
-    case 'SUBTYPE_FEATURE_PRINT':
-      text = `${patterned}的印花提供视觉重点，其他单品不必再增加复杂信息。`;
-      break;
-    case 'PATTERN_SOLID_BALANCE':
-      text = `${patterned}用印花吸引视线，${label(relation.roles?.[1], '纯色单品')}用纯色留出空间，画面更易保持清楚。`;
-      break;
-    case 'NEUTRAL_COLOR_BRIDGE':
-      text = `${label(relation.roles?.[0], '单品')}与${label(relation.roles?.[1], '单品')}用不同中性色过渡，视觉层次更自然。`;
-      break;
-    case 'STRUCTURE_ONEPIECE_OUTERWEAR':
-      text = `${onepiece}放在内层，${outerwear}补出外层变化，穿搭层次更完整。`;
-      break;
-    case 'STRUCTURE_ONEPIECE_SHOES':
-      text = `${onepiece}与${shoes}从裙装延续到鞋履，收尾更完整。`;
-      break;
-    case 'STRUCTURE_TOP_BOTTOM':
-      text = `${top}与${bottom}从上到下分区清楚，整体轮廓更利落。`;
-      break;
-    case 'SINGLE_COLOR_FALLBACK':
-      text = `${patterned}的颜色作为视觉锚点，其他单品更容易保持克制。`;
-      break;
-    default:
-      break;
-  }
-  return text ? {
+  const copyPlan = buildNaturalDetailCopyPlan(model, relation);
+  const naturalnessGate = copyPlan.text ? evaluateCopyNaturalness(copyPlan) : null;
+  return copyPlan.text ? {
     relationCode: relation.relationCode,
-    text: compactText(text),
+    text: copyPlan.text,
     supportedBy: relation.authorizedValues.slice(),
+    copyPlan,
+    naturalnessGate,
   } : null;
 }
 
@@ -523,8 +444,15 @@ function buildRelations(items) {
   if (onepiece && shoes) {
     push('STRUCTURE_ONEPIECE_SHOES', ['onepiece', 'shoes'], [onepiece.canonicalSubtype, shoes.canonicalSubtype]);
   }
+  if (onepiece && !outerwear && !shoes) {
+    push('STRUCTURE_ONEPIECE_ONLY', ['onepiece'], [onepiece.canonicalSubtype]);
+  }
   if (top && bottom) {
     push('STRUCTURE_TOP_BOTTOM', ['top', 'bottom'], [top.canonicalSubtype, bottom.canonicalSubtype]);
+  }
+  if (relations.length === 0 && items.length === 1) {
+    const item = items[0];
+    push('STRUCTURE_SINGLE_ITEM', [item.role], [item.canonicalSubtype]);
   }
   const order = new Map(RELATION_PRIORITY.map((value, index) => [value, index]));
   return relations.sort((left, right) => (order.get(left.relationCode) ?? 99) - (order.get(right.relationCode) ?? 99));
@@ -561,6 +489,30 @@ function buildItemFact(roleEntry, item, candidate) {
     visibleFeatureTags: featureTags,
     normalizedColor: extractAuthorizedColor(source, authorizedRecords),
     authorizedFactIds: uniqueStrings(authorizedRecords.map((record) => readAuthorizedFactId(record, itemId))),
+  };
+}
+
+function buildPresentationQualification(source = {}) {
+  const contract = asObject(source.copyContract);
+  const reasonCode = readText(contract.coreEligibilityReasonCode || source.coreEligibilityReasonCode);
+  const evidence = (Array.isArray(contract.coreEligibilityEvidence)
+    ? contract.coreEligibilityEvidence
+    : Array.isArray(source.coreEligibilityEvidence) ? source.coreEligibilityEvidence : [])
+    .map((record) => ({
+      factId: readText(record?.factId || record?.relationFactId),
+      fact: readText(record?.fact),
+      itemId: readText(record?.itemId),
+      subjectItemIds: uniqueStrings(record?.subjectItemIds),
+    }))
+    .filter((record) => record.factId);
+  return {
+    reasonCode,
+    reason: readText(contract.coreEligibilityReason || source.coreEligibilityReason),
+    subjectItemIds: uniqueStrings(contract.coreEligibilitySubjectItemIds || source.coreEligibilitySubjectItemIds),
+    supportingFactIds: uniqueStrings(contract.coreEligibilitySupportingFactIds || source.coreEligibilitySupportingFactIds),
+    relationFactIds: uniqueStrings(contract.coreEligibilityRelationFactIds || source.coreEligibilityRelationFactIds),
+    sourceRule: readText(contract.coreEligibilitySourceRule || source.coreEligibilitySourceRule),
+    evidence,
   };
 }
 
@@ -704,18 +656,6 @@ function readAuthorizedFactId(record, itemId) {
   return itemId && fact ? `item:${itemId}:${fact}` : '';
 }
 
-function relationItemLabel(model, role, fallback) {
-  const item = (Array.isArray(model?.items) ? model.items : []).find((entry) => entry.role === role);
-  return `${item?.normalizedColor || ''}${item?.canonicalSubtype || item?.canonicalName || fallback}`;
-}
-
-function joinChineseLabels(values) {
-  const labels = uniqueStrings(values);
-  if (labels.length <= 1) return labels[0] || '';
-  if (labels.length === 2) return `${labels[0]}与${labels[1]}`;
-  return `${labels.slice(0, -1).join('、')}和${labels.at(-1)}`;
-}
-
 function firstItemPair(items, predicate) {
   for (let leftIndex = 0; leftIndex < items.length; leftIndex += 1) {
     for (let rightIndex = leftIndex + 1; rightIndex < items.length; rightIndex += 1) {
@@ -746,6 +686,8 @@ function relationExpressionIntent(relationCode) {
     SINGLE_COLOR_FALLBACK: 'visible_color_anchor',
     STRUCTURE_ONEPIECE_OUTERWEAR: 'onepiece_outerwear_structure',
     STRUCTURE_ONEPIECE_SHOES: 'onepiece_shoes_structure',
+    STRUCTURE_ONEPIECE_ONLY: 'onepiece_only_structure',
+    STRUCTURE_SINGLE_ITEM: 'single_item_structure',
     STRUCTURE_TOP_BOTTOM: 'top_bottom_structure',
   }[relationCode] || '';
 }
@@ -902,30 +844,6 @@ function relationTitleLabel(code) {
   }[code] || '';
 }
 
-function buildSceneConclusion(scene) {
-  return scene === 'sport' ? '适合日常轻运动' : `适合${SCENE_LABELS[scene] || '日常'}场景`;
-}
-
-function buildSceneBenefit(model, relation) {
-  const scene = model?.scene;
-  const items = Array.isArray(model?.items) ? model.items : [];
-  const colors = uniqueStrings(items.map((item) => item.normalizedColor).filter(Boolean));
-  if (scene === 'home') return colors.length <= 2 ? '配色简洁' : '视觉重点清楚';
-  if (scene === 'work') return '整体利落';
-  if (scene === 'date') return relation?.relationCode && relation.relationCode.includes('COLOR')
-    ? '配色有呼应，整体更完整'
-    : '层次清楚，整体更完整';
-  if (scene === 'sport') {
-    const authorizedFacts = new Set(items.flatMap((item) => item.authorizedFactIds || []));
-    const hasShortSleeve = [...authorizedFacts].some((factId) => /:short_sleeve$/.test(factId));
-    const hasShorts = [...authorizedFacts].some((factId) => /:shorts$/.test(factId));
-    const hasSportShoes = [...authorizedFacts].some((factId) => /:sport_shoe$/.test(factId));
-    if (hasShortSleeve && hasShorts && hasSportShoes) return '组合简洁';
-    return '画面清爽';
-  }
-  return '整体更清楚';
-}
-
 function shortColor(value) {
   return COLOR_SHORT_LABELS[value] || value.replace(/色$/, '');
 }
@@ -1017,10 +935,6 @@ function stableSerialize(value) {
   if (Array.isArray(value)) return `[${value.map(stableSerialize).join(',')}]`;
   if (!value || typeof value !== 'object') return JSON.stringify(value);
   return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableSerialize(value[key])}`).join(',')}}`;
-}
-
-function compactText(value) {
-  return String(value || '').replace(/\s+/g, '').replace(/，+/g, '，').trim();
 }
 
 function uniqueStrings(values) {

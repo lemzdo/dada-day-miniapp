@@ -44,7 +44,7 @@ function buildSupportedOutfitInsights(facts = {}) {
   if (facts.scene?.normalized === '居家' || facts.scene?.raw === '居家') {
     insights.push(insight({
       code: 'scene_fit_home',
-      text: '组合适合居家场景',
+      text: '宅家时可以直接穿这组衣物',
       requiredFacts: ['scene:居家'],
       subjectItemIds: items.map((item) => item.id),
       evidenceFactIds: ['scene:home'],

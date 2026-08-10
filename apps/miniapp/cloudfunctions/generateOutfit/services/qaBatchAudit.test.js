@@ -340,7 +340,7 @@ test('identical canonical titles caused by equivalent facts pass with a warning'
   assert.equal(clientAudit.exactTitleDuplicateGroups[0].count, 2);
   assert.equal(clientAudit.normalizedTitleDuplicateGroups[0].count, 2);
   assert.equal(clientAudit.syntheticSuffixCount, 0);
-  assert.equal(clientAudit.availableDifferentiatorCount, 0);
+  assert.equal(clientAudit.availableDifferentiatorCount, 2);
   assert.equal(clientAudit.duplicateCause, 'FACT_EQUIVALENCE');
   assert.equal(clientAudit.titleDuplicateWarningCount, 2);
   assert.equal(clientAudit.gateStatus, 'passed_with_warnings');

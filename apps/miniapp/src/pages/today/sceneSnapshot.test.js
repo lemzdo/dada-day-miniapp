@@ -13,7 +13,7 @@ const {
   shouldUseSceneSnapshot,
 } = require('./sceneSnapshot');
 
-const COPY_CONTRACT_VERSION = 'recommendation-copy-contract-v3';
+const COPY_CONTRACT_VERSION = 'recommendation-copy-contract-v4';
 const VOICE_BANK_VERSION = 'xiaoda-fixed-claim-catalog-v2';
 
 function currentOutfit(id = 'current') {
@@ -27,6 +27,10 @@ function currentOutfit(id = 'current') {
       gateResult: 'PASS',
       todayReason: '衬衫配直筒裤，上班穿比较利落。',
       riskFlags: [],
+      naturalnessGateVersion: 'copy-naturalness-gate-v1',
+      naturalnessGateResult: 'PASS',
+      naturalnessRiskFlags: [],
+      todayCopyProvenance: { version: 'recommendation-natural-language-v1' },
     },
   };
 }

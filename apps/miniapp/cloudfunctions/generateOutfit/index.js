@@ -980,6 +980,8 @@ function projectPublicCopyContract(contract) {
     'detailClaim', 'detailClaimId', 'detailAction', 'detailDimension',
     'detailSentenceClusterId', 'detailSubjectItemId', 'detailSubjectItemIds',
     'detailSlotBindings', 'riskFlags', 'qualification', 'primaryRelationCode',
+    'todayCopyProvenance', 'detailCopyProvenance', 'naturalnessGateVersion',
+    'naturalnessGateResult', 'naturalnessRiskFlags',
     'unsupportedClaimCount',
   ]) {
     if (Object.prototype.hasOwnProperty.call(contract, field)) projected[field] = contract[field];
@@ -2422,6 +2424,11 @@ const COPY_CONTRACT_FIELDS = [
   'defaultCopyHidden',
   'copyFinalizationMode',
   'qualification',
+  'todayCopyProvenance',
+  'detailCopyProvenance',
+  'naturalnessGateVersion',
+  'naturalnessGateResult',
+  'naturalnessRiskFlags',
 ];
 
 function pickRecommendationCopyContractFields(primary, fallback) {

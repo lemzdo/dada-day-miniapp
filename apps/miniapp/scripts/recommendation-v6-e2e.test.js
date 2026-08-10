@@ -639,8 +639,8 @@ function attachHarnessToMini(internals, harness, { screenshot } = {}) {
 }
 
 const TEST_USER_STORAGE_SCOPE = 'd1d:userStorage:v1:develop:cloud:test:user:test-openid';
-const TEST_TODAY_SNAPSHOT_KEY = `${TEST_USER_STORAGE_SCOPE}:today:outfitReturnSnapshot:recommendation-copy-contract-v3`;
-const TEST_SCENE_SNAPSHOT_PREFIX = `${TEST_USER_STORAGE_SCOPE}:${encodeURIComponent('today:sceneSnapshot:recommendation-copy-contract-v3')}`;
+const TEST_TODAY_SNAPSHOT_KEY = `${TEST_USER_STORAGE_SCOPE}:today:outfitReturnSnapshot:recommendation-copy-contract-v4`;
+const TEST_SCENE_SNAPSHOT_PREFIX = `${TEST_USER_STORAGE_SCOPE}:${encodeURIComponent('today:sceneSnapshot:recommendation-copy-contract-v4')}`;
 
 function acceptanceSnapshot({ sceneKey = 'home', count = 8, batchId = 'batch-test', exhausted = false } = {}) {
   return {
@@ -899,7 +899,7 @@ test('Sport page with a previous batch is reset without business calls', async (
 test('precise reset removes only current-user recommendation snapshots', async () => {
   const internals = loadE2eInternals();
   const snapshot = acceptanceSnapshot({ count: 8 });
-  const otherUserSnapshotKey = 'd1d:userStorage:v1:develop:cloud:test:user:other-user:today:outfitReturnSnapshot:recommendation-copy-contract-v3';
+  const otherUserSnapshotKey = 'd1d:userStorage:v1:develop:cloud:test:user:other-user:today:outfitReturnSnapshot:recommendation-copy-contract-v4';
   const harness = createTodayAcceptanceHarness({
     storageEntries: {
       ...acceptanceStorageEntries(snapshot),
@@ -1554,7 +1554,7 @@ test('production presentation evidence validator keeps raw response fields out o
     shared: {
       scene: 'sport',
       planVersion: 'presentation-plan-v2',
-      copyContractVersion: 'recommendation-copy-contract-v3',
+      copyContractVersion: 'recommendation-copy-contract-v4',
       qaVersion: internals.EXPECTED_QA_VERSION,
     },
     cards: cards.map((card, index) => ({

@@ -219,15 +219,18 @@ function buildReasonSemanticSkeleton(plan) {
   return [
     plan?.primaryRelationCode || plan?.primaryRelation?.relationCode || '',
     plan?.reasonClaim?.relationCode || '',
-    plan?.reasonClaim?.semanticSkeleton || '',
-    plan?.sceneConclusion || '',
+    plan?.scene || plan?.factModel?.scene || '',
+    ...(Array.isArray(plan?.todayCopyPlan?.clauses)
+      ? plan.todayCopyPlan.clauses.map((clause) => safeCode(clause?.templateId)).filter(Boolean)
+      : []),
   ].join('|');
 }
 
 function buildTitleSemanticSkeleton(plan) {
   return [
-    plan?.titleConcept || '',
     plan?.primaryRelationCode || plan?.primaryRelation?.relationCode || '',
+    plan?.titleAction || '',
+    plan?.titleDimension || '',
   ].join('|');
 }
 

@@ -55,7 +55,7 @@ function contract(scene, items = itemsFor(scene), weather = { temp: 22, weather:
 
 test('Contract publishes the new versions and complete canonical Claim metadata', () => {
   const result = contract('work');
-  assert.equal(COPY_CONTRACT_VERSION, 'recommendation-copy-contract-v3');
+  assert.equal(COPY_CONTRACT_VERSION, 'recommendation-copy-contract-v4');
   assert.equal(result.copyContractVersion, COPY_CONTRACT_VERSION);
   assert.equal(result.voiceBankVersion, VOICE_BANK_VERSION);
   assert.equal(result.gateResult, 'PASS');

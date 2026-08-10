@@ -148,13 +148,19 @@ interface ClientImageTiming {
 interface TodayFullComputeAcceptanceRequest {
   acceptanceRunId: string;
   captureId: string;
+  weatherModeOverride?: 'disabled';
 }
 
 interface TodayDiagnosticsBridge {
   marker: 'd1d-today-production-handler-v1';
+  copyAcceptanceBuild: 'today-copy-naturalness-v1';
   ready: boolean;
   sceneKey: SceneKey;
   triggerFullCompute: (request: TodayFullComputeAcceptanceRequest) => Promise<boolean>;
+  readCopyAcceptanceState: () => {
+    sceneKey: SceneKey;
+    outfits: Outfit[];
+  };
 }
 
 function isTodayDiagnosticsRuntime() {
@@ -171,7 +177,7 @@ function isTodayDiagnosticsRuntime() {
 }
 
 interface TodayRestoreSnapshot {
-  version: 3;
+  version: 4;
   copyContractVersion: typeof COPY_CONTRACT_VERSION;
   outfits: Outfit[];
   currentIndex: number;
@@ -214,8 +220,8 @@ interface TodayRestoreSnapshotInput {
   recommendationNotice?: string;
 }
 
-const TODAY_RESTORE_SNAPSHOT_KEY = 'today:outfitReturnSnapshot:recommendation-copy-contract-v3';
-const TODAY_SCENE_SNAPSHOT_STORAGE_PREFIX = 'today:sceneSnapshot:recommendation-copy-contract-v3';
+const TODAY_RESTORE_SNAPSHOT_KEY = 'today:outfitReturnSnapshot:recommendation-copy-contract-v4';
+const TODAY_SCENE_SNAPSHOT_STORAGE_PREFIX = 'today:sceneSnapshot:recommendation-copy-contract-v4';
 const TODAY_RESTORE_SNAPSHOT_TTL_MS = 10 * 60 * 1000;
 const WARDROBE_REFRESH_STORAGE_KEY = 'wardrobeNeedsRefresh';
 const TODAY_TIME_OF_DAY: TimeOfDay = 'all_day';
@@ -1409,7 +1415,7 @@ export default function TodayPage() {
       recommendationNotice: input.recommendationNotice ?? recommendationNoticeRef.current,
     }) : null;
     const snapshot: TodayRestoreSnapshot = {
-      version: 3,
+      version: 4,
       copyContractVersion: COPY_CONTRACT_VERSION,
       outfits: snapshotOutfits,
       currentIndex: snapshotIndex,
@@ -1571,7 +1577,7 @@ export default function TodayPage() {
         return null;
       }
       if (
-        value.version !== 3
+        value.version !== 4
         || value.copyContractVersion !== COPY_CONTRACT_VERSION
         || !Array.isArray(value.outfits)
       ) {
@@ -2121,8 +2127,20 @@ export default function TodayPage() {
     };
     const bridge: TodayDiagnosticsBridge = {
       marker: 'd1d-today-production-handler-v1',
+      copyAcceptanceBuild: 'today-copy-naturalness-v1',
       ready: Boolean(isAuthenticated && runtimeKey && !loading && !operation),
       sceneKey: selectedSceneKeyRef.current,
+      readCopyAcceptanceState: () => ({
+        sceneKey: selectedSceneKeyRef.current,
+        outfits: outfitsRef.current.map((outfit) => ({
+          id: outfit.id,
+          outfitKey: outfit.outfitKey,
+          scene: outfit.scene,
+          clothingIds: outfit.clothingIds,
+          copyContractVersion: outfit.copyContractVersion,
+          copyContract: outfit.copyContract,
+        } as Outfit)),
+      }),
       triggerFullCompute: async (request) => {
         if (!request?.acceptanceRunId || !request?.captureId) {
           throw new Error('acceptanceRunId and captureId are required');
@@ -2131,8 +2149,8 @@ export default function TodayPage() {
         return requestRecommendations({
           intentId: nextRecommendationIntentId('retry'),
           sceneKey: selectedSceneKeyRef.current,
-          weather: currentWeatherRef.current,
-          weatherMode: currentWeatherModeRef.current,
+          weather: request.weatherModeOverride === 'disabled' ? undefined : currentWeatherRef.current,
+          weatherMode: request.weatherModeOverride ?? currentWeatherModeRef.current,
           trigger: 'retry',
           acceptanceDiagnostics: request,
         });

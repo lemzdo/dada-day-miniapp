@@ -63,7 +63,7 @@ function buildFixtureCard(index) {
     defaultDetailExplanation: 'The set stays easy to move in.',
   };
   const copyContract = {
-    copyContractVersion: 'recommendation-copy-contract-v3',
+    copyContractVersion: 'recommendation-copy-contract-v4',
     gateResult: 'PASS',
     copyDisplay: 'rule',
     todayReasonSource: 'rule_default',
@@ -136,7 +136,7 @@ test('sanitized evidence captures eight real presentation-shaped cards without c
   assert.deepEqual(evidence.shared, {
     scene: 'sport',
     planVersion: null,
-    copyContractVersion: 'recommendation-copy-contract-v3',
+    copyContractVersion: 'recommendation-copy-contract-v4',
     qaVersion: 'qa-batch-audit-v6-1-semantic-presentation',
   });
   assert.deepEqual(evidence.cards.map((card) => card.cardAlias), ['C01', 'C02', 'C03', 'C04', 'C05', 'C06', 'C07', 'C08']);
@@ -187,7 +187,7 @@ test('missing evidence stays explicit and does not invent facts', () => {
   assert.equal(card.finalReason, null);
 });
 
-test('relation binding reports MATCH, MISMATCH, and NOT_APPLICABLE without a false failure', () => {
+test('relation binding reports MATCH and MISMATCH while a single item keeps a grounded structure relation', () => {
   const countContract = buildRecommendationCountContract({ returnedCardCount: 1, remainingUniqueBeforeConsume: 1 });
   const withRelation = canonicalizeRecommendation({
     scene: 'sport',
@@ -216,9 +216,10 @@ test('relation binding reports MATCH, MISMATCH, and NOT_APPLICABLE without a fal
     copyContract: { coreEligibilityReasonCode: 'HOME_COMFORT', riskFlags: [] },
     contentPlan: { version: 'xiaoda-content-plan-v1', sceneIntent: 'home:indoor_relax', primaryBenefit: 'ease', items: [{ id: 'top-2', slot: 'top' }] },
   }, { scene: 'home' });
-  const notApplicable = buildPresentationEvidence({ scene: 'home', finalCards: [withoutRelation], countContract }).cards[0];
-  assert.equal(notApplicable.binding.relationBindingStatus, 'NOT_APPLICABLE');
-  assert.equal(notApplicable.binding.relationCodesEqual, null);
+  const groundedSingleItem = buildPresentationEvidence({ scene: 'home', finalCards: [withoutRelation], countContract }).cards[0];
+  assert.equal(groundedSingleItem.primaryRelationCode, 'STRUCTURE_SINGLE_ITEM');
+  assert.equal(groundedSingleItem.binding.relationBindingStatus, 'MATCH');
+  assert.equal(groundedSingleItem.binding.relationCodesEqual, true);
 });
 
 test('PII and evidence budget checks fail instead of dropping fields', () => {

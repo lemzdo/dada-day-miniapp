@@ -149,7 +149,7 @@ test('four scenes compile only fixed Catalog strings and allow missing detail', 
 
 test('sparse unsupported input stays versioned rejected and empty', () => {
   const [result] = compileRecommendationLanguageV3({ outfits: [{ id: 'sparse' }], scene: 'work' });
-  assert.equal(result.copyContractVersion, 'recommendation-copy-contract-v3');
+  assert.equal(result.copyContractVersion, 'recommendation-copy-contract-v4');
   assert.equal(result.copyContract.gateResult, 'REJECT');
   assert.equal(result.reason, '');
   assert.equal(result.reasoning, undefined);

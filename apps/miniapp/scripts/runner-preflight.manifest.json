@@ -132,8 +132,8 @@
       "timing": "once before the formal matrix Initial",
       "currentUserOnly": true,
       "removedBusinessKeys": [
-        "today:outfitReturnSnapshot:recommendation-copy-contract-v3",
-        "today:sceneSnapshot:recommendation-copy-contract-v3:*"
+        "today:outfitReturnSnapshot:recommendation-copy-contract-v4",
+        "today:sceneSnapshot:recommendation-copy-contract-v4:*"
       ],
       "fullStorageClearForbidden": true,
       "preserved": [

@@ -164,6 +164,7 @@ function buildQaAuditSummaries({
   const cardConsistencyFailures = finalCards.filter((card) => card.consistency === false).length;
   const qualificationFailureCount = visibleRecords.filter((record) => hasQualificationFailure(record)).length;
   const safetyFailureCount = visibleRecords.filter((record) => hasSafetyFailure(record)).length;
+  const naturalnessFailureCount = visibleRecords.filter((record) => record.naturalnessGateResult === 'REJECT').length;
   const safetyWarningCount = visibleRecords.filter((record) => hasOrdinarySafetyWarning(record)).length;
   const sceneConfidenceWarningCount = visibleRecords.filter((record) => hasSceneConfidenceWarning(record)).length;
   const qaWarnings = [
@@ -182,6 +183,7 @@ function buildQaAuditSummaries({
     cardConsistencyFailures,
     qualificationFailureCount,
     safetyFailureCount,
+    naturalnessFailureCount,
   });
   const gateStatus = qaBlockReasons.length > 0
     ? 'failed'
@@ -261,6 +263,7 @@ function buildQaAuditSummaries({
     presentationFactSignatureHash: visibleRecords[0]?.presentationFactSignatureHash || null,
     primaryRelationCode: visibleRecords[0]?.primaryRelationCode || null,
     unsupportedClaimCount: visibleRecords.reduce((sum, record) => sum + record.unsupportedClaimCount, 0),
+    naturalnessFailureCount,
     reasonSemanticSkeleton: visibleRecords[0]?.reasonSemanticSkeleton || '',
     titleSemanticSkeleton: visibleRecords[0]?.titleSemanticSkeleton || '',
     semanticEquivalentGroupCount: semanticEquivalentGroups.filter((group) => group.count > 1).length,
@@ -407,6 +410,7 @@ function buildQaGateSummary(audit) {
     availableDifferentiatorCount: safeNonNegativeNumber(audit?.availableDifferentiatorCount),
     titleDuplicateWarningCount: safeNonNegativeNumber(audit?.titleDuplicateWarningCount),
     unsupportedClaimCount: safeNonNegativeNumber(audit?.unsupportedClaimCount),
+    naturalnessFailureCount: safeNonNegativeNumber(audit?.naturalnessFailureCount),
     tagSceneMismatchCount: safeNonNegativeNumber(audit?.tagSceneMismatchCount),
     cardConsistencyFailures: safeNonNegativeNumber(audit?.cardConsistencyFailures),
     qaTruncated: audit?.qaTruncated === true,
@@ -524,6 +528,7 @@ function buildQaBlockReasons({
   cardConsistencyFailures = 0,
   qualificationFailureCount = 0,
   safetyFailureCount = 0,
+  naturalnessFailureCount = 0,
 } = {}) {
   const reasons = [];
   if (syntheticSuffixCount > 0) reasons.push('SYNTHETIC_SUFFIX');
@@ -537,6 +542,7 @@ function buildQaBlockReasons({
   if (cardConsistencyFailures > 0) reasons.push('CARD_CONSISTENCY');
   if (qualificationFailureCount > 0) reasons.push('QUALIFICATION_INVALID');
   if (safetyFailureCount > 0) reasons.push('SAFETY_INVALID');
+  if (naturalnessFailureCount > 0) reasons.push('COPY_NATURALNESS_INVALID');
   return reasons;
 }
 
@@ -572,6 +578,9 @@ function buildVisibleOutfitRecords(outfits, selected) {
       selectedDifferentiator: presentationPlan.selectedDifferentiator || null,
       differentiatorApplied: isSelectedDifferentiatorApplied(presentationPlan, outfit),
       unsupportedClaimCount: presentationPlan.unsupportedClaims.length,
+      naturalnessGateResult: sharedPlan
+        ? presentationPlan.naturalnessGateResult || 'REJECT'
+        : outfit?.copyContract?.naturalnessGateResult || 'NOT_APPLICABLE',
       reasonSemanticSkeleton: buildReasonSemanticSkeleton(presentationPlan),
       titleSemanticSkeleton: buildTitleSemanticSkeleton(presentationPlan),
     };

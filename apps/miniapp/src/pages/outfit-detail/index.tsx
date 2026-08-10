@@ -155,7 +155,7 @@ function buildOutfitDetailCacheKey(source: DetailSource, detailId: string | unde
   if (!detailId) return '';
   return buildPageCacheKey([
     'outfitDetail',
-    'recommendation-copy-contract-v3',
+    'recommendation-copy-contract-v4',
     source,
     detailId,
     scene || 'unknown',

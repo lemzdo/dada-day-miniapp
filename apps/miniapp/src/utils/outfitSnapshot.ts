@@ -14,9 +14,9 @@ import {
 import { getOutfitDisplayTitle } from './outfitTitle';
 import { stripStaleDefaultCopy } from './recommendationCopyContract';
 
-const DETAIL_DRAFT_KEY = 'outfitDetailDraft:recommendation-copy-contract-v3';
+const DETAIL_DRAFT_KEY = 'outfitDetailDraft:recommendation-copy-contract-v4';
 const OUTFIT_STATE_SYNC_KEY = 'outfitStateSync';
-const TODAY_RESTORE_SNAPSHOT_KEY = 'today:outfitReturnSnapshot:recommendation-copy-contract-v3';
+const TODAY_RESTORE_SNAPSHOT_KEY = 'today:outfitReturnSnapshot:recommendation-copy-contract-v4';
 
 interface OutfitSnapshotStorageOptions {
   authContext?: ActiveAuthContext | null;

@@ -50,7 +50,7 @@ function productionPresentationFixture() {
         sceneIntent: 'sport:light_activity',
       },
       copyContract: {
-        copyContractVersion: 'recommendation-copy-contract-v3',
+        copyContractVersion: 'recommendation-copy-contract-v4',
         coreEligibilityReasonCode: 'SPORT_LIGHT_ACTIVITY_SET',
         todayReason: 'fixture copy replaced by presentation plan',
       },
@@ -207,15 +207,17 @@ test('real production-shaped eight-card fixture uses semantic presentation facts
     'SAME_COLOR_ALL_ROLES',
   ]);
   assert.deepEqual(cards.map((card) => card.copyContract.todayReason), [
-    '粉色短袖T恤配灰色短裤，亮色突出重点，适合日常轻运动，组合简洁。',
-    '白色短袖T恤与灰色短裤用中性色过渡，适合日常轻运动，组合简洁。',
-    '白色短袖T恤与灰色短裤用中性色过渡，适合日常轻运动，组合简洁。',
-    '白色短袖T恤、白色短裤和白色运动鞋同色统一，适合日常轻运动，组合简洁。',
-    '灰色短袖T恤与灰色短裤顺色衔接，适合日常轻运动，组合简洁。',
-    '绿色短袖T恤配灰色短裤，亮色突出重点，适合日常轻运动，组合简洁。',
-    '白色短袖T恤与灰色短裤用中性色过渡，适合日常轻运动，组合简洁。',
-    '白色短袖T恤、白色短裤和白色运动鞋同色统一，适合日常轻运动，组合简洁。',
+    '粉色短袖T恤负责亮色重点，灰色短裤用中性色接住，日常轻运动可以直接这样穿。',
+    '白色短袖T恤和灰色短裤都是中性色，日常轻运动可以直接这样穿。',
+    '白色短袖T恤和灰色短裤都是中性色，日常轻运动可以直接这样穿。',
+    '短袖T恤、短裤和运动鞋都用了白色，日常轻运动可以直接这样穿。',
+    '短袖T恤和短裤都用了灰色，日常轻运动可以直接这样穿。',
+    '绿色短袖T恤负责亮色重点，灰色短裤用中性色接住，日常轻运动可以直接这样穿。',
+    '白色短袖T恤和灰色短裤都是中性色，日常轻运动可以直接这样穿。',
+    '短袖T恤、短裤和运动鞋都用了白色，日常轻运动可以直接这样穿。',
   ]);
+  assert.equal(cards.every((card) => card.copyContract.naturalnessGateResult === 'PASS'
+    && card.copyContract.naturalnessRiskFlags.length === 0), true);
   assert.equal(cards.every((card) => !/活动方便|稳定包脚|\(\d+\)|第\d+套/.test(`${card.title}${card.copyContract.todayReason}`)), true);
   assert.equal(new Set(cards.map((card) => card.title)).size, 5);
   assert.equal(new Set(cards.map((card) => card.copyContract.presentationFactSignature)).size, 5);
@@ -314,7 +316,7 @@ test('real-schema replay preserves onepiece and produces authorized relations', 
   const structureDifferentiator = model.availableDifferentiators.find((entry) => entry.relationCode === 'STRUCTURE_ONEPIECE_SHOES');
   const structurePlan = buildPresentationPlan(model, { selectedDifferentiator: structureDifferentiator });
   assert.notEqual(colorPlan.todayReason, structurePlan.todayReason);
-  assert.match(structurePlan.todayReason, /衔接裙装与鞋履/);
+  assert.match(structurePlan.todayReason, /吊带裙配运动鞋/);
   assert.equal(card.presentationPlan.selectedDifferentiator.relationCode, card.presentationPlan.primaryRelationCode);
   assert.deepEqual(card.todaySubjectItemIds, card.presentationPlan.selectedDifferentiator.subjectItemIds);
   assert.deepEqual(card.todayEvidenceFactIds, card.presentationPlan.selectedDifferentiator.evidenceFactIds);
@@ -347,7 +349,7 @@ test('real-schema replay canonical labels have one semantic owner', () => {
   assert.equal(labels.some((value) => /毛衣毛衣|长裤长裤|Polo衫Polo衫/.test(value)), false);
 });
 
-test('real-schema replay hides detail without a second authorized relation', () => {
+test('standalone onepiece uses an authorized structural detail instead of generic fallback', () => {
   const source = realSchemaReplayFixture({
     items: [{
       clothingId: 'replay-single-dress',
@@ -357,9 +359,11 @@ test('real-schema replay hides detail without a second authorized relation', () 
     }],
   });
   const [card] = canonicalizeRecommendationBatch([source], { scene: 'home' });
-  assert.equal(card.presentationPlan.availableDifferentiators.length, 1);
-  assert.equal(card.detailDisplay, 'hidden');
-  assert.equal(card.copyContract.detailExplanation, '');
+  assert.equal(card.presentationPlan.availableDifferentiators.length, 2);
+  assert.equal(card.presentationPlan.availableDifferentiators[1].relationCode, 'STRUCTURE_ONEPIECE_ONLY');
+  assert.equal(card.detailDisplay, 'visible');
+  assert.match(card.copyContract.detailExplanation, /单穿就能成一身/);
+  assert.equal(card.copyContract.naturalnessGateResult, 'PASS');
 });
 
 test('top plus bottom regressions never authorize or mention shoes', () => {
@@ -383,12 +387,12 @@ test('top plus bottom regressions never authorize or mention shoes', () => {
   assert.notEqual(card.copyContract.todayReason, card.copyContract.detailExplanation);
 });
 
-test('scene conclusions and benefits are present without system phrasing', () => {
-  for (const [scene, conclusion, benefit] of [
-    ['home', '适合居家场景', '配色简洁'],
-    ['work', '适合通勤场景', '整体利落'],
-    ['date', '适合约会场景', '整体更完整'],
-    ['sport', '适合日常轻运动', '组合简洁'],
+test('scene value clauses stay conversational and do not invent a closing benefit', () => {
+  for (const [scene, reasonCode, sceneValue] of [
+    ['home', 'HOME_COMFORT', '宅家时可以直接这样穿'],
+    ['work', 'WORK_BASELINE_PRESENTABLE', '日常通勤可以直接这样穿'],
+    ['date', 'DATE_SIMPLE_COMPLETE', '约会时可以直接这样穿'],
+    ['sport', 'SPORT_LIGHT_ACTIVITY_SET', '日常轻运动可以直接这样穿'],
   ]) {
     const source = {
       scene,
@@ -397,11 +401,13 @@ test('scene conclusions and benefits are present without system phrasing', () =>
         authorizedItem('bottom', '短裤', '灰色', { itemId: `${scene}-bottom` }),
         ...(scene === 'sport' ? [authorizedItem('shoes', '运动鞋', '白色', { itemId: `${scene}-shoes` })] : []),
       ],
-      copyContract: { coreEligibilityReasonCode: scene === 'work' ? 'WORK_BASELINE_PRESENTABLE' : scene === 'sport' ? 'SPORT_LIGHT_ACTIVITY_SET' : 'HOME_COMFORT' },
+      copyContract: { coreEligibilityReasonCode: reasonCode },
     };
     const [card] = canonicalizeRecommendationBatch([source], { scene });
-    assert.match(card.copyContract.todayReason, new RegExp(`${conclusion}.*${benefit}`));
-    assert.doesNotMatch(`${card.copyContract.todayReason}${card.copyContract.detailExplanation}`, /构成明确的上下装关系|分别承担|颜色关系清楚|配色承接关系明确|配色层次明确|是这套搭配的主体/);
+    assert.match(card.copyContract.todayReason, new RegExp(`${sceneValue}。$`));
+    assert.deepEqual(card.copyContract.todayCopyProvenance.clauses.map((clause) => clause.slot), ['relation', 'scene_value']);
+    assert.equal(card.copyContract.naturalnessGateResult, 'PASS');
+    assert.doesNotMatch(`${card.copyContract.todayReason}${card.copyContract.detailExplanation}`, /适合.+场景|配色简洁|整体协调|整体利落|整体更完整|构成明确的上下装关系|分别承担|颜色关系清楚|配色承接关系明确|配色层次明确|是这套搭配的主体/);
   }
 });
 
@@ -519,8 +525,12 @@ test('production-shaped language closeout replay removes all seven binding misma
       ? [index] : [];
   });
   assert.deepEqual(afterMismatches, []);
-  assert.deepEqual(replayed.map((card) => [card.title, card.todayReason, card.detailExplanation]),
-    beforeCards.map((card) => [card.title, card.todayReason, card.detailExplanation]));
+  assert.deepEqual(replayed.map((card) => card.title), beforeCards.map((card) => card.title));
+  assert.notDeepEqual(replayed.map((card) => [card.todayReason, card.detailExplanation]),
+    beforeCards.map((card) => [card.todayReason, card.detailExplanation]));
+  assert.equal(replayed.every((card) => card.copyContract.naturalnessGateResult === 'PASS'
+    && card.copyContract.naturalnessRiskFlags.length === 0
+    && !/中性色过渡|适合.+场景|配色简洁|整体协调|整体利落|整体更完整/.test(`${card.todayReason}${card.detailExplanation}`)), true);
   assert.equal(replayed.every((card) => card.presentationPlan.unsupportedClaims.length === 0
     && !hasSyntheticSuffix(card.title)
     && !hasSyntheticSuffix(card.todayReason)

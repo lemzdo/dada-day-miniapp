@@ -39,6 +39,7 @@ test('buildSupportedOutfitInsights produces grounded golden insights', () => {
   assert.deepEqual(echo.pageSuitability, ['today', 'detail']);
   assert.ok(echo.requiredFacts.includes('color:米白色'));
   assert.ok(echo.text.includes('米白色'));
+  assert.equal(insights.find((entry) => entry.code === 'scene_fit_home').text, '宅家时可以直接穿这组衣物');
 });
 
 test('buildSupportedOutfitInsights does not invent color insights without colors', () => {

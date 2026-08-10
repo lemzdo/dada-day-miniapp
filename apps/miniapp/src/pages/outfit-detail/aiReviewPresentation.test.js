@@ -186,7 +186,7 @@ test('rule fallback response stays empty in the AI-only presentation', () => {
     tip: '旧 fallback 建议也不展示。',
     source: 'rule_fallback',
     reviewSource: 'rule_fallback',
-  }, contentPlan, { copyContractVersion: 'recommendation-copy-contract-v3' });
+  }, contentPlan, { copyContractVersion: 'recommendation-copy-contract-v4' });
 
   assert.deepEqual(result.bodyParagraphs, []);
   assert.equal(result.advice, null);
@@ -216,7 +216,7 @@ test('rule default and legacy comments never enter the AI-only presentation', ()
     },
   ]) {
     const result = buildAiReviewPresentation(aiComment, contentPlan, {
-      copyContractVersion: 'recommendation-copy-contract-v3',
+      copyContractVersion: 'recommendation-copy-contract-v4',
     });
     const visible = [...result.bodyParagraphs, result.advice].filter(Boolean).join('\n');
 
@@ -287,7 +287,7 @@ test('success false rule fallback keeps retry button and non-success toast seman
 });
 
 test('canonical rule detail is excluded from the AI-only presentation', () => {
-  const currentContext = { copyContractVersion: 'recommendation-copy-contract-v3' };
+  const currentContext = { copyContractVersion: 'recommendation-copy-contract-v4' };
   const contentPlan = {
     defaultDetailExplanation: '这条裤子弹性不错，坐着办公久一点也不容易勒。',
     suggestion: { text: '不应混入默认正文的建议。' },
@@ -342,7 +342,7 @@ test('real ai remains independent of stale default copy but fallback-first confl
   }, {
     defaultDetailExplanation: '这条裤子弹性不错，坐着办公久一点也不容易勒。',
   }, {
-    copyContractVersion: 'recommendation-copy-contract-v3',
+    copyContractVersion: 'recommendation-copy-contract-v4',
     reviewSource: 'ai',
     enhanced: true,
   });

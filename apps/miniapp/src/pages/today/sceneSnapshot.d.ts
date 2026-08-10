@@ -1,6 +1,6 @@
 import type { Outfit, RecommendationCountContract, WeatherMode } from '@starter-template/types';
 
-export const TODAY_SCENE_COPY_VERSION: 'recommendation-copy-contract-v3';
+export const TODAY_SCENE_COPY_VERSION: 'recommendation-copy-contract-v4';
 export const TODAY_SCENE_VOICE_VERSION: 'xiaoda-fixed-claim-catalog-v2';
 export const TODAY_SCENE_SNAPSHOT_TTL_MS: number;
 
