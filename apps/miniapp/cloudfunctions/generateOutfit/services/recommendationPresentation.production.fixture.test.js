@@ -207,14 +207,14 @@ test('real production-shaped eight-card fixture uses semantic presentation facts
     'SAME_COLOR_ALL_ROLES',
   ]);
   assert.deepEqual(cards.map((card) => card.copyContract.todayReason), [
-    '粉色短袖T恤负责亮色重点，灰色短裤用中性色接住，日常轻运动可以直接这样穿。',
-    '白色短袖T恤和灰色短裤都是中性色，日常轻运动可以直接这样穿。',
-    '白色短袖T恤和灰色短裤都是中性色，日常轻运动可以直接这样穿。',
-    '短袖T恤、短裤和运动鞋都用了白色，日常轻运动可以直接这样穿。',
-    '短袖T恤和短裤都用了灰色，日常轻运动可以直接这样穿。',
-    '绿色短袖T恤负责亮色重点，灰色短裤用中性色接住，日常轻运动可以直接这样穿。',
-    '白色短袖T恤和灰色短裤都是中性色，日常轻运动可以直接这样穿。',
-    '短袖T恤、短裤和运动鞋都用了白色，日常轻运动可以直接这样穿。',
+    '粉色短袖T恤配灰色短裤，亮色留在上半身。',
+    '白色短袖T恤和灰色短裤都是中性色。',
+    '白色短袖T恤和灰色短裤都是中性色。',
+    '短袖T恤、短裤和运动鞋都用了白色。',
+    '短袖T恤和短裤都用了灰色。',
+    '绿色短袖T恤配灰色短裤，亮色留在上半身。',
+    '白色短袖T恤和灰色短裤都是中性色。',
+    '短袖T恤、短裤和运动鞋都用了白色。',
   ]);
   assert.equal(cards.every((card) => card.copyContract.naturalnessGateResult === 'PASS'
     && card.copyContract.naturalnessRiskFlags.length === 0), true);
@@ -387,12 +387,12 @@ test('top plus bottom regressions never authorize or mention shoes', () => {
   assert.notEqual(card.copyContract.todayReason, card.copyContract.detailExplanation);
 });
 
-test('scene value clauses stay conversational and do not invent a closing benefit', () => {
-  for (const [scene, reasonCode, sceneValue] of [
-    ['home', 'HOME_COMFORT', '宅家时可以直接这样穿'],
-    ['work', 'WORK_BASELINE_PRESENTABLE', '日常通勤可以直接这样穿'],
-    ['date', 'DATE_SIMPLE_COMPLETE', '约会时可以直接这样穿'],
-    ['sport', 'SPORT_LIGHT_ACTIVITY_SET', '日常轻运动可以直接这样穿'],
+test('generic scene fallbacks are omitted instead of being paraphrased', () => {
+  for (const [scene, reasonCode] of [
+    ['home', 'HOME_COMFORT'],
+    ['work', 'WORK_BASELINE_PRESENTABLE'],
+    ['date', 'DATE_SIMPLE_COMPLETE'],
+    ['sport', 'SPORT_LIGHT_ACTIVITY_SET'],
   ]) {
     const source = {
       scene,
@@ -404,8 +404,8 @@ test('scene value clauses stay conversational and do not invent a closing benefi
       copyContract: { coreEligibilityReasonCode: reasonCode },
     };
     const [card] = canonicalizeRecommendationBatch([source], { scene });
-    assert.match(card.copyContract.todayReason, new RegExp(`${sceneValue}。$`));
-    assert.deepEqual(card.copyContract.todayCopyProvenance.clauses.map((clause) => clause.slot), ['relation', 'scene_value']);
+    assert.doesNotMatch(card.copyContract.todayReason, /可以直接这样穿/);
+    assert.deepEqual(card.copyContract.todayCopyProvenance.clauses.map((clause) => clause.slot), ['relation']);
     assert.equal(card.copyContract.naturalnessGateResult, 'PASS');
     assert.doesNotMatch(`${card.copyContract.todayReason}${card.copyContract.detailExplanation}`, /适合.+场景|配色简洁|整体协调|整体利落|整体更完整|构成明确的上下装关系|分别承担|颜色关系清楚|配色承接关系明确|配色层次明确|是这套搭配的主体/);
   }

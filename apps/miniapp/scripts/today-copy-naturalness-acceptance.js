@@ -23,6 +23,7 @@ const SCENE_TAGS = Object.freeze({ home: '居家', work: '上班', date: '约会
 const COPY_CONTRACT_VERSION = 'recommendation-copy-contract-v4';
 const NATURALNESS_GATE_VERSION = 'copy-naturalness-gate-v1';
 const OLD_EDITORIAL_COPY = /中性色过渡|适合.+场景|配色简洁|整体协调|整体利落|整体更完整|更显质感|已经配齐|已经配上|唯一有明确事实|已经配成上下装|已经配成一身/;
+const GENERIC_SCENE_FALLBACK = /(?:宅家时|日常通勤|约会时|日常轻运动)可以直接这样穿/;
 const SCENE_SEMANTIC_TOKENS = Object.freeze({ home: '宅家', work: '通勤', date: '约会', sport: '轻运动' });
 
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
@@ -117,21 +118,32 @@ function auditFinalTodayCopy(scene, data, uiCards) {
   const uiReasons = uiCards.map((card) => card.todayReason).filter(Boolean);
   const canonicalReasons = outfits.map((outfit) => String(outfit?.copyContract?.todayReason || '').trim());
   const failures = [];
-  if (outfits.length < 4) failures.push(`returned_card_count:${outfits.length}`);
-  if (uiReasons.length < 4) failures.push(`ui_reason_count:${uiReasons.length}`);
+  const sceneClauses = [];
+  let genericSceneFallbackCount = 0;
+  let omittedLowValueClauseCount = 0;
+  if (outfits.length < 8) failures.push(`returned_card_count:${outfits.length}`);
+  if (uiReasons.length < 8) failures.push(`ui_reason_count:${uiReasons.length}`);
   outfits.forEach((outfit, index) => {
     const contract = outfit?.copyContract || {};
     const provenance = contract.todayCopyProvenance || {};
+    const clauses = Array.isArray(provenance.clauses) ? provenance.clauses : [];
     const clothingIds = new Set((Array.isArray(outfit?.clothingIds) ? outfit.clothingIds : []).map(String));
     if (![scene, SCENE_TAGS[scene]].includes(outfit.scene)) failures.push(`scene:${index}`);
     if (outfit.copyContractVersion !== COPY_CONTRACT_VERSION || contract.copyContractVersion !== COPY_CONTRACT_VERSION) failures.push(`contract:${index}`);
     if (contract.naturalnessGateVersion !== NATURALNESS_GATE_VERSION || contract.naturalnessGateResult !== 'PASS') failures.push(`naturalness:${index}`);
     if (!Array.isArray(contract.naturalnessRiskFlags) || contract.naturalnessRiskFlags.length > 0) failures.push(`naturalness_flags:${index}`);
-    if (!Array.isArray(provenance.clauses) || provenance.clauses.length === 0 || provenance.text !== contract.todayReason) failures.push(`provenance:${index}`);
+    if (clauses.length === 0 || provenance.text !== contract.todayReason) failures.push(`provenance:${index}`);
     if (OLD_EDITORIAL_COPY.test(contract.todayReason || '')) failures.push(`editorial_copy:${index}`);
+    if (GENERIC_SCENE_FALLBACK.test(contract.todayReason || '')) {
+      genericSceneFallbackCount += 1;
+      failures.push(`generic_scene_fallback:${index}`);
+    }
     if (countText(contract.todayReason || '', SCENE_SEMANTIC_TOKENS[scene]) > 1) failures.push(`repeated_scene_semantics:${index}`);
     if (Number(contract.unsupportedClaimCount) !== 0) failures.push(`unsupported:${index}`);
-    for (const clause of Array.isArray(provenance.clauses) ? provenance.clauses : []) {
+    const emittedSceneClauses = clauses.filter((clause) => clause.slot === 'scene_value');
+    sceneClauses.push(...emittedSceneClauses.map((clause) => String(clause.text || '').trim()).filter(Boolean));
+    if (contract.coreEligibilityReasonCode && emittedSceneClauses.length === 0) omittedLowValueClauseCount += 1;
+    for (const clause of clauses) {
       if (!Array.isArray(clause.subjectItemIds) || clause.subjectItemIds.some((id) => !clothingIds.has(String(id)))) failures.push(`subject_binding:${index}`);
       if (clause.slot === 'benefit' && (!Array.isArray(clause.evidenceFactIds) || clause.evidenceFactIds.length === 0)) failures.push(`benefit_evidence:${index}`);
     }
@@ -146,7 +158,34 @@ function auditFinalTodayCopy(scene, data, uiCards) {
     finalCardCount: outfits.length,
     uiCardCount: uiReasons.length,
     samples: uiReasons.slice(0, 8),
+    finalCopies: uiReasons,
+    sceneClauses,
+    genericSceneFallbackCount,
+    omittedLowValueClauseCount,
   };
+}
+
+function summarizeNaturalnessMetrics(scenes) {
+  const entries = Array.isArray(scenes) ? scenes : [];
+  const finalCopies = entries.flatMap((scene) => Array.isArray(scene.finalCopies) ? scene.finalCopies : []);
+  const sceneClauses = entries.flatMap((scene) => Array.isArray(scene.sceneClauses) ? scene.sceneClauses : []);
+  const totalCardCount = finalCopies.length;
+  const genericSceneFallbackCount = entries.reduce((sum, scene) => sum + Number(scene.genericSceneFallbackCount || 0), 0);
+  const omittedLowValueClauseCount = entries.reduce((sum, scene) => sum + Number(scene.omittedLowValueClauseCount || 0), 0);
+  return {
+    totalCardCount,
+    emittedSceneClauseCount: sceneClauses.length,
+    exactSceneClauseDuplicateRate: duplicateRate(sceneClauses),
+    exactFullCopyDuplicateRate: duplicateRate(finalCopies),
+    genericSceneFallbackCount,
+    genericSceneFallbackUsageRate: totalCardCount > 0 ? genericSceneFallbackCount / totalCardCount : 0,
+    omittedLowValueClauseCount,
+  };
+}
+
+function duplicateRate(values) {
+  const list = (Array.isArray(values) ? values : []).map((value) => String(value || '').trim()).filter(Boolean);
+  return list.length > 0 ? (list.length - new Set(list).size) / list.length : 0;
 }
 
 function countText(value, token) {
@@ -186,8 +225,8 @@ async function captureScene(session, scene, runId) {
   const responseData = unwrapped?.data;
   const responseHasOutfits = Boolean(responseData && Array.isArray(responseData.outfits));
   const data = responseHasOutfits ? responseData : { outfits: selectedState?.outfits || [] };
-  if (!Array.isArray(data.outfits) || data.outfits.length < 4) {
-    throw Object.assign(new Error(`${scene} response and Today state are missing four outfits`), { capture, unwrapped, selectedState });
+  if (!Array.isArray(data.outfits) || data.outfits.length < 8) {
+    throw Object.assign(new Error(`${scene} response and Today state are missing eight outfits`), { capture, unwrapped, selectedState });
   }
   if (!responseHasOutfits) {
     const fallbackAudit = auditFinalTodayCopy(scene, data, selectedUiCards);
@@ -237,8 +276,9 @@ async function runAcceptance() {
     const result = {
       version: 'today-copy-naturalness-acceptance-v1',
       runId,
-      passed: scenes.every((scene) => scene.passed && scene.samples.length >= 4),
+      passed: scenes.every((scene) => scene.passed && scene.samples.length >= 8),
       scenes,
+      metrics: summarizeNaturalnessMetrics(scenes),
     };
     fs.mkdirSync(artifactDirectory, { recursive: true });
     fs.writeFileSync(path.join(artifactDirectory, 'acceptance.json'), `${JSON.stringify(result, null, 2)}\n`, 'utf8');
@@ -264,4 +304,11 @@ if (require.main === module) {
   });
 }
 
-module.exports = { OLD_EDITORIAL_COPY, SCENES, auditFinalTodayCopy, runAcceptance };
+module.exports = {
+  GENERIC_SCENE_FALLBACK,
+  OLD_EDITORIAL_COPY,
+  SCENES,
+  auditFinalTodayCopy,
+  runAcceptance,
+  summarizeNaturalnessMetrics,
+};

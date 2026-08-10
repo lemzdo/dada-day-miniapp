@@ -297,7 +297,7 @@ test('duplicate fixed reasons consume the selected card visible difference witho
   const reasons = cards.map((card) => card.copyContract.todayReason);
 
   assert.equal(new Set(reasons).size, 8);
-  assert.equal(reasons.every((reason) => reason.includes('日常轻运动可以直接这样穿')), true);
+  assert.equal(reasons.every((reason) => !reason.includes('可以直接这样穿')), true);
   assert.equal(reasons.every((reason) => !/活动方便|稳定包脚/.test(reason)), true);
   assert.equal(reasons.some((reason) => /\(\d+\)|（\d+）|第\d+套/.test(reason)), false);
 });

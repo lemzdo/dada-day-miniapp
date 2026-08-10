@@ -52,7 +52,11 @@ test('naturalness combination matrix covers every requested axis and passes stru
   assert.deepEqual([...coverage.scenes].sort(), ['date', 'home', 'sport', 'work']);
   assert.equal(['top+bottom', 'top+bottom+shoes', 'onepiece', '基础款两件', '图案上衣', 'layer'].every((value) => coverage.structures.has(value)), true);
   assert.equal(['neutral', 'same', 'analogous', 'contrast', 'none'].every((value) => coverage.colors.has(value)), true);
-  assert.deepEqual([...coverage.clauseCounts].sort(), [2, 3]);
+  assert.deepEqual([...coverage.clauseCounts].sort(), [1, 2]);
+  assert.equal(CASES.every((entry) => {
+    const { model, relation } = buildInputs(entry);
+    return !buildNaturalTodayCopyPlan(model, relation).clauses.some((clause) => clause.slot === 'scene_value');
+  }), true);
 });
 
 test('missing relation has no generic sentence fallback', () => {

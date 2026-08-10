@@ -24,6 +24,7 @@ const COPY_NATURALNESS_FLAGS = Object.freeze({
   MECHANICAL_SCENE_RESTATEMENT: 'MECHANICAL_SCENE_RESTATEMENT',
   GENERIC_EDITORIAL_TAIL: 'GENERIC_EDITORIAL_TAIL',
   SYSTEM_CHECKLIST_TONE: 'SYSTEM_CHECKLIST_TONE',
+  NO_INCREMENTAL_INFORMATION: 'NO_INCREMENTAL_INFORMATION',
   LANGUAGE_POLICY_VIOLATION: 'LANGUAGE_POLICY_VIOLATION',
   TEXT_COMPOSITION_MISMATCH: 'TEXT_COMPOSITION_MISMATCH',
 });
@@ -44,7 +45,7 @@ function evaluateCopyNaturalness(planValue) {
   const flags = [];
   const allowedPatterns = plan.surface === 'detail'
     ? ['relation']
-    : ['relation', 'relation>scene_value', 'relation>scene_value>benefit'];
+    : ['relation', 'scene_value', 'benefit', 'relation>scene_value', 'relation>benefit', 'scene_value>benefit', 'relation>scene_value>benefit'];
   if (!allowedPatterns.includes(plan.compositionPattern)) flags.push(COPY_NATURALNESS_FLAGS.INVALID_SLOT_ORDER);
   if (plan.text !== joinClauses(plan.clauses)) flags.push(COPY_NATURALNESS_FLAGS.TEXT_COMPOSITION_MISMATCH);
   if (EDITORIAL_TAILS.test(plan.text)) flags.push(COPY_NATURALNESS_FLAGS.GENERIC_EDITORIAL_TAIL);
@@ -54,8 +55,11 @@ function evaluateCopyNaturalness(planValue) {
 
   const informationKeys = new Set();
   const usedEvidence = new Set();
+  const usedAuthorizations = new Set();
   for (const clause of plan.clauses) {
-    if (!isKnownTemplate(plan.surface, clause)) flags.push(COPY_NATURALNESS_FLAGS.UNKNOWN_TEMPLATE);
+    const definition = findTemplateDefinition(plan.surface, clause);
+    if (!definition) flags.push(COPY_NATURALNESS_FLAGS.UNKNOWN_TEMPLATE);
+    if (definition?.incrementalInformation !== true) flags.push(COPY_NATURALNESS_FLAGS.NO_INCREMENTAL_INFORMATION);
     if (!clause.templateId || !clause.informationKey || !clause.source
       || clause.subjectItemIds.length === 0
       || clause.evidenceFactIds.length + clause.authorizationIds.length === 0) {
@@ -79,7 +83,13 @@ function evaluateCopyNaturalness(planValue) {
         flags.push(COPY_NATURALNESS_FLAGS.DUPLICATE_INFORMATION);
       }
     }
+    const newSupportCount = clause.evidenceFactIds.filter((factId) => !usedEvidence.has(factId)).length
+      + clause.authorizationIds.filter((authorizationId) => !usedAuthorizations.has(authorizationId)).length;
+    if (informationKeys.size > 1 && newSupportCount === 0) {
+      flags.push(COPY_NATURALNESS_FLAGS.NO_INCREMENTAL_INFORMATION);
+    }
     clause.evidenceFactIds.forEach((factId) => usedEvidence.add(factId));
+    clause.authorizationIds.forEach((authorizationId) => usedAuthorizations.add(authorizationId));
   }
   return flags.length > 0 ? reject(flags) : pass();
 }
@@ -116,18 +126,18 @@ function normalizeClause(value) {
   };
 }
 
-function isKnownTemplate(surface, clause) {
+function findTemplateDefinition(surface, clause) {
   if (clause.slot === 'relation') {
     const bank = surface === 'detail' ? DETAIL_RELATION_SLOTS : RELATION_SLOTS;
-    return Object.values(bank).some((entry) => entry.id === clause.templateId);
+    return Object.values(bank).find((entry) => entry.id === clause.templateId) || null;
   }
   if (clause.slot === 'scene_value') {
-    return Object.values(SCENE_VALUE_SLOTS).some((entry) => entry.id === clause.templateId);
+    return Object.values(SCENE_VALUE_SLOTS).find((entry) => entry.id === clause.templateId) || null;
   }
   if (clause.slot === 'benefit') {
-    return BENEFIT_SLOTS.some((entry) => entry.id === clause.templateId);
+    return BENEFIT_SLOTS.find((entry) => entry.id === clause.templateId) || null;
   }
-  return false;
+  return null;
 }
 
 function pass() {
