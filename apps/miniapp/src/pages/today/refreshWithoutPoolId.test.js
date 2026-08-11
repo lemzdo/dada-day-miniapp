@@ -55,7 +55,7 @@ test('client initial state uses undefined not empty string for recommendationBat
 test('client refresh flow does not show error when recommendationBatchId is missing', () => {
   const todaySource = fs.readFileSync(path.join(__dirname, 'index.tsx'), 'utf8');
 
-  const refreshSection = todaySource.match(/async function handleRefresh\(\)[\s\S]*?\n {2}\}/);
+  const refreshSection = todaySource.match(/async function handleRefresh\([^)]*\)[\s\S]*?\n {2}\}/);
   assert.ok(refreshSection, 'should find handleRefresh function');
 
   const refreshCode = refreshSection[0];

@@ -26,7 +26,7 @@ const HISTORY_FIRST_PAGE_CACHE_TTL = 2 * 60 * 1000;
 const HISTORY_FIRST_PAGE_CACHE_KEY = buildPageCacheKey([
   'history',
   'first',
-  'recommendation-copy-contract-v4',
+  'recommendation-copy-contract-v7',
   PAGE_SIZE,
 ]);
 const WEEKDAY_LABELS = ['一', '二', '三', '四', '五', '六', '日'];

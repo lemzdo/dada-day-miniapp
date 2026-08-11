@@ -1076,6 +1076,9 @@ function projectPublicCopyContract(contract) {
     'detailSlotBindings', 'riskFlags', 'qualification', 'primaryRelationCode',
     'todayCopyProvenance', 'detailCopyProvenance', 'naturalnessGateVersion',
     'naturalnessGateResult', 'naturalnessRiskFlags',
+    'structuralNaturalnessVersion', 'structuralNaturalnessResult',
+    'structuralNaturalnessRiskFlags', 'messageIntent', 'messageCandidateId',
+    'structuralNaturalnessWarningFlags', 'messageDimension', 'valueAssessment',
     'unsupportedClaimCount',
   ]) {
     if (Object.prototype.hasOwnProperty.call(contract, field)) projected[field] = contract[field];
@@ -2523,6 +2526,14 @@ const COPY_CONTRACT_FIELDS = [
   'naturalnessGateVersion',
   'naturalnessGateResult',
   'naturalnessRiskFlags',
+  'structuralNaturalnessVersion',
+  'structuralNaturalnessResult',
+  'structuralNaturalnessRiskFlags',
+  'structuralNaturalnessWarningFlags',
+  'messageIntent',
+  'messageCandidateId',
+  'messageDimension',
+  'valueAssessment',
 ];
 
 function pickRecommendationCopyContractFields(primary, fallback) {

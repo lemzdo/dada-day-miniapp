@@ -13,6 +13,11 @@ const {
   readPresentationPlan,
 } = require('./presentationFactModel');
 const { evaluateCopyNaturalness } = require('./copyNaturalnessGate');
+const {
+  BATCH_EDITORIAL_PASS,
+  reviewBatchEditorialNaturalness,
+  selectBatchEditorialCandidates,
+} = require('./batchEditorialReview');
 
 const SCENE_PREFIX = Object.freeze({
   home: '居家',
@@ -27,25 +32,36 @@ function canonicalizeRecommendationBatch(outfits, { scene } = {}) {
     ...outfit,
     scene: normalizeScene(scene || outfit?.scene),
   }));
-  const differentiators = assignPresentationDifferentiators(models);
+  const editorialSelection = selectBatchEditorialCandidates(models);
   const canonical = source.map((outfit, index) => canonicalizeRecommendation(outfit, {
     scene,
     model: models[index],
-    selectedDifferentiator: differentiators[index],
+    selectedMessageCandidateId: editorialSelection.selectedCandidateIds[index],
   }));
+  const editorialReview = reviewBatchEditorialNaturalness(
+    canonical.map((outfit) => readPresentationPlan(outfit)?.reasonClaim?.copyPlan),
+    editorialSelection.candidatePools,
+  );
+  if (editorialReview.result !== BATCH_EDITORIAL_PASS) {
+    throw new Error(`batch editorial review failed: ${editorialReview.riskFlags.join(',')} ${JSON.stringify(editorialReview.metrics)}`);
+  }
+  canonical.forEach((outfit) => applyBatchEditorialReview(outfit, editorialReview));
   assertHomeQuickOutingRatio(canonical, scene);
   assertFinalPresentation(canonical, scene);
   return canonical;
 }
 
-function canonicalizeRecommendation(outfit, { scene, model, selectedDifferentiator } = {}) {
+function canonicalizeRecommendation(outfit, { scene, model, selectedDifferentiator, selectedMessageCandidateId } = {}) {
   if (!outfit || typeof outfit !== 'object' || Array.isArray(outfit)) return outfit;
   const sceneKey = normalizeScene(scene || outfit.scene);
   const factModel = model || buildPresentationFactModel({ ...outfit, scene: sceneKey });
   const assignedDifferentiator = selectedDifferentiator === undefined
     ? assignPresentationDifferentiators([factModel])[0]
     : selectedDifferentiator;
-  const plan = buildPresentationPlan(factModel, { selectedDifferentiator: assignedDifferentiator });
+  const plan = buildPresentationPlan(factModel, {
+    selectedDifferentiator: assignedDifferentiator,
+    selectedMessageCandidateId,
+  });
   if (plan.naturalnessGateResult !== 'PASS'
     || (plan.detailNaturalnessGateResult && plan.detailNaturalnessGateResult !== 'PASS')) {
     throw new Error(`copy naturalness gate failed: ${[
@@ -66,6 +82,20 @@ function canonicalizeRecommendation(outfit, { scene, model, selectedDifferentiat
     selectedDifferentiator: assignedDifferentiator,
   });
   return next;
+}
+
+function applyBatchEditorialReview(outfit, review) {
+  if (!outfit || typeof outfit !== 'object' || Array.isArray(outfit)) return;
+  const patch = {
+    structuralNaturalnessVersion: review.version,
+    structuralNaturalnessResult: review.result,
+    structuralNaturalnessRiskFlags: review.riskFlags.slice(),
+    structuralNaturalnessWarningFlags: review.warningFlags.slice(),
+  };
+  Object.assign(outfit, patch);
+  if (outfit.copyContract && typeof outfit.copyContract === 'object') Object.assign(outfit.copyContract, patch);
+  if (outfit.contentPlan && typeof outfit.contentPlan === 'object') Object.assign(outfit.contentPlan, patch);
+  if (outfit.presentationPlan && typeof outfit.presentationPlan === 'object') Object.assign(outfit.presentationPlan, patch);
 }
 
 function buildCanonicalTitle(items, scene, outfit = {}) {

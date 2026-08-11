@@ -13,7 +13,7 @@ const {
   shouldUseSceneSnapshot,
 } = require('./sceneSnapshot');
 
-const COPY_CONTRACT_VERSION = 'recommendation-copy-contract-v4';
+const COPY_CONTRACT_VERSION = 'recommendation-copy-contract-v7';
 const VOICE_BANK_VERSION = 'xiaoda-fixed-claim-catalog-v2';
 
 function currentOutfit(id = 'current') {
@@ -27,10 +27,13 @@ function currentOutfit(id = 'current') {
       gateResult: 'PASS',
       todayReason: '衬衫配直筒裤，上班穿比较利落。',
       riskFlags: [],
-      naturalnessGateVersion: 'copy-naturalness-gate-v1',
+      naturalnessGateVersion: 'copy-naturalness-gate-v2',
       naturalnessGateResult: 'PASS',
       naturalnessRiskFlags: [],
-      todayCopyProvenance: { version: 'recommendation-natural-language-v1' },
+      structuralNaturalnessVersion: 'batch-editorial-review-v2',
+      structuralNaturalnessResult: 'PASS',
+      structuralNaturalnessRiskFlags: [],
+      todayCopyProvenance: { version: 'recommendation-natural-language-v3' },
     },
   };
 }
@@ -273,7 +276,7 @@ test('restored retained exhaustion keeps cards and suppresses another pool reque
 
 test('Today commits legal zero responses to both snapshots before suppressing repeated refresh', () => {
   const source = fs.readFileSync(path.join(__dirname, 'index.tsx'), 'utf8');
-  const refreshStart = source.indexOf('async function handleRefresh()');
+  const refreshStart = source.indexOf('async function handleRefresh(');
   const refreshEnd = source.indexOf('async function handleToggleFavorite()', refreshStart);
   const refreshSource = source.slice(refreshStart, refreshEnd);
   const suppression = refreshSource.indexOf('isNoMoreRecommendationState({');

@@ -1,4 +1,4 @@
-const TODAY_SCENE_COPY_VERSION = 'recommendation-copy-contract-v4';
+const TODAY_SCENE_COPY_VERSION = 'recommendation-copy-contract-v7';
 const TODAY_SCENE_VOICE_VERSION = 'xiaoda-fixed-claim-catalog-v2';
 const TODAY_SCENE_SNAPSHOT_TTL_MS = 10 * 60 * 1000;
 const { hasCurrentCopyContract } = require('../../utils/recommendationCopyContract');

@@ -9,8 +9,8 @@ const {
 } = require('./recommendationNaturalLanguage');
 
 const PRESENTATION_FACT_MODEL_VERSION = 'presentation-fact-model-v4';
-const PRESENTATION_FACT_MODEL_BUILD = 'presentation-fact-model-20260810-naturalness-r1';
-const PRESENTATION_PLAN_VERSION = 'presentation-plan-v4';
+const PRESENTATION_FACT_MODEL_BUILD = 'presentation-fact-model-20260811-natural-language-v2';
+const PRESENTATION_PLAN_VERSION = 'presentation-plan-v5';
 const PRESENTATION_PLAN_SOURCE = 'presentation_plan';
 
 const ROLE_ORDER = Object.freeze(['onepiece', 'top', 'bottom', 'outerwear', 'shoes']);
@@ -115,30 +115,42 @@ function buildPresentationPlan(model = {}, options = {}) {
   const requestedDifferentiator = Object.prototype.hasOwnProperty.call(options, 'selectedDifferentiator')
     ? cloneDifferentiator(options.selectedDifferentiator)
     : cloneDifferentiator(source.availableDifferentiators?.[0]);
-  const primaryRelation = findDifferentiatorRelation(source, requestedDifferentiator) || source.relations?.[0] || {
+  const requestedRelation = findDifferentiatorRelation(source, requestedDifferentiator) || source.relations?.[0] || {
     relationCode: null,
     roles: [],
     authorizedValues: [],
     subjectItemIds: [],
     evidenceFactIds: [],
   };
+  const reasonClaim = buildReasonClaim(source, requestedRelation, {
+    candidateId: readText(options.selectedMessageCandidateId),
+  });
+  const primaryRelation = (Array.isArray(source.relations) ? source.relations : [])
+    .find((relation) => relation.relationCode === reasonClaim.copyPlan.relationCode)
+    || requestedRelation;
   // A FACT_EQUIVALENCE group may supply a differentiator selected from its
   // representative model. Rebind all identity-bearing fields to this model's
   // relation while preserving the selected semantic relation and copy text.
   const selectedDifferentiator = primaryRelation.relationCode
     ? toDifferentiator(primaryRelation)
     : requestedDifferentiator;
-  const detailDifferentiator = (Array.isArray(source.availableDifferentiators)
-    ? source.availableDifferentiators : [])
-    .find((entry) => differentiatorSignature(entry) !== differentiatorSignature(selectedDifferentiator || primaryRelation));
-  const detailRelation = findDifferentiatorRelation(source, detailDifferentiator);
+  const detailRelations = (Array.isArray(source.relations) ? source.relations : [])
+    .filter((relation) => buildNaturalDetailCopyPlan(source, relation).text);
+  const detailRelation = detailRelations.find((relation) => relation.relationCode !== primaryRelation.relationCode)
+    || detailRelations.find((relation) => relation.relationCode === primaryRelation.relationCode);
   const titleConcept = buildTitleConcept(source);
-  const reasonClaim = buildReasonClaim(source, primaryRelation);
   const detailClaim = detailRelation ? buildDetailClaim(source, detailRelation) : null;
   const naturalnessGate = reasonClaim.naturalnessGate;
   const detailNaturalnessGate = detailClaim?.naturalnessGate || null;
-  const todayMetadata = buildSurfaceMetadata(source, primaryRelation);
-  const detailMetadata = detailRelation ? buildSurfaceMetadata(source, detailRelation) : emptySurfaceMetadata();
+  const todayMetadata = buildCopyPlanMetadata(reasonClaim.copyPlan);
+  const detailMetadata = detailClaim ? buildCopyPlanMetadata(detailClaim.copyPlan) : emptySurfaceMetadata();
+  const presentationDifferentiator = {
+    ...(selectedDifferentiator || {}),
+    relationCode: reasonClaim.copyPlan.relationCode,
+    subjectItemIds: todayMetadata.subjectItemIds.slice(),
+    evidenceFactIds: todayMetadata.evidenceFactIds.slice(),
+    todayExpressionIntent: reasonClaim.copyPlan.messageIntent,
+  };
   return {
     version: PRESENTATION_PLAN_VERSION,
     planId: PRESENTATION_PLAN_VERSION,
@@ -160,7 +172,7 @@ function buildPresentationPlan(model = {}, options = {}) {
     detailDimension: detailMetadata.dimension,
     detailSubjectItemIds: detailMetadata.subjectItemIds,
     detailEvidenceFactIds: detailMetadata.evidenceFactIds,
-    selectedDifferentiator,
+    selectedDifferentiator: presentationDifferentiator,
     availableDifferentiators: (Array.isArray(source.availableDifferentiators)
       ? source.availableDifferentiators : []).map(cloneDifferentiator).filter(Boolean),
     // Contract: candidates available before the batch selects one differentiator.
@@ -173,9 +185,17 @@ function buildPresentationPlan(model = {}, options = {}) {
     naturalnessGateVersion: COPY_NATURALNESS_GATE_VERSION,
     naturalnessGateResult: naturalnessGate.result,
     naturalnessRiskFlags: naturalnessGate.riskFlags,
+    messageIntent: reasonClaim.copyPlan.messageIntent,
+    messageCandidateId: reasonClaim.copyPlan.messageCandidateId,
+    messageDimension: reasonClaim.copyPlan.messageDimension,
+    openingFamily: reasonClaim.copyPlan.openingFamily,
+    endingFamily: reasonClaim.copyPlan.endingFamily,
+    valueAssessment: { ...reasonClaim.copyPlan.valueAssessment },
     detailNaturalnessGateResult: detailNaturalnessGate?.result || null,
     detailNaturalnessRiskFlags: detailNaturalnessGate?.riskFlags || [],
-    sceneConclusion: reasonClaim.copyPlan.clauses.find((clause) => clause.slot === 'scene_value')?.text || '',
+    sceneConclusion: reasonClaim.copyPlan.clauses.find((clause) => (
+      ['core_eligibility', 'evidence_composition'].includes(clause.source)
+    ))?.text || '',
     unsupportedClaims: Array.isArray(source.unsupportedClaims) ? source.unsupportedClaims.slice() : [],
   };
 }
@@ -245,6 +265,10 @@ function applyPresentationPlan(outfit, model, plan) {
   next.naturalnessGateVersion = canonicalPlan.naturalnessGateVersion;
   next.naturalnessGateResult = canonicalPlan.naturalnessGateResult;
   next.naturalnessRiskFlags = canonicalPlan.naturalnessRiskFlags.slice();
+  next.messageIntent = canonicalPlan.messageIntent;
+  next.messageCandidateId = canonicalPlan.messageCandidateId;
+  next.messageDimension = canonicalPlan.messageDimension;
+  next.valueAssessment = { ...canonicalPlan.valueAssessment };
   next.selectedDifferentiator = cloneDifferentiator(canonicalPlan.selectedDifferentiator);
   Object.assign(next, buildSurfacePatch(canonicalPlan, {
     todayEvidenceSources,
@@ -276,6 +300,12 @@ function applyPresentationPlan(outfit, model, plan) {
     naturalnessGateVersion: canonicalPlan.naturalnessGateVersion,
     naturalnessGateResult: canonicalPlan.naturalnessGateResult,
     naturalnessRiskFlags: canonicalPlan.naturalnessRiskFlags.slice(),
+    messageIntent: canonicalPlan.messageIntent,
+    messageCandidateId: canonicalPlan.messageCandidateId,
+    messageDimension: canonicalPlan.messageDimension,
+    openingFamily: canonicalPlan.openingFamily,
+    endingFamily: canonicalPlan.endingFamily,
+    valueAssessment: { ...canonicalPlan.valueAssessment },
   };
   const existingContentPlan = asObject(next.contentPlan);
   const existingDefaultCopy = asObject(existingContentPlan.defaultCopy);
@@ -300,6 +330,12 @@ function applyPresentationPlan(outfit, model, plan) {
     naturalnessGateVersion: canonicalPlan.naturalnessGateVersion,
     naturalnessGateResult: canonicalPlan.naturalnessGateResult,
     naturalnessRiskFlags: canonicalPlan.naturalnessRiskFlags.slice(),
+    messageIntent: canonicalPlan.messageIntent,
+    messageCandidateId: canonicalPlan.messageCandidateId,
+    messageDimension: canonicalPlan.messageDimension,
+    openingFamily: canonicalPlan.openingFamily,
+    endingFamily: canonicalPlan.endingFamily,
+    valueAssessment: { ...canonicalPlan.valueAssessment },
     defaultCopy: {
       ...existingDefaultCopy,
       todayReason: reason,
@@ -344,15 +380,19 @@ function buildTitleConcept(model) {
   return `${sceneLabel}搭配`;
 }
 
-function buildReasonClaim(model, relation) {
-  const copyPlan = buildNaturalTodayCopyPlan(model, relation);
+function buildReasonClaim(model, relation, options = {}) {
+  const copyPlan = buildNaturalTodayCopyPlan(model, relation, options);
   const naturalnessGate = evaluateCopyNaturalness(copyPlan);
+  const clause = copyPlan.clauses[0] || {};
   return {
-    relationCode: relation.relationCode,
+    relationCode: copyPlan.relationCode,
     text: copyPlan.text,
-    supportedBy: relation.authorizedValues.slice(),
-    semanticSkeleton: relation.semanticSkeleton || '',
-    todayExpressionIntent: relation.todayExpressionIntent || '',
+    supportedBy: uniqueStrings([
+      ...(Array.isArray(relation?.authorizedValues) ? relation.authorizedValues : []),
+      ...(Array.isArray(clause.evidenceFactIds) ? clause.evidenceFactIds : []),
+    ]),
+    semanticSkeleton: relation?.semanticSkeleton || '',
+    todayExpressionIntent: copyPlan.messageIntent,
     copyPlan,
     naturalnessGate,
   };
@@ -755,27 +795,14 @@ function findDifferentiatorRelation(model, differentiator) {
     || null;
 }
 
-function buildSurfaceMetadata(model, relation) {
-  const relationCode = relation?.relationCode || null;
-  const isPatternRelation = ['SUBTYPE_FEATURE_PRINT', 'PATTERN_SOLID_BALANCE'].includes(relationCode);
-  const isStructureRelation = /^STRUCTURE_/.test(relationCode || '');
-  const action = isPatternRelation
-    ? 'highlight_pattern'
-    : isStructureRelation
-      ? 'explain_structure_relation'
-    : relationCode === 'SINGLE_COLOR_FALLBACK'
-      ? 'identify_color_anchor'
-      : relationCode ? 'explain_color_relation' : null;
-  const dimension = isPatternRelation ? 'pattern' : isStructureRelation ? 'structure' : relationCode ? 'color' : null;
-  const subjectItemIds = uniqueStrings(Array.isArray(relation?.subjectItemIds)
-    ? relation.subjectItemIds
-    : (Array.isArray(relation?.roles) ? relation.roles : []).map((role) => (
-      (Array.isArray(model?.items) ? model.items : []).find((item) => item.role === role)?.itemId
-    )));
-  const evidenceFactIds = uniqueStrings(Array.isArray(relation?.evidenceFactIds)
-    ? relation.evidenceFactIds
-    : []);
-  return { action, dimension, subjectItemIds, evidenceFactIds };
+function buildCopyPlanMetadata(copyPlan) {
+  const clauses = Array.isArray(copyPlan?.clauses) ? copyPlan.clauses : [];
+  return {
+    action: copyPlan?.messageIntent || null,
+    dimension: copyPlan?.messageDimension || null,
+    subjectItemIds: uniqueStrings(clauses.flatMap((clause) => clause.subjectItemIds || [])),
+    evidenceFactIds: uniqueStrings(clauses.flatMap((clause) => clause.evidenceFactIds || [])),
+  };
 }
 
 function emptySurfaceMetadata() {

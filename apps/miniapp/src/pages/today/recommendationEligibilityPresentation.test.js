@@ -14,7 +14,7 @@ test('Today admits only new recommendations with a non-empty core-backed reason'
 });
 
 test('refresh exhaustion preserves existing cards and shows the dedicated light notice', () => {
-  const refreshBody = source.slice(source.indexOf('async function handleRefresh()'), source.indexOf('async function handleToggleFavorite()'));
+  const refreshBody = source.slice(source.indexOf('async function handleRefresh('), source.indexOf('async function handleToggleFavorite('));
   assert.match(refreshBody, /NO_MORE_NEW_OUTFITS_NOTICE/);
   assert.match(refreshBody, /if \(eligibleApiOutfits\.length > 0\)/);
   const emptyBranch = refreshBody.slice(refreshBody.indexOf('} else {'));

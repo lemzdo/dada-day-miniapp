@@ -153,10 +153,11 @@ interface TodayFullComputeAcceptanceRequest {
 
 interface TodayDiagnosticsBridge {
   marker: 'd1d-today-production-handler-v1';
-  copyAcceptanceBuild: 'today-copy-naturalness-v1';
+  copyAcceptanceBuild: 'today-copy-naturalness-v2';
   ready: boolean;
   sceneKey: SceneKey;
   triggerFullCompute: (request: TodayFullComputeAcceptanceRequest) => Promise<boolean>;
+  triggerRefresh: (request: TodayFullComputeAcceptanceRequest) => Promise<boolean>;
   readCopyAcceptanceState: () => {
     sceneKey: SceneKey;
     outfits: Outfit[];
@@ -220,8 +221,8 @@ interface TodayRestoreSnapshotInput {
   recommendationNotice?: string;
 }
 
-const TODAY_RESTORE_SNAPSHOT_KEY = 'today:outfitReturnSnapshot:recommendation-copy-contract-v4';
-const TODAY_SCENE_SNAPSHOT_STORAGE_PREFIX = 'today:sceneSnapshot:recommendation-copy-contract-v4';
+const TODAY_RESTORE_SNAPSHOT_KEY = 'today:outfitReturnSnapshot:recommendation-copy-contract-v7';
+const TODAY_SCENE_SNAPSHOT_STORAGE_PREFIX = 'today:sceneSnapshot:recommendation-copy-contract-v7';
 const TODAY_RESTORE_SNAPSHOT_TTL_MS = 10 * 60 * 1000;
 const WARDROBE_REFRESH_STORAGE_KEY = 'wardrobeNeedsRefresh';
 const TODAY_TIME_OF_DAY: TimeOfDay = 'all_day';
@@ -741,19 +742,21 @@ export default function TodayPage() {
     }
   }
 
-  async function handleRefresh() {
-    if (loading || operation) return;
+  async function handleRefresh(acceptanceDiagnostics?: TodayFullComputeAcceptanceRequest): Promise<boolean> {
+    if (loading || operation) return false;
     if (isNoMoreRecommendationState({
       batchExhausted: batchExhaustedRef.current,
       countContract: countContractRef.current,
     })) {
       setRecommendationNotice(NO_MORE_NEW_OUTFITS_NOTICE);
       Taro.showToast({ title: NO_MORE_NEW_OUTFITS_NOTICE, icon: 'none' });
-      return;
+      return false;
     }
     shouldRestoreFromDetailRef.current = false;
-    const weatherForRefresh = currentWeather ?? currentWeatherRef.current;
-    const weatherModeForRefresh = currentWeatherModeRef.current;
+    const weatherForRefresh = acceptanceDiagnostics?.weatherModeOverride === 'disabled'
+      ? undefined
+      : currentWeather ?? currentWeatherRef.current;
+    const weatherModeForRefresh = acceptanceDiagnostics?.weatherModeOverride ?? currentWeatherModeRef.current;
     const excludedOutfitKeys = getSeenOutfitKeysForScene(selectedSceneKeyRef.current);
     const intent = recommendationIntentRegistryRef.current?.activate({
       intentId: nextRecommendationIntentId('refresh'),
@@ -765,7 +768,7 @@ export default function TodayPage() {
         requestKind: 'refresh',
       }),
     });
-    if (!intent) return;
+    if (!intent) return false;
     const requestContext = createRecommendationRequestContext(
       selectedSceneKeyRef.current,
       weatherModeForRefresh,
@@ -775,7 +778,7 @@ export default function TodayPage() {
     const seq = requestContext.requestSeq;
     const auditId = requestContext.auditId;
     const authContext = captureAuthContext();
-    if (!authContext) return;
+    if (!authContext) return false;
     const previousOutfits = outfitsRef.current;
     const previousRecommendationBatchId = recommendationBatchIdRef.current;
     setOperationForRequest(seq, 'refresh');
@@ -794,6 +797,13 @@ export default function TodayPage() {
         auditId,
         weatherMode: weatherModeForRefresh,
         trigger: 'refresh',
+        ...(acceptanceDiagnostics ? {
+          performanceDiagnostics: true,
+          diagnostics: true,
+          debugRecommendationAudit: true,
+          acceptanceRunId: acceptanceDiagnostics.acceptanceRunId,
+          captureId: acceptanceDiagnostics.captureId,
+        } : {}),
         ...(weatherForRefresh ? { weather: weatherForRefresh } : {}),
         ...(typeof previousRecommendationBatchId === 'string' && previousRecommendationBatchId.length > 0 ? { recommendationBatchId: previousRecommendationBatchId } : {}),
         excludedOutfitKeys,
@@ -802,7 +812,7 @@ export default function TodayPage() {
       const responseReceivedAt = Date.now();
       const transport = getCloudResponseTransportDiagnostics(data);
 
-      if (!isRecommendationIntentCurrent(intent) || !isAuthContextCurrent(authContext)) return;
+      if (!isRecommendationIntentCurrent(intent) || !isAuthContextCurrent(authContext)) return false;
       const currentInputSignature = getRecommendationInputSignature({
         sceneKey: requestContext.sceneKey,
         weather: weatherForRefresh,
@@ -812,12 +822,12 @@ export default function TodayPage() {
       });
       if (currentInputSignature !== requestContext.inputSignature) {
         logRecommendationIntentReject(requestContext, data, 'INPUT_SIGNATURE_CHANGED');
-        return;
+        return false;
       }
       const validation = validateSceneContract(requestContext, data);
       if (!validation.ok) {
         logSceneContractReject(auditId, data, validation);
-        return;
+        return false;
       }
       const countValidation = validateRecommendationCountContract(data);
       if (!countValidation.ok) {
@@ -826,7 +836,7 @@ export default function TodayPage() {
           reason: countValidation.reason,
           responseCardCount: countValidation.returnedCardCount,
         });
-        return;
+        return false;
       }
       const eligibleApiOutfits = data.outfits.filter(hasCurrentNewRecommendationCopy);
       logRecommendationResponse(requestContext, data, 'refresh', eligibleApiOutfits.length);
@@ -910,7 +920,7 @@ export default function TodayPage() {
             reason: 'INVALID_EXHAUSTED_STATE',
             responseCardCount: data.outfits.length,
           });
-          return;
+          return false;
         }
         countContractRef.current = data.countContract;
         hasRecommendationsRef.current = exhaustedState.hasRecommendations;
@@ -963,11 +973,13 @@ export default function TodayPage() {
           firstOutfit: undefined,
         });
       }
+      return true;
     } catch (err) {
-      if (!isRecommendationIntentCurrent(intent) || !isLatestRequest(seq)) return;
+      if (!isRecommendationIntentCurrent(intent) || !isLatestRequest(seq)) return false;
       logRecommendationError(auditId, seq, 'handleRefresh', err);
       setError('换一套失败，请稍后再试');
       Taro.showToast({ title: '刷新失败', icon: 'none' });
+      return false;
     } finally {
       clearOperationForRequest(seq);
     }
@@ -2129,7 +2141,7 @@ export default function TodayPage() {
     };
     const bridge: TodayDiagnosticsBridge = {
       marker: 'd1d-today-production-handler-v1',
-      copyAcceptanceBuild: 'today-copy-naturalness-v1',
+      copyAcceptanceBuild: 'today-copy-naturalness-v2',
       ready: Boolean(isAuthenticated && runtimeKey && !loading && !operation),
       sceneKey: selectedSceneKeyRef.current,
       readCopyAcceptanceState: () => ({
@@ -2156,6 +2168,13 @@ export default function TodayPage() {
           trigger: 'retry',
           acceptanceDiagnostics: request,
         });
+      },
+      triggerRefresh: async (request) => {
+        if (!request?.acceptanceRunId || !request?.captureId) {
+          throw new Error('acceptanceRunId and captureId are required');
+        }
+        if (loading || operation) throw new Error('Today recommendation handler is busy');
+        return handleRefresh(request);
       },
     };
     diagnosticsGlobal.__d1dTodayDiagnostics = bridge;
@@ -2365,7 +2384,7 @@ export default function TodayPage() {
               </View>
             </View>
 
-            <View className={`refresh-btn ${isRefreshing || isNoMoreRecommendations ? 'disabled' : ''}`} onClick={handleRefresh}>
+            <View className={`refresh-btn ${isRefreshing || isNoMoreRecommendations ? 'disabled' : ''}`} onClick={() => { void handleRefresh(); }}>
               <Text className="refresh-text">{isRefreshing ? '正在找灵感...' : isNoMoreRecommendations ? '这一轮已看完' : '换一批灵感'}</Text>
             </View>
           </View>

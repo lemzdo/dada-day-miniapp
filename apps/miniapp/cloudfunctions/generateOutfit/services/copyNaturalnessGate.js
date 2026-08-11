@@ -1,15 +1,15 @@
 const { findHumanCopyPolicyViolations } = require('./humanCopyPolicy');
 const {
-  BENEFIT_SLOTS,
   DECISION_VALUE_CATEGORIES,
-  DETAIL_RELATION_SLOTS,
+  COMPOSED_MESSAGE_DEFINITIONS,
+  DETAIL_MESSAGE_DEFINITIONS,
   NATURAL_LANGUAGE_PLAN_VERSION,
-  RELATION_SLOTS,
-  SCENE_VALUE_SLOTS,
+  RELATION_MESSAGE_DEFINITIONS,
+  SCENE_MESSAGE_DEFINITIONS,
   joinClauses,
 } = require('./recommendationNaturalLanguage');
 
-const COPY_NATURALNESS_GATE_VERSION = 'copy-naturalness-gate-v1';
+const COPY_NATURALNESS_GATE_VERSION = 'copy-naturalness-gate-v2';
 const COPY_NATURALNESS_PASS = 'PASS';
 const COPY_NATURALNESS_REJECT = 'REJECT';
 const DECISION_VALUE_GATE_VERSION = 'decision-value-gate-v1';
@@ -37,35 +37,30 @@ const COPY_NATURALNESS_FLAGS = Object.freeze({
   LOW_VALUE_FINAL_REASON: 'LOW_VALUE_FINAL_REASON',
   LANGUAGE_POLICY_VIOLATION: 'LANGUAGE_POLICY_VIOLATION',
   TEXT_COMPOSITION_MISMATCH: 'TEXT_COMPOSITION_MISMATCH',
+  MESSAGE_INTENT_MISMATCH: 'MESSAGE_INTENT_MISMATCH',
+  INVALID_VALUE_ASSESSMENT: 'INVALID_VALUE_ASSESSMENT',
+  KNOWN_LOW_VALUE_SENTENCE: 'KNOWN_LOW_VALUE_SENTENCE',
 });
 
 const EDITORIAL_TAILS = /(?:配色简洁|整体协调|更显质感|整体更完整|整体利落|画面清爽|视觉重点清楚|整体更清楚)[。！]?$/u;
 const MECHANICAL_SCENE = /适合(?:居家|通勤|约会|日常|运动|轻运动).{0,4}(?:场景)?|(?:宅家时|日常通勤|约会时|日常轻运动)可以直接这样穿/u;
 const SYSTEM_CHECKLIST_TONE = /(?:已经配齐|已经配上|唯一有明确事实|已经配成上下装|已经配成一身)/u;
-const SCENE_SEMANTIC_TOKENS = Object.freeze({
-  home: Object.freeze(['宅家', '居家', '在家']),
-  work: Object.freeze(['通勤', '上班']),
-  date: Object.freeze(['约会']),
-  sport: Object.freeze(['轻运动']),
-});
-
+const KNOWN_LOW_VALUE_SENTENCE = /(?:印花已经是这身的重点|其他单品沿用.+就好|组成一套.+不用临时补搭|这套(?:结构|活动结构).*(?:方便|轻便)|这套有清楚的搭配关系|用同色呼应|在家穿不会裹得太多)/u;
 function evaluateCopyNaturalness(planValue) {
   const plan = normalizePlan(planValue);
   if (!plan) return reject([COPY_NATURALNESS_FLAGS.INVALID_PLAN]);
   const flags = [];
-  const allowedPatterns = plan.surface === 'detail'
-    ? ['relation']
-    : ['relation', 'scene_value', 'benefit', 'relation>scene_value', 'relation>benefit', 'scene_value>benefit', 'relation>scene_value>benefit'];
+  const allowedPatterns = plan.surface === 'detail' ? ['detail_message'] : ['natural_message'];
   if (!allowedPatterns.includes(plan.compositionPattern)) flags.push(COPY_NATURALNESS_FLAGS.INVALID_SLOT_ORDER);
   if (plan.text !== joinClauses(plan.clauses)) flags.push(COPY_NATURALNESS_FLAGS.TEXT_COMPOSITION_MISMATCH);
   if (EDITORIAL_TAILS.test(plan.text)) flags.push(COPY_NATURALNESS_FLAGS.GENERIC_EDITORIAL_TAIL);
   if (MECHANICAL_SCENE.test(plan.text)) flags.push(COPY_NATURALNESS_FLAGS.MECHANICAL_SCENE_RESTATEMENT);
   if (SYSTEM_CHECKLIST_TONE.test(plan.text)) flags.push(COPY_NATURALNESS_FLAGS.SYSTEM_CHECKLIST_TONE);
+  if (KNOWN_LOW_VALUE_SENTENCE.test(plan.text)) flags.push(COPY_NATURALNESS_FLAGS.KNOWN_LOW_VALUE_SENTENCE);
   if (findHumanCopyPolicyViolations(plan.text).length > 0) flags.push(COPY_NATURALNESS_FLAGS.LANGUAGE_POLICY_VIOLATION);
 
+  if (plan.clauses.length !== 1) flags.push(COPY_NATURALNESS_FLAGS.INVALID_SLOT_ORDER);
   const informationKeys = new Set();
-  const usedEvidence = new Set();
-  const usedAuthorizations = new Set();
   for (const clause of plan.clauses) {
     const definition = findTemplateDefinition(plan.surface, clause);
     if (!definition) flags.push(COPY_NATURALNESS_FLAGS.UNKNOWN_TEMPLATE);
@@ -79,27 +74,17 @@ function evaluateCopyNaturalness(planValue) {
     informationKeys.add(clause.informationKey);
     if (clause.relationCode !== plan.relationCode) flags.push(COPY_NATURALNESS_FLAGS.RELATION_BINDING_MISMATCH);
     if (clause.scene !== plan.scene) flags.push(COPY_NATURALNESS_FLAGS.SCENE_BINDING_MISMATCH);
-    if (clause.slot === 'scene_value' && (clause.source !== 'core_eligibility' || clause.authorizationIds.length === 0)) {
+    if (clause.messageIntent !== plan.messageIntent || clause.messageIntent !== definition?.intent) {
+      flags.push(COPY_NATURALNESS_FLAGS.MESSAGE_INTENT_MISMATCH);
+    }
+    if (['core_eligibility', 'evidence_composition'].includes(clause.source)
+      && clause.authorizationIds.length === 0) {
       flags.push(COPY_NATURALNESS_FLAGS.MECHANICAL_SCENE_RESTATEMENT);
     }
-    if (clause.slot === 'benefit') {
-      const newEvidence = clause.evidenceFactIds.filter((factId) => !usedEvidence.has(factId));
-      if (newEvidence.length === 0 || clause.source !== 'core_eligibility_benefit') {
-        flags.push(COPY_NATURALNESS_FLAGS.BENEFIT_WITHOUT_NEW_EVIDENCE);
-      }
-      const sceneClause = plan.clauses.find((entry) => entry.slot === 'scene_value');
-      const sceneTokens = SCENE_SEMANTIC_TOKENS[plan.scene] || [];
-      if (sceneClause && sceneTokens.some((token) => sceneClause.text.includes(token) && clause.text.includes(token))) {
-        flags.push(COPY_NATURALNESS_FLAGS.DUPLICATE_INFORMATION);
-      }
+    if (!isValidValueAssessment(clause.valueAssessment)
+      || !sameValueAssessment(clause.valueAssessment, plan.valueAssessment)) {
+      flags.push(COPY_NATURALNESS_FLAGS.INVALID_VALUE_ASSESSMENT);
     }
-    const newSupportCount = clause.evidenceFactIds.filter((factId) => !usedEvidence.has(factId)).length
-      + clause.authorizationIds.filter((authorizationId) => !usedAuthorizations.has(authorizationId)).length;
-    if (informationKeys.size > 1 && newSupportCount === 0) {
-      flags.push(COPY_NATURALNESS_FLAGS.NO_INCREMENTAL_INFORMATION);
-    }
-    clause.evidenceFactIds.forEach((factId) => usedEvidence.add(factId));
-    clause.authorizationIds.forEach((authorizationId) => usedAuthorizations.add(authorizationId));
   }
   if (plan.surface === 'today' && evaluateNormalizedDecisionValue(plan).result !== DECISION_VALUE_PASS) {
     flags.push(COPY_NATURALNESS_FLAGS.LOW_VALUE_FINAL_REASON);
@@ -119,7 +104,10 @@ function evaluateNormalizedDecisionValue(plan) {
     return {
       slot: clause.slot,
       templateId: clause.templateId,
-      category: definition?.decisionValue || DECISION_VALUE_CATEGORIES.FACTUAL_BUT_LOW_VALUE,
+      messageIntent: clause.messageIntent,
+      category: isValidValueAssessment(clause.valueAssessment)
+        ? definition?.decisionValue || DECISION_VALUE_CATEGORIES.FACTUAL_BUT_LOW_VALUE
+        : DECISION_VALUE_CATEGORIES.FACTUAL_BUT_LOW_VALUE,
     };
   });
   const categories = uniqueStrings(clauses.map((clause) => clause.category));
@@ -148,8 +136,11 @@ function normalizePlan(value) {
   const compositionPattern = readString(value.compositionPattern);
   const text = readString(value.text);
   const clauses = Array.isArray(value.clauses) ? value.clauses.map(normalizeClause).filter(Boolean) : [];
-  if (value.version !== NATURAL_LANGUAGE_PLAN_VERSION || !surface || !scene || !relationCode || !text || clauses.length === 0) return null;
-  return { surface, scene, relationCode, compositionPattern, text, clauses };
+  const messageIntent = readString(value.messageIntent);
+  const valueAssessment = normalizeValueAssessment(value.valueAssessment);
+  if (value.version !== NATURAL_LANGUAGE_PLAN_VERSION || !surface || !scene || !relationCode
+    || !messageIntent || !text || clauses.length === 0 || !valueAssessment) return null;
+  return { surface, scene, relationCode, messageIntent, valueAssessment, compositionPattern, text, clauses };
 }
 
 function normalizeClause(value) {
@@ -161,6 +152,7 @@ function normalizeClause(value) {
   return {
     slot,
     templateId,
+    messageIntent: readString(value.messageIntent),
     text,
     informationKey: readString(value.informationKey),
     subjectItemIds: uniqueStrings(value.subjectItemIds),
@@ -169,21 +161,42 @@ function normalizeClause(value) {
     relationCode: readString(value.relationCode),
     scene: readString(value.scene),
     source: readString(value.source),
+    valueAssessment: normalizeValueAssessment(value.valueAssessment),
   };
 }
 
 function findTemplateDefinition(surface, clause) {
-  if (clause.slot === 'relation') {
-    const bank = surface === 'detail' ? DETAIL_RELATION_SLOTS : RELATION_SLOTS;
-    return Object.values(bank).find((entry) => entry.id === clause.templateId) || null;
-  }
-  if (clause.slot === 'scene_value') {
-    return Object.values(SCENE_VALUE_SLOTS).find((entry) => entry.id === clause.templateId) || null;
-  }
-  if (clause.slot === 'benefit') {
-    return BENEFIT_SLOTS.find((entry) => entry.id === clause.templateId) || null;
-  }
-  return null;
+  const bank = surface === 'detail'
+    ? DETAIL_MESSAGE_DEFINITIONS
+    : [...RELATION_MESSAGE_DEFINITIONS, ...SCENE_MESSAGE_DEFINITIONS, ...COMPOSED_MESSAGE_DEFINITIONS];
+  return bank.find((entry) => entry.id === clause.templateId) || null;
+}
+
+function normalizeValueAssessment(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const normalized = {
+    factAvailable: value.factAvailable === true,
+    userValue: Number(value.userValue),
+    novelInformation: Number(value.novelInformation),
+    sceneRelevance: Number(value.sceneRelevance),
+    naturalExpressibility: Number(value.naturalExpressibility),
+    total: Number(value.total),
+  };
+  return Object.values(normalized).every((entry) => typeof entry === 'boolean' || Number.isFinite(entry))
+    ? normalized : null;
+}
+
+function isValidValueAssessment(value) {
+  return Boolean(value?.factAvailable === true
+    && value.userValue >= 2
+    && value.novelInformation >= 2
+    && value.naturalExpressibility >= 2
+    && value.total === 2 + value.userValue + value.novelInformation
+      + value.sceneRelevance + value.naturalExpressibility);
+}
+
+function sameValueAssessment(left, right) {
+  return JSON.stringify(left || null) === JSON.stringify(right || null);
 }
 
 function pass() {

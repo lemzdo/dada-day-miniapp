@@ -5,7 +5,7 @@ const test = require('node:test');
 
 const { normalizeDefaultCopyAtResponseBoundary } = require('./recommendationCopyRehydration');
 
-const CONTRACT_VERSION = 'recommendation-copy-contract-v4';
+const CONTRACT_VERSION = 'recommendation-copy-contract-v7';
 const VOICE_VERSION = 'xiaoda-fixed-claim-catalog-v2';
 
 function staleWorkOutfit(extra = {}) {

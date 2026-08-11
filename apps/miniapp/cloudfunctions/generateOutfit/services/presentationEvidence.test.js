@@ -63,7 +63,7 @@ function buildFixtureCard(index) {
     defaultDetailExplanation: 'The set stays easy to move in.',
   };
   const copyContract = {
-    copyContractVersion: 'recommendation-copy-contract-v4',
+    copyContractVersion: 'recommendation-copy-contract-v7',
     gateResult: 'PASS',
     copyDisplay: 'rule',
     todayReasonSource: 'rule_default',
@@ -136,7 +136,7 @@ test('sanitized evidence captures eight real presentation-shaped cards without c
   assert.deepEqual(evidence.shared, {
     scene: 'sport',
     planVersion: null,
-    copyContractVersion: 'recommendation-copy-contract-v4',
+    copyContractVersion: 'recommendation-copy-contract-v7',
     qaVersion: 'qa-batch-audit-v6-1-semantic-presentation',
   });
   assert.deepEqual(evidence.cards.map((card) => card.cardAlias), ['C01', 'C02', 'C03', 'C04', 'C05', 'C06', 'C07', 'C08']);

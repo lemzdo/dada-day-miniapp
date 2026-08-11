@@ -1,157 +1,138 @@
-const test = require('node:test');
 const assert = require('node:assert/strict');
-
-const { evaluateCopyNaturalness, evaluateDecisionValue } = require('./copyNaturalnessGate');
+const test = require('node:test');
+const { evaluateCopyNaturalness } = require('./copyNaturalnessGate');
 const {
-  BENEFIT_SLOTS,
-  DECISION_VALUE_CATEGORIES,
-  DETAIL_RELATION_SLOTS,
-  RELATION_SLOTS,
+  LOW_VALUE_RELATION_CODES,
   SAFE_FALLBACK,
-  SCENE_VALUE_SLOTS,
   buildNaturalDetailCopyPlan,
+  buildNaturalTodayCopyCandidates,
   buildNaturalTodayCopyPlan,
 } = require('./recommendationNaturalLanguage');
-const { CLAIM_CATALOG, SAFE_FALLBACK_CLUSTERS } = require('./xiaodaVoiceBankV2');
 
-const BANNED_EDITORIAL_COPY = /中性色过渡|适合(?:居家|通勤|约会|日常|运动|轻运动).{0,4}(?:场景)?|配色简洁|整体协调|整体利落|整体更完整|更显质感|已经配齐|已经配上|唯一有明确事实|已经配成上下装|已经配成一身/;
+const ITEM_IDS = Object.freeze({ top: 'top-1', bottom: 'bottom-1', onepiece: 'dress-1', outerwear: 'outer-1', shoes: 'shoe-1', accessory: 'accessory-1' });
 
-const CASES = [
-  matrixCase('home-neutral-two-piece', 'home', 'top+bottom', 'neutral', 'NEUTRAL_COLOR_BRIDGE', ['top', 'bottom'], benefit('HOME_SHORT_SLEEVE_SHORTS', ['short_sleeve', 'shorts'])),
-  matrixCase('home-basic-benefit', 'home', '基础款两件', 'same', 'SAME_COLOR_TOP_BOTTOM', ['top', 'bottom'], benefit('HOME_HOT_SHORT_SLEEVE_SHORTS', ['short_sleeve', 'shorts'])),
-  matrixCase('work-three-piece-benefit', 'work', 'top+bottom+shoes', 'contrast', 'DISTINCT_TOP_BOTTOM_COLOR', ['top', 'bottom'], benefit('WORK_SHIRT_STRAIGHT_PANTS', ['shirt', 'straight_cut'])),
-  matrixCase('work-patterned-top', 'work', '图案上衣', 'none', 'SUBTYPE_FEATURE_PRINT', ['top'], benefit('WORK_PATTERN_TOP_SOLID_BOTTOM', ['pattern_visible', 'solid_color'])),
-  matrixCase('date-onepiece', 'date', 'onepiece', 'same', 'COLOR_ECHO_ONEPIECE_SHOES', ['onepiece', 'shoes'], benefit('DATE_SIMPLE_DRESS_SHOES', ['dress', 'simple_style', 'outing_shoe'])),
-  matrixCase('date-layer-no-color-relation', 'date', 'layer', 'none', 'STRUCTURE_ONEPIECE_OUTERWEAR', ['onepiece', 'outerwear']),
-  matrixCase('sport-complete-benefit', 'sport', 'top+bottom+shoes', 'same', 'SAME_COLOR_ALL_ROLES', ['top', 'bottom', 'shoes'], benefit('SPORT_COMPLETE_SET', ['sport_top', 'sport_bottom', 'sport_shoe'])),
-  matrixCase('sport-structure-without-color', 'sport', 'top+bottom+shoes', 'none', 'STRUCTURE_TOP_BOTTOM', ['top', 'bottom'], benefit('SPORT_LIGHT_ACTIVITY_SET', ['sport_top', 'shorts', 'sport_shoe'])),
-  matrixCase('home-onepiece-safe-structure', 'home', 'onepiece', 'none', 'STRUCTURE_ONEPIECE_ONLY', ['onepiece']),
-  matrixCase('date-analogous-colors', 'date', 'top+bottom', 'analogous', 'DISTINCT_TOP_BOTTOM_COLOR', ['top', 'bottom']),
-  matrixCase('work-accent-neutral', 'work', 'top+bottom', 'contrast', 'TOP_ACCENT_WITH_NEUTRAL_BOTTOM', ['top', 'bottom']),
-  matrixCase('home-pattern-solid', 'home', '图案上衣', 'contrast', 'PATTERN_SOLID_BALANCE', ['top', 'bottom']),
-];
-
-test('naturalness combination matrix covers every requested axis and passes structurally', () => {
-  const coverage = { scenes: new Set(), structures: new Set(), colors: new Set(), clauseCounts: new Set() };
-  for (const entry of CASES) {
-    const { model, relation } = buildInputs(entry);
-    const todayPlan = buildNaturalTodayCopyPlan(model, relation);
-    const detailPlan = buildNaturalDetailCopyPlan(model, relation);
-    const todayGate = evaluateCopyNaturalness(todayPlan);
-    const decisionGate = evaluateDecisionValue(todayPlan);
-    const detailGate = evaluateCopyNaturalness(detailPlan);
-    assert.equal(todayGate.result, 'PASS', `${entry.id}: ${todayGate.riskFlags.join(',')}`);
-    assert.equal(decisionGate.result, 'PASS', `${entry.id} decision: ${decisionGate.riskFlags.join(',')}`);
-    assert.equal(detailGate.result, 'PASS', `${entry.id} detail: ${detailGate.riskFlags.join(',')}`);
-    assert.doesNotMatch(`${todayPlan.text}${detailPlan.text}`, BANNED_EDITORIAL_COPY, entry.id);
-    assert.equal(todayPlan.clauses[0].relationCode, entry.relationCode);
-    assert.equal(todayPlan.clauses.every((clause) => clause.subjectItemIds.length > 0), true);
-    const expectsScene = Boolean(entry.benefit)
-      && RELATION_SLOTS[entry.relationCode].decisionValue === DECISION_VALUE_CATEGORIES.FACTUAL_BUT_LOW_VALUE;
-    assert.equal(todayPlan.clauses.some((clause) => clause.slot === 'scene_value'), expectsScene);
-    coverage.scenes.add(entry.scene);
-    coverage.structures.add(entry.structure);
-    coverage.colors.add(entry.colorMode);
-    coverage.clauseCounts.add(todayPlan.clauses.length);
-  }
-  assert.deepEqual([...coverage.scenes].sort(), ['date', 'home', 'sport', 'work']);
-  assert.equal(['top+bottom', 'top+bottom+shoes', 'onepiece', '基础款两件', '图案上衣', 'layer'].every((value) => coverage.structures.has(value)), true);
-  assert.equal(['neutral', 'same', 'analogous', 'contrast', 'none'].every((value) => coverage.colors.has(value)), true);
-  assert.deepEqual([...coverage.clauseCounts].sort(), [1]);
-  assert.equal(CASES.filter((entry) => entry.benefit
-    && RELATION_SLOTS[entry.relationCode].decisionValue === DECISION_VALUE_CATEGORIES.FACTUAL_BUT_LOW_VALUE).every((entry) => {
-    const { model, relation } = buildInputs(entry);
-    return buildNaturalTodayCopyPlan(model, relation).clauses.some((clause) => clause.slot === 'scene_value');
-  }), true);
-});
-
-test('missing relation has no generic sentence fallback', () => {
-  const plan = buildNaturalTodayCopyPlan({ scene: 'home', items: [], qualification: {} }, {});
-  assert.equal(plan.text, '');
-  assert.equal(evaluateCopyNaturalness(plan).result, 'REJECT');
-  assert.deepEqual(SAFE_FALLBACK, {
-    strategy: 'grounded-relation-only',
-    allowGenericSentence: false,
-    allowSceneLabelRestatement: false,
-  });
-});
-
-test('relation, scene, benefit, detail, and Voice Bank inventories are complete and free of old editorial tails', () => {
-  const relationCodes = new Set(CASES.map((entry) => entry.relationCode));
-  assert.equal([...relationCodes].every((code) => RELATION_SLOTS[code] && DETAIL_RELATION_SLOTS[code]), true);
-  assert.deepEqual([...new Set(SCENE_VALUE_SLOTS.map((entry) => entry.scene))].sort(), ['date', 'home', 'sport', 'work']);
-  assert.equal(SCENE_VALUE_SLOTS.every((entry) => entry.reasonCodes.length > 0 && entry.requiredFactOptions.length > 0), true);
-  assert.equal(BENEFIT_SLOTS.length > 0, true);
-  assert.equal(CLAIM_CATALOG.length > 0, true);
-  assert.equal(CLAIM_CATALOG.every((entry) => entry.requirements.length > 0 && !BANNED_EDITORIAL_COPY.test(entry.text)), true);
-  assert.deepEqual(SAFE_FALLBACK_CLUSTERS, []);
-});
-
-function matrixCase(id, scene, structure, colorMode, relationCode, roles, benefitValue = null) {
-  return { id, scene, structure, colorMode, relationCode, roles, benefit: benefitValue };
-}
-
-function benefit(reasonCode, facts) {
-  return { reasonCode, facts };
-}
-
-function buildInputs(entry) {
-  const items = rolesForStructure(entry.structure).map((role, index) => ({
-    role,
-    itemId: `${entry.id}-${role}`,
-    canonicalSubtype: subtype(role, entry.structure),
-    canonicalName: subtype(role, entry.structure),
-    normalizedColor: colorFor(entry.colorMode, index),
-  }));
-  const subjectItemIds = entry.roles.map((role) => items.find((item) => item.role === role).itemId);
-  const evidenceFactIds = subjectItemIds.map((itemId) => `item:${itemId}:${entry.colorMode === 'none' ? 'category' : 'color'}`);
-  const eligibilityFacts = entry.benefit?.facts || [];
-  const eligibilityEvidence = eligibilityFacts.map((fact, index) => ({
-    fact,
-    factId: `eligibility:${entry.id}:${fact}`,
-    itemId: items[index % items.length].itemId,
-  }));
+function item(role, subtype, color = '', tags = []) {
   return {
-    model: {
-      scene: entry.scene,
-      items,
-      qualification: {
-        reasonCode: entry.benefit?.reasonCode || defaultReason(entry.scene),
-        subjectItemIds,
-        supportingFactIds: eligibilityEvidence.map((record) => record.factId),
-        relationFactIds: [],
-        evidence: eligibilityEvidence,
-      },
-    },
-    relation: {
-      relationCode: entry.relationCode,
-      roles: entry.roles,
-      subjectItemIds,
-      evidenceFactIds,
-    },
+    role,
+    itemId: ITEM_IDS[role],
+    canonicalSubtype: subtype,
+    canonicalName: subtype,
+    normalizedColor: color,
+    visibleFeatureTags: tags,
   };
 }
 
-function rolesForStructure(structure) {
-  if (structure === 'onepiece') return ['onepiece', 'shoes'];
-  if (structure === 'layer') return ['onepiece', 'outerwear'];
-  if (structure === 'top+bottom+shoes') return ['top', 'bottom', 'shoes'];
-  return ['top', 'bottom'];
+function relation(code, roles) {
+  return {
+    relationCode: code,
+    roles,
+    authorizedValues: roles.map((role) => role),
+    subjectItemIds: roles.map((role) => ITEM_IDS[role]),
+    evidenceFactIds: roles.map((role) => `item:${ITEM_IDS[role]}:authorized`),
+  };
 }
 
-function subtype(role, structure) {
-  if (role === 'top') return structure === '图案上衣' ? '印花衬衫' : '短袖T恤';
-  return { bottom: '直筒裤', shoes: '运动鞋', onepiece: '连衣裙', outerwear: '外套' }[role];
+function qualification(reasonCode, facts, roles = ['top', 'bottom']) {
+  const evidence = facts.map((fact, index) => ({
+    factId: `item:${ITEM_IDS[roles[index % roles.length]]}:${fact}`,
+    fact,
+    itemId: ITEM_IDS[roles[index % roles.length]],
+  }));
+  return {
+    reasonCode,
+    subjectItemIds: [...new Set(evidence.map((record) => record.itemId))],
+    supportingFactIds: evidence.map((record) => record.factId),
+    relationFactIds: [],
+    evidence,
+  };
 }
 
-function colorFor(mode, index) {
-  if (mode === 'none') return '';
-  if (mode === 'same') return '白色';
-  if (mode === 'neutral') return ['白色', '灰色', '黑色'][index] || '黑色';
-  if (mode === 'analogous') return ['蓝色', '绿色', '蓝色'][index] || '蓝色';
-  return ['红色', '黑色', '白色'][index] || '白色';
+function model({ scene = 'home', items = [], relations = [], qualification: evidence = {} }) {
+  return { scene, items, relations, qualification: evidence };
 }
 
-function defaultReason(scene) {
-  return { home: 'HOME_COMFORT', work: 'WORK_BASELINE_PRESENTABLE', date: 'DATE_SIMPLE_COMPLETE', sport: 'SPORT_LIGHT_ACTIVITY_SET' }[scene];
-}
+const cases = [
+  ['same-color', model({ scene: 'date', items: [item('top', 'T恤', '白色'), item('bottom', '直筒裤', '白色')], relations: [relation('SAME_COLOR_TOP_BOTTOM', ['top', 'bottom'])] })],
+  ['neutral-support', model({ scene: 'work', items: [item('top', '衬衫', '白色'), item('bottom', '直筒裤', '灰色')], relations: [relation('NEUTRAL_COLOR_BRIDGE', ['top', 'bottom'])] })],
+  ['primary-neutral', model({ scene: 'date', items: [item('top', 'T恤', '绿色'), item('bottom', '直筒裤', '灰色')], relations: [relation('TOP_ACCENT_WITH_NEUTRAL_BOTTOM', ['top', 'bottom'])] })],
+  ['bright-scene', model({ scene: 'date', items: [item('top', 'T恤', '粉色'), item('bottom', '直筒裤', '黑色')], qualification: qualification('DATE_BRIGHT_TOP_BASIC_SUPPORT', ['bright_color', 'basic_color']) })],
+  ['pattern-solid', model({ scene: 'date', items: [item('top', '印花T恤', '白色', ['印花']), item('bottom', '直筒裤', '黑色', ['纯色'])], relations: [relation('PATTERN_SOLID_BALANCE', ['top', 'bottom'])], qualification: qualification('DATE_PATTERN_TOP_SIMPLE_SUPPORT', ['pattern_visible', 'solid_color', 'simple_style']) })],
+  ['onepiece-only', model({ scene: 'date', items: [item('onepiece', '连衣裙', '蓝色')], relations: [relation('STRUCTURE_ONEPIECE_ONLY', ['onepiece'])] })],
+  ['onepiece-shoes', model({ scene: 'home', items: [item('onepiece', '吊带裙', '白色'), item('shoes', '运动鞋', '白色')], relations: [relation('STRUCTURE_ONEPIECE_SHOES', ['onepiece', 'shoes'])], qualification: qualification('HOME_DRESS_NORMAL_SHOES', ['dress', 'outing_shoe'], ['onepiece', 'shoes']) })],
+  ['onepiece-layer', model({ scene: 'work', items: [item('onepiece', '连衣裙', '藏青色'), item('outerwear', '外套', '灰色')], relations: [relation('STRUCTURE_ONEPIECE_OUTERWEAR', ['onepiece', 'outerwear'])] })],
+  ['optional-accessory-keeps-core-message', model({ scene: 'date', items: [item('top', 'T恤', '绿色'), item('bottom', '直筒裤', '灰色'), item('accessory', '小包', '白色')], relations: [relation('TOP_ACCENT_WITH_NEUTRAL_BOTTOM', ['top', 'bottom'])] })],
+  ['home-light', model({ scene: 'home', items: [item('top', '短袖T恤'), item('bottom', '短裤')], qualification: qualification('HOME_SHORT_SLEEVE_SHORTS', ['short_sleeve', 'shorts']) })],
+  ['home-movement', model({ scene: 'home', items: [item('top', 'T恤'), item('bottom', '阔腿裤')], qualification: qualification('HOME_LOOSE_TWO_PIECE', ['loose_fit']) })],
+  ['home-quick-outing', model({ scene: 'home', items: [item('top', '短袖T恤'), item('bottom', '长裤')], qualification: qualification('HOME_SHORT_SLEEVE_LONG_PANTS', ['short_sleeve', 'long_pants']) })],
+  ['work-strong', model({ scene: 'work', items: [item('top', '衬衫'), item('bottom', '直筒裤')], qualification: qualification('WORK_SHIRT_STRAIGHT_PANTS', ['shirt', 'straight_cut']) })],
+  ['work-weather', model({ scene: 'work', items: [item('top', '短袖T恤'), item('bottom', '长裤')], qualification: qualification('WORK_HOT_SHORT_SLEEVE_PANTS', ['short_sleeve', 'long_pants']) })],
+  ['medium-relation-plus-scene', model({ scene: 'work', items: [item('top', '短袖T恤', '白色'), item('bottom', '长裤', '灰色')], relations: [relation('NEUTRAL_COLOR_BRIDGE', ['top', 'bottom'])], qualification: qualification('WORK_V4_EVIDENCE_SUPPORTED', ['category'], ['top']) })],
+  ['date-simple', model({ scene: 'date', items: [item('onepiece', '连衣裙'), item('shoes', '乐福鞋')], qualification: qualification('DATE_SIMPLE_DRESS_SHOES', ['dress', 'simple_style', 'outing_shoe'], ['onepiece', 'shoes']) })],
+  ['scene-only', model({ scene: 'date', items: [item('onepiece', '连衣裙')], qualification: qualification('DATE_V4_EVIDENCE_SUPPORTED', ['category'], ['onepiece']) })],
+  ['sport-complete', model({ scene: 'sport', items: [item('top', '运动上衣'), item('bottom', '运动裤'), item('shoes', '运动鞋')], qualification: qualification('SPORT_COMPLETE_SET', ['sport_top', 'sport_bottom', 'sport_shoe'], ['top', 'bottom', 'shoes']) })],
+  ['sport-hot', model({ scene: 'sport', items: [item('top', '短袖运动上衣'), item('bottom', '运动短裤'), item('shoes', '运动鞋')], qualification: qualification('SPORT_HOT_SHORT_SLEEVE_SHORTS', ['short_sleeve', 'shorts', 'sport_bottom', 'sport_shoe'], ['top', 'bottom', 'bottom', 'shoes']) })],
+];
+
+test('high-value fixture spans color, pattern, structure, scene, weather, and evidence-strength axes', () => {
+  for (const [name, source] of cases) {
+    const candidates = buildNaturalTodayCopyCandidates(source);
+    assert.ok(candidates.length > 0, `${name}: candidate`);
+    const plan = buildNaturalTodayCopyPlan(source, source.relations[0] || {}, { candidateId: candidates[0].candidateId });
+    const gate = evaluateCopyNaturalness(plan);
+    assert.equal(gate.result, 'PASS', `${name}: ${gate.riskFlags.join(',')}`);
+    assert.equal(plan.clauses.length, 1, name);
+    assert.ok(plan.messageIntent, name);
+    assert.ok(plan.valueAssessment.userValue >= 2, name);
+    assert.doesNotMatch(plan.text, /配色简洁|整体协调|更显质感|其他单品沿用.+就好|组成一套.+不用临时补搭/, name);
+  }
+});
+
+test('weak, conflicting, or merely factual observations are omitted instead of padded', () => {
+  const weakCases = [
+    model({ items: [item('top', '印花T恤', '白色', ['印花']), item('bottom', '印花短裤', '黑色', ['印花'])], relations: [relation('SUBTYPE_FEATURE_PRINT', ['top'])] }),
+    model({ items: [item('top', 'T恤', '蓝色'), item('bottom', '短裤', '绿色')], relations: [relation('DISTINCT_TOP_BOTTOM_COLOR', ['top', 'bottom'])] }),
+    model({ items: [item('top', 'T恤')], relations: [relation('STRUCTURE_SINGLE_ITEM', ['top'])] }),
+    model({ items: [item('top', 'T恤'), item('bottom', '短裤')], relations: [relation('STRUCTURE_TOP_BOTTOM', ['top', 'bottom'])] }),
+    model({ items: [item('top', 'T恤')], relations: [], qualification: {} }),
+  ];
+  for (const source of weakCases) {
+    assert.deepEqual(buildNaturalTodayCopyCandidates(source), []);
+    const plan = buildNaturalTodayCopyPlan(source, source.relations[0] || {});
+    assert.equal(plan.text, '');
+    assert.equal(plan.fallbackStrategy, SAFE_FALLBACK.strategy);
+  }
+  assert.ok([...LOW_VALUE_RELATION_CODES].includes('SUBTYPE_FEATURE_PRINT'));
+});
+
+test('strong scene evidence composes with an independent relation instead of being dropped for batch variety', () => {
+  const source = model({
+    scene: 'sport',
+    items: [
+      item('top', '短袖T恤', '白色'),
+      item('bottom', '短裤', '灰色'),
+      item('shoes', '运动鞋', '白色'),
+    ],
+    relations: [relation('NEUTRAL_COLOR_BRIDGE', ['top', 'bottom'])],
+    qualification: qualification('SPORT_V4_EVIDENCE_SUPPORTED', ['category'], ['top']),
+  });
+  const [candidate] = buildNaturalTodayCopyCandidates(source);
+  assert.equal(candidate.source, 'evidence_composition');
+  assert.match(candidate.text, /中性色/);
+  assert.match(candidate.text, /散步、日常走动/);
+  assert.deepEqual(candidate.authorizationIds, ['eligibility:SPORT_V4_EVIDENCE_SUPPORTED']);
+  assert.ok(candidate.evidenceFactIds.some((factId) => factId.includes(':authorized')));
+  assert.ok(candidate.evidenceFactIds.some((factId) => factId.includes(':category')));
+  const plan = buildNaturalTodayCopyPlan(source, source.relations[0], { candidateId: candidate.candidateId });
+  assert.equal(evaluateCopyNaturalness(plan).result, 'PASS');
+});
+
+test('detail advice stays grounded and is not a copy of the Today message', () => {
+  for (const [name, source] of cases.filter(([, entry]) => entry.relations.length > 0)) {
+    const relationValue = source.relations[0];
+    const today = buildNaturalTodayCopyPlan(source, relationValue);
+    const detail = buildNaturalDetailCopyPlan(source, relationValue);
+    if (!detail.text) continue;
+    assert.equal(evaluateCopyNaturalness(detail).result, 'PASS', name);
+    assert.notEqual(detail.text, today.text, name);
+  }
+});

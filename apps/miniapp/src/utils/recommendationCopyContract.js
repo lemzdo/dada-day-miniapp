@@ -1,6 +1,6 @@
-const COPY_CONTRACT_VERSION = 'recommendation-copy-contract-v4';
+const COPY_CONTRACT_VERSION = 'recommendation-copy-contract-v7';
 const VOICE_BANK_VERSION = 'xiaoda-fixed-claim-catalog-v2';
-const COPY_NATURALNESS_GATE_VERSION = 'copy-naturalness-gate-v1';
+const COPY_NATURALNESS_GATE_VERSION = 'copy-naturalness-gate-v2';
 
 const DEFAULT_COPY_FIELDS = [
   'reason',
@@ -53,6 +53,14 @@ const DEFAULT_COPY_FIELDS = [
   'naturalnessGateVersion',
   'naturalnessGateResult',
   'naturalnessRiskFlags',
+  'structuralNaturalnessVersion',
+  'structuralNaturalnessResult',
+  'structuralNaturalnessRiskFlags',
+  'structuralNaturalnessWarningFlags',
+  'messageIntent',
+  'messageCandidateId',
+  'messageDimension',
+  'valueAssessment',
 ];
 
 const FALLBACK_REVIEW_SOURCES = new Set([
@@ -73,6 +81,9 @@ function hasCurrentDefaultCopy(outfit) {
     && outfit.copyContract.naturalnessGateResult === 'PASS'
     && Array.isArray(outfit.copyContract.naturalnessRiskFlags)
     && outfit.copyContract.naturalnessRiskFlags.length === 0
+    && outfit.copyContract.structuralNaturalnessResult === 'PASS'
+    && Array.isArray(outfit.copyContract.structuralNaturalnessRiskFlags)
+    && outfit.copyContract.structuralNaturalnessRiskFlags.length === 0
     && isPlainObject(outfit.copyContract.todayCopyProvenance);
 }
 

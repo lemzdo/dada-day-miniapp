@@ -252,7 +252,7 @@ test('eight-card normal response keeps raw fact carriers out of the business pay
       defaultCopy: { todayReason: 'reason', detailExplanation: 'detail' },
     },
     copyContract: {
-      copyContractVersion: 'recommendation-copy-contract-v4',
+      copyContractVersion: 'recommendation-copy-contract-v7',
       voiceBankVersion: 'xiaoda-fixed-claim-catalog-v2',
       gateResult: 'PASS', riskFlags: [], todayReason: 'reason',
       coreEligibilityReason: '居家放松适配',

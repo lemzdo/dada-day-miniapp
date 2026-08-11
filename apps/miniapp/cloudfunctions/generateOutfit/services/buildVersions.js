@@ -3,7 +3,7 @@ const {
   SCENE_EVIDENCE_VERSION,
 } = require('./sceneEvidenceRegistryV4');
 
-const CLOUD_BUILD_VERSION = 'generateOutfit-scene-evidence-v4-20260810';
+const CLOUD_BUILD_VERSION = 'generateOutfit-copy-natural-language-v4-20260811';
 const CANDIDATE_POOL_ENGINE_VERSION = `generateOutfit-scene-evidence-v4-${SCENE_EVIDENCE_FINGERPRINT}`;
 const REASON_CATALOG_VERSION = 'eligibility-reason-v6';
 const AI_REVIEW_VERSION = 'stylist-review-v3';

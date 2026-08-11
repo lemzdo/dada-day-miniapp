@@ -35,25 +35,36 @@ function outfit(scene, index, todayReason = '粉色上衣配灰色下装，亮�
   return {
     scene,
     clothingIds: [topId, bottomId],
-    copyContractVersion: 'recommendation-copy-contract-v4',
+    copyContractVersion: 'recommendation-copy-contract-v7',
     copyContract: {
-      copyContractVersion: 'recommendation-copy-contract-v4',
+      copyContractVersion: 'recommendation-copy-contract-v7',
       coreEligibilityReasonCode: `${scene.toUpperCase()}_BASELINE`,
       todayReason,
       unsupportedClaimCount: 0,
-      naturalnessGateVersion: 'copy-naturalness-gate-v1',
+      naturalnessGateVersion: 'copy-naturalness-gate-v2',
       naturalnessGateResult: 'PASS',
       naturalnessRiskFlags: [],
+      structuralNaturalnessVersion: 'batch-editorial-review-v2',
+      structuralNaturalnessResult: 'PASS',
+      structuralNaturalnessRiskFlags: [],
       todayCopyProvenance: {
-        version: 'recommendation-natural-language-v1',
+        version: 'recommendation-natural-language-v3',
         surface: 'today',
         scene,
         relationCode: 'TOP_ACCENT_WITH_NEUTRAL_BOTTOM',
-        compositionPattern: 'relation',
+        messageIntent: 'color_focal_support',
+        messageCandidateId: 'message.color-focal-support:TOP_ACCENT_WITH_NEUTRAL_BOTTOM:relation',
+        messageDimension: 'color',
+        openingFamily: 'bright_subject',
+        endingFamily: 'quiet_support',
+        valueAssessment: { factAvailable: true, userValue: 3, novelInformation: 3, sceneRelevance: 1, naturalExpressibility: 3, total: 12 },
+        availableMessageCount: 1,
+        compositionPattern: 'natural_message',
         text: todayReason,
         clauses: [{
-          slot: 'relation',
-          templateId: 'relation.accent-neutral',
+          slot: 'message',
+          templateId: 'message.color-focal-support',
+          messageIntent: 'color_focal_support',
           text: todayReason.replace(/。$/, ''),
           informationKey: 'relation:TOP_ACCENT_WITH_NEUTRAL_BOTTOM',
           subjectItemIds: [topId, bottomId],
@@ -62,6 +73,7 @@ function outfit(scene, index, todayReason = '粉色上衣配灰色下装，亮�
           relationCode: 'TOP_ACCENT_WITH_NEUTRAL_BOTTOM',
           scene,
           source: 'presentation_relation',
+          valueAssessment: { factAvailable: true, userValue: 3, novelInformation: 3, sceneRelevance: 1, naturalExpressibility: 3, total: 12 },
         }],
       },
     },
@@ -81,6 +93,17 @@ test('real Today audit requires eight cards per scene and compares final UI text
     assert.equal(result.decisionValueCount, 8);
     assert.equal(result.omittedLowValueClauseCount, 8);
   }
+});
+
+test('refresh audit accepts omitted full-compute scene diagnostics while retaining public Scene V4 meta', () => {
+  const outfits = Array.from({ length: 8 }, (_, index) => outfit('home', index));
+  const uiCards = outfits.map((entry, index) => ({ index, todayReason: entry.copyContract.todayReason }));
+  const data = acceptanceData(outfits);
+  delete data.debug;
+  assert.equal(auditFinalTodayCopy('home', data, uiCards).passed, false);
+  assert.equal(auditFinalTodayCopy('home', data, uiCards, {
+    requireSceneEvidenceDiagnostics: false,
+  }).passed, true);
 });
 
 test('real Today audit rejects stale editorial copy and UI binding drift independently', () => {

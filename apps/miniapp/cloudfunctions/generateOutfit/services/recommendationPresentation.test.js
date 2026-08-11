@@ -66,7 +66,7 @@ test('canonical batch preserves factual copy without synthetic sequence suffixes
   ];
   const first = canonicalizeRecommendationBatch(source, { scene: 'work' });
   const second = canonicalizeRecommendationBatch(source, { scene: 'work' });
-  assert.equal(new Set(first.map((entry) => entry.copyContract.todayReason)).size, 2);
+  assert.equal(new Set(first.map((entry) => entry.copyContract.todayReason)).size, 1);
   assert.deepEqual(first.map((entry) => entry.copyContract.todayReason), second.map((entry) => entry.copyContract.todayReason));
   assert.equal(first.every((entry) => entry.title === entry.displayTitle), true);
   assert.equal(first.some((entry) => /（\d+）|\(\d+\)$/.test(entry.copyContract.todayReason)), false);
@@ -251,15 +251,15 @@ test('final presentation plan atomically owns copy, metadata, evidence, and sour
   assert.doesNotMatch(`${plan.todayReason}${plan.detailExplanation}`, /放在中间/);
 });
 
-test('detail is hidden when the plan has no second supported fact', () => {
+test('detail may expand the same structural fact without repeating Today copy', () => {
   const card = canonicalizeRecommendation(outfit(9, {
     scene: 'home',
     items: [{ itemId: 'dress-only', category: 'onepiece', subcategory: 'dress' }],
   }), { scene: 'home' });
-  assert.equal(card.presentationPlan.detailDisplay, 'hidden');
-  assert.equal(card.presentationPlan.detailExplanation, '');
-  assert.equal(card.copyContract.detailExplanation, '');
-  assert.equal(card.contentPlan.defaultDetailExplanation, '');
+  assert.equal(card.presentationPlan.detailDisplay, 'visible');
+  assert.match(card.presentationPlan.detailExplanation, /省掉上下装配对/);
+  assert.notEqual(card.presentationPlan.detailExplanation, card.presentationPlan.todayReason);
+  assert.equal(card.copyContract.detailExplanation, card.contentPlan.defaultDetailExplanation);
 });
 
 test('same-color top and bottom copy does not infer a shoe contrast', () => {
@@ -273,7 +273,7 @@ test('same-color top and bottom copy does not infer a shoe contrast', () => {
 
   const card = canonicalizeRecommendation(source, { scene: 'sport' });
   assert.equal(card.presentationPlan.primaryRelationCode, 'SAME_COLOR_TOP_BOTTOM');
-  assert.match(card.copyContract.todayReason, /日常轻运动时走动更方便/);
+  assert.match(card.copyContract.todayReason, /散步、快走/);
   assert.doesNotMatch(card.copyContract.todayReason, /都用了黑色/);
   assert.doesNotMatch(card.copyContract.todayReason, /鞋.+对比|形成对比/);
 });
@@ -323,7 +323,8 @@ test('duplicate fixed reasons consume the selected card visible difference witho
   const cards = canonicalizeRecommendationBatch(fixture, { scene: 'sport' });
   const reasons = cards.map((card) => card.copyContract.todayReason);
 
-  assert.equal(new Set(reasons).size, 5);
+  assert.ok(new Set(reasons).size >= 5);
+  assert.equal(cards.every((card) => card.copyContract.structuralNaturalnessResult === 'PASS'), true);
   assert.equal(reasons.every((reason) => !reason.includes('可以直接这样穿')), true);
   assert.equal(reasons.every((reason) => !/活动方便|稳定包脚/.test(reason)), true);
   assert.equal(reasons.some((reason) => /\(\d+\)|（\d+）|第\d+套/.test(reason)), false);

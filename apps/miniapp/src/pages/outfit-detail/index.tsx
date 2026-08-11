@@ -49,6 +49,7 @@ import {
   getTimeLabel,
 } from '@/utils/outfitContextText';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
+import { mergeRecommendationEntryDraft } from './outfitDetailEntryMerge';
 import { buildAiReviewPresentation } from './aiReviewPresentation';
 import { getAiReviewPageState } from './aiReviewPageState';
 import { getAiCommentButtonBlockReason, getAiCommentButtonState, type AiCommentButtonState } from './aiCommentButtonState';
@@ -155,7 +156,7 @@ function buildOutfitDetailCacheKey(source: DetailSource, detailId: string | unde
   if (!detailId) return '';
   return buildPageCacheKey([
     'outfitDetail',
-    'recommendation-copy-contract-v4',
+    'recommendation-copy-contract-v7',
     source,
     detailId,
     scene || 'unknown',
@@ -453,13 +454,14 @@ export default function OutfitDetailPage() {
     try {
       const decodedId = decodeURIComponent(outfitId);
       const source = normalizeSource(sourceParam);
-      const cacheKey = buildOutfitDetailCacheKey(source, decodedId);
+      let recommendationEntryDraft: Outfit | null = null;
       if (requestSeqRef.current !== requestSeq || !isCurrentAuthContext(authContext)) return;
       setDetailSource(source);
 
       if (source === 'recommendation') {
         const draft = readOutfitDetailDraft(decodedId, { authContext });
         if (draft) {
+          recommendationEntryDraft = draft;
           if (requestSeqRef.current !== requestSeq || !isCurrentAuthContext(authContext)) return;
           const preparedDraft = prepareOutfitForState({ ...draft, outfitKind: draft.outfitKind || 'recommendation' }, authContext);
           setOutfit(preparedDraft);
@@ -469,6 +471,8 @@ export default function OutfitDetailPage() {
           void loadCanonicalAiComment(preparedDraft, requestSeq, authContext);
         }
       }
+
+      const cacheKey = buildOutfitDetailCacheKey(source, decodedId, recommendationEntryDraft?.scene);
 
       if (!hasDisplayableOutfit && cacheKey && !hasWardrobeRefreshSignal(authContext)) {
         const cached = await getUserPageCache<Outfit>(cacheKey, { authContext });
@@ -490,7 +494,10 @@ export default function OutfitDetailPage() {
             ? await getOutfitHistoryDetail(decodedId)
             : await getCloudOutfit(decodedId);
       if (requestSeqRef.current !== requestSeq || !isCurrentAuthContext(authContext)) return;
-      const prepared = prepareOutfitForState(detail, authContext);
+      const entryConsistentDetail = source === 'recommendation' && recommendationEntryDraft
+        ? mergeRecommendationEntryDraft(detail, recommendationEntryDraft)
+        : detail;
+      const prepared = prepareOutfitForState(entryConsistentDetail, authContext);
       setOutfit(prepared);
       trackDetailViewOnce(prepared, source);
       void loadCanonicalAiComment(prepared, requestSeq, authContext);

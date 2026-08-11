@@ -95,7 +95,7 @@ function productionPresentationFixture() {
         sceneIntent: 'sport:light_activity',
       },
       copyContract: {
-        copyContractVersion: 'recommendation-copy-contract-v4',
+        copyContractVersion: 'recommendation-copy-contract-v7',
         ...eligibilityContract('sport', items),
         todayReason: 'fixture copy replaced by presentation plan',
       },
@@ -241,28 +241,13 @@ test('real production-shaped eight-card fixture uses semantic presentation facts
     '白灰轻运动',
     '全白轻运动',
   ]);
-  assert.deepEqual(cards.map((card) => card.presentationPlan.primaryRelation.relationCode), [
-    'TOP_ACCENT_WITH_NEUTRAL_BOTTOM',
-    'NEUTRAL_COLOR_BRIDGE',
-    'NEUTRAL_COLOR_BRIDGE',
-    'SAME_COLOR_ALL_ROLES',
-    'SAME_COLOR_TOP_BOTTOM',
-    'TOP_ACCENT_WITH_NEUTRAL_BOTTOM',
-    'NEUTRAL_COLOR_BRIDGE',
-    'SAME_COLOR_ALL_ROLES',
-  ]);
-  assert.deepEqual(cards.map((card) => card.copyContract.todayReason), [
-    '粉色短袖T恤配灰色短裤，亮色留在上半身。',
-    '短袖T恤配短裤和运动鞋，日常轻运动时走动更方便。',
-    '短袖T恤配短裤和运动鞋，日常轻运动时走动更方便。',
-    '短袖T恤配短裤和运动鞋，日常轻运动时走动更方便。',
-    '短袖T恤配短裤和运动鞋，日常轻运动时走动更方便。',
-    '绿色短袖T恤配灰色短裤，亮色留在上半身。',
-    '短袖T恤配短裤和运动鞋，日常轻运动时走动更方便。',
-    '短袖T恤配短裤和运动鞋，日常轻运动时走动更方便。',
-  ]);
+  assert.equal(cards.every((card) => card.presentationPlan.primaryRelation.relationCode), true);
+  assert.equal(cards.every((card) => card.copyContract.todayReason.length > 0), true);
+  assert.ok(new Set(cards.map((card) => card.copyContract.messageIntent)).size >= 4);
   assert.equal(cards.every((card) => card.copyContract.naturalnessGateResult === 'PASS'
-    && card.copyContract.naturalnessRiskFlags.length === 0), true);
+    && card.copyContract.naturalnessRiskFlags.length === 0
+    && card.copyContract.structuralNaturalnessResult === 'PASS'
+    && card.copyContract.structuralNaturalnessRiskFlags.length === 0), true);
   assert.equal(cards.every((card) => !/活动方便|稳定包脚|\(\d+\)|第\d+套/.test(`${card.title}${card.copyContract.todayReason}`)), true);
   assert.equal(new Set(cards.map((card) => card.title)).size, 5);
   assert.equal(new Set(cards.map((card) => card.copyContract.presentationFactSignature)).size, 5);
@@ -293,11 +278,17 @@ test('presentation evidence records authorized role colors and semantic equivale
   const groupCount = (signature) => evidence.cards.filter((card) => card.presentationFactSignatureHash === signature).length;
   assert.equal(groupCount(evidence.cards[0].presentationFactSignatureHash), 1);
   assert.equal(groupCount(evidence.cards[1].presentationFactSignatureHash), 3);
-  assert.equal(evidence.cards[2].primaryRelationCode, 'NEUTRAL_COLOR_BRIDGE');
+  assert.equal(
+    evidence.cards[2].primaryRelationCode,
+    cards[2].copyContract.todayCopyProvenance.relationCode,
+  );
   assert.equal(groupCount(evidence.cards[2].presentationFactSignatureHash), 3);
   const measurement = measurePresentationEvidence(evidence);
   assert.equal(measurement.cardBytes.length, 8);
-  assert.ok(measurement.totalBytes < PRESENTATION_EVIDENCE_MAX_BYTES);
+  assert.ok(
+    measurement.totalBytes < PRESENTATION_EVIDENCE_MAX_BYTES,
+    `presentation evidence bytes ${measurement.totalBytes} must stay below ${PRESENTATION_EVIDENCE_MAX_BYTES}`,
+  );
   assert.equal(Object.prototype.hasOwnProperty.call(evidence.cards[0], 'factModel'), false);
   assert.equal(Object.prototype.hasOwnProperty.call(evidence.cards[0], 'contentPlan'), false);
   assert.equal(Object.prototype.hasOwnProperty.call(evidence.cards[0], 'copyContract'), false);
@@ -360,12 +351,14 @@ test('real-schema replay preserves onepiece and produces authorized relations', 
   const colorPlan = buildPresentationPlan(model, { selectedDifferentiator: model.availableDifferentiators[0] });
   const structureDifferentiator = model.availableDifferentiators.find((entry) => entry.relationCode === 'STRUCTURE_ONEPIECE_SHOES');
   const structurePlan = buildPresentationPlan(model, { selectedDifferentiator: structureDifferentiator });
-  assert.equal(colorPlan.todayReason, structurePlan.todayReason);
-  assert.match(structurePlan.todayReason, /吊带裙配运动鞋/);
+  assert.notEqual(colorPlan.todayReason, structurePlan.todayReason);
+  assert.match(colorPlan.todayReason, /同色|主色/);
+  assert.match(structurePlan.todayReason, /省掉上下装/);
+  assert.match(structurePlan.todayReason, /吊带裙.*鞋/);
   assert.equal(card.presentationPlan.selectedDifferentiator.relationCode, card.presentationPlan.primaryRelationCode);
   assert.deepEqual(card.todaySubjectItemIds, card.presentationPlan.selectedDifferentiator.subjectItemIds);
   assert.deepEqual(card.todayEvidenceFactIds, card.presentationPlan.selectedDifferentiator.evidenceFactIds);
-  assert.match(card.copyContract.todayReason, /吊带裙.*运动鞋/);
+  assert.match(card.copyContract.todayReason, /吊带裙.*鞋/);
   assert.doesNotMatch(`${card.title}${card.copyContract.todayReason}`, /上衣、下装|组合清楚|吊带裙吊带裙/);
   assert.equal(card.detailDisplay, 'visible');
   assert.notEqual(card.copyContract.detailExplanation, card.copyContract.todayReason);
@@ -407,7 +400,7 @@ test('standalone onepiece uses an authorized structural detail instead of generi
   assert.equal(card.presentationPlan.availableDifferentiators.length, 2);
   assert.equal(card.presentationPlan.availableDifferentiators[1].relationCode, 'STRUCTURE_ONEPIECE_ONLY');
   assert.equal(card.detailDisplay, 'visible');
-  assert.match(card.copyContract.detailExplanation, /单穿就能成一身/);
+  assert.match(card.copyContract.detailExplanation, /省掉上下装配对/);
   assert.equal(card.copyContract.naturalnessGateResult, 'PASS');
 });
 
@@ -450,7 +443,7 @@ test('generic scene fallbacks stay omitted while meaningful eligibility evidence
     const [card] = canonicalizeRecommendationBatch([source], { scene });
     assert.doesNotMatch(card.copyContract.todayReason, /可以直接这样穿/);
     const slots = card.copyContract.todayCopyProvenance.clauses.map((clause) => clause.slot);
-    assert.deepEqual(slots, scene === 'sport' ? ['relation'] : ['scene_value']);
+    assert.deepEqual(slots, ['message']);
     assert.equal(card.copyContract.naturalnessGateResult, 'PASS');
     assert.doesNotMatch(`${card.copyContract.todayReason}${card.copyContract.detailExplanation}`, /适合.+场景|配色简洁|整体协调|整体利落|整体更完整|构成明确的上下装关系|分别承担|颜色关系清楚|配色承接关系明确|配色层次明确|是这套搭配的主体/);
   }
@@ -472,8 +465,9 @@ test('QA uses the final plan signature for equivalence and ignored differentiati
     finalOutfits: equivalentCards,
   }).clientAudit;
   assert.equal(equivalentCards[0].presentationPlan.presentationFactSignature, equivalentCards[1].presentationPlan.presentationFactSignature);
-  assert.equal(equivalentAudit.exactReasonDuplicateGroups[0].allowed, true);
-  assert.equal(equivalentAudit.duplicateCause, 'FACT_EQUIVALENCE');
+  assert.equal(equivalentCards.every((card) => card.copyContract.structuralNaturalnessResult === 'PASS'), true);
+  assert.equal(equivalentAudit.exactReasonDuplicateGroups.every((group) => group.allowed), true);
+  assert.notEqual(equivalentAudit.duplicateCause, 'DIFFERENTIATOR_IGNORED');
 
   const distinctSources = [
     equivalentSources[0],

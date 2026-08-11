@@ -1,182 +1,128 @@
-const test = require('node:test');
 const assert = require('node:assert/strict');
-
+const test = require('node:test');
 const {
   COPY_NATURALNESS_FLAGS,
-  DECISION_VALUE_CATEGORIES,
-  DECISION_VALUE_FLAGS,
-  evaluateDecisionValue,
+  DECISION_VALUE_PASS,
+  DECISION_VALUE_REJECT,
   evaluateCopyNaturalness,
+  evaluateDecisionValue,
 } = require('./copyNaturalnessGate');
-const { buildNaturalTodayCopyPlan, joinClauses } = require('./recommendationNaturalLanguage');
+const {
+  buildNaturalTodayCopyPlan,
+  joinClauses,
+} = require('./recommendationNaturalLanguage');
 
-function validPlan() {
-  const model = {
-    scene: 'home',
+function groundedModel() {
+  return {
+    scene: 'date',
     items: [
-      { role: 'top', itemId: 'top-1', canonicalSubtype: '短袖T恤', normalizedColor: '白色' },
-      { role: 'bottom', itemId: 'bottom-1', canonicalSubtype: '短裤', normalizedColor: '灰色' },
+      item('top', 'top-1', '短袖T恤', '绿色'),
+      item('bottom', 'bottom-1', '直筒裤', '灰色'),
     ],
-    qualification: {
-      reasonCode: 'HOME_HOT_SHORT_SLEEVE_SHORTS',
+    relations: [{
+      relationCode: 'TOP_ACCENT_WITH_NEUTRAL_BOTTOM',
+      roles: ['top', 'bottom'],
+      authorizedValues: ['绿色', '灰色'],
       subjectItemIds: ['top-1', 'bottom-1'],
-      supportingFactIds: ['item:top-1:short_sleeve', 'item:bottom-1:shorts'],
-      relationFactIds: [],
+      evidenceFactIds: ['item:top-1:color', 'item:bottom-1:color'],
+    }],
+    qualification: {
+      reasonCode: 'DATE_BRIGHT_TOP_BASIC_SUPPORT',
+      subjectItemIds: ['top-1', 'bottom-1'],
+      supportingFactIds: ['item:top-1:bright_color', 'item:bottom-1:basic_color'],
       evidence: [
-        { factId: 'item:top-1:short_sleeve', fact: 'short_sleeve', itemId: 'top-1' },
-        { factId: 'item:bottom-1:shorts', fact: 'shorts', itemId: 'bottom-1' },
+        { factId: 'item:top-1:bright_color', fact: 'bright_color', itemId: 'top-1' },
+        { factId: 'item:bottom-1:basic_color', fact: 'basic_color', itemId: 'bottom-1' },
       ],
     },
   };
-  const relation = {
-    relationCode: 'NEUTRAL_COLOR_BRIDGE',
-    roles: ['top', 'bottom'],
-    subjectItemIds: ['top-1', 'bottom-1'],
-    evidenceFactIds: ['item:top-1:color', 'item:bottom-1:color'],
-  };
-  return buildNaturalTodayCopyPlan(model, relation);
+}
+
+function item(role, itemId, subtype, normalizedColor) {
+  return { role, itemId, canonicalSubtype: subtype, canonicalName: subtype, normalizedColor };
+}
+
+function validPlan() {
+  const model = groundedModel();
+  return buildNaturalTodayCopyPlan(model, model.relations[0]);
 }
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-function insertGenericScene(planValue) {
-  const plan = clone(planValue);
-  plan.clauses.find((clause) => clause.slot === 'scene_value').text = '宅家时可以直接这样穿';
-  plan.text = joinClauses(plan.clauses);
-  return plan;
+function replaceText(plan, text) {
+  const next = clone(plan);
+  next.clauses[0].text = text.replace(/[。！？!?]+$/u, '');
+  next.text = joinClauses(next.clauses);
+  return next;
 }
 
-function prependGroundedRelation(planValue) {
-  const plan = clone(planValue);
-  const sceneClause = plan.clauses.find((entry) => entry.slot === 'scene_value');
-  plan.clauses.unshift({
-    ...clone(sceneClause),
-    slot: 'relation',
-    templateId: 'relation.neutral-pair',
-    text: '白色短袖T恤和灰色短裤都是中性色',
-    informationKey: 'relation:NEUTRAL_COLOR_BRIDGE',
-    evidenceFactIds: ['item:top-1:color', 'item:bottom-1:color'],
-    authorizationIds: [],
-    source: 'presentation_relation',
-  });
-  plan.compositionPattern = plan.clauses.map((entry) => entry.slot).join('>');
-  plan.text = joinClauses(plan.clauses);
-  return plan;
-}
-
-function replaceSceneWithBenefit(planValue) {
-  const plan = prependGroundedRelation(planValue);
-  const clause = plan.clauses.find((entry) => entry.slot === 'scene_value');
-  clause.slot = 'benefit';
-  clause.templateId = 'benefit.less-bundled-home-short-sleeve';
-  clause.text = '短袖和短裤不会裹得太多';
-  clause.informationKey = 'benefit:benefit.less-bundled-home-short-sleeve';
-  clause.source = 'core_eligibility_benefit';
-  clause.authorizationIds = ['eligibility:HOME_HOT_SHORT_SLEEVE_SHORTS'];
-  plan.compositionPattern = plan.clauses.map((entry) => entry.slot).join('>');
-  plan.text = joinClauses(plan.clauses);
-  return plan;
-}
-
-test('COPY_NATURALNESS_GATE replaces a low-value relation with meaningful scene evidence', () => {
+test('registered high-value message with complete evidence passes both gates', () => {
   const plan = validPlan();
-  assert.equal(plan.compositionPattern, 'scene_value');
-  assert.equal(plan.clauses.some((clause) => clause.slot === 'scene_value'), true);
+  assert.equal(plan.compositionPattern, 'natural_message');
+  assert.equal(plan.clauses.length, 1);
   assert.equal(evaluateCopyNaturalness(plan).result, 'PASS');
-  assert.deepEqual(evaluateDecisionValue(plan).categories, [
-    DECISION_VALUE_CATEGORIES.MEANINGFUL_SCENE_EVIDENCE,
-  ]);
+  assert.equal(evaluateDecisionValue(plan).result, DECISION_VALUE_PASS);
 });
 
-test('COPY_NATURALNESS_GATE rejects the reported editorial composition even with populated provenance', () => {
-  const plan = insertGenericScene(prependGroundedRelation(validPlan()));
-  plan.clauses[0].text = '白色短袖T恤与灰色短裤用中性色过渡';
-  plan.clauses[1].text = '适合居家场景，配色简洁';
-  plan.text = joinClauses(plan.clauses);
-  const result = evaluateCopyNaturalness(plan);
-  assert.equal(result.result, 'REJECT');
-  assert.ok(result.riskFlags.includes(COPY_NATURALNESS_FLAGS.MECHANICAL_SCENE_RESTATEMENT));
-  assert.ok(result.riskFlags.includes(COPY_NATURALNESS_FLAGS.GENERIC_EDITORIAL_TAIL));
+test('missing valuable evidence cannot fall back to a generic sentence', () => {
+  const plan = buildNaturalTodayCopyPlan({ scene: 'home', items: [], relations: [], qualification: {} });
+  assert.equal(plan.text, '');
+  assert.equal(evaluateCopyNaturalness(plan).result, 'REJECT');
+  assert.equal(evaluateDecisionValue(plan).result, DECISION_VALUE_REJECT);
 });
 
-test('COPY_NATURALNESS_GATE rejects a benefit that repeats relation evidence', () => {
-  const plan = replaceSceneWithBenefit(validPlan());
-  const benefitClause = plan.clauses.find((clause) => clause.slot === 'benefit');
-  benefitClause.evidenceFactIds = plan.clauses[0].evidenceFactIds.slice();
-  const result = evaluateCopyNaturalness(plan);
-  assert.equal(result.result, 'REJECT');
-  assert.ok(result.riskFlags.includes(COPY_NATURALNESS_FLAGS.BENEFIT_WITHOUT_NEW_EVIDENCE));
+test('message intent, template registration, provenance, and value assessment are structural', () => {
+  const intent = clone(validPlan());
+  intent.messageIntent = 'forged_intent';
+  assert.ok(evaluateCopyNaturalness(intent).riskFlags.includes(COPY_NATURALNESS_FLAGS.MESSAGE_INTENT_MISMATCH));
+
+  const template = clone(validPlan());
+  template.clauses[0].templateId = 'message.unregistered';
+  assert.ok(evaluateCopyNaturalness(template).riskFlags.includes(COPY_NATURALNESS_FLAGS.UNKNOWN_TEMPLATE));
+
+  const provenance = clone(validPlan());
+  provenance.clauses[0].evidenceFactIds = [];
+  provenance.clauses[0].authorizationIds = [];
+  assert.ok(evaluateCopyNaturalness(provenance).riskFlags.includes(COPY_NATURALNESS_FLAGS.MISSING_PROVENANCE));
+
+  const value = clone(validPlan());
+  value.valueAssessment.userValue = 0;
+  value.clauses[0].valueAssessment.userValue = 0;
+  assert.ok(evaluateCopyNaturalness(value).riskFlags.includes(COPY_NATURALNESS_FLAGS.INVALID_VALUE_ASSESSMENT));
 });
 
-test('COPY_NATURALNESS_GATE rejects unregistered templates and broken composition', () => {
+test('copy plan must remain one natural message instead of mechanical slot concatenation', () => {
   const plan = clone(validPlan());
-  plan.clauses[0].templateId = 'relation.unregistered';
-  plan.compositionPattern = 'benefit>relation>scene_value';
-  const result = evaluateCopyNaturalness(plan);
-  assert.equal(result.result, 'REJECT');
-  assert.ok(result.riskFlags.includes(COPY_NATURALNESS_FLAGS.UNKNOWN_TEMPLATE));
-  assert.ok(result.riskFlags.includes(COPY_NATURALNESS_FLAGS.INVALID_SLOT_ORDER));
-});
-
-test('COPY_NATURALNESS_GATE rejects scene copy without eligibility authorization', () => {
-  const plan = insertGenericScene(validPlan());
-  plan.clauses.find((clause) => clause.slot === 'scene_value').authorizationIds = [];
+  plan.clauses.push(clone(plan.clauses[0]));
+  plan.clauses[1].informationKey = 'second-slot';
   plan.text = joinClauses(plan.clauses);
-  const result = evaluateCopyNaturalness(plan);
-  assert.equal(result.result, 'REJECT');
-  assert.ok(result.riskFlags.includes(COPY_NATURALNESS_FLAGS.MECHANICAL_SCENE_RESTATEMENT));
+  assert.ok(evaluateCopyNaturalness(plan).riskFlags.includes(COPY_NATURALNESS_FLAGS.INVALID_SLOT_ORDER));
 });
 
-test('COPY_NATURALNESS_GATE rejects system checklist phrasing even when provenance is complete', () => {
-  const plan = validPlan();
-  plan.clauses.find((clause) => clause.slot === 'scene_value').text = '活动用的下装和鞋已经配上';
-  plan.text = joinClauses(plan.clauses);
-  assert.deepEqual(evaluateCopyNaturalness(plan), {
-    version: 'copy-naturalness-gate-v1',
-    result: 'REJECT',
-    riskFlags: ['SYSTEM_CHECKLIST_TONE'],
-  });
+test('reported low-value production sentences are rejected even with forged complete provenance', () => {
+  const failures = [
+    '短袖T恤配短裤，在家穿不会裹得太多。',
+    '白色印花短袖T恤的印花已经是这身的重点。',
+    '毛衣、阔腿裤、运动鞋和手提袋组成一套，上班出门不用临时补搭。',
+    '灰色卫衣定下主色，其他单品沿用灰色或相近颜色就好。',
+    '这套有清楚的搭配关系，日常约会穿着自然。',
+    '白色短裤和白色运动鞋用同色呼应。',
+    '这套活动结构轻便，适合散步和日常轻运动。',
+  ];
+  for (const copy of failures) {
+    const result = evaluateCopyNaturalness(replaceText(validPlan(), copy));
+    assert.equal(result.result, 'REJECT', copy);
+    assert.ok(result.riskFlags.includes(COPY_NATURALNESS_FLAGS.KNOWN_LOW_VALUE_SENTENCE)
+      || result.riskFlags.includes(COPY_NATURALNESS_FLAGS.MECHANICAL_SCENE_RESTATEMENT), copy);
+  }
 });
 
-test('COPY_NATURALNESS_GATE rejects repeated scene semantics across scene and benefit slots', () => {
-  const plan = validPlan();
-  const benefit = clone(plan.clauses.find((clause) => clause.slot === 'scene_value'));
-  benefit.slot = 'benefit';
-  benefit.templateId = 'benefit.less-bundled-home-short-sleeve';
-  benefit.text = '在家时短袖和短裤不会裹得太多';
-  benefit.informationKey = 'benefit:benefit.less-bundled-home-short-sleeve';
-  benefit.evidenceFactIds = ['item:top-1:benefit'];
-  benefit.source = 'core_eligibility_benefit';
-  plan.clauses.push(benefit);
-  plan.compositionPattern = plan.clauses.map((clause) => clause.slot).join('>');
-  plan.text = joinClauses(plan.clauses);
-  const result = evaluateCopyNaturalness(plan);
-  assert.equal(result.result, 'REJECT');
-  assert.ok(result.riskFlags.includes('DUPLICATE_INFORMATION'));
-});
+test('human policy still rejects system-checklist and generic editorial language', () => {
+  const checklist = replaceText(validPlan(), '这些单品已经配齐，可以直接这样穿。');
+  assert.ok(evaluateCopyNaturalness(checklist).riskFlags.includes(COPY_NATURALNESS_FLAGS.SYSTEM_CHECKLIST_TONE));
 
-test('COPY_NATURALNESS_GATE preserves NO_INCREMENTAL_INFORMATION for a template without metadata', () => {
-  const plan = validPlan();
-  plan.clauses[0].templateId = 'relation.unregistered';
-  const result = evaluateCopyNaturalness(plan);
-  assert.equal(result.result, 'REJECT');
-  assert.ok(result.riskFlags.includes(COPY_NATURALNESS_FLAGS.NO_INCREMENTAL_INFORMATION));
-});
-
-test('DECISION_VALUE_GATE rejects a factual relation when it is the whole final reason', () => {
-  const plan = validPlan();
-  plan.clauses = [{
-    ...plan.clauses[0],
-    templateId: 'relation.top-bottom',
-    text: '短袖T恤配短裤',
-  }];
-  plan.compositionPattern = 'relation';
-  plan.text = joinClauses(plan.clauses);
-  const decision = evaluateDecisionValue(plan);
-  assert.equal(decision.result, 'REJECT');
-  assert.deepEqual(decision.categories, [DECISION_VALUE_CATEGORIES.FACTUAL_BUT_LOW_VALUE]);
-  assert.deepEqual(decision.riskFlags, [DECISION_VALUE_FLAGS.LOW_VALUE_FINAL_REASON]);
-  assert.ok(evaluateCopyNaturalness(plan).riskFlags.includes(COPY_NATURALNESS_FLAGS.LOW_VALUE_FINAL_REASON));
+  const editorial = replaceText(validPlan(), '绿色上衣和灰色下装配色简洁。');
+  assert.ok(evaluateCopyNaturalness(editorial).riskFlags.includes(COPY_NATURALNESS_FLAGS.GENERIC_EDITORIAL_TAIL));
 });

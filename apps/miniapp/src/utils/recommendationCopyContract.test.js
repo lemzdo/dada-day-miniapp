@@ -8,7 +8,7 @@ const implementation = fs.existsSync(path.join(__dirname, 'recommendationCopyCon
   ? require(MODULE_PATH)
   : {};
 
-const EXPECTED_VERSION = 'recommendation-copy-contract-v4';
+const EXPECTED_VERSION = 'recommendation-copy-contract-v7';
 const EXPECTED_VOICE_VERSION = 'xiaoda-fixed-claim-catalog-v2';
 
 function currentOutfit(overrides = {}) {
@@ -25,10 +25,13 @@ function currentOutfit(overrides = {}) {
       gateResult: 'PASS',
       todayReason: '衬衫配直筒裤，上班穿比较利落。',
       riskFlags: [],
-      naturalnessGateVersion: 'copy-naturalness-gate-v1',
+      naturalnessGateVersion: 'copy-naturalness-gate-v2',
       naturalnessGateResult: 'PASS',
       naturalnessRiskFlags: [],
-      todayCopyProvenance: { version: 'recommendation-natural-language-v1' },
+      structuralNaturalnessVersion: 'batch-editorial-review-v2',
+      structuralNaturalnessResult: 'PASS',
+      structuralNaturalnessRiskFlags: [],
+      todayCopyProvenance: { version: 'recommendation-natural-language-v3' },
     },
     reason: '衬衫配直筒裤，上班穿比较利落。',
     reasoning: '这条裤子弹性不错，坐着办公久一点也不容易勒。',
@@ -45,7 +48,7 @@ test('only the exact Contract and fixed Claim Catalog versions make default copy
   for (const outfit of [
     currentOutfit({ copyContractVersion: undefined, reasonVersion: 'recommendation-reason-v3' }),
     currentOutfit({ copyContractVersion: 'recommendation-copy-contract-v0', voiceBankVersion: 'xiaoda-voice-bank-v2' }),
-    currentOutfit({ copyContractVersion: ' recommendation-copy-contract-v4 ' }),
+    currentOutfit({ copyContractVersion: ' recommendation-copy-contract-v7 ' }),
     currentOutfit({ voiceBankVersion: 'xiaoda-voice-bank-v2' }),
     currentOutfit({ copyContract: {
       ...currentOutfit().copyContract,
@@ -224,12 +227,12 @@ test('stale stripping is null, array, and malformed-nesting safe', () => {
 
 test('all client cache and storage boundaries include the exact Contract version', () => {
   const sources = [
-    ['../lib/cloud.ts', /generateOutfit[^\n]*recommendation-copy-contract-v4|recommendation-copy-contract-v4[^\n]*generateOutfit/s],
-    ['outfitSnapshot.ts', /outfitDetailDraft[^\n]*recommendation-copy-contract-v4|recommendation-copy-contract-v4[^\n]*outfitDetailDraft/s],
-    ['../pages/today/index.tsx', /today:outfitReturnSnapshot[^\n]*recommendation-copy-contract-v4|recommendation-copy-contract-v4[^\n]*today:outfitReturnSnapshot/s],
-    ['../pages/outfit-detail/index.tsx', /outfitDetail[\s\S]{0,160}recommendation-copy-contract-v4/],
-    ['../pages/favorite-outfits/index.tsx', /favorites[\s\S]{0,160}recommendation-copy-contract-v4/],
-    ['../pages/outfit-history/index.tsx', /history[\s\S]{0,160}recommendation-copy-contract-v4/],
+    ['../lib/cloud.ts', /generateOutfit[^\n]*recommendation-copy-contract-v7|recommendation-copy-contract-v7[^\n]*generateOutfit/s],
+    ['outfitSnapshot.ts', /outfitDetailDraft[^\n]*recommendation-copy-contract-v7|recommendation-copy-contract-v7[^\n]*outfitDetailDraft/s],
+    ['../pages/today/index.tsx', /today:outfitReturnSnapshot[^\n]*recommendation-copy-contract-v7|recommendation-copy-contract-v7[^\n]*today:outfitReturnSnapshot/s],
+    ['../pages/outfit-detail/index.tsx', /outfitDetail[\s\S]{0,160}recommendation-copy-contract-v7/],
+    ['../pages/favorite-outfits/index.tsx', /favorites[\s\S]{0,160}recommendation-copy-contract-v7/],
+    ['../pages/outfit-history/index.tsx', /history[\s\S]{0,160}recommendation-copy-contract-v7/],
   ];
 
   for (const [relativePath, expected] of sources) {

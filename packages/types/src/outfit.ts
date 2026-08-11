@@ -265,14 +265,32 @@ export interface RecommendationCopyClauseProvenance {
   authorizationIds: string[];
   relationCode: string | null;
   scene: string;
-  source: 'presentation_relation' | 'core_eligibility' | 'core_eligibility_benefit';
+  source: 'presentation_relation' | 'core_eligibility' | 'evidence_composition';
+  messageIntent: string;
+  valueAssessment: RecommendationCopyValueAssessment;
+}
+
+export interface RecommendationCopyValueAssessment {
+  factAvailable: boolean;
+  userValue: number;
+  novelInformation: number;
+  sceneRelevance: number;
+  naturalExpressibility: number;
+  total: number;
 }
 
 export interface RecommendationCopyProvenance {
-  version: 'recommendation-natural-language-v1';
+  version: 'recommendation-natural-language-v3';
   surface: 'today' | 'detail';
   scene: string;
   relationCode: string | null;
+  messageIntent: string;
+  messageCandidateId: string;
+  messageDimension: string;
+  openingFamily: string;
+  endingFamily: string;
+  valueAssessment: RecommendationCopyValueAssessment;
+  availableMessageCount: number;
   compositionPattern: string;
   clauses: RecommendationCopyClauseProvenance[];
   text: string;
@@ -280,7 +298,7 @@ export interface RecommendationCopyProvenance {
 }
 
 export interface RecommendationCopyContract {
-  copyContractVersion: 'recommendation-copy-contract-v4';
+  copyContractVersion: 'recommendation-copy-contract-v7';
   voiceBankVersion: 'xiaoda-fixed-claim-catalog-v2';
   gateResult: 'PASS' | 'REJECT';
   copyDisplay?: 'visible' | 'hidden';
@@ -326,9 +344,17 @@ export interface RecommendationCopyContract {
   unsupportedClaimCount?: number;
   todayCopyProvenance?: RecommendationCopyProvenance;
   detailCopyProvenance?: RecommendationCopyProvenance | null;
-  naturalnessGateVersion?: 'copy-naturalness-gate-v1';
+  naturalnessGateVersion?: 'copy-naturalness-gate-v2';
   naturalnessGateResult?: 'PASS' | 'REJECT';
   naturalnessRiskFlags?: string[];
+  structuralNaturalnessVersion?: 'batch-editorial-review-v2';
+  structuralNaturalnessResult?: 'PASS' | 'REJECT';
+  structuralNaturalnessRiskFlags?: string[];
+  structuralNaturalnessWarningFlags?: string[];
+  messageIntent?: string;
+  messageCandidateId?: string;
+  messageDimension?: string;
+  valueAssessment?: RecommendationCopyValueAssessment;
 }
 
 export interface XiaodaContentPlanItem {
@@ -687,6 +713,14 @@ export interface Outfit {
   naturalnessGateVersion?: RecommendationCopyContract['naturalnessGateVersion'];
   naturalnessGateResult?: RecommendationCopyContract['naturalnessGateResult'];
   naturalnessRiskFlags?: string[];
+  structuralNaturalnessVersion?: RecommendationCopyContract['structuralNaturalnessVersion'];
+  structuralNaturalnessResult?: RecommendationCopyContract['structuralNaturalnessResult'];
+  structuralNaturalnessRiskFlags?: string[];
+  structuralNaturalnessWarningFlags?: string[];
+  messageIntent?: string;
+  messageCandidateId?: string;
+  messageDimension?: string;
+  valueAssessment?: RecommendationCopyValueAssessment;
   qualification?: RecommendationCopyContract['qualification'];
   outfitItemRoles?: XiaodaContentPlanItem[];
   contentPlan?: XiaodaContentPlan;

@@ -28,8 +28,8 @@ const REPOSITORY_ROOT = path.resolve(__dirname, '..', '..', '..');
 const ARTIFACT_ROOT = path.join(REPOSITORY_ROOT, 'artifacts', 'today-copy-naturalness-acceptance');
 const SCENES = Object.freeze(['home', 'work', 'date', 'sport']);
 const SCENE_TAGS = Object.freeze({ home: '居家', work: '上班', date: '约会', sport: '运动' });
-const COPY_CONTRACT_VERSION = 'recommendation-copy-contract-v4';
-const NATURALNESS_GATE_VERSION = 'copy-naturalness-gate-v1';
+const COPY_CONTRACT_VERSION = 'recommendation-copy-contract-v7';
+const NATURALNESS_GATE_VERSION = 'copy-naturalness-gate-v2';
 const OLD_EDITORIAL_COPY = /中性色过渡|适合.+场景|配色简洁|整体协调|整体利落|整体更完整|更显质感|已经配齐|已经配上|唯一有明确事实|已经配成上下装|已经配成一身/;
 const GENERIC_SCENE_FALLBACK = /(?:宅家时|日常通勤|约会时|日常轻运动)可以直接这样穿/;
 const SCENE_SEMANTIC_PATTERNS = Object.freeze({
@@ -81,7 +81,7 @@ async function selectScene(session, scene) {
   return waitUntil(
     () => readBridge(session.mini),
     (value) => value?.marker === 'd1d-today-production-handler-v1'
-      && value.copyAcceptanceBuild === 'today-copy-naturalness-v1'
+      && value.copyAcceptanceBuild === 'today-copy-naturalness-v2'
       && value.ready === true
       && value.sceneKey === scene,
     60000,
@@ -101,14 +101,16 @@ async function waitForNetworkIdle(mini) {
   );
 }
 
-async function triggerProductionRequest(mini, identifiers) {
-  return mini.evaluate(async (request) => {
+async function triggerProductionRequest(mini, identifiers, requestKind = 'retry') {
+  return mini.evaluate(async (payload) => {
     const bridge = globalThis.__d1dTodayDiagnostics;
     if (!bridge || bridge.marker !== 'd1d-today-production-handler-v1') {
       throw new Error('Today production diagnostics bridge is unavailable');
     }
-    return bridge.triggerFullCompute(request);
-  }, identifiers);
+    return payload.kind === 'refresh'
+      ? bridge.triggerRefresh(payload.request)
+      : bridge.triggerFullCompute(payload.request);
+  }, { request: identifiers, kind: requestKind });
 }
 
 async function readUiCards(session) {
@@ -126,7 +128,7 @@ async function readText(element) {
   return String(await element.text() || '').trim();
 }
 
-function auditFinalTodayCopy(scene, data, uiCards) {
+function auditFinalTodayCopy(scene, data, uiCards, { requireSceneEvidenceDiagnostics = true } = {}) {
   const outfits = Array.isArray(data?.outfits) ? data.outfits : [];
   const uiReasons = uiCards.map((card) => card.todayReason).filter(Boolean);
   const canonicalReasons = outfits.map((outfit) => String(outfit?.copyContract?.todayReason || '').trim());
@@ -145,8 +147,8 @@ function auditFinalTodayCopy(scene, data, uiCards) {
     || data?.meta?.sceneEvidenceFingerprint !== SCENE_EVIDENCE_FINGERPRINT) {
     failures.push('scene_evidence_meta_version');
   }
-  if (sceneAcceptance?.version !== SCENE_EVIDENCE_VERSION
-    || sceneAcceptance?.fingerprint !== SCENE_EVIDENCE_FINGERPRINT) {
+  if (requireSceneEvidenceDiagnostics && (sceneAcceptance?.version !== SCENE_EVIDENCE_VERSION
+    || sceneAcceptance?.fingerprint !== SCENE_EVIDENCE_FINGERPRINT)) {
     failures.push('scene_evidence_diagnostic_version');
   }
   if (outfits.length < 8) failures.push(`returned_card_count:${outfits.length}`);
@@ -164,7 +166,11 @@ function auditFinalTodayCopy(scene, data, uiCards) {
     const naturalnessPass = contract.naturalnessGateVersion === NATURALNESS_GATE_VERSION
       && contract.naturalnessGateResult === 'PASS'
       && Array.isArray(contract.naturalnessRiskFlags)
-      && contract.naturalnessRiskFlags.length === 0;
+      && contract.naturalnessRiskFlags.length === 0
+      && contract.structuralNaturalnessVersion === 'batch-editorial-review-v2'
+      && contract.structuralNaturalnessResult === 'PASS'
+      && Array.isArray(contract.structuralNaturalnessRiskFlags)
+      && contract.structuralNaturalnessRiskFlags.length === 0;
     if (![scene, SCENE_TAGS[scene]].includes(outfit.scene)) failures.push(`scene:${index}`);
     if (outfit.copyContractVersion !== COPY_CONTRACT_VERSION || contract.copyContractVersion !== COPY_CONTRACT_VERSION) failures.push(`contract:${index}`);
     if (!naturalnessPass) failures.push(`naturalness:${index}`);
@@ -186,7 +192,9 @@ function auditFinalTodayCopy(scene, data, uiCards) {
     if (subjectBindingCorrect && uiBindingCorrect) bindingCorrectnessCount += 1;
     if (naturalnessPass) naturalnessCount += 1;
     if (decisionValue.result === 'PASS') decisionValueCount += 1;
-    const emittedSceneClauses = clauses.filter((clause) => clause.slot === 'scene_value');
+    const emittedSceneClauses = clauses.filter((clause) => (
+      ['core_eligibility', 'evidence_composition'].includes(clause.source)
+    ));
     sceneClauses.push(...emittedSceneClauses.map((clause) => String(clause.text || '').trim()).filter(Boolean));
     if (contract.coreEligibilityReasonCode && emittedSceneClauses.length === 0) omittedLowValueClauseCount += 1;
     cardDiagnostics.push({
@@ -204,6 +212,9 @@ function auditFinalTodayCopy(scene, data, uiCards) {
       factCorrect,
       bindingCorrect: subjectBindingCorrect && uiBindingCorrect,
       naturalnessPass,
+      structuralNaturalnessVersion: contract.structuralNaturalnessVersion,
+      structuralNaturalnessResult: contract.structuralNaturalnessResult,
+      structuralNaturalnessWarningFlags: contract.structuralNaturalnessWarningFlags || [],
     });
     for (const clause of clauses) {
       if (clause.slot === 'benefit' && (!Array.isArray(clause.evidenceFactIds) || clause.evidenceFactIds.length === 0)) failures.push(`benefit_evidence:${index}`);
@@ -353,7 +364,112 @@ async function captureScene(session, scene, runId) {
   const uiCards = await readUiCards(session);
   const audit = auditFinalTodayCopy(scene, data, uiCards);
   if (!audit.passed) throw Object.assign(new Error(`${scene} final Today copy failed`), { audit });
-  return { ...audit, request: requestValidation.businessRequest, requestOutcome: 'fulfilled', evidenceSource: 'captured_public_dto_and_ui' };
+  const firstBatch = {
+    ...audit,
+    batch: 1,
+    request: requestValidation.businessRequest,
+    requestOutcome: 'fulfilled',
+    evidenceSource: 'captured_public_dto_and_ui',
+  };
+  const secondBatch = await captureRefreshBatch(session, scene, runId);
+  return combineSceneBatches(firstBatch, secondBatch);
+}
+
+async function captureRefreshBatch(session, scene, runId) {
+  await resetAcceptanceSingleRequestGuard(session.mini);
+  const baselineCumulativeRequestCount = await readAcceptanceCumulativeRequestCount(session.mini);
+  const identifiers = {
+    acceptanceRunId: `${runId}-${scene}-refresh`,
+    captureId: `copy-naturalness-${scene}-refresh-${crypto.randomBytes(3).toString('hex')}`,
+    weatherModeOverride: 'disabled',
+  };
+  await installAcceptanceSingleRequestGuard(session.mini, { ...identifiers, baselineCumulativeRequestCount });
+  await waitForNetworkIdle(session.mini);
+  const triggered = await triggerProductionRequest(session.mini, identifiers, 'refresh');
+  if (!triggered) {
+    return { batch: 2, supported: false, reason: 'candidate_pool_exhausted_before_refresh' };
+  }
+  const guard = await waitForNetworkIdle(session.mini);
+  const capture = await readAcceptanceCapture(session.mini);
+  const finalCumulativeRequestCount = await readAcceptanceCumulativeRequestCount(session.mini);
+  assertAcceptanceSingleRequest({
+    baselineCumulativeRequestCount,
+    finalCumulativeRequestCount,
+    capturedRequestCount: guard.capturedRequestCount,
+  });
+  if (!capture || capture.status !== 'fulfilled') {
+    throw Object.assign(new Error(`${scene} refresh request was not fulfilled: ${capture?.status || 'missing'} ${capture?.error || ''}`), { capture });
+  }
+  const requestValidation = validateProductionRequest(capture.originalRequestData);
+  const request = requestValidation.businessRequest;
+  const refreshBuilderValid = request.trigger === 'refresh'
+    && request.scene === SCENE_TAGS[scene]
+    && request.maxResults === 8
+    && typeof request.recommendationBatchId === 'string'
+    && request.recommendationBatchId.length > 0
+    && Array.isArray(request.excludedOutfitKeys)
+    && request.excludedOutfitKeys.length > 0
+    && requestValidation.missingFields.length === 0
+    && requestValidation.unicodeValid;
+  if (!refreshBuilderValid) {
+    throw Object.assign(new Error(`${scene} did not use the Today production refresh builder`), { requestValidation });
+  }
+  const data = unwrapCloudResponse(capture.rawResponse)?.data;
+  if (!data || !Array.isArray(data.outfits) || data.outfits.length === 0) {
+    return {
+      batch: 2,
+      supported: false,
+      reason: 'candidate_pool_exhausted_on_refresh',
+      request,
+      countContract: data?.countContract || null,
+    };
+  }
+  if (data.outfits.length < 8) {
+    throw Object.assign(new Error(`${scene} refresh returned a partial batch`), { capture });
+  }
+  await waitUntil(
+    () => readUiCards(session),
+    (cards) => cards.filter((card) => card.todayReason).length === data.outfits.length,
+    30000,
+    `${scene} refresh UI copy commit`,
+  );
+  const audit = auditFinalTodayCopy(scene, data, await readUiCards(session), {
+    requireSceneEvidenceDiagnostics: false,
+  });
+  if (!audit.passed) throw Object.assign(new Error(`${scene} second Today batch failed`), { audit });
+  return {
+    ...audit,
+    batch: 2,
+    supported: true,
+    request,
+    requestOutcome: 'fulfilled',
+    evidenceSource: 'captured_refresh_public_dto_and_ui',
+  };
+}
+
+function combineSceneBatches(firstBatch, secondBatch) {
+  const captured = [firstBatch, secondBatch].filter((batch) => batch?.supported !== false);
+  const secondSupported = secondBatch?.supported === true;
+  return {
+    ...firstBatch,
+    passed: captured.every((batch) => batch.passed),
+    batches: [firstBatch, secondBatch],
+    secondBatchSupported: secondSupported,
+    secondBatchReason: secondSupported ? '' : secondBatch?.reason || 'not_captured',
+    secondBatchSamples: secondSupported ? secondBatch.samples : [],
+    finalCopies: captured.flatMap((batch) => batch.finalCopies || []),
+    sceneClauses: captured.flatMap((batch) => batch.sceneClauses || []),
+    cardDiagnostics: captured.flatMap((batch) => batch.cardDiagnostics || []),
+    finalCardCount: captured.reduce((sum, batch) => sum + Number(batch.finalCardCount || 0), 0),
+    uiCardCount: captured.reduce((sum, batch) => sum + Number(batch.uiCardCount || 0), 0),
+    genericSceneFallbackCount: captured.reduce((sum, batch) => sum + Number(batch.genericSceneFallbackCount || 0), 0),
+    lowValueFinalReasonCount: captured.reduce((sum, batch) => sum + Number(batch.lowValueFinalReasonCount || 0), 0),
+    omittedLowValueClauseCount: captured.reduce((sum, batch) => sum + Number(batch.omittedLowValueClauseCount || 0), 0),
+    factCorrectnessCount: captured.reduce((sum, batch) => sum + Number(batch.factCorrectnessCount || 0), 0),
+    bindingCorrectnessCount: captured.reduce((sum, batch) => sum + Number(batch.bindingCorrectnessCount || 0), 0),
+    naturalnessCount: captured.reduce((sum, batch) => sum + Number(batch.naturalnessCount || 0), 0),
+    decisionValueCount: captured.reduce((sum, batch) => sum + Number(batch.decisionValueCount || 0), 0),
+  };
 }
 
 async function runAcceptance() {
@@ -367,7 +483,7 @@ async function runAcceptance() {
     await waitUntil(
       () => readBridge(session.mini),
       (bridge) => bridge?.marker === 'd1d-today-production-handler-v1'
-        && bridge.copyAcceptanceBuild === 'today-copy-naturalness-v1'
+        && bridge.copyAcceptanceBuild === 'today-copy-naturalness-v2'
         && bridge.ready === true,
       60000,
       'TODAY_FRESH_BUILD_READY',
@@ -377,7 +493,8 @@ async function runAcceptance() {
     for (const scene of SCENES) {
       const result = await captureScene(session, scene, runId);
       scenes.push(result);
-      process.stdout.write(`${scene.toUpperCase()}_TODAY_COPY_PASS ${JSON.stringify(result.samples.slice(0, 4))}\n`);
+      process.stdout.write(`${scene.toUpperCase()}_TODAY_COPY_PASS ${JSON.stringify(result.samples)}\n`);
+      process.stdout.write(`${scene.toUpperCase()}_TODAY_COPY_SECOND_BATCH ${result.secondBatchSupported ? JSON.stringify(result.secondBatchSamples) : result.secondBatchReason}\n`);
     }
     const result = {
       version: 'today-copy-naturalness-acceptance-v1',
