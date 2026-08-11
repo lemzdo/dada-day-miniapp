@@ -337,8 +337,8 @@ function renderXiaodaStylistFallback({ facts = {}, insights = [], benefits = [],
   return {
     overallComment: ensureXiaodaCopy(overallComment, facts),
     advice: ensureXiaodaCopy(advice, facts),
-    reviewVersion: 'stylist-explanation-v15',
-    promptVersion: 'stylist-prompt-v16',
+    reviewVersion: 'stylist-explanation-v20',
+    promptVersion: 'stylist-prompt-v21',
     copyPolicyVersion: 'human-copy-v2',
     voicePolicyVersion: VOICE_POLICY_VERSION,
   };

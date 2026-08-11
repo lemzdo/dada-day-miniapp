@@ -612,16 +612,19 @@ function assertFinalPresentation(outfits) {
 function xiaodaStyleInsightMatches(outfit, copyContract, contentPlan, plan) {
   const planInsight = plan?.xiaodaStyleInsight;
   const primaryCode = planInsight?.primary?.code;
-  if (planInsight?.version !== 'xiaoda-style-insight-v1' || !primaryCode) return false;
+  if (planInsight?.version !== 'xiaoda-style-insight-v3' || !primaryCode) return false;
   const values = [
     outfit?.xiaodaStyleInsight,
     copyContract?.xiaodaStyleInsight,
     contentPlan?.xiaodaStyleInsight,
     plan?.todayCopyProvenance?.xiaodaStyleInsight,
-    plan?.detailCopyProvenance?.xiaodaStyleInsight,
   ];
-  return values.every((value) => value?.version === planInsight.version
-    && value?.primary?.code === primaryCode);
+  if (!values.every((value) => value?.version === planInsight.version
+    && value?.primary?.code === primaryCode)) return false;
+  if (!plan?.detailExplanation) return !plan?.detailCopyProvenance?.text;
+  const detailInsight = plan?.detailCopyProvenance?.xiaodaStyleInsight;
+  return detailInsight?.version === planInsight.version
+    && detailInsight?.primary?.code === primaryCode;
 }
 
 function surfaceMetadataMatchesPlan(source, plan) {

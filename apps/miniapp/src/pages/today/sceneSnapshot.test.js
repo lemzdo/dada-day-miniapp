@@ -30,10 +30,11 @@ function currentOutfit(id = 'current') {
       naturalnessGateVersion: 'copy-naturalness-gate-v3',
       naturalnessGateResult: 'PASS',
       naturalnessRiskFlags: [],
-      structuralNaturalnessVersion: 'batch-editorial-review-v2',
+      structuralNaturalnessVersion: 'batch-editorial-review-v3',
       structuralNaturalnessResult: 'PASS',
       structuralNaturalnessRiskFlags: [],
-      todayCopyProvenance: { version: 'recommendation-natural-language-v4' },
+      xiaodaStyleInsight: { version: 'xiaoda-style-insight-v3', primary: { code: 'WORK_DAILY_READY' } },
+      todayCopyProvenance: { version: 'recommendation-natural-language-v5' },
     },
   };
 }

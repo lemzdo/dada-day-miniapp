@@ -2,7 +2,7 @@ const {
   buildNaturalTodayCopyCandidates,
 } = require('./recommendationNaturalLanguage');
 
-const BATCH_EDITORIAL_REVIEW_VERSION = 'batch-editorial-review-v2';
+const BATCH_EDITORIAL_REVIEW_VERSION = 'batch-editorial-review-v3';
 const BATCH_EDITORIAL_PASS = 'PASS';
 const BATCH_EDITORIAL_REJECT = 'REJECT';
 
@@ -130,7 +130,8 @@ function maxFrequency(values) {
 function editorialSelectionScore(candidate, usage, previous, beforePrevious) {
   const total = Number(candidate?.valueAssessment?.total) || 0;
   const priority = Number(candidate?.priority) || 0;
-  let score = total * 100 + priority;
+  const humanValueTier = Number(candidate?.humanValueTier || candidate?.valueAssessment?.humanValueTier) || 0;
+  let score = humanValueTier * 10000 + total * 100 + priority;
   score -= countUsage(usage.intent, candidate.messageIntent) * 38;
   score -= countUsage(usage.opening, candidate.openingFamily) * 30;
   score -= countUsage(usage.ending, candidate.endingFamily) * 26;
@@ -217,7 +218,11 @@ function hasAvoidableTemplateNameSwap(plans, pools) {
 }
 
 function isNotLowerValue(candidate, plan) {
-  return Number(candidate?.valueAssessment?.total) >= Number(plan?.valueAssessment?.total);
+  const candidateTier = Number(candidate?.humanValueTier || candidate?.valueAssessment?.humanValueTier) || 0;
+  const planTier = Number(plan?.humanValueTier || plan?.valueAssessment?.humanValueTier) || 0;
+  return candidateTier > planTier
+    || (candidateTier === planTier
+      && Number(candidate?.valueAssessment?.total) >= Number(plan?.valueAssessment?.total));
 }
 
 function hasAlternativeWithoutFrame(pools, pattern) {

@@ -2095,8 +2095,8 @@ function alignAiCommentSourceWithRequestedPresentation(source, payload) {
   const contractInsight = payload.copyContract?.xiaodaStyleInsight;
   const currentPresentation = payload.copyContractVersion === COPY_CONTRACT_VERSION
     && payload.copyContract?.copyContractVersion === COPY_CONTRACT_VERSION
-    && requestedInsight?.version === 'xiaoda-style-insight-v1'
-    && contractInsight?.version === 'xiaoda-style-insight-v1'
+    && requestedInsight?.version === 'xiaoda-style-insight-v3'
+    && contractInsight?.version === 'xiaoda-style-insight-v3'
     && requestedInsight.primary?.code
     && requestedInsight.primary.code === contractInsight.primary?.code;
   if (!currentPresentation) return source;

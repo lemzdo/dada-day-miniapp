@@ -8,8 +8,11 @@ const { inspectXiaodaPersonaCopy } = require('./xiaodaPersonaContract');
 const { buildPresentationFactModel } = require('./presentationFactModel');
 const { buildNaturalDetailCopyPlan, buildNaturalTodayCopyPlan } = require('./recommendationNaturalLanguage');
 const {
+  DETAIL_INCREMENTAL_VALUE_GATE_VERSION,
   XIAODA_STYLE_INSIGHT_VERSION,
   buildXiaodaStyleInsight,
+  buildXiaodaTodayCandidates,
+  evaluateDetailIncrementalValue,
 } = require('./xiaodaStyleInsight');
 const {
   XIAODA_STYLE_INSIGHT_FIXTURES,
@@ -30,19 +33,83 @@ test('Style Insight fixture matrix chooses the highest-value supported insight',
   }
 });
 
-test('Today and Detail share one primary insight while Detail adds explanation', () => {
+test('Today and Detail share one primary insight while Detail only appears with incremental explanation', () => {
   for (const fixture of XIAODA_STYLE_INSIGHT_FIXTURES) {
     const today = buildNaturalTodayCopyPlan(fixture.model, fixture.model.relations[0] || {});
     const detail = buildNaturalDetailCopyPlan(fixture.model, { relationCode: today.relationCode });
     assert.equal(today.xiaodaStyleInsight?.primary?.code, fixture.expectedPrimaryCode, fixture.id);
-    assert.equal(detail.xiaodaStyleInsight?.primary?.code, fixture.expectedPrimaryCode, fixture.id);
-    assert.notEqual(detail.text, today.text, fixture.id);
-    assert.ok(Array.from(detail.text).length > Array.from(today.text).length, fixture.id);
     assert.equal(evaluateCopyNaturalness(today).result, 'PASS', fixture.id);
-    assert.equal(evaluateCopyNaturalness(detail).result, 'PASS', fixture.id);
     assert.equal(inspectXiaodaPersonaCopy(today.text).passed, true, fixture.id);
-    assert.equal(inspectXiaodaPersonaCopy(detail.text).passed, true, fixture.id);
+    if (detail.text) {
+      assert.equal(detail.xiaodaStyleInsight?.primary?.code, fixture.expectedPrimaryCode, fixture.id);
+      assert.notEqual(detail.text, today.text, fixture.id);
+      assert.equal(detail.incrementalValueGate?.version, DETAIL_INCREMENTAL_VALUE_GATE_VERSION, fixture.id);
+      assert.equal(detail.incrementalValueGate?.result, 'PASS', fixture.id);
+      assert.equal(evaluateCopyNaturalness(detail).result, 'PASS', fixture.id);
+      assert.equal(inspectXiaodaPersonaCopy(detail.text).passed, true, fixture.id);
+    } else {
+      assert.equal(fixture.expectedPrimaryCode, 'SIMPLE_EVERYDAY_COMBINATION', fixture.id);
+      assert.equal(evaluateDetailIncrementalValue({ todayText: today.text, detailText: '' }).reason, 'NO_SUPPORTED_INCREMENT');
+    }
   }
+});
+
+test('Human Meaning is item-specific and is the only realization source', () => {
+  const fixture = XIAODA_STYLE_INSIGHT_FIXTURES.find((entry) => entry.id === 'print-solid');
+  const plan = buildXiaodaStyleInsight(fixture.model);
+  const today = buildNaturalTodayCopyPlan(fixture.model, fixture.model.relations[0]);
+  const detail = buildNaturalDetailCopyPlan(fixture.model, { relationCode: today.relationCode });
+  assert.equal(today.text.replace(/[。！？]+$/u, ''), plan.primary.humanMeaning);
+  assert.equal(detail.text.replace(/[。！？]+$/u, ''), plan.primary.overallMeaning);
+  assert.match(plan.primary.primaryObservation, /印花T恤/);
+  assert.match(plan.primary.supportingRelation, /直筒裤/);
+  assert.doesNotMatch(`${today.text}${detail.text}`, /支撑关系|承担这套|其他位置|颜色接得上/);
+});
+
+test('one Human Meaning can be realized with body-centered syntax variants without changing its insight', () => {
+  const model = {
+    scene: 'work',
+    items: [
+      { itemId: 'top', role: 'top', canonicalSubtype: '衬衫', normalizedColor: '白色' },
+      { itemId: 'bottom', role: 'bottom', canonicalSubtype: '直筒裤', normalizedColor: '黑色' },
+    ],
+    relations: [{
+      relationCode: 'FORMALITY_INTENTIONAL_MIX',
+      subjectItemIds: ['top', 'bottom'],
+      evidenceFactIds: ['aesthetic:formality-mix'],
+      polarity: 'positive',
+      strength: 3,
+    }],
+  };
+  const candidates = buildXiaodaTodayCandidates(model);
+  assert.equal(candidates.length, 3);
+  assert.equal(candidates[0].text, candidates[0].xiaodaStyleInsight.primary.humanMeaning);
+  assert.ok(candidates.some((candidate) => candidate.text.startsWith('白色衬衫和黑色直筒裤一起穿')));
+  assert.ok(candidates.some((candidate) => candidate.text.startsWith('穿上白色衬衫和黑色直筒裤')));
+  assert.equal(new Set(candidates.map((candidate) => candidate.informationKey)).size, 1);
+  assert.equal(new Set(candidates.map((candidate) => candidate.relationCode)).size, 1);
+  assert.ok(candidates.every((candidate) => inspectXiaodaPersonaCopy(candidate.text).passed));
+});
+
+test('strong shape and pattern relations outrank weak color facts by human value', () => {
+  const fixture = XIAODA_STYLE_INSIGHT_FIXTURES.find((entry) => entry.id === 'multiple-insights');
+  const model = {
+    ...fixture.model,
+    relations: [
+      ...fixture.model.relations,
+      {
+        relationCode: 'COLOR_NEUTRAL_ACCENT',
+        subjectItemIds: ['top-1', 'bottom-1'],
+        evidenceFactIds: ['weak-color'],
+        polarity: 'positive',
+        strength: 1,
+      },
+    ],
+  };
+  const plan = buildXiaodaStyleInsight(model);
+  assert.equal(plan.primary.code, 'PATTERN_FOCUS_WITH_SIMPLE_SUPPORT');
+  assert.equal(plan.primary.ranking.humanValueTier, 4);
+  assert.ok(plan.secondary.every((entry) => entry.ranking.humanValueTier <= 4));
 });
 
 test('weak facts use an honest fallback and missing authorization stays empty', () => {
@@ -145,6 +212,33 @@ test('an optional accessory never displaces the core garments as the primary col
   assert.equal(plan.primary?.subjectItemIds.includes('bag'), false);
 });
 
+test('an accessory-like item cannot become the body-centered primary even when an upstream slot is mislabeled', () => {
+  const model = {
+    scene: 'date',
+    items: [
+      { itemId: 'top', role: 'top', canonicalSubtype: '印花短袖T恤', normalizedColor: '白色' },
+      { itemId: 'bottom', role: 'bottom', canonicalSubtype: '阔腿裤', normalizedColor: '绿色' },
+      { itemId: 'bag', role: 'outerwear', canonicalSubtype: '手提袋', normalizedColor: '蓝色' },
+    ],
+    qualification: {
+      reasonCode: 'DATE_SIMPLE_COMPLETE',
+      subjectItemIds: ['top', 'bottom'],
+      supportingFactIds: ['top:category', 'bottom:category'],
+    },
+    relations: [{
+      relationCode: 'COLOR_NEUTRAL_ACCENT',
+      subjectItemIds: ['bag', 'bottom'],
+      evidenceFactIds: ['aesthetic:neutral-accent'],
+      polarity: 'positive',
+      strength: 3,
+    }],
+  };
+
+  const plan = buildXiaodaStyleInsight(model);
+  assert.equal(plan.primary?.code, 'DATE_SIMPLE_ROOM');
+  assert.equal(plan.primary?.subjectItemIds.includes('bag'), false);
+});
+
 test('direct work eligibility outranks weak neutral-accent inference with deterministic varied phrasing', () => {
   const model = {
     scene: 'work',
@@ -172,6 +266,11 @@ test('direct work eligibility outranks weak neutral-accent inference with determ
   const second = buildNaturalTodayCopyPlan(model, model.relations[0]);
   assert.equal(first.text, second.text);
   assert.match(first.text, /上班|办公|办公室/);
+  const candidates = buildXiaodaTodayCandidates(model);
+  assert.ok(candidates.length >= 4);
+  assert.ok(candidates.some((candidate) => /把上班需要的整齐感穿出来/u.test(candidate.text)));
+  assert.ok(candidates.some((candidate) => /穿在上身利落/u.test(candidate.text)));
+  assert.equal(new Set(candidates.map((candidate) => candidate.informationKey)).size, 1);
 });
 
 test('Today Style Insight and voice realization stay synchronous and network-free', () => {

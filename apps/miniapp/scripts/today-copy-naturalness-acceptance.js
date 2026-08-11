@@ -171,7 +171,7 @@ function auditFinalTodayCopy(scene, data, uiCards, { requireSceneEvidenceDiagnos
       && contract.naturalnessGateResult === 'PASS'
       && Array.isArray(contract.naturalnessRiskFlags)
       && contract.naturalnessRiskFlags.length === 0
-      && contract.structuralNaturalnessVersion === 'batch-editorial-review-v2'
+      && contract.structuralNaturalnessVersion === 'batch-editorial-review-v3'
       && contract.structuralNaturalnessResult === 'PASS'
       && Array.isArray(contract.structuralNaturalnessRiskFlags)
       && contract.structuralNaturalnessRiskFlags.length === 0;
@@ -236,6 +236,11 @@ function auditFinalTodayCopy(scene, data, uiCards, { requireSceneEvidenceDiagnos
     finalCopies: uiReasons,
     sceneClauses,
     cardDiagnostics,
+    blackBoxCards: outfits.map((outfit, index) => ({
+      scene,
+      garments: visibleGarments(outfit),
+      today: uiReasons[index] || '',
+    })),
     genericSceneFallbackCount,
     lowValueFinalReasonCount,
     omittedLowValueClauseCount,
@@ -573,14 +578,18 @@ function auditDetailSamples(samples) {
     else failures.push(`unknown_scene:${index}`);
     const todayReason = String(sample?.todayReason || '').trim();
     const coreReason = String(sample?.coreReason || '').trim();
+    const deterministicDetail = String(sample?.defaultDetail || '').trim();
     const paragraphs = Array.isArray(sample?.paragraphs)
       ? sample.paragraphs.map((value) => String(value || '').trim()).filter(Boolean)
       : [];
     const advice = String(sample?.advice || '').trim();
     const commentary = [...paragraphs, advice].filter(Boolean).join(' ');
     if (!todayReason || coreReason !== todayReason) failures.push(`today_detail_binding:${index}`);
+    if (!deterministicDetail) failures.push(`deterministic_detail_empty:${index}`);
+    if (deterministicDetail === todayReason) failures.push(`deterministic_detail_no_increment:${index}`);
+    if (deterministicDetail && !inspectXiaodaPersonaCopy(deterministicDetail).passed) failures.push(`deterministic_detail_persona:${index}`);
     if (paragraphs.length === 0) failures.push(`ai_commentary_empty:${index}`);
-    if (commentary === todayReason || commentary === String(sample?.defaultDetail || '').trim()) {
+    if (commentary === todayReason || commentary === deterministicDetail) {
       failures.push(`ai_commentary_no_increment:${index}`);
     }
     if (!inspectXiaodaPersonaCopy(commentary).passed) failures.push(`ai_commentary_persona:${index}`);
@@ -594,6 +603,77 @@ function auditDetailSamples(samples) {
     sampleCount: entries.length,
     sceneCounts,
   };
+}
+
+function buildBlackBoxEditorialReview(scenes, detailSamples) {
+  const todayCards = (Array.isArray(scenes) ? scenes : []).flatMap((scene) => {
+    const batches = Array.isArray(scene?.batches) ? scene.batches : [scene];
+    return batches.flatMap((batch) => (Array.isArray(batch?.blackBoxCards) ? batch.blackBoxCards : []));
+  });
+  const threeLayerComparisons = (Array.isArray(detailSamples) ? detailSamples : []).map((sample) => ({
+    scene: String(sample?.scene || ''),
+    garments: uniqueVisibleStrings([sample?.title]),
+    today: String(sample?.todayReason || '').trim(),
+    detail: String(sample?.defaultDetail || '').trim(),
+    aiCommentary: (Array.isArray(sample?.paragraphs) ? sample.paragraphs : [])
+      .map((value) => String(value || '').trim()).filter(Boolean).join(' '),
+    advice: String(sample?.advice || '').trim(),
+  }));
+  return { todayCards, threeLayerComparisons };
+}
+
+function auditBlackBoxEditorialReview(review) {
+  const todayCards = Array.isArray(review?.todayCards) ? review.todayCards : [];
+  const comparisons = Array.isArray(review?.threeLayerComparisons) ? review.threeLayerComparisons : [];
+  const failures = [];
+  const allowedTodayKeys = ['scene', 'garments', 'today'];
+  const allowedComparisonKeys = ['scene', 'garments', 'today', 'detail', 'aiCommentary', 'advice'];
+  if (todayCards.length < 64) failures.push(`today_black_box_count:${todayCards.length}`);
+  if (comparisons.length < 8) failures.push(`three_layer_black_box_count:${comparisons.length}`);
+  todayCards.forEach((card, index) => {
+    if (!sameKeys(card, allowedTodayKeys)) failures.push(`today_hidden_context:${index}`);
+    if (!Array.isArray(card.garments) || card.garments.length === 0) failures.push(`today_garments:${index}`);
+    if (!card.today || !inspectXiaodaPersonaCopy(card.today).passed) failures.push(`today_persona:${index}`);
+  });
+  comparisons.forEach((sample, index) => {
+    if (!sameKeys(sample, allowedComparisonKeys)) failures.push(`comparison_hidden_context:${index}`);
+    if (!sample.today || !sample.detail || !sample.aiCommentary) failures.push(`comparison_incomplete:${index}`);
+    if (sample.detail === sample.today) failures.push(`detail_repeats_today:${index}`);
+    if (sample.aiCommentary === sample.today || sample.aiCommentary === sample.detail) failures.push(`ai_repeats_visible_copy:${index}`);
+    for (const text of [sample.today, sample.detail, sample.aiCommentary, sample.advice].filter(Boolean)) {
+      if (!inspectXiaodaPersonaCopy(text).passed) failures.push(`comparison_persona:${index}`);
+    }
+  });
+  for (const scene of SCENES) {
+    const count = comparisons.filter((sample) => sample.scene === scene).length;
+    if (count < 2) failures.push(`comparison_scene_count:${scene}:${count}`);
+  }
+  return {
+    passed: failures.length === 0,
+    failures: [...new Set(failures)],
+    todayCount: todayCards.length,
+    comparisonCount: comparisons.length,
+  };
+}
+
+function visibleGarments(outfit) {
+  const contentPlanItems = Array.isArray(outfit?.contentPlan?.items) ? outfit.contentPlan.items : [];
+  if (contentPlanItems.length > 0) return uniqueVisibleStrings(contentPlanItems.map((item) => item?.displayName));
+  const items = [
+    ...(Array.isArray(outfit?.snapshotItems) ? outfit.snapshotItems : []),
+    ...(Array.isArray(outfit?.itemsSnapshot) ? outfit.itemsSnapshot : []),
+    ...(Array.isArray(outfit?.items) ? outfit.items : []),
+  ];
+  return uniqueVisibleStrings(items.map((item) => item?.name || item?.subcategory || item?.subCategory || item?.category));
+}
+
+function uniqueVisibleStrings(values) {
+  return [...new Set((Array.isArray(values) ? values : []).map((value) => String(value || '').trim()).filter(Boolean))];
+}
+
+function sameKeys(value, expected) {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value)
+    && JSON.stringify(Object.keys(value).sort()) === JSON.stringify(expected.slice().sort()));
 }
 
 async function readDetailUiState(mini) {
@@ -861,15 +941,20 @@ async function runAcceptance() {
       process.stdout.write(`${scene.toUpperCase()}_DETAIL_XIAODA_PASS ${JSON.stringify(details)}\n`);
     }
     const detailAudit = auditDetailSamples(detailSamples);
+    const blackBoxReview = buildBlackBoxEditorialReview(scenes, detailSamples);
+    const blackBoxAudit = auditBlackBoxEditorialReview(blackBoxReview);
     const result = {
       version: 'today-copy-naturalness-acceptance-v1',
       runId,
       passed: scenes.every((scene) => scene.passed && scene.samples.length >= 8
         && scene.secondBatchSupported && scene.secondBatchSamples.length >= 8)
-        && detailAudit.passed,
+        && detailAudit.passed
+        && blackBoxAudit.passed,
       scenes,
       detailSamples,
       detailAudit,
+      blackBoxReview,
+      blackBoxAudit,
       metrics: summarizeNaturalnessMetrics(scenes),
       crossSceneComparisons: buildCrossSceneComparisons(scenes),
     };
@@ -908,6 +993,8 @@ module.exports = {
   SCENES,
   auditDetailSamples,
   auditFinalTodayCopy,
+  auditBlackBoxEditorialReview,
+  buildBlackBoxEditorialReview,
   buildCrossSceneComparisons,
   runAcceptance,
   summarizeNaturalnessMetrics,

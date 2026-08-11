@@ -84,6 +84,7 @@ function hasCurrentDefaultCopy(outfit) {
     && outfit.copyContract.structuralNaturalnessResult === 'PASS'
     && Array.isArray(outfit.copyContract.structuralNaturalnessRiskFlags)
     && outfit.copyContract.structuralNaturalnessRiskFlags.length === 0
+    && outfit.copyContract.xiaodaStyleInsight?.version === 'xiaoda-style-insight-v3'
     && isPlainObject(outfit.copyContract.todayCopyProvenance);
 }
 

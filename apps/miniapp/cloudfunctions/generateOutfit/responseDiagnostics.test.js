@@ -374,8 +374,8 @@ test('sport QA responseBytes exposes the measured eligibility audit bytes', () =
 test('AI comment canonicalization carries the canonical Style Insight into a legacy content plan', () => {
   const internals = loadInternals();
   const xiaodaStyleInsight = {
-    version: 'xiaoda-style-insight-v1',
-    personaVersion: 'xiaoda-persona-v2',
+    version: 'xiaoda-style-insight-v3',
+    personaVersion: 'xiaoda-persona-v6',
     primary: { code: 'HOME_EASY_DAY_SET', rank: 'PRIMARY' },
     secondary: [],
     optional: [],
@@ -394,7 +394,7 @@ test('AI comment canonicalization carries the canonical Style Insight into a leg
       xiaodaStyleInsight,
     },
     contentPlan: {
-      version: 'xiaoda-content-plan-v2',
+      version: 'xiaoda-content-plan-v3',
       sceneIntent: 'home:clean_daily',
       primaryBenefit: 'clean_daily',
       items: [{ id: 'top-1', slot: 'top', role: 'core', displayName: '白色上衣' }],
@@ -475,25 +475,25 @@ test('Detail adopts only a current Today plan whose primary matches its copy con
   const internals = loadInternals();
   const source = {
     contentPlan: {
-      version: 'xiaoda-content-plan-v2',
+      version: 'xiaoda-content-plan-v3',
       sceneIntent: 'home:clean_daily',
       primaryBenefit: 'clean_daily',
       items: [{ id: 'top-1', slot: 'top', role: 'core', displayName: '白色上衣' }],
-      xiaodaStyleInsight: { version: 'xiaoda-style-insight-v1', primary: { code: 'COLOR_FOCUS_WITH_NEUTRAL_SUPPORT' } },
+      xiaodaStyleInsight: { version: 'xiaoda-style-insight-v3', primary: { code: 'COLOR_FOCUS_WITH_NEUTRAL_SUPPORT' } },
     },
   };
   const requestedPlan = {
-    version: 'xiaoda-content-plan-v2',
+    version: 'xiaoda-content-plan-v3',
     sceneIntent: 'home:clean_daily',
     primaryBenefit: 'clean_daily',
     items: [{ id: 'top-1', slot: 'top', role: 'core', displayName: '白色上衣' }],
-    xiaodaStyleInsight: { version: 'xiaoda-style-insight-v1', primary: { code: 'HOME_EASY_DAY_SET' } },
+    xiaodaStyleInsight: { version: 'xiaoda-style-insight-v3', primary: { code: 'HOME_EASY_DAY_SET' } },
   };
   const payload = {
     copyContractVersion: 'recommendation-copy-contract-v8',
     copyContract: {
       copyContractVersion: 'recommendation-copy-contract-v8',
-      xiaodaStyleInsight: { version: 'xiaoda-style-insight-v1', primary: { code: 'HOME_EASY_DAY_SET' } },
+      xiaodaStyleInsight: { version: 'xiaoda-style-insight-v3', primary: { code: 'HOME_EASY_DAY_SET' } },
     },
     contentPlan: requestedPlan,
   };
@@ -504,7 +504,7 @@ test('Detail adopts only a current Today plan whose primary matches its copy con
     ...payload,
     copyContract: {
       ...payload.copyContract,
-      xiaodaStyleInsight: { version: 'xiaoda-style-insight-v1', primary: { code: 'OTHER' } },
+      xiaodaStyleInsight: { version: 'xiaoda-style-insight-v3', primary: { code: 'OTHER' } },
     },
   });
   assert.equal(rejected, source);

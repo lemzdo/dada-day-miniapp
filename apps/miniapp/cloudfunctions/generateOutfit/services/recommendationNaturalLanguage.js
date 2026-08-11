@@ -4,7 +4,7 @@ const {
   buildXiaodaTodayCandidates,
 } = require('./xiaodaStyleInsight');
 
-const NATURAL_LANGUAGE_PLAN_VERSION = 'recommendation-natural-language-v4';
+const NATURAL_LANGUAGE_PLAN_VERSION = 'recommendation-natural-language-v5';
 
 const DECISION_VALUE_CATEGORIES = Object.freeze({
   FACTUAL_BUT_LOW_VALUE: 'FACTUAL_BUT_LOW_VALUE',
@@ -493,6 +493,8 @@ function candidateToPlan(surface, model, candidate, availableMessageCount) {
     openingFamily: candidate.openingFamily,
     endingFamily: candidate.endingFamily,
     valueAssessment: { ...candidate.valueAssessment },
+    humanValueTier: Number(candidate.humanValueTier) || 0,
+    incrementalValueGate: candidate.incrementalValueGate || null,
     availableMessageCount,
     compositionPattern: surface === 'detail' ? 'detail_message' : 'natural_message',
     clauses,

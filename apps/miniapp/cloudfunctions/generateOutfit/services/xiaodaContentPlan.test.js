@@ -2,9 +2,11 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
+  AI_COMMENTARY_INCREMENTAL_VALUE_GATE_VERSION,
   XIAODA_CONTENT_PLAN_VERSION,
   buildXiaodaContentPlanV1,
   buildXiaodaDefaultReviewV1,
+  evaluateAiCommentaryIncrementalValue,
   hasQualifiedAiReviewIncrementV1,
   normalizeXiaodaSuggestionV1,
   renderXiaodaPlanTextV1,
@@ -117,7 +119,7 @@ test('AI qualification helper can preserve a real grounded AI review independent
 test('Style Insight semantic matching accepts natural color-relation synonyms', () => {
   const plan = buildXiaodaContentPlanV1(outfit({
     xiaodaStyleInsight: {
-      version: 'xiaoda-style-insight-v1',
+      version: 'xiaoda-style-insight-v2',
       primary: { code: 'SAME_COLOR_CORE' },
       secondary: [],
       optional: [],
@@ -127,7 +129,7 @@ test('Style Insight semantic matching accepts natural color-relation synonyms', 
       todayReason: '灰色上衣和灰色下装用了同一个颜色。',
       detailExplanation: '灰色上衣和灰色下装保持同色。',
       xiaodaStyleInsight: {
-        version: 'xiaoda-style-insight-v1',
+        version: 'xiaoda-style-insight-v2',
         primary: { code: 'SAME_COLOR_CORE' },
         secondary: [],
         optional: [],
@@ -142,6 +144,40 @@ test('Style Insight semantic matching accepts natural color-relation synonyms', 
   assert.equal(result.rejectReasons.includes('semantic_drift'), false);
 });
 
+test('quiet neutral semantic matching accepts natural low-contrast wording but still rejects scene-only drift', () => {
+  const plan = buildXiaodaContentPlanV1(outfit({
+    scene: 'home',
+    outfitItemRoles: [
+      { id: 'top-1', slot: 'top', role: 'core', displayName: '白色短袖T恤' },
+      { id: 'bottom-1', slot: 'bottom', role: 'core', displayName: '灰色短裤' },
+    ],
+    xiaodaStyleInsight: {
+      version: 'xiaoda-style-insight-v2',
+      primary: { code: 'QUIET_NEUTRAL_BASE', subjectItemIds: ['top-1', 'bottom-1'] },
+      secondary: [],
+      optional: [],
+    },
+  }), {
+    canonicalCopy: {
+      todayReason: '白色短袖T恤和灰色短裤穿在一起简单自然。',
+      detailExplanation: '白色短袖T恤和灰色短裤的明暗变化不大，衣服不会抢走注意力。',
+    },
+  });
+  const aligned = hasQualifiedAiReviewIncrementV1({
+    reason: '白色短袖T恤和灰色短裤都不抢眼，上下身明暗变化不大，所以穿上后人的状态比衣服更突出。',
+    tip: '',
+    source: 'ai',
+  }, plan, buildXiaodaDefaultReviewV1(plan));
+  const drifted = hasQualifiedAiReviewIncrementV1({
+    reason: '白色短袖T恤和灰色短裤适合在家活动，因为短衣短裤走动起来更加方便。',
+    tip: '',
+    source: 'ai',
+  }, plan, buildXiaodaDefaultReviewV1(plan));
+
+  assert.equal(aligned.rejectReasons.includes('semantic_drift'), false);
+  assert.equal(drifted.rejectReasons.includes('semantic_drift'), true);
+});
+
 test('color-focus semantic matching does not treat a negated support-item phrase as focal-role drift', () => {
   const plan = buildXiaodaContentPlanV1(outfit({
     scene: 'date',
@@ -153,7 +189,7 @@ test('color-focus semantic matching does not treat a negated support-item phrase
       { id: 'bag-1', slot: 'accessory', role: 'optional', displayName: '蓝色手提袋' },
     ],
     xiaodaStyleInsight: {
-      version: 'xiaoda-style-insight-v1',
+      version: 'xiaoda-style-insight-v2',
       primary: {
         code: 'COLOR_FOCUS_WITH_NEUTRAL_SUPPORT',
         subjectItemIds: ['bottom-1', 'top-1'],
@@ -187,7 +223,7 @@ test('Style Insight semantic matching covers bottom-to-shoe color continuity', (
       { id: 'shoes-1', slot: 'shoes', role: 'core', displayName: '白色运动鞋' },
     ],
     xiaodaStyleInsight: {
-      version: 'xiaoda-style-insight-v1',
+      version: 'xiaoda-style-insight-v2',
       primary: {
         code: 'BOTTOM_SHOE_COLOR_CONTINUITY',
         subjectItemIds: ['bottom-1', 'shoes-1'],
@@ -225,4 +261,46 @@ test('Detail advice may refine the current combination but cannot replace or res
     normalizeXiaodaSuggestionV1('可以保留白色短袖T恤和白色运动鞋的呼应，不再增加其他亮色。', plan)?.text,
     '可以保留白色短袖T恤和白色运动鞋的呼应，不再增加其他亮色。',
   );
+});
+
+test('AI commentary must add value beyond both Today and deterministic Detail', () => {
+  const plan = buildXiaodaContentPlanV1(outfit({
+    outfitItemRoles: [
+      { id: 'top-1', slot: 'top', role: 'core', displayName: '印花T恤' },
+      { id: 'bottom-1', slot: 'bottom', role: 'core', displayName: '灰色直筒裤' },
+    ],
+  }), {
+    canonicalCopy: {
+      todayReason: '印花T恤已经够有内容，灰色直筒裤简单一些，穿在身上有重点但不拥挤。',
+      detailExplanation: '穿上以后会先注意到印花T恤，灰色直筒裤没有再加图案，所以衣服不会堆得太满。',
+    },
+  });
+  const repeated = evaluateAiCommentaryIncrementalValue({
+    reason: '穿上以后会先注意到印花T恤，灰色直筒裤没有再加图案，所以衣服不会堆得太满。',
+    plan,
+  });
+  assert.equal(repeated.version, AI_COMMENTARY_INCREMENTAL_VALUE_GATE_VERSION);
+  assert.equal(repeated.result, 'REJECT');
+  assert.ok(repeated.reasons.includes('REPHRASES_VISIBLE_COPY'));
+
+  const deeper = evaluateAiCommentaryIncrementalValue({
+    reason: '印花T恤把注意力留在脸和上半身，灰色直筒裤又把腿部线条收干净，所以穿在人身上不会被图案压住。',
+    plan,
+  });
+  assert.equal(deeper.result, 'PASS');
+});
+
+test('AI qualification rejects algorithm-to-Chinese leakage before persistence', () => {
+  const plan = buildXiaodaContentPlanV1(outfit(), {
+    canonicalCopy: {
+      todayReason: '白色衬衫配黑色长裤，穿去上班利落得体。',
+      detailExplanation: '白色衬衫把上半身穿得整齐，黑色长裤把直线条延续到下半身。',
+    },
+  });
+  const result = hasQualifiedAiReviewIncrementV1({
+    reason: '白色衬衫把利落感撑起来，黑色长裤接住日常感，所以主色已经很统一。',
+    tip: '',
+  }, plan, buildXiaodaDefaultReviewV1(plan));
+  assert.equal(result.qualified, false);
+  assert.ok(result.rejectReasons.includes('algorithm_to_chinese_leakage'));
 });

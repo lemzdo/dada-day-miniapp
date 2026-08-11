@@ -64,8 +64,8 @@ test('parseStylistExplanationJson parses loose JSON and rejects invalid JSON', (
 });
 
 test('V3 constants and prompt describe human-only JSON output', () => {
-  assert.equal(STYLIST_PROMPT_VERSION, 'stylist-prompt-v16');
-  assert.equal(STYLIST_REVIEW_VERSION, 'stylist-explanation-v15');
+  assert.equal(STYLIST_PROMPT_VERSION, 'stylist-prompt-v21');
+  assert.equal(STYLIST_REVIEW_VERSION, 'stylist-explanation-v20');
   assert.equal(COPY_POLICY_VERSION, 'human-copy-v2');
   assert.equal(VOICE_POLICY_VERSION, 'xiaoda-voice-v6');
   const prompt = buildStylistPromptV2(evidenceInput());
@@ -74,11 +74,14 @@ test('V3 constants and prompt describe human-only JSON output', () => {
   assert.doesNotMatch(prompt.system, /字段只能是 schemaVersion/);
   assert.doesNotMatch(prompt.system, /reviewVersion、promptVersion/);
   assert.match(prompt.system, /你是“小搭”/);
-  assert.match(prompt.system, /Style Insight/);
+  assert.match(prompt.system, /本次主判断/);
   assert.match(prompt.system, /算法中文/);
+  assert.match(prompt.system, /视线拉回两端/);
+  assert.match(prompt.system, /短裤在中间留出颜色变化/);
+  assert.match(prompt.system, /鞋子因为和上衣颜色一样所以不突兀/);
   assert.match(prompt.system, /不虚构舒适、透气、保暖、柔软/);
   assert.match(prompt.system, /不能让用户换掉、替换、另选或购买任何衣物/);
-  assert.match(prompt.system, /primary\.subjectItemIds/);
+  assert.doesNotMatch(prompt.system, /primary\.subjectItemIds/);
   assert.equal(prompt.user.includes('cloud://'), false);
   assert.equal(prompt.user.includes('learnedProfile'), false);
   assert.equal(prompt.user.includes('contentPlan'), false);
@@ -96,6 +99,16 @@ test('retry prompt carries only safe validator codes and controlled rejected ter
   assert.doesNotMatch(prompt.system, /untrusted-free-text/);
 });
 
+test('algorithm-Chinese retry switches from picture analysis to body-centered language', () => {
+  const prompt = buildStylistPromptV2(evidenceInput(), {
+    retryReasons: ['algorithm_to_chinese_leakage'],
+  });
+  assert.match(prompt.system, /不描述颜色在画面里怎样移动、连接或分区/);
+  assert.match(prompt.system, /只说具体衣物穿在人身上的判断/);
+  assert.match(prompt.system, /鞋子不会显得突兀、下装让整身保留颜色变化/);
+  assert.match(prompt.system, /也不要出现“中间”/);
+});
+
 test('unsupported-fact retry prevents attributes from leaking across items', () => {
   const prompt = buildStylistPromptV2(evidenceInput(), {
     retryReasons: ['UNSUPPORTED_FACT', 'OVERALL_FACT_VALIDATION_FAILED'],
@@ -103,12 +116,22 @@ test('unsupported-fact retry prevents attributes from leaking across items', () 
 
   assert.match(prompt.system, /必须逐件绑定/);
   assert.match(prompt.system, /不要写任何材质、厚度、版型或设计属性/);
-  assert.match(prompt.system, /contentPlan\.items\.displayName/);
+  assert.match(prompt.system, /输入里的衣物名称/);
+});
+
+test('overall-copy retry tells the model to replace repeated full names with natural garment references', () => {
+  const prompt = buildStylistPromptV2(evidenceInput(), {
+    retryReasons: ['OVERALL_COPY_INVALID'],
+  });
+
+  assert.match(prompt.system, /每件衣物的完整名称和颜色.*最多说一次/);
+  assert.match(prompt.system, /后一句改用“上衣、下装、鞋子、它”等代称/);
+  assert.doesNotMatch(prompt.system, /头重脚轻/);
 });
 
 test('prompt carries safe item facts and the same Today Style Insight', () => {
   const contentPlan = {
-    version: 'xiaoda-content-plan-v2',
+    version: 'xiaoda-content-plan-v3',
     personaVersion: 'xiaoda-persona-v1',
     sceneIntent: 'date:casual',
     primaryBenefit: 'clear_highlight',
@@ -116,7 +139,7 @@ test('prompt carries safe item facts and the same Today Style Insight', () => {
     observations: ['top:白色印花上衣'],
     defaultTodayReason: '白色印花上衣已经够有内容了，灰色下装简单一点刚刚好。',
     xiaodaStyleInsight: {
-      version: 'xiaoda-style-insight-v1',
+      version: 'xiaoda-style-insight-v2',
       personaVersion: 'xiaoda-persona-v1',
       primary: {
         rank: 'PRIMARY',
@@ -135,9 +158,17 @@ test('prompt carries safe item facts and the same Today Style Insight', () => {
   };
   const prompt = buildStylistPromptV2(evidenceInput({ contentPlan }));
   const input = JSON.parse(prompt.user);
-  assert.equal(input.contentPlan.defaultTodayReason, contentPlan.defaultTodayReason);
-  assert.equal(input.contentPlan.xiaodaStyleInsight.primary.code, 'PATTERN_FOCUS_WITH_SIMPLE_SUPPORT');
-  assert.equal(input.outfit.items[0].subcategory, '白色上衣');
+  assert.equal(input.todayReason, contentPlan.defaultTodayReason);
+  assert.deepEqual(input.mainJudgment, [
+    '印花上衣负责重点',
+    '灰色下装保持简单',
+    '重点只留一处',
+    '有重点但不杂',
+  ]);
+  assert.equal(input.garments[0].name, '白色上衣');
+  assert.equal('contentPlan' in input, false);
+  assert.equal(prompt.user.includes('PATTERN_FOCUS_WITH_SIMPLE_SUPPORT'), false);
+  assert.equal(prompt.user.includes('top-1'), false);
 });
 
 test('validateStylistExplanationV2 accepts old AI version fields when content is valid', () => {
@@ -432,13 +463,13 @@ test('validator accepts a color carried by the authoritative content-plan displa
       items: [{ itemId: 'top-1', category: 'top', subcategory: '毛衣' }],
     },
     contentPlan: {
-      version: 'xiaoda-content-plan-v2',
+      version: 'xiaoda-content-plan-v3',
       sceneIntent: 'work:polished',
       primaryBenefit: 'commute_polish',
       items: [{ id: 'top-1', slot: 'top', role: 'core', displayName: '灰色毛衣' }],
       defaultDetailExplanation: '灰色毛衣让日常办公更利落。',
       xiaodaStyleInsight: {
-        version: 'xiaoda-style-insight-v1',
+        version: 'xiaoda-style-insight-v2',
         primary: { code: 'WORK_DAILY_READY', subjectItemIds: ['top-1'] },
         secondary: [],
         optional: [],
@@ -466,7 +497,7 @@ test('validator aligns hashed evidence items to content-plan slots instead of ar
       ],
     },
     contentPlan: {
-      version: 'xiaoda-content-plan-v2',
+      version: 'xiaoda-content-plan-v3',
       sceneIntent: 'work:polished',
       primaryBenefit: 'commute_polish',
       items: [
@@ -476,7 +507,7 @@ test('validator aligns hashed evidence items to content-plan slots instead of ar
       ],
       defaultDetailExplanation: '灰色毛衣搭军绿色阔腿裤，白色运动鞋收住整体。',
       xiaodaStyleInsight: {
-        version: 'xiaoda-style-insight-v1',
+        version: 'xiaoda-style-insight-v2',
         primary: { code: 'WORK_DAILY_READY', subjectItemIds: ['raw-top', 'raw-bottom', 'raw-shoes'] },
         secondary: [],
         optional: [],
@@ -552,7 +583,7 @@ test('real editorial rejection phrases are rejected before an AI review is saved
 
 test('validator rejects a Detail comment that drifts away from the primary Style Insight', () => {
   const contentPlan = {
-    version: 'xiaoda-content-plan-v2',
+    version: 'xiaoda-content-plan-v3',
     sceneIntent: 'date:casual',
     items: [
       { id: 'top-1', slot: 'top', role: 'core', displayName: '白色上衣' },
@@ -562,7 +593,7 @@ test('validator rejects a Detail comment that drifts away from the primary Style
     primaryBenefit: 'clear_highlight',
     defaultDetailExplanation: '印花上衣负责重点，灰色下装简单一点。',
     xiaodaStyleInsight: {
-      version: 'xiaoda-style-insight-v1',
+      version: 'xiaoda-style-insight-v2',
       primary: { code: 'PATTERN_FOCUS_WITH_SIMPLE_SUPPORT' },
       secondary: [],
       optional: [],
@@ -577,7 +608,7 @@ test('validator rejects a Detail comment that drifts away from the primary Style
 
 test('validator rejects assigning a color focal role to a supporting garment', () => {
   const contentPlan = {
-    version: 'xiaoda-content-plan-v2',
+    version: 'xiaoda-content-plan-v3',
     sceneIntent: 'home:clean_daily',
     items: [
       { id: 'top-1', slot: 'top', role: 'core', displayName: '白色短袖T恤' },
@@ -588,7 +619,7 @@ test('validator rejects assigning a color focal role to a supporting garment', (
     primaryBenefit: 'clean_daily',
     defaultDetailExplanation: '绿色阔腿裤是颜色重点，白色单品保持简单。',
     xiaodaStyleInsight: {
-      version: 'xiaoda-style-insight-v1',
+      version: 'xiaoda-style-insight-v2',
       primary: {
         code: 'COLOR_FOCUS_WITH_NEUTRAL_SUPPORT',
         subjectItemIds: ['bottom-1', 'top-1'],

@@ -61,7 +61,7 @@ function normalizeDefaultCopyAtResponseBoundary(outfit, context = {}) {
     && outfit.copyContract.gateResult === 'PASS'
     && Array.isArray(outfit.copyContract.riskFlags)
     && outfit.copyContract.riskFlags.length === 0
-    && outfit.copyContract?.xiaodaStyleInsight?.version === 'xiaoda-style-insight-v1'
+    && outfit.copyContract?.xiaodaStyleInsight?.version === 'xiaoda-style-insight-v3'
     && (mode === FINALIZATION_MODES.SAVED_SNAPSHOT
       || (typeof outfit.copyContract.coreEligibilityReason === 'string'
         && outfit.copyContract.coreEligibilityReason.trim()

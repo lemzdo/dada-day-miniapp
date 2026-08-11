@@ -53,13 +53,18 @@ test('BATCH_EDITORIAL_REVIEW chooses evidence variation deterministically and pa
   }).reasonClaim.copyPlan);
   const review = reviewBatchEditorialNaturalness(plans, selection.candidatePools);
   assert.equal(review.result, 'PASS', review.riskFlags.join(','));
-  assert.ok(review.metrics.distinctIntentCount >= 3);
+  assert.ok(review.metrics.distinctIntentCount >= 2);
   assert.ok(review.metrics.distinctOpeningCount >= 2);
   const sceneEvidenceCount = selection.selectedCandidates
     .filter((candidate) => candidate.authorizationIds.length > 0).length;
   assert.ok(sceneEvidenceCount >= 2, 'the batch must retain representative scene evidence');
   assert.ok(sceneEvidenceCount <= 4, 'the same scene boundary must not dominate the whole batch');
   assert.ok(selection.selectedCandidates.some((candidate) => candidate.source === 'style_insight'));
+  assert.equal(
+    selection.selectedCandidates.some((candidate) => candidate.messageIntent === 'color_echo'),
+    false,
+    'weak color facts must not replace a higher human-value scene judgment for variety',
+  );
   assert.deepEqual(
     selectBatchEditorialCandidates(models).selectedCandidateIds,
     selection.selectedCandidateIds,
@@ -69,9 +74,10 @@ test('BATCH_EDITORIAL_REVIEW chooses evidence variation deterministically and pa
 test('BATCH_EDITORIAL_REVIEW rejects avoidable repeated copy and template name replacement', () => {
   const models = Array.from({ length: 8 }, (_, index) => model(index));
   const selection = selectBatchEditorialCandidates(models);
-  const repeated = models.map((entry) => buildPresentationPlan(entry, {
-    selectedMessageCandidateId: selection.candidatePools[0][0].candidateId,
-  }).reasonClaim.copyPlan);
+  const firstPlan = buildPresentationPlan(models[0], {
+    selectedMessageCandidateId: selection.selectedCandidateIds[0],
+  }).reasonClaim.copyPlan;
+  const repeated = models.map(() => ({ ...firstPlan }));
   const review = reviewBatchEditorialNaturalness(repeated, selection.candidatePools);
   assert.equal(review.result, 'REJECT');
   assert.ok(review.riskFlags.some((flag) => [
@@ -92,4 +98,27 @@ test('identical facts with no alternative message are allowed to remain identica
   const review = reviewBatchEditorialNaturalness(plans, selection.candidatePools);
   assert.equal(review.result, 'PASS', review.riskFlags.join(','));
   assert.ok(review.metrics.exactDuplicateCount > 0);
+});
+
+test('Work scene Human Meaning variants prevent an eight-card name-swap frame', () => {
+  const models = Array.from({ length: 8 }, (_, index) => {
+    const entry = model(index);
+    return {
+      ...entry,
+      scene: 'work',
+      qualification: {
+        ...entry.qualification,
+        reasonCode: 'WORK_BASELINE_PRESENTABLE',
+      },
+    };
+  });
+  const selection = selectBatchEditorialCandidates(models);
+  const plans = models.map((entry, index) => buildPresentationPlan(entry, {
+    selectedMessageCandidateId: selection.selectedCandidateIds[index],
+  }).reasonClaim.copyPlan);
+  const review = reviewBatchEditorialNaturalness(plans, selection.candidatePools);
+
+  assert.equal(review.result, 'PASS', review.riskFlags.join(','));
+  assert.ok(new Set(plans.map((plan) => plan.text)).size >= 6);
+  assert.ok(new Set(plans.map((plan) => plan.openingFamily)).size >= 3);
 });

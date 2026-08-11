@@ -293,6 +293,7 @@ export interface XiaodaStyleInsightRanking {
   outfitSpecificity: number;
   sceneRelevance: number;
   naturalExpressibility: number;
+  humanValueTier: number;
   total: number;
 }
 
@@ -311,6 +312,7 @@ export interface XiaodaStyleInsight {
   primaryObservation: string;
   supportingRelation: string;
   humanMeaning: string;
+  humanMeaningAlternatives?: string[];
   overallMeaning: string;
   allowedAestheticInferences: XiaodaAestheticInferenceAuthorization[];
   forbiddenClaims: string[];
@@ -318,8 +320,8 @@ export interface XiaodaStyleInsight {
 }
 
 export interface XiaodaStyleInsightPlan {
-  version: 'xiaoda-style-insight-v1';
-  personaVersion: 'xiaoda-persona-v2';
+  version: 'xiaoda-style-insight-v3';
+  personaVersion: 'xiaoda-persona-v6';
   primary: XiaodaStyleInsight | null;
   secondary: XiaodaStyleInsight[];
   optional: XiaodaStyleInsight[];
@@ -328,7 +330,7 @@ export interface XiaodaStyleInsightPlan {
 }
 
 export interface RecommendationCopyProvenance {
-  version: 'recommendation-natural-language-v4';
+  version: 'recommendation-natural-language-v5';
   surface: 'today' | 'detail';
   scene: string;
   relationCode: string | null;
@@ -396,7 +398,7 @@ export interface RecommendationCopyContract {
   naturalnessGateVersion?: 'copy-naturalness-gate-v3';
   naturalnessGateResult?: 'PASS' | 'REJECT';
   naturalnessRiskFlags?: string[];
-  structuralNaturalnessVersion?: 'batch-editorial-review-v2';
+  structuralNaturalnessVersion?: 'batch-editorial-review-v3';
   structuralNaturalnessResult?: 'PASS' | 'REJECT';
   structuralNaturalnessRiskFlags?: string[];
   structuralNaturalnessWarningFlags?: string[];
@@ -455,7 +457,7 @@ export interface XiaodaDefaultCopy {
 
 export interface XiaodaContentPlan {
   version: string;
-  personaVersion?: 'xiaoda-persona-v2';
+  personaVersion?: 'xiaoda-persona-v6';
   sceneIntent: string;
   items: XiaodaContentPlanItem[];
   observations: string[];
@@ -774,7 +776,7 @@ export interface Outfit {
   messageDimension?: string;
   valueAssessment?: RecommendationCopyValueAssessment;
   xiaodaStyleInsight?: XiaodaStyleInsightPlan | null;
-  personaVersion?: 'xiaoda-persona-v2';
+  personaVersion?: 'xiaoda-persona-v6';
   qualification?: RecommendationCopyContract['qualification'];
   outfitItemRoles?: XiaodaContentPlanItem[];
   contentPlan?: XiaodaContentPlan;

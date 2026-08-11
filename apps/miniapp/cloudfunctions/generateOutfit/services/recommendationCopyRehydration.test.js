@@ -50,7 +50,7 @@ test('stale recommendation favorite history and detail shapes rehydrate to curre
     assert.equal(result.voiceBankVersion, VOICE_VERSION, kind);
     assert.equal(result.copyContract.gateResult, 'PASS', kind);
     assert.match(result.reason, /衬衫.*直筒裤.*利落/, kind);
-    assert.equal(result.copyContract.xiaodaStyleInsight.version, 'xiaoda-style-insight-v1', kind);
+    assert.equal(result.copyContract.xiaodaStyleInsight.version, 'xiaoda-style-insight-v3', kind);
     assert.notEqual(result.reason, source.reason, kind);
     assert.equal(result.copyContract.todayReason, result.reason, kind);
   }

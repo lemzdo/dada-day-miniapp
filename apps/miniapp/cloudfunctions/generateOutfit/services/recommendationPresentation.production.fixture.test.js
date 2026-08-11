@@ -243,7 +243,9 @@ test('real production-shaped eight-card fixture uses semantic presentation facts
   ]);
   assert.equal(cards.every((card) => card.presentationPlan.primaryRelation.relationCode), true);
   assert.equal(cards.every((card) => card.copyContract.todayReason.length > 0), true);
-  assert.ok(new Set(cards.map((card) => card.copyContract.messageIntent)).size >= 4);
+  assert.ok(new Set(cards.map((card) => card.copyContract.messageIntent)).size >= 2);
+  assert.equal(cards.every((card) => card.copyContract.todayCopyProvenance.humanValueTier
+    === card.copyContract.xiaodaStyleInsight.primary.ranking.humanValueTier), true);
   assert.equal(cards.every((card) => card.copyContract.naturalnessGateResult === 'PASS'
     && card.copyContract.naturalnessRiskFlags.length === 0
     && card.copyContract.structuralNaturalnessResult === 'PASS'

@@ -1,6 +1,10 @@
-const { XIAODA_PERSONA_VERSION } = require('./xiaodaPersonaContract');
+const {
+  XIAODA_PERSONA_VERSION,
+  inspectXiaodaPersonaCopy,
+} = require('./xiaodaPersonaContract');
 
-const XIAODA_CONTENT_PLAN_VERSION = 'xiaoda-content-plan-v2';
+const XIAODA_CONTENT_PLAN_VERSION = 'xiaoda-content-plan-v3';
+const AI_COMMENTARY_INCREMENTAL_VALUE_GATE_VERSION = 'ai-commentary-incremental-value-gate-v1';
 
 const SLOT_LABELS = {
   top: '上衣',
@@ -100,10 +104,19 @@ function hasQualifiedAiReviewIncrementV1(aiComment, plan, fallbackReview) {
   if (!reason) rejectReasons.push('missing_reason');
   if (containsEmptyPhrase(combined)) rejectReasons.push('empty_phrase');
   if (containsEnglishTypeLeak(combined)) rejectReasons.push('english_type_leak');
+  if (inspectXiaodaPersonaCopy(combined).violations.includes('ALGORITHM_CHINESE')) {
+    rejectReasons.push('algorithm_to_chinese_leakage');
+  }
   if (!mentionsPlanFact(combined, plan)) rejectReasons.push('not_grounded');
   if (!mentionsPrimaryInsight(combined, plan)) rejectReasons.push('semantic_drift');
-  if (!hasInformationGain(reason, fallbackReview?.reason || renderXiaodaPlanTextV1(plan).bodyParagraphs.join(''))) {
+  const incrementalValueGate = evaluateAiCommentaryIncrementalValue({
+    reason,
+    plan,
+    fallbackReason: fallbackReview?.reason || renderXiaodaPlanTextV1(plan).bodyParagraphs.join(''),
+  });
+  if (incrementalValueGate.result !== 'PASS') {
     rejectReasons.push('no_information_gain');
+    rejectReasons.push('no_ai_incremental_value');
   }
   const normalizedSuggestion = tip ? normalizeXiaodaSuggestionV1(tip, plan) : null;
   if (tip && !normalizedSuggestion) rejectReasons.push('invalid_suggestion');
@@ -118,9 +131,40 @@ function hasQualifiedAiReviewIncrementV1(aiComment, plan, fallbackReview) {
           source: aiComment?.source || 'ai',
           contentPlanVersion: plan.version,
           sceneIntent: plan.sceneIntent,
-          primaryBenefitCode: plan.primaryBenefit,
-        }
+           primaryBenefitCode: plan.primaryBenefit,
+           incrementalValueGate,
+         }
       : null,
+  };
+}
+
+function evaluateAiCommentaryIncrementalValue({ reason, plan, fallbackReason } = {}) {
+  const candidate = normalizeVisibleText(reason);
+  const baselines = uniqueStrings([
+    readCanonicalText(plan?.defaultTodayReason),
+    readCanonicalText(plan?.defaultDetailExplanation),
+    readCanonicalText(fallbackReason),
+  ]);
+  const reasons = [];
+  if (candidate.length < 32) reasons.push('TOO_SHORT_FOR_DEEPER_COMMENTARY');
+  if (baselines.some((baseline) => baseline && similarity(candidate, baseline) >= 0.76)) {
+    reasons.push('REPHRASES_VISIBLE_COPY');
+  }
+  const baselineNgrams = new Set(baselines.flatMap((baseline) => characterNgrams(baseline, 3)));
+  const newNgrams = characterNgrams(candidate, 3).filter((value) => !baselineNgrams.has(value));
+  if (newNgrams.length < 6) reasons.push('INSUFFICIENT_NEW_EXPLANATION');
+  const mentionedItems = (Array.isArray(plan?.items) ? plan.items : [])
+    .filter((item) => itemFocusTerms(item).some((term) => candidate.includes(term)));
+  if (mentionedItems.length < Math.min(2, (plan?.items || []).length)) reasons.push('INSUFFICIENT_GARMENT_CONTRIBUTION');
+  if (!/(因为|所以|因此|让|把|少了|不会|没有|先|又|穿上|穿在)/u.test(candidate)) {
+    reasons.push('MISSING_CAUSAL_STYLING_REASON');
+  }
+  return {
+    version: AI_COMMENTARY_INCREMENTAL_VALUE_GATE_VERSION,
+    result: reasons.length === 0 ? 'PASS' : 'REJECT',
+    reasons,
+    comparedSurfaces: baselines.length,
+    newExplanationNgramCount: newNgrams.length,
   };
 }
 
@@ -223,7 +267,7 @@ function mentionsPrimaryInsight(text, plan) {
   const groups = [
     [/PATTERN|DESIGN_FOCUS/u, ['图案', '印花', '细节', '重点', '简单']],
     [/COLOR_FOCUS/u, ['颜色', '中性色', '重点', '清爽']],
-    [/ECHO|CONTINUITY|SAME_COLOR|TONAL|NEARBY_COLOR|COLOR_CONTRAST/u, ['颜色', '同色', '呼应', '主色', '变化', '色彩', '色调', '基调', '统一', '衔接', '接近', '柔和', '对比', '点缀色']],
+    [/ECHO|CONTINUITY|SAME_COLOR|TONAL|NEARBY_COLOR|COLOR_CONTRAST|TWO_COLOR|QUIET_NEUTRAL/u, ['颜色', '同色', '呼应', '主色', '变化', '色彩', '色调', '基调', '统一', '衔接', '接近', '柔和', '对比', '点缀色', '明暗', '不抢眼']],
     [/SILHOUETTE/u, ['宽松', '收', '松紧', '线条', '利落']],
     [/PROPORTION/u, ['长短', '比例', '短', '长']],
     [/ONEPIECE/u, ['连衣裙', '一件式', '外套', '鞋']],
@@ -252,9 +296,9 @@ function preservesPrimaryInsightRoles(text, plan) {
 
 function itemFocusTerms(item) {
   const displayName = readString(item?.displayName);
-  const terms = [displayName];
+  const terms = [normalizeVisibleText(displayName)];
   const garmentTerms = displayName.match(/阔腿裤|直筒裤|短裤|长裤|半裙|吊带裙|连衣裙|运动鞋|皮鞋|乐福鞋|T恤|衬衫|毛衣|卫衣|外套/giu) || [];
-  terms.push(...garmentTerms);
+  terms.push(...garmentTerms.map(normalizeVisibleText));
   return uniqueStrings(terms);
 }
 
@@ -298,15 +342,14 @@ function normalizeStyleInsight(value) {
   };
 }
 
-function hasInformationGain(candidate, fallback) {
-  const candidateTokens = meaningfulTokens(candidate);
-  const fallbackTokens = new Set(meaningfulTokens(fallback));
-  const newTokens = candidateTokens.filter((token) => !fallbackTokens.has(token));
-  return candidate.length >= 28 && newTokens.length >= 2 && similarity(candidate, fallback) < 0.76;
-}
-
-function meaningfulTokens(text) {
-  return uniqueStrings(normalizeVisibleText(text).split(/[，。；、\s]+/).filter((part) => part.length >= 2));
+function characterNgrams(value, size) {
+  const characters = Array.from(normalizeVisibleText(value).replace(/[，。！？；、,.!?;\s]+/gu, ''));
+  if (characters.length < size) return [];
+  const values = [];
+  for (let index = 0; index <= characters.length - size; index += 1) {
+    values.push(characters.slice(index, index + size).join(''));
+  }
+  return uniqueStrings(values);
 }
 
 function containsEmptyPhrase(text) {
@@ -358,9 +401,11 @@ function similarity(left, right) {
 }
 
 module.exports = {
+  AI_COMMENTARY_INCREMENTAL_VALUE_GATE_VERSION,
   XIAODA_CONTENT_PLAN_VERSION,
   buildXiaodaContentPlanV1,
   buildXiaodaDefaultReviewV1,
+  evaluateAiCommentaryIncrementalValue,
   hasQualifiedAiReviewIncrementV1,
   normalizeXiaodaSuggestionV1,
   normalizeStyleInsight,

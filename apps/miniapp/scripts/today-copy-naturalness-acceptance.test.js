@@ -3,8 +3,10 @@ const assert = require('node:assert/strict');
 
 const {
   SCENES,
+  auditBlackBoxEditorialReview,
   auditDetailSamples,
   auditFinalTodayCopy,
+  buildBlackBoxEditorialReview,
   buildCrossSceneComparisons,
   summarizeNaturalnessMetrics,
 } = require('./today-copy-naturalness-acceptance');
@@ -45,11 +47,11 @@ function outfit(scene, index, todayReason = '上身这件粉色上衣已经很�
       naturalnessGateVersion: 'copy-naturalness-gate-v3',
       naturalnessGateResult: 'PASS',
       naturalnessRiskFlags: [],
-      structuralNaturalnessVersion: 'batch-editorial-review-v2',
+      structuralNaturalnessVersion: 'batch-editorial-review-v3',
       structuralNaturalnessResult: 'PASS',
       structuralNaturalnessRiskFlags: [],
       todayCopyProvenance: {
-        version: 'recommendation-natural-language-v4',
+        version: 'recommendation-natural-language-v5',
         surface: 'today',
         scene,
         relationCode: 'TOP_ACCENT_WITH_NEUTRAL_BOTTOM',
@@ -181,4 +183,40 @@ test('Detail audit requires two real AI UI comments per scene with Today binding
   assert.equal(result.passed, false);
   assert.ok(result.failures.includes('today_detail_binding:0'));
   assert.ok(result.failures.includes('detail_scene_count:home:1'));
+});
+
+test('black-box editorial review exposes only garments scene and user-visible three-layer copy', () => {
+  const scenes = SCENES.map((scene) => ({
+    scene,
+    batches: [1, 2].map(() => ({
+      blackBoxCards: Array.from({ length: 8 }, () => ({
+        scene,
+        garments: ['印花T恤', '灰色直筒裤'],
+        today: '印花T恤已经够有内容，灰色直筒裤简单一些，穿在身上有重点但不拥挤。',
+      })),
+    })),
+  }));
+  const details = SCENES.flatMap((scene) => [1, 2].map((cardIndex) => ({
+    scene,
+    cardIndex,
+    title: '印花T恤 · 灰色直筒裤',
+    todayReason: '印花T恤已经够有内容，灰色直筒裤简单一些，穿在身上有重点但不拥挤。',
+    defaultDetail: '穿上以后会先注意到印花T恤，灰色直筒裤没有再加图案，所以衣服不会堆得太满。',
+    paragraphs: ['印花T恤把注意力留在脸和上半身，灰色直筒裤把腿部线条收干净，所以穿在人身上不会被图案压住。'],
+    advice: '',
+  })));
+  const review = buildBlackBoxEditorialReview(scenes, details);
+  const audit = auditBlackBoxEditorialReview(review);
+  assert.equal(audit.passed, true, audit.failures.join(','));
+  assert.equal(audit.todayCount, 64);
+  assert.equal(audit.comparisonCount, 8);
+  assert.deepEqual(Object.keys(review.todayCards[0]).sort(), ['garments', 'scene', 'today']);
+  assert.deepEqual(
+    Object.keys(review.threeLayerComparisons[0]).sort(),
+    ['advice', 'aiCommentary', 'detail', 'garments', 'scene', 'today'],
+  );
+  assert.equal(JSON.stringify(review).includes('reasonCode'), false);
+  assert.equal(JSON.stringify(review).includes('relationCode'), false);
+  assert.equal(JSON.stringify(review).includes('evidence'), false);
+  assert.equal(JSON.stringify(review).includes('authorization'), false);
 });
