@@ -153,11 +153,12 @@ interface TodayFullComputeAcceptanceRequest {
 
 interface TodayDiagnosticsBridge {
   marker: 'd1d-today-production-handler-v1';
-  copyAcceptanceBuild: 'today-copy-naturalness-v2';
+  copyAcceptanceBuild: 'today-copy-naturalness-v3';
   ready: boolean;
   sceneKey: SceneKey;
   triggerFullCompute: (request: TodayFullComputeAcceptanceRequest) => Promise<boolean>;
   triggerRefresh: (request: TodayFullComputeAcceptanceRequest) => Promise<boolean>;
+  releaseCaptureLock: () => void;
   readCopyAcceptanceState: () => {
     sceneKey: SceneKey;
     outfits: Outfit[];
@@ -221,8 +222,8 @@ interface TodayRestoreSnapshotInput {
   recommendationNotice?: string;
 }
 
-const TODAY_RESTORE_SNAPSHOT_KEY = 'today:outfitReturnSnapshot:recommendation-copy-contract-v7';
-const TODAY_SCENE_SNAPSHOT_STORAGE_PREFIX = 'today:sceneSnapshot:recommendation-copy-contract-v7';
+const TODAY_RESTORE_SNAPSHOT_KEY = 'today:outfitReturnSnapshot:recommendation-copy-contract-v8';
+const TODAY_SCENE_SNAPSHOT_STORAGE_PREFIX = 'today:sceneSnapshot:recommendation-copy-contract-v8';
 const TODAY_RESTORE_SNAPSHOT_TTL_MS = 10 * 60 * 1000;
 const WARDROBE_REFRESH_STORAGE_KEY = 'wardrobeNeedsRefresh';
 const TODAY_TIME_OF_DAY: TimeOfDay = 'all_day';
@@ -345,6 +346,7 @@ export default function TodayPage() {
   const lastHandledRuntimeKeyRef = useRef<string | null>(null);
   const operationTargetRef = useRef<{ operation: OutfitOperation; outfitKey: string } | null>(null);
   const behaviorTrackerRef = useRef(createOutfitBehaviorExposureTracker());
+  const copyAcceptanceCaptureLockRef = useRef(false);
   const sceneSnapshotsRef = useRef<Record<string, ExtendedSceneSnapshot>>({});
   const [currentWeather, setCurrentWeather] = useState<WeatherSnapshot | undefined>(undefined);
   const [performanceSnapshot, setPerformanceSnapshot] = useState<TodayPerformanceLedgerSnapshot>({ active: null, history: [] });
@@ -1214,6 +1216,11 @@ export default function TodayPage() {
     currentWeatherModeRef.current = options.weatherMode;
     currentWeatherFingerprintRef.current = weatherFingerprint;
     setCurrentWeather(weather);
+
+    if (copyAcceptanceCaptureLockRef.current) {
+      markTodayPerformanceStage('weatherEnd');
+      return 'unchanged';
+    }
 
     const sceneKey = selectedSceneKeyRef.current;
     if (!options.forceRefresh) {
@@ -2141,7 +2148,7 @@ export default function TodayPage() {
     };
     const bridge: TodayDiagnosticsBridge = {
       marker: 'd1d-today-production-handler-v1',
-      copyAcceptanceBuild: 'today-copy-naturalness-v2',
+      copyAcceptanceBuild: 'today-copy-naturalness-v3',
       ready: Boolean(isAuthenticated && runtimeKey && !loading && !operation),
       sceneKey: selectedSceneKeyRef.current,
       readCopyAcceptanceState: () => ({
@@ -2155,11 +2162,15 @@ export default function TodayPage() {
           copyContract: outfit.copyContract,
         } as Outfit)),
       }),
+      releaseCaptureLock: () => {
+        copyAcceptanceCaptureLockRef.current = false;
+      },
       triggerFullCompute: async (request) => {
         if (!request?.acceptanceRunId || !request?.captureId) {
           throw new Error('acceptanceRunId and captureId are required');
         }
         if (loading || operation) throw new Error('Today recommendation handler is busy');
+        copyAcceptanceCaptureLockRef.current = true;
         return requestRecommendations({
           intentId: nextRecommendationIntentId('retry'),
           sceneKey: selectedSceneKeyRef.current,
@@ -2174,6 +2185,7 @@ export default function TodayPage() {
           throw new Error('acceptanceRunId and captureId are required');
         }
         if (loading || operation) throw new Error('Today recommendation handler is busy');
+        copyAcceptanceCaptureLockRef.current = true;
         return handleRefresh(request);
       },
     };

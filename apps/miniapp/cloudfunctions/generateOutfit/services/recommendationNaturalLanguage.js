@@ -1,4 +1,10 @@
-const NATURAL_LANGUAGE_PLAN_VERSION = 'recommendation-natural-language-v3';
+const {
+  XIAODA_STYLE_MESSAGE_DEFINITIONS,
+  buildXiaodaDetailCandidate,
+  buildXiaodaTodayCandidates,
+} = require('./xiaodaStyleInsight');
+
+const NATURAL_LANGUAGE_PLAN_VERSION = 'recommendation-natural-language-v4';
 
 const DECISION_VALUE_CATEGORIES = Object.freeze({
   FACTUAL_BUT_LOW_VALUE: 'FACTUAL_BUT_LOW_VALUE',
@@ -341,31 +347,12 @@ const BENEFIT_SLOTS = Object.freeze([]);
 const DETAIL_RELATION_SLOTS = buildDetailCompatibilityRegistry();
 
 function buildNaturalTodayCopyCandidates(model = {}, onlyRelation = null) {
-  const qualification = normalizeQualification(model?.qualification);
-  const relations = onlyRelation?.relationCode
-    ? [onlyRelation]
-    : Array.isArray(model?.relations) ? model.relations : [];
-  const relationCandidates = relations.flatMap((relation) => RELATION_MESSAGE_DEFINITIONS
-    .filter((definition) => definition.relationCodes.includes(relation?.relationCode))
-    .map((definition) => buildRelationCandidate(definition, model, relation, qualification))
-    .filter(Boolean));
-  const sceneCandidates = SCENE_MESSAGE_DEFINITIONS
-    .filter((definition) => definition.scene === model?.scene
-      && definition.reasonCodes.includes(qualification.reasonCode))
-    .map((definition) => buildSceneCandidate(definition, model, qualification, relations[0]))
-    .filter(Boolean);
-  const onepieceCompositionCandidate = relationCandidates.find((candidate) => (
-    [MESSAGE_INTENTS.ONEPIECE_DECISION, MESSAGE_INTENTS.LAYERING_LOGIC].includes(candidate.messageIntent)
-  ));
-  const compositionCandidates = sceneCandidates.flatMap((sceneCandidate) => relationCandidates
-    .filter((relationCandidate) => relationCandidate.source === 'presentation_relation'
-      && relationCandidate.messageIntent !== sceneCandidate.messageIntent
-      && (!onepieceCompositionCandidate || relationCandidate === onepieceCompositionCandidate))
-    .map((relationCandidate) => buildCompositionCandidate(model, relationCandidate, sceneCandidate))
-    .filter(Boolean));
-  return [...compositionCandidates, ...relationCandidates, ...sceneCandidates]
-    .filter((candidate) => isHighValueAssessment(candidate.valueAssessment))
-    .sort(compareCandidates);
+  const candidates = buildXiaodaTodayCandidates(model);
+  // `onlyRelation` remains in the signature for compatibility with callers
+  // that still pass the old presentation differentiator. Style Insight owns
+  // semantic ranking now, so that hint must not force a weaker explanation.
+  void onlyRelation;
+  return candidates;
 }
 
 function buildCompositionCandidate(model, relationCandidate, sceneCandidate) {
@@ -414,26 +401,8 @@ function buildNaturalTodayCopyPlan(model = {}, relation = {}, options = {}) {
 }
 
 function buildNaturalDetailCopyPlan(model = {}, relation = {}) {
-  const definition = DETAIL_MESSAGE_DEFINITIONS.find((entry) => entry.relationCodes.includes(relation?.relationCode));
-  if (!definition) return emptyPlan('detail', model, relation);
-  const text = stripTerminalPunctuation(definition.render({ model, relation }));
-  if (!text) return emptyPlan('detail', model, relation);
-  const candidate = {
-    candidateId: `${definition.id}:${relation.relationCode}`,
-    templateId: definition.id,
-    messageIntent: definition.intent,
-    relationCode: relation.relationCode,
-    dimension: definition.dimension,
-    openingFamily: definition.openingFamily,
-    endingFamily: definition.endingFamily,
-    text,
-    subjectItemIds: uniqueStrings(relation.subjectItemIds),
-    evidenceFactIds: uniqueStrings(relation.evidenceFactIds),
-    authorizationIds: [],
-    informationKey: `detail:${definition.intent}:${relation.relationCode}`,
-    source: 'presentation_relation',
-    valueAssessment: definition.value,
-  };
+  const candidate = buildXiaodaDetailCandidate(model, { relationCode: relation?.relationCode });
+  if (!candidate) return emptyPlan('detail', model, relation);
   return candidateToPlan('detail', model, candidate, 1);
 }
 
@@ -529,6 +498,7 @@ function candidateToPlan(surface, model, candidate, availableMessageCount) {
     clauses,
     text: joinClauses(clauses),
     fallbackStrategy: '',
+    xiaodaStyleInsight: candidate.xiaodaStyleInsight || null,
   };
 }
 
@@ -897,6 +867,7 @@ module.exports = {
   SAFE_FALLBACK,
   SCENE_MESSAGE_DEFINITIONS,
   SCENE_VALUE_SLOTS,
+  XIAODA_STYLE_MESSAGE_DEFINITIONS,
   buildNaturalDetailCopyPlan,
   buildNaturalTodayCopyCandidates,
   buildNaturalTodayCopyPlan,

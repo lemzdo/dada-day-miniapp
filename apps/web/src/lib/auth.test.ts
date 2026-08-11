@@ -4,7 +4,7 @@ import { AuthError, createAuthToken, getUserIdFromRequest } from './auth';
 
 test('createAuthToken signs a token accepted by getUserIdFromRequest', () => {
   process.env['AUTH_TOKEN_SECRET'] = 'test-secret';
-  const token = createAuthToken('user-123', new Date('2026-05-19T00:00:00.000Z'));
+  const token = createAuthToken('user-123');
   const request = new Request('http://localhost/api/v1/user/profile', {
     headers: { Authorization: `Bearer ${token}` },
   });

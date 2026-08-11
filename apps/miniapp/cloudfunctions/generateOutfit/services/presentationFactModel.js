@@ -8,9 +8,9 @@ const {
   buildNaturalTodayCopyPlan,
 } = require('./recommendationNaturalLanguage');
 
-const PRESENTATION_FACT_MODEL_VERSION = 'presentation-fact-model-v4';
-const PRESENTATION_FACT_MODEL_BUILD = 'presentation-fact-model-20260811-natural-language-v2';
-const PRESENTATION_PLAN_VERSION = 'presentation-plan-v5';
+const PRESENTATION_FACT_MODEL_VERSION = 'presentation-fact-model-v5';
+const PRESENTATION_FACT_MODEL_BUILD = 'presentation-fact-model-20260811-xiaoda-insight-v1';
+const PRESENTATION_PLAN_VERSION = 'presentation-plan-v6';
 const PRESENTATION_PLAN_SOURCE = 'presentation_plan';
 
 const ROLE_ORDER = Object.freeze(['onepiece', 'top', 'bottom', 'outerwear', 'shoes']);
@@ -52,8 +52,19 @@ const COLOR_SHORT_LABELS = Object.freeze({
 });
 const NEUTRAL_COLORS = new Set(['黑色', '白色', '灰色', '藏青色', '米色', '棕色']);
 const RELATION_PRIORITY = Object.freeze([
+  'PATTERN_SINGLE_FOCUS',
+  'DETAIL_SINGLE_FOCUS',
   'SUBTYPE_FEATURE_PRINT',
   'PATTERN_SOLID_BALANCE',
+  'SILHOUETTE_BALANCED_CONTRAST',
+  'PROPORTION_CLEAR_LAYERING',
+  'COLOR_NEUTRAL_ACCENT',
+  'COLOR_ANALOGOUS',
+  'COLOR_MONOCHROMATIC',
+  'FORMALITY_ALIGNED',
+  'FORMALITY_INTENTIONAL_MIX',
+  'SILHOUETTE_BALANCED_CONTINUITY',
+  'COLOR_CONTROLLED_CONTRAST',
   'SAME_COLOR_ALL_ROLES',
   'SAME_COLOR_TOP_BOTTOM',
   'COLOR_ECHO_TOP_SHOES',
@@ -86,7 +97,7 @@ function buildPresentationFactModel(selectedCandidate = {}) {
   const normalizedItems = items
     .filter(Boolean)
     .sort((left, right) => roleIndex(left.role) - roleIndex(right.role) || left.canonicalSubtype.localeCompare(right.canonicalSubtype));
-  const relations = buildRelations(normalizedItems);
+  const relations = buildRelations(normalizedItems, source.aestheticEvaluation);
   const qualification = buildPresentationQualification(source);
   const semanticSignature = normalizedItems.length > 0
     ? stableSerialize({
@@ -127,17 +138,14 @@ function buildPresentationPlan(model = {}, options = {}) {
   });
   const primaryRelation = (Array.isArray(source.relations) ? source.relations : [])
     .find((relation) => relation.relationCode === reasonClaim.copyPlan.relationCode)
-    || requestedRelation;
+    || relationFromCopyPlan(source, reasonClaim.copyPlan, requestedRelation);
   // A FACT_EQUIVALENCE group may supply a differentiator selected from its
   // representative model. Rebind all identity-bearing fields to this model's
   // relation while preserving the selected semantic relation and copy text.
   const selectedDifferentiator = primaryRelation.relationCode
     ? toDifferentiator(primaryRelation)
     : requestedDifferentiator;
-  const detailRelations = (Array.isArray(source.relations) ? source.relations : [])
-    .filter((relation) => buildNaturalDetailCopyPlan(source, relation).text);
-  const detailRelation = detailRelations.find((relation) => relation.relationCode !== primaryRelation.relationCode)
-    || detailRelations.find((relation) => relation.relationCode === primaryRelation.relationCode);
+  const detailRelation = primaryRelation;
   const titleConcept = buildTitleConcept(source);
   const detailClaim = detailRelation ? buildDetailClaim(source, detailRelation) : null;
   const naturalnessGate = reasonClaim.naturalnessGate;
@@ -191,12 +199,39 @@ function buildPresentationPlan(model = {}, options = {}) {
     openingFamily: reasonClaim.copyPlan.openingFamily,
     endingFamily: reasonClaim.copyPlan.endingFamily,
     valueAssessment: { ...reasonClaim.copyPlan.valueAssessment },
+    xiaodaStyleInsight: reasonClaim.copyPlan.xiaodaStyleInsight || null,
     detailNaturalnessGateResult: detailNaturalnessGate?.result || null,
     detailNaturalnessRiskFlags: detailNaturalnessGate?.riskFlags || [],
     sceneConclusion: reasonClaim.copyPlan.clauses.find((clause) => (
       ['core_eligibility', 'evidence_composition'].includes(clause.source)
     ))?.text || '',
     unsupportedClaims: Array.isArray(source.unsupportedClaims) ? source.unsupportedClaims.slice() : [],
+  };
+}
+
+function relationFromCopyPlan(model, copyPlan, fallback = {}) {
+  const metadata = buildCopyPlanMetadata(copyPlan);
+  const subjectIds = new Set(metadata.subjectItemIds);
+  const roles = uniqueStrings((Array.isArray(model?.items) ? model.items : [])
+    .filter((item) => subjectIds.has(item.itemId))
+    .map((item) => item.role));
+  return {
+    relationCode: readText(copyPlan?.relationCode) || readText(fallback?.relationCode),
+    roles: roles.length > 0 ? roles : uniqueStrings(fallback?.roles),
+    authorizedValues: uniqueStrings([
+      ...(Array.isArray(fallback?.authorizedValues) ? fallback.authorizedValues : []),
+      ...(Array.isArray(copyPlan?.xiaodaStyleInsight?.primary?.authorizationIds)
+        ? copyPlan.xiaodaStyleInsight.primary.authorizationIds : []),
+    ]),
+    subjectItemIds: metadata.subjectItemIds.length > 0
+      ? metadata.subjectItemIds : uniqueStrings(fallback?.subjectItemIds),
+    evidenceFactIds: metadata.evidenceFactIds.length > 0
+      ? metadata.evidenceFactIds : uniqueStrings(fallback?.evidenceFactIds),
+    semanticSkeleton: readText(fallback?.semanticSkeleton),
+    todayExpressionIntent: readText(copyPlan?.messageIntent) || readText(fallback?.todayExpressionIntent),
+    source: readText(copyPlan?.source) || readText(fallback?.source) || 'style_insight',
+    polarity: 'positive',
+    strength: Number.isFinite(Number(fallback?.strength)) ? Number(fallback.strength) : 2,
   };
 }
 
@@ -269,6 +304,7 @@ function applyPresentationPlan(outfit, model, plan) {
   next.messageCandidateId = canonicalPlan.messageCandidateId;
   next.messageDimension = canonicalPlan.messageDimension;
   next.valueAssessment = { ...canonicalPlan.valueAssessment };
+  next.xiaodaStyleInsight = canonicalPlan.xiaodaStyleInsight || null;
   next.selectedDifferentiator = cloneDifferentiator(canonicalPlan.selectedDifferentiator);
   Object.assign(next, buildSurfacePatch(canonicalPlan, {
     todayEvidenceSources,
@@ -306,6 +342,7 @@ function applyPresentationPlan(outfit, model, plan) {
     openingFamily: canonicalPlan.openingFamily,
     endingFamily: canonicalPlan.endingFamily,
     valueAssessment: { ...canonicalPlan.valueAssessment },
+    xiaodaStyleInsight: canonicalPlan.xiaodaStyleInsight || null,
   };
   const existingContentPlan = asObject(next.contentPlan);
   const existingDefaultCopy = asObject(existingContentPlan.defaultCopy);
@@ -336,6 +373,7 @@ function applyPresentationPlan(outfit, model, plan) {
     openingFamily: canonicalPlan.openingFamily,
     endingFamily: canonicalPlan.endingFamily,
     valueAssessment: { ...canonicalPlan.valueAssessment },
+    xiaodaStyleInsight: canonicalPlan.xiaodaStyleInsight || null,
     defaultCopy: {
       ...existingDefaultCopy,
       todayReason: reason,
@@ -410,7 +448,7 @@ function buildDetailClaim(model, relation) {
   } : null;
 }
 
-function buildRelations(items) {
+function buildRelations(items, aestheticEvaluation) {
   const relations = [];
   const byRole = new Map(items.map((item) => [item.role, item]));
   const top = byRole.get('top');
@@ -419,11 +457,12 @@ function buildRelations(items) {
   const outerwear = byRole.get('outerwear');
   const shoes = byRole.get('shoes');
   const colored = [onepiece, top, bottom, outerwear, shoes].filter((item) => item?.normalizedColor);
-  const push = (relationCode, roles, values) => {
+  const push = (relationCode, roles, values, metadata = {}) => {
     if (!roles.length || values.some((value) => !value)) return;
     const subjectItems = roles.map((role) => byRole.get(role)).filter(Boolean);
     if (subjectItems.length !== roles.length || subjectItems.some((item) => !item.itemId)) return;
-    const evidenceFactIds = uniqueStrings(subjectItems.flatMap((item) => item.authorizedFactIds || []));
+    const evidenceFactIds = uniqueStrings(metadata.evidenceFactIds
+      || subjectItems.flatMap((item) => item.authorizedFactIds || []));
     if (evidenceFactIds.length === 0) return;
     relations.push({
       relationCode,
@@ -433,8 +472,21 @@ function buildRelations(items) {
       evidenceFactIds,
       semanticSkeleton: relationSemanticSkeleton(relationCode, roles),
       todayExpressionIntent: relationExpressionIntent(relationCode),
+      source: metadata.source || 'presentation_relation',
+      polarity: metadata.polarity || 'positive',
+      strength: Number.isFinite(Number(metadata.strength)) ? Number(metadata.strength) : 2,
     });
   };
+  for (const evidence of normalizeAestheticEvidence(aestheticEvaluation)) {
+    const subjectItems = evidence.itemIds.map((itemId) => items.find((item) => item.itemId === itemId)).filter(Boolean);
+    if (subjectItems.length !== evidence.itemIds.length) continue;
+    push(evidence.code, subjectItems.map((item) => item.role), [evidence.code], {
+      source: 'aesthetic_evaluation',
+      polarity: evidence.polarity,
+      strength: evidence.strength,
+      evidenceFactIds: [`aesthetic:${evidence.code}:${evidence.itemIds.slice().sort().join('|')}`],
+    });
+  }
   const patterned = items.find((item) => item.visibleFeatureTags.includes('印花'));
   const solid = items.find((item) => item.role !== patterned?.role && item.visibleFeatureTags.includes('纯色'));
   if (patterned) {
@@ -528,6 +580,17 @@ function buildItemFact(roleEntry, item, candidate) {
     canonicalSubtype: canonicalSubtypeValue || canonicalName,
     visibleFeatureTags: featureTags,
     normalizedColor: extractAuthorizedColor(source, authorizedRecords),
+    fit: readItemFeature(source, 'fit'),
+    silhouette: readItemFeature(source, 'silhouette'),
+    length: readItemFeature(source, 'length'),
+    patternType: readItemFeature(source, 'patternType'),
+    formalityLevel: normalizeFormalityLevel(readItemFeature(source, 'formalityLevel')),
+    designElements: readItemFeatureArray(source, 'designElements'),
+    styleTags: uniqueStrings([
+      ...readItemArray(source.styleTags),
+      ...readItemArray(source.styles),
+      ...readItemArray(source.style),
+    ]),
     authorizedFactIds: uniqueStrings(authorizedRecords.map((record) => readAuthorizedFactId(record, itemId))),
   };
 }
@@ -753,7 +816,60 @@ function toSignatureItem(item) {
     canonicalSubtype: item.canonicalSubtype,
     visibleFeatureTags: item.visibleFeatureTags,
     normalizedColor: item.normalizedColor,
+    fit: item.fit,
+    silhouette: item.silhouette,
+    length: item.length,
+    patternType: item.patternType,
+    formalityLevel: item.formalityLevel,
+    designElements: item.designElements,
+    styleTags: item.styleTags,
   };
+}
+
+function normalizeAestheticEvidence(value) {
+  const allowed = new Set([
+    'SILHOUETTE_BALANCED_CONTRAST',
+    'SILHOUETTE_BALANCED_CONTINUITY',
+    'PROPORTION_CLEAR_LAYERING',
+    'COLOR_MONOCHROMATIC',
+    'COLOR_ANALOGOUS',
+    'COLOR_NEUTRAL_ACCENT',
+    'COLOR_CONTROLLED_CONTRAST',
+    'PATTERN_SINGLE_FOCUS',
+    'FORMALITY_ALIGNED',
+    'FORMALITY_INTENTIONAL_MIX',
+    'DETAIL_SINGLE_FOCUS',
+  ]);
+  return (Array.isArray(value?.evidence) ? value.evidence : [])
+    .map((entry) => ({
+      code: readText(entry?.code),
+      polarity: readText(entry?.polarity) || 'neutral',
+      strength: Math.max(1, Math.min(3, Math.round(Number(entry?.strength) || 1))),
+      itemIds: uniqueStrings(entry?.itemIds),
+    }))
+    .filter((entry) => allowed.has(entry.code)
+      && entry.polarity !== 'negative'
+      && entry.itemIds.length > 0);
+}
+
+function readItemFeature(source, key) {
+  const value = source?.aestheticFeatures?.[key] ?? source?.[key];
+  return typeof value === 'string' || typeof value === 'number' ? String(value).trim() : '';
+}
+
+function readItemFeatureArray(source, key) {
+  const value = source?.aestheticFeatures?.[key] ?? source?.[key];
+  return readItemArray(value);
+}
+
+function readItemArray(value) {
+  if (Array.isArray(value)) return uniqueStrings(value.map((entry) => typeof entry === 'string' ? entry : readText(entry?.name || entry?.label)));
+  return typeof value === 'string' ? uniqueStrings(value.split(/[,，、|/]+/u)) : [];
+}
+
+function normalizeFormalityLevel(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 1 && number <= 5 ? number : null;
 }
 
 function stripInternalItemFields(item) {

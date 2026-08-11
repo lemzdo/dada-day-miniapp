@@ -19,6 +19,22 @@ import type { RecommendRequest, RecommendResponse, Outfit, OutfitItemSummary, We
 import type { SceneTag, TimeOfDay, ClothingCategory } from '@starter-template/types';
 import { resolveRecommendScene } from './sceneNormalization';
 
+const WEB_RECOMMENDATION_BATCH_SIZE = 3;
+
+function buildCountContract(returnedCardCount: number): RecommendResponse['countContract'] {
+  return {
+    requestedBatchSize: WEB_RECOMMENDATION_BATCH_SIZE,
+    expectedCardCount: returnedCardCount,
+    returnedCardCount,
+    remainingUniqueBeforeConsume: returnedCardCount,
+    remainingUniqueAfterConsume: 0,
+    tailBatchAuthorized: returnedCardCount > 0 && returnedCardCount < WEB_RECOMMENDATION_BATCH_SIZE,
+    poolExhaustedAfterConsume: true,
+    executionMode: 'full_compute',
+    candidatePoolId: null,
+  };
+}
+
 // ── POST /api/v1/outfits/recommend ───────────────────────────
 
 export async function POST(request: Request) {
@@ -51,6 +67,7 @@ export async function POST(request: Request) {
         code: 0,
         data: {
           outfits: [],
+          countContract: buildCountContract(0),
           sceneKey,
           scene: sceneTag,
           weather,
@@ -94,7 +111,7 @@ export async function POST(request: Request) {
       timeOfDay: body.timeOfDay,
       recentlyWornIds,
       excludeClothingIdSets: body.excludeClothingIdSets,
-      maxResults: 3,
+      maxResults: WEB_RECOMMENDATION_BATCH_SIZE,
     });
 
     // 6. 保存推荐的穿搭方案到数据库
@@ -161,6 +178,7 @@ export async function POST(request: Request) {
     // sceneKey/scene 来自同一组归一化结果，禁止返回 sceneKey='' 的成功响应。
     const response: RecommendResponse = {
       outfits: savedOutfits,
+      countContract: buildCountContract(savedOutfits.length),
       sceneKey,
       scene: sceneTag,
       weather: weather as WeatherSnapshot,

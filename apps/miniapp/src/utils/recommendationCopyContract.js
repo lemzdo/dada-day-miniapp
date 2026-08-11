@@ -1,6 +1,6 @@
-const COPY_CONTRACT_VERSION = 'recommendation-copy-contract-v7';
+const COPY_CONTRACT_VERSION = 'recommendation-copy-contract-v8';
 const VOICE_BANK_VERSION = 'xiaoda-fixed-claim-catalog-v2';
-const COPY_NATURALNESS_GATE_VERSION = 'copy-naturalness-gate-v2';
+const COPY_NATURALNESS_GATE_VERSION = 'copy-naturalness-gate-v3';
 
 const DEFAULT_COPY_FIELDS = [
   'reason',

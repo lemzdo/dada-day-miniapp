@@ -14,6 +14,7 @@ const DEBUG_FIELDS = [
   'providerRequestStarted',
   'providerRequestFinished',
   'providerStatus',
+  'providerAttemptCount',
   'validatorResult',
   'validatorRejectReasons',
   'validatorTrace',
@@ -22,6 +23,8 @@ const DEBUG_FIELDS = [
   'fallbackReason',
   'saved',
   'errorCode',
+  'storageErrorCode',
+  'storageErrorMessage',
 ];
 
 function createAiReviewDebug({
@@ -45,6 +48,7 @@ function createAiReviewDebug({
     providerRequestStarted: false,
     providerRequestFinished: false,
     providerStatus: undefined,
+    providerAttemptCount: 0,
     validatorResult: 'not_run',
     validatorRejectReasons: [],
     validatorTrace: [],
@@ -53,6 +57,8 @@ function createAiReviewDebug({
     fallbackReason: '',
     saved: false,
     errorCode: '',
+    storageErrorCode: '',
+    storageErrorMessage: '',
   };
 }
 
@@ -96,13 +102,14 @@ function sanitizeField(field, value) {
   if (field === 'aiAttempted' || field === 'providerConfigured' || field === 'providerRequestStarted' || field === 'providerRequestFinished' || field === 'fallbackUsed' || field === 'saved') {
     return typeof value === 'boolean' ? value : undefined;
   }
-  if (field === 'providerStatus') {
+  if (field === 'providerStatus' || field === 'providerAttemptCount') {
     const status = Number(value);
     return Number.isFinite(status) ? status : undefined;
   }
   if (field === 'outfitKeyShort') return limitText(value, 16);
   if (field === 'model') return limitText(value, 64);
   if (field === 'provider') return limitText(value, 48);
+  if (field === 'storageErrorMessage') return sanitizePreview(value, 160);
   return limitText(value, 80);
 }
 

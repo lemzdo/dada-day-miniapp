@@ -7,7 +7,7 @@ const {
 const { VOICE_BANK_VERSION } = require('./xiaodaVoiceBankV2');
 const { toCoreEligibilityPayload } = require('./recommendationEligibilityReason');
 
-const COPY_CONTRACT_VERSION = 'recommendation-copy-contract-v7';
+const COPY_CONTRACT_VERSION = 'recommendation-copy-contract-v8';
 
 function buildRecommendationCopyContract(input = {}) {
   const source = asObject(input);

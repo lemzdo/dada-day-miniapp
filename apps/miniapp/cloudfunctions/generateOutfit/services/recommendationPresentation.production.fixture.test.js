@@ -95,7 +95,7 @@ function productionPresentationFixture() {
         sceneIntent: 'sport:light_activity',
       },
       copyContract: {
-        copyContractVersion: 'recommendation-copy-contract-v7',
+        copyContractVersion: 'recommendation-copy-contract-v8',
         ...eligibilityContract('sport', items),
         todayReason: 'fixture copy replaced by presentation plan',
       },
@@ -351,10 +351,9 @@ test('real-schema replay preserves onepiece and produces authorized relations', 
   const colorPlan = buildPresentationPlan(model, { selectedDifferentiator: model.availableDifferentiators[0] });
   const structureDifferentiator = model.availableDifferentiators.find((entry) => entry.relationCode === 'STRUCTURE_ONEPIECE_SHOES');
   const structurePlan = buildPresentationPlan(model, { selectedDifferentiator: structureDifferentiator });
-  assert.notEqual(colorPlan.todayReason, structurePlan.todayReason);
-  assert.match(colorPlan.todayReason, /同色|主色/);
-  assert.match(structurePlan.todayReason, /省掉上下装/);
-  assert.match(structurePlan.todayReason, /吊带裙.*鞋/);
+  assert.equal(colorPlan.todayReason, structurePlan.todayReason);
+  assert.match(colorPlan.todayReason, /吊带裙.*鞋/);
+  assert.doesNotMatch(structurePlan.todayReason, /省掉上下装配对/);
   assert.equal(card.presentationPlan.selectedDifferentiator.relationCode, card.presentationPlan.primaryRelationCode);
   assert.deepEqual(card.todaySubjectItemIds, card.presentationPlan.selectedDifferentiator.subjectItemIds);
   assert.deepEqual(card.todayEvidenceFactIds, card.presentationPlan.selectedDifferentiator.evidenceFactIds);
@@ -400,7 +399,8 @@ test('standalone onepiece uses an authorized structural detail instead of generi
   assert.equal(card.presentationPlan.availableDifferentiators.length, 2);
   assert.equal(card.presentationPlan.availableDifferentiators[1].relationCode, 'STRUCTURE_ONEPIECE_ONLY');
   assert.equal(card.detailDisplay, 'visible');
-  assert.match(card.copyContract.detailExplanation, /省掉上下装配对/);
+  assert.match(card.copyContract.detailExplanation, /连衣裙|一件式/);
+  assert.doesNotMatch(card.copyContract.detailExplanation, /省掉上下装配对/);
   assert.equal(card.copyContract.naturalnessGateResult, 'PASS');
 });
 

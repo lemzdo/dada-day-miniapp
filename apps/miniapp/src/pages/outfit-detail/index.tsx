@@ -156,7 +156,7 @@ function buildOutfitDetailCacheKey(source: DetailSource, detailId: string | unde
   if (!detailId) return '';
   return buildPageCacheKey([
     'outfitDetail',
-    'recommendation-copy-contract-v7',
+    'recommendation-copy-contract-v8',
     source,
     detailId,
     scene || 'unknown',
@@ -911,7 +911,12 @@ export default function OutfitDetailPage() {
       model: result.model ?? result.review?.model,
     });
     if (shouldPreserveDisplayedComment && result.aiComment) {
-      setOutfit((current) => (current ? normalizeOutfitSnapshot({ ...current, aiComment: result.aiComment ?? undefined }) : current));
+      setOutfit((current) => (current ? normalizeOutfitSnapshot({
+        ...current,
+        aiComment: result.aiComment ?? undefined,
+        reviewSource: result.reviewSource ?? result.review?.source ?? result.aiComment?.reviewSource ?? result.aiComment?.source,
+        enhanced: result.enhanced ?? true,
+      }) : current));
       return;
     }
 

@@ -40,3 +40,34 @@ test('validateCopyAgainstFacts rejects unsupported colors and missing fields', (
   assert.ok(missingFields.trace.some((entry) => entry.term === '透气'));
   assert.ok(missingFields.trace.some((entry) => entry.term === '亲肤'));
 });
+
+test('validateCopyAgainstFacts accepts a pattern stated by structured styleTags', () => {
+  const facts = buildOutfitCopyFacts({
+    outfit: {
+      scene: '居家',
+      items: [
+        { clothingId: 'top-print', category: 'top', subcategory: 'T恤', color: '米白色', styleTags: ['印花', '休闲'] },
+        { clothingId: 'bottom-plain', category: 'bottom', subcategory: '阔腿裤', color: '军绿色' },
+      ],
+    },
+  });
+  const result = validateCopyAgainstFacts('这件白色印花T恤配军绿色阔腿裤，图案留在上身，下面简单一点。', facts);
+
+  assert.equal(result.ok, true);
+  assert.equal(facts.fieldsPresent.pattern, true);
+  assert.ok(facts.allowedFacts.includes('pattern:印花'));
+});
+
+test('validateCopyAgainstFacts accepts white and gray wording for a gray-white garment', () => {
+  const result = validateCopyAgainstFacts('灰白色运动鞋和白色上衣有颜色照应。', {
+    outfit: {
+      items: [
+        { clothingId: 'shoe', category: 'shoes', subcategory: '运动鞋', color: '灰白色' },
+        { clothingId: 'top', category: 'top', subcategory: '上衣', color: '白色' },
+      ],
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.trace.some((entry) => entry.code === 'UNSUPPORTED_FACT'), false);
+});

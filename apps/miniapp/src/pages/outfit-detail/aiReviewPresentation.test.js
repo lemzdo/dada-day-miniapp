@@ -186,7 +186,7 @@ test('rule fallback response stays empty in the AI-only presentation', () => {
     tip: '旧 fallback 建议也不展示。',
     source: 'rule_fallback',
     reviewSource: 'rule_fallback',
-  }, contentPlan, { copyContractVersion: 'recommendation-copy-contract-v7' });
+  }, contentPlan, { copyContractVersion: 'recommendation-copy-contract-v8' });
 
   assert.deepEqual(result.bodyParagraphs, []);
   assert.equal(result.advice, null);
@@ -216,7 +216,7 @@ test('rule default and legacy comments never enter the AI-only presentation', ()
     },
   ]) {
     const result = buildAiReviewPresentation(aiComment, contentPlan, {
-      copyContractVersion: 'recommendation-copy-contract-v7',
+      copyContractVersion: 'recommendation-copy-contract-v8',
     });
     const visible = [...result.bodyParagraphs, result.advice].filter(Boolean).join('\n');
 
@@ -242,6 +242,21 @@ test('successful enhanced review can replace contentPlan defaultDetailExplanatio
 
   assert.deepEqual(result.bodyParagraphs, ['米白 T恤把上半身提亮，军绿色阔腿裤让颜色不单薄，白色运动鞋也接住了上衣。']);
   assert.equal(result.advice, '居家穿可以维持这三件，临时出门不用重新换一身。');
+});
+
+test('explicit AI provenance is not hidden by the outfit rule-default source', () => {
+  const result = buildAiReviewPresentation({
+    reason: '白色上衣和灰色下装颜色接得很自然，整身有联系，但不会从头到脚都一样。',
+    tip: '',
+    source: 'ai',
+    reviewSource: 'ai',
+  }, null, { reviewSource: 'rule_default', enhanced: false });
+
+  assert.deepEqual(result.bodyParagraphs, [
+    '白色上衣和灰色下装颜色接得很自然，整身有联系，但不会从头到脚都一样。',
+  ]);
+  const source = fs.readFileSync(path.join(__dirname, 'index.tsx'), 'utf8');
+  assert.match(source, /reviewSource: result\.reviewSource/);
 });
 
 test('contentPlan without canonical detail stays empty instead of joining item names', () => {
@@ -287,7 +302,7 @@ test('success false rule fallback keeps retry button and non-success toast seman
 });
 
 test('canonical rule detail is excluded from the AI-only presentation', () => {
-  const currentContext = { copyContractVersion: 'recommendation-copy-contract-v7' };
+  const currentContext = { copyContractVersion: 'recommendation-copy-contract-v8' };
   const contentPlan = {
     defaultDetailExplanation: '这条裤子弹性不错，坐着办公久一点也不容易勒。',
     suggestion: { text: '不应混入默认正文的建议。' },
@@ -342,7 +357,7 @@ test('real ai remains independent of stale default copy but fallback-first confl
   }, {
     defaultDetailExplanation: '这条裤子弹性不错，坐着办公久一点也不容易勒。',
   }, {
-    copyContractVersion: 'recommendation-copy-contract-v7',
+    copyContractVersion: 'recommendation-copy-contract-v8',
     reviewSource: 'ai',
     enhanced: true,
   });

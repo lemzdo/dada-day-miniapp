@@ -46,9 +46,25 @@ function codes(benefits) {
 }
 
 test('deriveUserBenefitsV1 exposes stable xiaoda voice version and allowlist', () => {
-  assert.equal(VOICE_POLICY_VERSION, 'xiaoda-voice-v1');
+  assert.equal(VOICE_POLICY_VERSION, 'xiaoda-voice-v6');
   assert.ok(USER_BENEFIT_CODES.includes('HOT_DAY_LIGHT_AND_EASY'));
   assert.ok(USER_BENEFIT_CODES.includes('LOW_EFFORT_COHERENT_LOOK'));
+});
+
+test('editorial policy rejects analysis jargon and unsupported comfort claims', () => {
+  const violations = findXiaodaVoicePolicyViolations(
+    '三件核心单品共同维持了视觉节奏，基础款型自然过渡，各司其职，穿起来舒服又不费力。',
+  );
+
+  assert.deepEqual(violations, ['视觉节奏', '共同维持', '核心单品', '自然过渡', '基础款型', '各司其职', '舒服', '不费力']);
+});
+
+test('editorial policy rejects the final real Max model failure patterns', () => {
+  const violations = findXiaodaVoicePolicyViolations(
+    '两件都是基础休闲款，白色上衣和白鞋把上下两头接住了，灰色短裤在中间没有重复。',
+  );
+
+  assert.deepEqual(violations, ['基础休闲款', '上下两头接住', '在中间没有重复']);
 });
 
 test('hot weather with short sleeve shorts and sneakers produces grounded benefits', () => {

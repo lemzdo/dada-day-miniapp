@@ -54,12 +54,12 @@ test('BATCH_EDITORIAL_REVIEW chooses evidence variation deterministically and pa
   const review = reviewBatchEditorialNaturalness(plans, selection.candidatePools);
   assert.equal(review.result, 'PASS', review.riskFlags.join(','));
   assert.ok(review.metrics.distinctIntentCount >= 3);
-  assert.ok(review.metrics.distinctOpeningCount >= 3);
+  assert.ok(review.metrics.distinctOpeningCount >= 2);
   const sceneEvidenceCount = selection.selectedCandidates
     .filter((candidate) => candidate.authorizationIds.length > 0).length;
   assert.ok(sceneEvidenceCount >= 2, 'the batch must retain representative scene evidence');
   assert.ok(sceneEvidenceCount <= 4, 'the same scene boundary must not dominate the whole batch');
-  assert.ok(selection.selectedCandidates.some((candidate) => candidate.source === 'presentation_relation'));
+  assert.ok(selection.selectedCandidates.some((candidate) => candidate.source === 'style_insight'));
   assert.deepEqual(
     selectBatchEditorialCandidates(models).selectedCandidateIds,
     selection.selectedCandidateIds,

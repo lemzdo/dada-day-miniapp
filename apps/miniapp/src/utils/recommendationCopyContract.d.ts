@@ -1,8 +1,8 @@
 import type { Outfit } from '@starter-template/types';
 
-export const COPY_CONTRACT_VERSION: 'recommendation-copy-contract-v7';
+export const COPY_CONTRACT_VERSION: 'recommendation-copy-contract-v8';
 export const VOICE_BANK_VERSION: 'xiaoda-fixed-claim-catalog-v2';
-export const COPY_NATURALNESS_GATE_VERSION: 'copy-naturalness-gate-v2';
+export const COPY_NATURALNESS_GATE_VERSION: 'copy-naturalness-gate-v3';
 
 export function hasCurrentDefaultCopy(outfit: unknown): outfit is Outfit & {
   copyContractVersion: typeof COPY_CONTRACT_VERSION;

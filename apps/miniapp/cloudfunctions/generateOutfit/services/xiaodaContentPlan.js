@@ -1,4 +1,6 @@
-const XIAODA_CONTENT_PLAN_VERSION = 'xiaoda-content-plan-v1';
+const { XIAODA_PERSONA_VERSION } = require('./xiaodaPersonaContract');
+
+const XIAODA_CONTENT_PLAN_VERSION = 'xiaoda-content-plan-v2';
 
 const SLOT_LABELS = {
   top: '上衣',
@@ -47,8 +49,12 @@ function buildXiaodaContentPlanV1(outfit = {}, context = {}) {
     ...items.map((item) => `${item.role}:${item.displayName}`),
   ]).filter(Boolean).slice(0, 5);
   const detailExplanation = readCanonicalText(canonicalCopy.detailExplanation);
+  const xiaodaStyleInsight = normalizeStyleInsight(
+    context.xiaodaStyleInsight || outfit.xiaodaStyleInsight || canonicalCopy.xiaodaStyleInsight,
+  );
   return {
     version: XIAODA_CONTENT_PLAN_VERSION,
+    personaVersion: XIAODA_PERSONA_VERSION,
     sceneIntent,
     items,
     observations,
@@ -58,6 +64,7 @@ function buildXiaodaContentPlanV1(outfit = {}, context = {}) {
     defaultCopy: canonicalCopy,
     defaultTodayReason: readCanonicalText(canonicalCopy.todayReason),
     defaultDetailExplanation: detailExplanation,
+    xiaodaStyleInsight,
   };
 }
 
@@ -94,6 +101,7 @@ function hasQualifiedAiReviewIncrementV1(aiComment, plan, fallbackReview) {
   if (containsEmptyPhrase(combined)) rejectReasons.push('empty_phrase');
   if (containsEnglishTypeLeak(combined)) rejectReasons.push('english_type_leak');
   if (!mentionsPlanFact(combined, plan)) rejectReasons.push('not_grounded');
+  if (!mentionsPrimaryInsight(combined, plan)) rejectReasons.push('semantic_drift');
   if (!hasInformationGain(reason, fallbackReview?.reason || renderXiaodaPlanTextV1(plan).bodyParagraphs.join(''))) {
     rejectReasons.push('no_information_gain');
   }
@@ -119,7 +127,8 @@ function hasQualifiedAiReviewIncrementV1(aiComment, plan, fallbackReview) {
 function normalizeXiaodaSuggestionV1(value, plan) {
   const text = normalizeVisibleText(value);
   if (!text || containsEmptyPhrase(text) || containsEnglishTypeLeak(text)) return null;
-  if (!/(带|拿|穿|换|留|收|减少|搭|放|选)/.test(text)) return null;
+  if (/(换成|更换|替换|改成|另选|选一(?:双|件|条|个|只)|购买|买一)/.test(text)) return null;
+  if (!/(带|拿|穿|留|收|减少|搭|放)/.test(text)) return null;
   if (!mentionsPlanFact(text, plan)) return null;
   return { text };
 }
@@ -208,6 +217,87 @@ function mentionsPlanFact(text, plan) {
   return facts.some((fact) => fact && text.includes(fact));
 }
 
+function mentionsPrimaryInsight(text, plan) {
+  const code = readString(plan?.xiaodaStyleInsight?.primary?.code);
+  if (!code) return true;
+  const groups = [
+    [/PATTERN|DESIGN_FOCUS/u, ['图案', '印花', '细节', '重点', '简单']],
+    [/COLOR_FOCUS/u, ['颜色', '中性色', '重点', '清爽']],
+    [/ECHO|CONTINUITY|SAME_COLOR|TONAL|NEARBY_COLOR|COLOR_CONTRAST/u, ['颜色', '同色', '呼应', '主色', '变化', '色彩', '色调', '基调', '统一', '衔接', '接近', '柔和', '对比', '点缀色']],
+    [/SILHOUETTE/u, ['宽松', '收', '松紧', '线条', '利落']],
+    [/PROPORTION/u, ['长短', '比例', '短', '长']],
+    [/ONEPIECE/u, ['连衣裙', '一件式', '外套', '鞋']],
+    [/FORMALITY|WORK_/u, ['利落', '得体', '正式', '上班', '通勤']],
+    [/SPORT_/u, ['运动', '散步', '快走', '轻活动']],
+    [/HOME_/u, ['在家', '下楼', '日常']],
+    [/SIMPLE_EVERYDAY/u, ['简单', '日常', '省心']],
+  ];
+  const terms = groups.find(([pattern]) => pattern.test(code))?.[1] || [];
+  return terms.some((term) => text.includes(term)) && preservesPrimaryInsightRoles(text, plan);
+}
+
+function preservesPrimaryInsightRoles(text, plan) {
+  const primary = plan?.xiaodaStyleInsight?.primary;
+  if (!/COLOR_FOCUS/u.test(readString(primary?.code))) return true;
+  const focalItemId = uniqueStrings(primary?.subjectItemIds)[0];
+  if (!focalItemId) return true;
+  const otherItems = (Array.isArray(plan?.items) ? plan.items : [])
+    .filter((item) => item?.id && item.id !== focalItemId);
+  return !otherItems.some((item) => itemFocusTerms(item).some((term) => {
+    const match = text.match(new RegExp(`${escapeRegExp(term)}(.{0,6})(?:焦点|亮点|颜色重点)`, 'u'));
+    if (!match) return false;
+    return !/(?:没有|没|未|不)/u.test(match[1] || '');
+  }));
+}
+
+function itemFocusTerms(item) {
+  const displayName = readString(item?.displayName);
+  const terms = [displayName];
+  const garmentTerms = displayName.match(/阔腿裤|直筒裤|短裤|长裤|半裙|吊带裙|连衣裙|运动鞋|皮鞋|乐福鞋|T恤|衬衫|毛衣|卫衣|外套/giu) || [];
+  terms.push(...garmentTerms);
+  return uniqueStrings(terms);
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizeStyleInsight(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const normalizeEntry = (entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+    return {
+      rank: readString(entry.rank),
+      code: readString(entry.code),
+      intent: readString(entry.intent),
+      dimension: readString(entry.dimension),
+      relationCode: readString(entry.relationCode),
+      source: readString(entry.source),
+      subjectItemIds: uniqueStrings(entry.subjectItemIds),
+      primaryObservation: readString(entry.primaryObservation),
+      supportingRelation: readString(entry.supportingRelation),
+      humanMeaning: readString(entry.humanMeaning),
+      overallMeaning: readString(entry.overallMeaning),
+      allowedAestheticInferences: Array.isArray(entry.allowedAestheticInferences)
+        ? entry.allowedAestheticInferences.map((inference) => ({
+            code: readString(inference?.code),
+            label: readString(inference?.label),
+          })).filter((inference) => inference.code && inference.label)
+        : [],
+    };
+  };
+  const primary = normalizeEntry(value.primary);
+  if (!primary?.code) return null;
+  return {
+    version: readString(value.version),
+    personaVersion: readString(value.personaVersion) || XIAODA_PERSONA_VERSION,
+    primary,
+    secondary: (Array.isArray(value.secondary) ? value.secondary : []).map(normalizeEntry).filter(Boolean).slice(0, 2),
+    optional: (Array.isArray(value.optional) ? value.optional : []).map(normalizeEntry).filter(Boolean).slice(0, 3),
+    forbiddenClaims: uniqueStrings(value.forbiddenClaims),
+  };
+}
+
 function hasInformationGain(candidate, fallback) {
   const candidateTokens = meaningfulTokens(candidate);
   const fallbackTokens = new Set(meaningfulTokens(fallback));
@@ -273,5 +363,6 @@ module.exports = {
   buildXiaodaDefaultReviewV1,
   hasQualifiedAiReviewIncrementV1,
   normalizeXiaodaSuggestionV1,
+  normalizeStyleInsight,
   renderXiaodaPlanTextV1,
 };

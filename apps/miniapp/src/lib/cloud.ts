@@ -78,7 +78,7 @@ type ResolvedCloudCacheScope =
 
 const taroCloud = (Taro as CloudTaro).cloud;
 const cloudResponseCache = new Map<string, { expiresAt: number; data: unknown }>();
-const GENERATE_OUTFIT_CACHE_NAMESPACE = 'generateOutfit:recommendation-copy-contract-v7';
+const GENERATE_OUTFIT_CACHE_NAMESPACE = 'generateOutfit:recommendation-copy-contract-v8';
 interface CloudInflightRequest<T = unknown> {
   promise: Promise<T>;
   invalidated: boolean;
@@ -707,21 +707,29 @@ export async function generateCloudOutfit(params: RecommendRequest = {}) {
   }
   if (typeof params.acceptanceRunId === 'string' && typeof params.captureId === 'string') {
     const acceptanceTransport = getCloudResponseTransportDiagnostics(result);
-    Taro.setStorageSync(GENERATE_OUTFIT_ACCEPTANCE_TRANSPORT_KEY, {
-      acceptanceRunId: params.acceptanceRunId,
-      captureId: params.captureId,
-      auditId: requestPayload.auditId,
-      ...(acceptanceTransport ?? {}),
-      clientTotalMs: acceptanceTransport?.immediatelyBeforeCallFunction !== undefined
-        && acceptanceTransport.callFunctionPromiseResolved !== undefined
-        ? acceptanceTransport.callFunctionPromiseResolved - acceptanceTransport.immediatelyBeforeCallFunction
-        : undefined,
-    });
+    try {
+      Taro.setStorageSync(GENERATE_OUTFIT_ACCEPTANCE_TRANSPORT_KEY, {
+        acceptanceRunId: params.acceptanceRunId,
+        captureId: params.captureId,
+        auditId: requestPayload.auditId,
+        ...(acceptanceTransport ?? {}),
+        clientTotalMs: acceptanceTransport?.immediatelyBeforeCallFunction !== undefined
+          && acceptanceTransport.callFunctionPromiseResolved !== undefined
+          ? acceptanceTransport.callFunctionPromiseResolved - acceptanceTransport.immediatelyBeforeCallFunction
+          : undefined,
+      });
+    } catch (error) {
+      console.warn('[generateOutfit] acceptance transport persistence skipped:', error);
+    }
   }
   if (params.diagnostics === true || params.performanceDiagnostics === true) {
     const performance = result?.diagnostics?.performance;
     if (performance && typeof performance === 'object') {
-      Taro.setStorageSync(GENERATE_OUTFIT_PERFORMANCE_ARTIFACT_KEY, performance);
+      try {
+        Taro.setStorageSync(GENERATE_OUTFIT_PERFORMANCE_ARTIFACT_KEY, performance);
+      } catch (error) {
+        console.warn('[generateOutfit] performance artifact persistence skipped:', error);
+      }
     }
   }
   return result;

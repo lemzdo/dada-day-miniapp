@@ -66,7 +66,7 @@ test('canonical batch preserves factual copy without synthetic sequence suffixes
   ];
   const first = canonicalizeRecommendationBatch(source, { scene: 'work' });
   const second = canonicalizeRecommendationBatch(source, { scene: 'work' });
-  assert.equal(new Set(first.map((entry) => entry.copyContract.todayReason)).size, 1);
+  assert.equal(new Set(first.map((entry) => entry.copyContract.todayReason)).size, 2);
   assert.deepEqual(first.map((entry) => entry.copyContract.todayReason), second.map((entry) => entry.copyContract.todayReason));
   assert.equal(first.every((entry) => entry.title === entry.displayTitle), true);
   assert.equal(first.some((entry) => /（\d+）|\(\d+\)$/.test(entry.copyContract.todayReason)), false);
@@ -257,7 +257,8 @@ test('detail may expand the same structural fact without repeating Today copy', 
     items: [{ itemId: 'dress-only', category: 'onepiece', subcategory: 'dress' }],
   }), { scene: 'home' });
   assert.equal(card.presentationPlan.detailDisplay, 'visible');
-  assert.match(card.presentationPlan.detailExplanation, /省掉上下装配对/);
+  assert.match(card.presentationPlan.detailExplanation, /连衣裙|一件式/);
+  assert.doesNotMatch(card.presentationPlan.detailExplanation, /省掉上下装配对/);
   assert.notEqual(card.presentationPlan.detailExplanation, card.presentationPlan.todayReason);
   assert.equal(card.copyContract.detailExplanation, card.contentPlan.defaultDetailExplanation);
 });
@@ -272,8 +273,12 @@ test('same-color top and bottom copy does not infer a shoe contrast', () => {
   source.items[2].factRecords[0] = { fact: 'color', value: 'white', authorized: true };
 
   const card = canonicalizeRecommendation(source, { scene: 'sport' });
-  assert.equal(card.presentationPlan.primaryRelationCode, 'SAME_COLOR_TOP_BOTTOM');
-  assert.match(card.copyContract.todayReason, /散步、快走/);
+  assert.equal(card.presentationPlan.primaryRelationCode, card.copyContract.primaryRelationCode);
+  assert.equal(
+    card.presentationPlan.todayCopyProvenance.xiaodaStyleInsight.primary.code,
+    card.presentationPlan.detailCopyProvenance.xiaodaStyleInsight.primary.code,
+  );
+  assert.match(card.copyContract.todayReason, /散步或快走/);
   assert.doesNotMatch(card.copyContract.todayReason, /都用了黑色/);
   assert.doesNotMatch(card.copyContract.todayReason, /鞋.+对比|形成对比/);
 });

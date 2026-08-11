@@ -7,9 +7,9 @@ function outfit(overrides = {}) {
     id: 'same-id',
     outfitKey: 'same-key',
     scene: '居家',
-    copyContractVersion: 'recommendation-copy-contract-v7',
+    copyContractVersion: 'recommendation-copy-contract-v8',
     copyContract: {
-      copyContractVersion: 'recommendation-copy-contract-v7',
+      copyContractVersion: 'recommendation-copy-contract-v8',
       todayReason: '居家入口文案。',
     },
     ...overrides,
@@ -20,7 +20,7 @@ test('recommendation detail keeps the current entry scene and canonical copy whi
   const remote = outfit({
     scene: '运动',
     copyContract: {
-      copyContractVersion: 'recommendation-copy-contract-v7',
+      copyContractVersion: 'recommendation-copy-contract-v8',
       todayReason: '服务端最近一次运动文案。',
     },
     isFavorite: true,

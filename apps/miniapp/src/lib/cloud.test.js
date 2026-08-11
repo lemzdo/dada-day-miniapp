@@ -87,6 +87,8 @@ test('diagnostic generateOutfit response is persisted as a performance artifact'
   assert.match(funcBody, /result\?\.diagnostics\?\.performance/);
   assert.match(funcBody, /GENERATE_OUTFIT_PERFORMANCE_ARTIFACT_KEY/);
   assert.match(funcBody, /Taro\.setStorageSync/);
+  assert.match(funcBody, /performance artifact persistence skipped/);
+  assert.match(funcBody, /acceptance transport persistence skipped/);
 });
 
 test('cloud.ts trigger is still sent to cloud function via requestPayload', () => {

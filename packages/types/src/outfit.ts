@@ -279,8 +279,56 @@ export interface RecommendationCopyValueAssessment {
   total: number;
 }
 
+export interface XiaodaAestheticInferenceAuthorization {
+  code: string;
+  label?: string;
+  authorizedBy: string[];
+}
+
+export interface XiaodaStyleInsightRanking {
+  factAvailable: boolean;
+  relationStrength: number;
+  userValue: number;
+  novelInformation: number;
+  outfitSpecificity: number;
+  sceneRelevance: number;
+  naturalExpressibility: number;
+  total: number;
+}
+
+export interface XiaodaStyleInsight {
+  insightId: string;
+  code: string;
+  intent: string;
+  dimension: string;
+  relationCode: string;
+  priority: number;
+  rank?: 'PRIMARY' | 'SECONDARY' | 'OPTIONAL';
+  subjectItemIds: string[];
+  evidenceFactIds: string[];
+  authorizationIds: string[];
+  source: string;
+  primaryObservation: string;
+  supportingRelation: string;
+  humanMeaning: string;
+  overallMeaning: string;
+  allowedAestheticInferences: XiaodaAestheticInferenceAuthorization[];
+  forbiddenClaims: string[];
+  ranking: XiaodaStyleInsightRanking;
+}
+
+export interface XiaodaStyleInsightPlan {
+  version: 'xiaoda-style-insight-v1';
+  personaVersion: 'xiaoda-persona-v2';
+  primary: XiaodaStyleInsight | null;
+  secondary: XiaodaStyleInsight[];
+  optional: XiaodaStyleInsight[];
+  allowedAestheticInferences: XiaodaAestheticInferenceAuthorization[];
+  forbiddenClaims: string[];
+}
+
 export interface RecommendationCopyProvenance {
-  version: 'recommendation-natural-language-v3';
+  version: 'recommendation-natural-language-v4';
   surface: 'today' | 'detail';
   scene: string;
   relationCode: string | null;
@@ -295,10 +343,11 @@ export interface RecommendationCopyProvenance {
   clauses: RecommendationCopyClauseProvenance[];
   text: string;
   fallbackStrategy: string;
+  xiaodaStyleInsight?: XiaodaStyleInsightPlan | null;
 }
 
 export interface RecommendationCopyContract {
-  copyContractVersion: 'recommendation-copy-contract-v7';
+  copyContractVersion: 'recommendation-copy-contract-v8';
   voiceBankVersion: 'xiaoda-fixed-claim-catalog-v2';
   gateResult: 'PASS' | 'REJECT';
   copyDisplay?: 'visible' | 'hidden';
@@ -344,7 +393,7 @@ export interface RecommendationCopyContract {
   unsupportedClaimCount?: number;
   todayCopyProvenance?: RecommendationCopyProvenance;
   detailCopyProvenance?: RecommendationCopyProvenance | null;
-  naturalnessGateVersion?: 'copy-naturalness-gate-v2';
+  naturalnessGateVersion?: 'copy-naturalness-gate-v3';
   naturalnessGateResult?: 'PASS' | 'REJECT';
   naturalnessRiskFlags?: string[];
   structuralNaturalnessVersion?: 'batch-editorial-review-v2';
@@ -355,6 +404,7 @@ export interface RecommendationCopyContract {
   messageCandidateId?: string;
   messageDimension?: string;
   valueAssessment?: RecommendationCopyValueAssessment;
+  xiaodaStyleInsight?: XiaodaStyleInsightPlan | null;
 }
 
 export interface XiaodaContentPlanItem {
@@ -405,6 +455,7 @@ export interface XiaodaDefaultCopy {
 
 export interface XiaodaContentPlan {
   version: string;
+  personaVersion?: 'xiaoda-persona-v2';
   sceneIntent: string;
   items: XiaodaContentPlanItem[];
   observations: string[];
@@ -414,6 +465,7 @@ export interface XiaodaContentPlan {
   defaultCopy?: XiaodaDefaultCopy;
   defaultTodayReason?: string;
   defaultDetailExplanation?: string;
+  xiaodaStyleInsight?: XiaodaStyleInsightPlan | null;
 }
 
 export interface OutfitCardViewModel {
@@ -721,6 +773,8 @@ export interface Outfit {
   messageCandidateId?: string;
   messageDimension?: string;
   valueAssessment?: RecommendationCopyValueAssessment;
+  xiaodaStyleInsight?: XiaodaStyleInsightPlan | null;
+  personaVersion?: 'xiaoda-persona-v2';
   qualification?: RecommendationCopyContract['qualification'];
   outfitItemRoles?: XiaodaContentPlanItem[];
   contentPlan?: XiaodaContentPlan;

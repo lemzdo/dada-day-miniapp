@@ -1,4 +1,5 @@
 const { findHumanCopyPolicyViolations } = require('./humanCopyPolicy');
+const { inspectXiaodaPersonaCopy } = require('./xiaodaPersonaContract');
 const {
   DECISION_VALUE_CATEGORIES,
   COMPOSED_MESSAGE_DEFINITIONS,
@@ -6,10 +7,11 @@ const {
   NATURAL_LANGUAGE_PLAN_VERSION,
   RELATION_MESSAGE_DEFINITIONS,
   SCENE_MESSAGE_DEFINITIONS,
+  XIAODA_STYLE_MESSAGE_DEFINITIONS,
   joinClauses,
 } = require('./recommendationNaturalLanguage');
 
-const COPY_NATURALNESS_GATE_VERSION = 'copy-naturalness-gate-v2';
+const COPY_NATURALNESS_GATE_VERSION = 'copy-naturalness-gate-v3';
 const COPY_NATURALNESS_PASS = 'PASS';
 const COPY_NATURALNESS_REJECT = 'REJECT';
 const DECISION_VALUE_GATE_VERSION = 'decision-value-gate-v1';
@@ -40,6 +42,7 @@ const COPY_NATURALNESS_FLAGS = Object.freeze({
   MESSAGE_INTENT_MISMATCH: 'MESSAGE_INTENT_MISMATCH',
   INVALID_VALUE_ASSESSMENT: 'INVALID_VALUE_ASSESSMENT',
   KNOWN_LOW_VALUE_SENTENCE: 'KNOWN_LOW_VALUE_SENTENCE',
+  XIAODA_PERSONA_VIOLATION: 'XIAODA_PERSONA_VIOLATION',
 });
 
 const EDITORIAL_TAILS = /(?:配色简洁|整体协调|更显质感|整体更完整|整体利落|画面清爽|视觉重点清楚|整体更清楚)[。！]?$/u;
@@ -58,6 +61,7 @@ function evaluateCopyNaturalness(planValue) {
   if (SYSTEM_CHECKLIST_TONE.test(plan.text)) flags.push(COPY_NATURALNESS_FLAGS.SYSTEM_CHECKLIST_TONE);
   if (KNOWN_LOW_VALUE_SENTENCE.test(plan.text)) flags.push(COPY_NATURALNESS_FLAGS.KNOWN_LOW_VALUE_SENTENCE);
   if (findHumanCopyPolicyViolations(plan.text).length > 0) flags.push(COPY_NATURALNESS_FLAGS.LANGUAGE_POLICY_VIOLATION);
+  if (!inspectXiaodaPersonaCopy(plan.text).passed) flags.push(COPY_NATURALNESS_FLAGS.XIAODA_PERSONA_VIOLATION);
 
   if (plan.clauses.length !== 1) flags.push(COPY_NATURALNESS_FLAGS.INVALID_SLOT_ORDER);
   const informationKeys = new Set();
@@ -166,6 +170,8 @@ function normalizeClause(value) {
 }
 
 function findTemplateDefinition(surface, clause) {
+  const xiaodaDefinition = XIAODA_STYLE_MESSAGE_DEFINITIONS.find((entry) => entry.id === clause.templateId);
+  if (xiaodaDefinition) return xiaodaDefinition;
   const bank = surface === 'detail'
     ? DETAIL_MESSAGE_DEFINITIONS
     : [...RELATION_MESSAGE_DEFINITIONS, ...SCENE_MESSAGE_DEFINITIONS, ...COMPOSED_MESSAGE_DEFINITIONS];

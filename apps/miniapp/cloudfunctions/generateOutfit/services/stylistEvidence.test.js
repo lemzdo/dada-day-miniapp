@@ -81,8 +81,8 @@ function outfit(overrides = {}) {
 
 test('buildStylistEvidenceV1 handles empty outfit safely', () => {
   const result = buildStylistEvidenceV1({});
-  assert.equal(result.schemaVersion, 1);
-  assert.equal(result.evidenceVersion, 'stylist-evidence-v1');
+  assert.equal(result.schemaVersion, 2);
+  assert.equal(result.evidenceVersion, 'stylist-evidence-v2');
   assert.equal(result.outfit.itemCount, 0);
   assert.deepEqual(result.evidence, []);
   assert.match(result.inputDigest, /^[a-f0-9]{64}$/);

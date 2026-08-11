@@ -29,15 +29,17 @@ function buildAiReviewPresentation(aiComment, contentPlan, context = {}) {
 
 function isRealAiComment(aiComment, context) {
   if (!isPlainObject(aiComment)) return false;
-  const sources = [
-    context?.reviewSource,
+  const explicitSources = [
     aiComment.source,
     aiComment.reviewSource,
     isPlainObject(aiComment.explanationV2) ? aiComment.explanationV2.source : undefined,
   ].map(normalizeReviewSource).filter(Boolean);
 
-  if (sources.some((source) => FALLBACK_REVIEW_SOURCES.has(source))) return false;
-  if (sources.includes('cached_ai') || sources.includes('ai')) return true;
+  if (explicitSources.some((source) => FALLBACK_REVIEW_SOURCES.has(source))) return false;
+  if (explicitSources.includes('cached_ai') || explicitSources.includes('ai')) return true;
+  const contextSource = normalizeReviewSource(context?.reviewSource);
+  if (FALLBACK_REVIEW_SOURCES.has(contextSource)) return false;
+  if (contextSource === 'cached_ai' || contextSource === 'ai') return true;
   return context?.enhanced === true;
 }
 

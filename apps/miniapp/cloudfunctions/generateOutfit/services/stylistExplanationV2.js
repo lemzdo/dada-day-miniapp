@@ -15,10 +15,11 @@ const {
   normalizeXiaodaSuggestionV1,
 } = require('./xiaodaContentPlan');
 const { validateCopyAgainstFacts } = require('./validatorFactPolicy');
+const { inspectXiaodaPersonaCopy } = require('./xiaodaPersonaContract');
 
-const STYLIST_REVIEW_VERSION = 'stylist-explanation-v4';
-const STYLIST_PROMPT_VERSION = 'stylist-prompt-v4';
-const COPY_POLICY_VERSION = 'human-copy-v1';
+const STYLIST_REVIEW_VERSION = 'stylist-explanation-v15';
+const STYLIST_PROMPT_VERSION = 'stylist-prompt-v16';
+const COPY_POLICY_VERSION = 'human-copy-v2';
 
 const VALID_LIMITATIONS = new Set([
   'LIMITED_AESTHETIC_COVERAGE',
@@ -28,21 +29,60 @@ const VALID_CONFIDENCE = new Set(['high', 'medium', 'low']);
 const VALID_SOURCES = new Set(['ai', 'rule_fallback']);
 const MATERIAL_WORDS = ['棉', '羊毛', '皮革', '牛仔', '丝绸', '亚麻', '针织', '雪纺'];
 
-function buildStylistPromptV2(evidenceInput) {
+function buildStylistPromptV2(evidenceInput, options = {}) {
+  const retryReasons = uniqueStrings(options.retryReasons);
+  const safeRetryTerms = uniqueStrings(options.retryRejectedTerms)
+    .filter((term) => [...MECHANICAL_VOICE_TERMS, ...UNSUPPORTED_SENSATION_TERMS].includes(term))
+    .slice(0, 8);
+  const primary = evidenceInput?.contentPlan?.xiaodaStyleInsight?.primary || {};
+  const primaryGuide = [
+    limitText(primary.code, 80),
+    limitText(primary.dimension, 40),
+    limitText(primary.humanMeaning, 160),
+  ].filter(Boolean).join(' / ');
   return {
     system: [
-      '你是用户身边懂穿搭的贴心朋友，表达要具体、温和、有生活感。',
-      '只能使用给定 facts、insights 和 benefits，不得虚构颜色、材质、版型、天气、场景、品牌、价格或品质。',
-      '不得解释识别、算法或生成过程，也不得提及识别、证据、线索、维度、覆盖率。',
-      '不得使用机械设计词，例如克制、稳定、基础单品、正式度接近、视觉关系、更完整。',
-      '不虚构舒适、材质、透气、保暖、柔软、亲肤等穿着感受。',
-      '不得重复普通推荐理由，不得输出 title 或 styleTags 给 UI。',
-      '不得使用显瘦、遮肉、显高、拉长腿等身体评价，也不得推断年龄、职业、身份。',
-      '不过度卖萌，不使用宝宝、绝绝子、拿捏。',
+      '你是“小搭”：审美在线、懂搭配、熟悉用户衣橱，说话自然、有判断但不过度点评的朋友型私人穿搭顾问。你不是 AI 客服、杂志编辑或系统分析器。',
+      '推荐已经由服务端决定。不要重新推荐、重跑判断或改变结论；只沿着 contentPlan.xiaodaStyleInsight.primary 深讲同一条洞察。',
+      ...(primaryGuide ? [`本次唯一主洞察：${primaryGuide}。不要转去讲颜色、图案、版型或正式程度等另一个维度，除非它本来就在这条主洞察里。`] : []),
+      '先给人能听懂的穿着判断，再说明具体衣物之间为什么成立。从穿衣者视角讲上身、下身、鞋子、外层和整身，不翻译算法字段。',
+      '只能使用给定 item facts、aesthetic relations、Today reason 和 Style Insight，不得虚构颜色、材质、版型、天气、场景、品牌、价格、品质或身体效果。',
+      '颜色、材质、厚度、版型和图案必须逐件绑定。某一件衣物有“棉、薄、印花”等字段，不代表其他衣物也有；除非每件都明确给出，否则不能说“两件都是……”。',
+      '不得提及识别、证据、线索、维度、覆盖率、关系编码，也不得使用“视觉重量、色块、结构完整度、主体连起来”等算法中文。',
+      '不虚构舒适、透气、保暖、柔软、亲肤，不承诺显瘦、显高、显腿长、显白、高级、性感或修饰身材。',
+      '不要用“毫无负担、轻松自在、不费力就”替代具体搭配判断；这些说法既空泛，也容易暗示未经证实的穿着感受。',
+      '避免“形成呼应、作为底色、点睛之笔、不过于平淡、既有层次又……”等时尚杂志套话。直接说哪件衣物做了什么，以及用户为什么可以保留这套搭法。',
+      '不要把点评写成“上身清爽、下身利落”或连续堆叠“自然、简洁、得体、有分寸”等形容词；每句话至少落到一件具体衣物关系。',
+      '不要把衣物关系包装成“视觉落点、视觉节奏、连成一体、核心单品共同维持”等编辑腔或分析腔；直接说哪两件衣服的颜色、图案或正式程度怎样接得上。',
+      '不要把“简单”扩写成“基础款型、没有额外设计”，也不要用“穿起来不费力、自然过渡、有联系又不单调”代替具体判断。输入没有明确写出的款型或设计事实一律不说。',
+      '不要说“基础休闲款”，不要把上衣和鞋子描述成“上下两头接住、下装在中间”；这仍是位置关系的算法翻译。直接说两件衣物用了相同或接近的颜色。',
+      '不要重判“适合居家、适合通勤、适合轻运动”等场景结论；推荐系统已经决定场景。可以解释当前衣物关系，但不能重新证明它适合这个场景。',
+      '使用口语化逗号和句号，不使用分号。避免“这套的价值在于、各司其职、互不干扰、主支撑关系、松弛感”等分析总结。',
+      'overallComment 最多两句话：第一句用具体衣物名接住 Today 的判断，第二句只展开一个衣物关系或一个用户决策价值。不要另起第三个观点。',
+      'overallComment 必须比 Today reason 多一层解释，但不能换成另一套理由；advice 只有在同一洞察下有明确可执行增量时才写，否则返回空字符串。',
+      '只围绕 primary.subjectItemIds 对应的衣物展开核心判断；其他衣物最多用一句“没有增加第二个重点”交代，不要把配饰或第三件衣物发展成新观点。',
+      'advice 不能让用户换掉、替换、另选或购买任何衣物，也不能一边建议换掉、一边说当前可保留。只允许针对当前组合给“保留、不再增加、减少额外颜色”等微调；没有真实增量就返回空字符串。',
+      '若 primary 是颜色或图案焦点，绝不能把支撑单品称为焦点、亮点或颜色重点；即使后文又说真正焦点更突出，也仍然算改变了主洞察。',
+      '好例：Today 说“印花上衣配简单下装，整身有重点但不杂”，Detail 可解释“印花上衣本身已经够有内容，下装没有再加第二种图案，所以整身只有一个重点”。',
+      '好例：Today 说“短裤和鞋子的颜色接得上”，Detail 可解释“短裤和运动鞋都用白色，下半身很干净。上衣保留自己的颜色，整身就不会全挤在同一个色里”。',
+      '好例：基础组合没有更强关系时，直接说“白色T恤配灰色短裤，在家和临时下楼都能接着穿”，不要编造“基础款型、没有设计、穿起来不费力”。',
+      '坏例：把上句改写成“图案与纯色形成视觉平衡，提升整体协调感”；这是算法翻译和空泛总结。',
       '只输出严格 JSON，字段只能是 overallComment、advice；不要输出版本字段，版本由服务端填写。',
-      'overallComment 为 40 到 120 字，总结整体气质和关系。',
-      'advice 为 20 到 80 字，只给一条可执行调整。',
+      'overallComment 为 40 到 90 字，说明总体判断和具体衣物关系。',
+      'advice 允许为空；不为空时为 20 到 80 字，只给一条可执行调整。',
       '数据少时只讲确定事实，不解释为什么信息有限。',
+      ...(retryReasons.length > 0
+        ? [`这是一次纠错重试。上一次只因这些安全校验未通过：${retryReasons.join('、')}。请重新输出，不要复述错误码；必须守住同一个 primary。`]
+        : []),
+      ...(safeRetryTerms.length > 0
+        ? [`上一次出现了这些明确禁用表达：${safeRetryTerms.join('、')}。本次逐字避开，并换成具体衣物关系。`]
+        : []),
+      ...(retryReasons.includes('STYLE_INSIGHT_DRIFT')
+        ? ['上一次换了理由。本次以 contentPlan.defaultTodayReason 和 defaultDetailExplanation 为唯一语义骨架，只做更自然、更具体的展开。']
+        : []),
+      ...(retryReasons.some((reason) => ['UNSUPPORTED_FACT', 'OVERALL_FACT_VALIDATION_FAILED', 'ADVICE_FACT_VALIDATION_FAILED'].includes(reason))
+        ? ['上一次把单件属性传播给了其他衣物，或补了输入没有的事实。本次不要写任何材质、厚度、版型或设计属性，只使用 contentPlan.items.displayName 与 primary 中明确给出的颜色或关系。']
+        : []),
     ].join('\n'),
     user: JSON.stringify(stripUnsafePromptInput(evidenceInput)),
   };
@@ -131,7 +171,7 @@ function validateOverallComment(value, evidenceInput, raw = {}) {
     rejectReasons.push('SCHEMA_FIELDS_INVALID');
   } else {
     try {
-      overallComment = normalizeVisibleCopy(value, 120);
+      overallComment = normalizeVisibleCopy(value, 90);
     } catch {
       rejectReasons.push('OVERALL_COPY_INVALID');
     }
@@ -410,6 +450,7 @@ function normalizeVisibleCopy(value, maxLength, options = {}) {
   if (findXiaodaVoicePolicyViolations(text).length > 0) {
     throw new Error('invalid_stylist_explanation');
   }
+  if (!inspectXiaodaPersonaCopy(text).passed) throw new Error('invalid_stylist_explanation');
   return text;
 }
 
@@ -607,6 +648,7 @@ function mapIncrementRejectReason(reason) {
     empty_phrase: 'EMPTY_OR_GENERIC_ADVICE',
     english_type_leak: 'FORBIDDEN_TERM',
     not_grounded: 'NO_INFORMATION_GAIN',
+    semantic_drift: 'STYLE_INSIGHT_DRIFT',
     no_information_gain: 'NO_INFORMATION_GAIN',
     invalid_suggestion: 'EMPTY_OR_GENERIC_ADVICE',
   };
@@ -665,17 +707,41 @@ function readOutfitMaterials(evidenceInput) {
 function evidenceToCopyFactsInput(evidenceInput = {}) {
   const outfit = evidenceInput.outfit || {};
   const colors = readOutfitColorNames(evidenceInput);
+  const contentPlanItems = Array.isArray(evidenceInput?.contentPlan?.items)
+    ? evidenceInput.contentPlan.items
+    : [];
+  const contentPlanIndexesById = new Map(contentPlanItems
+    .map((item, index) => [item?.id, index])
+    .filter(([id]) => id));
+  const usedContentPlanIndexes = new Set();
   const items = Array.isArray(outfit.items)
-    ? outfit.items.map((entry, index) => ({
-        clothingId: entry.itemId || entry.clothingId || `item-${index}`,
-        category: entry.category || entry.slot || 'other',
-        subcategory: entry.subcategory || entry.name || entry.category || '单品',
-        color: entry.color || entry.primaryColor || colors[index] || colors[0] || '',
-        material: entry.material || '',
-        patternType: entry.patternType || '',
-        fit: entry.fit || entry.silhouette || '',
-        styleTags: uniqueStrings(entry.styleTags || outfit.styleTags),
-      }))
+    ? outfit.items.map((entry, index) => {
+        const clothingId = entry.itemId || entry.clothingId || entry.identity || `item-${index}`;
+        const contentPlanItem = matchContentPlanItem({
+          entry,
+          index,
+          clothingId,
+          contentPlanItems,
+          contentPlanIndexesById,
+          usedContentPlanIndexes,
+          evidenceItemCount: outfit.items.length,
+        });
+        const displayName = limitText(contentPlanItem?.displayName, 120);
+        return {
+          clothingId,
+          category: entry.category || entry.slot || contentPlanItem?.slot || 'other',
+          subcategory: entry.subcategory || entry.name || displayName || entry.category || '单品',
+          color: readFirstColorName(entry)
+            || readColorFromDisplayName(displayName)
+            || colors[index]
+            || colors[0]
+            || '',
+          material: entry.material || '',
+          patternType: entry.patternType || '',
+          fit: entry.fit || entry.silhouette || '',
+          styleTags: uniqueStrings(entry.styleTags || outfit.styleTags),
+        };
+      })
     : colors.map((color, index) => ({
         clothingId: `color-${index}`,
         category: 'other',
@@ -691,6 +757,74 @@ function evidenceToCopyFactsInput(evidenceInput = {}) {
   };
 }
 
+function matchContentPlanItem({
+  entry,
+  index,
+  clothingId,
+  contentPlanItems,
+  contentPlanIndexesById,
+  usedContentPlanIndexes,
+  evidenceItemCount,
+}) {
+  const directIndex = contentPlanIndexesById.get(clothingId);
+  if (directIndex !== undefined && !usedContentPlanIndexes.has(directIndex)) {
+    usedContentPlanIndexes.add(directIndex);
+    return contentPlanItems[directIndex];
+  }
+
+  const evidenceSlot = normalizeSemanticSlot(entry.category || entry.slot);
+  const semanticIndex = contentPlanItems.findIndex((item, itemIndex) => (
+    !usedContentPlanIndexes.has(itemIndex)
+      && normalizeSemanticSlot(item?.slot) === evidenceSlot
+  ));
+  if (semanticIndex >= 0) {
+    usedContentPlanIndexes.add(semanticIndex);
+    return contentPlanItems[semanticIndex];
+  }
+
+  if (evidenceItemCount === 1 && contentPlanItems.length === 1) {
+    usedContentPlanIndexes.add(0);
+    return contentPlanItems[0];
+  }
+
+  const positionalItem = contentPlanItems[index];
+  if (positionalItem && !usedContentPlanIndexes.has(index) && evidenceSlot === 'other') {
+    usedContentPlanIndexes.add(index);
+    return positionalItem;
+  }
+  return undefined;
+}
+
+function normalizeSemanticSlot(value) {
+  const text = limitText(value, 80).toLowerCase();
+  if (/^(onepiece|dress)$|连衣裙|连体|jumpsuit/.test(text)) return 'onepiece';
+  if (/^(outerwear|outer|coat|jacket)$|外套|大衣|风衣|夹克/.test(text)) return 'outerwear';
+  if (/^(accessory|accessories)$|配饰|包|帽|腰带/.test(text)) return 'accessory';
+  if (/^(shoes?|sneakers?)$|鞋/.test(text)) return 'shoes';
+  if (/^(top|shirt|tee)$|上衣|衬衫|毛衣|卫衣|t恤/.test(text)) return 'top';
+  if (/^(bottom|pants|trousers?|skirt)$|下装|裤|半身裙/.test(text)) return 'bottom';
+  return text || 'other';
+}
+
+function readFirstColorName(entry = {}) {
+  const direct = limitText(entry.color || entry.primaryColor, 80);
+  if (direct) return direct;
+  const palette = Array.isArray(entry.colors)
+    ? entry.colors
+    : Array.isArray(entry.colorPalette)
+      ? entry.colorPalette
+      : [];
+  for (const color of palette) {
+    const name = limitText(typeof color === 'string' ? color : color?.name, 80);
+    if (name) return name;
+  }
+  return '';
+}
+
+function readColorFromDisplayName(value) {
+  return limitText(value, 120).match(/军绿色|米白色|藏青色|卡其色|灰白色|黑色|白色|灰色|米色|棕色|蓝色|绿色|红色|黄色|紫色|粉色|橙色/u)?.[0] || '';
+}
+
 function stripUnsafePromptInput(evidenceInput) {
   return {
     schemaVersion: evidenceInput?.schemaVersion,
@@ -699,6 +833,8 @@ function stripUnsafePromptInput(evidenceInput) {
     scores: evidenceInput?.scores,
     aesthetic: evidenceInput?.aesthetic,
     limitations: evidenceInput?.limitations,
+    contentPlan: evidenceInput?.contentPlan,
+    evidence: evidenceInput?.evidence,
     inputDigest: evidenceInput?.inputDigest,
   };
 }

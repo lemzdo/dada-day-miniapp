@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 
-const STYLIST_EVIDENCE_VERSION = 'stylist-evidence-v1';
-const STYLIST_EVIDENCE_SCHEMA_VERSION = 1;
+const STYLIST_EVIDENCE_VERSION = 'stylist-evidence-v2';
+const STYLIST_EVIDENCE_SCHEMA_VERSION = 2;
 const MAX_EVIDENCE_COUNT = 16;
 const VALID_POLARITIES = new Set(['positive', 'negative', 'neutral']);
 const SCORE_KEYS = ['total', 'weatherAdaptation', 'styleUnity', 'freshness', 'preference'];
@@ -51,9 +51,11 @@ function buildStylistEvidenceV1({ outfit, scene, weather, explicitProfile } = {}
     context,
     outfit: {
       itemCount: safeItems.length,
+      items: buildCanonicalOutfit(safeItems, explicitProfile).items,
       categories: uniqueStrings(safeItems.map((item) => item.category)).sort(),
       colors: uniqueColors(safeItems.flatMap((item) => item.colorPalette)).sort(compareColor),
       styleTags: uniqueStrings(safeItems.flatMap((item) => item.styleTags)).sort(),
+      explicitProfile: normalizeExplicitProfile(explicitProfile),
     },
     contentPlan: normalizeContentPlan(outfit?.contentPlan),
     scores,
@@ -86,6 +88,7 @@ function normalizeContentPlan(value) {
   if (!readString(value.version) || !sceneIntent || !primaryBenefit || items.length === 0) return null;
   return {
     version: readString(value.version),
+    personaVersion: readString(value.personaVersion),
     sceneIntent,
     items,
     observations: uniqueStrings(value.observations).sort(),
@@ -94,6 +97,45 @@ function normalizeContentPlan(value) {
     suggestion: value.suggestion && typeof value.suggestion === 'object'
       ? { text: readString(value.suggestion.text) }
       : null,
+    defaultTodayReason: readString(value.defaultTodayReason || value.defaultCopy?.todayReason),
+    defaultDetailExplanation: readString(value.defaultDetailExplanation || value.defaultCopy?.detailExplanation),
+    xiaodaStyleInsight: normalizePromptInsight(value.xiaodaStyleInsight),
+  };
+}
+
+function normalizePromptInsight(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const normalizeEntry = (entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+    return {
+      rank: readString(entry.rank),
+      code: readString(entry.code),
+      intent: readString(entry.intent),
+      dimension: readString(entry.dimension),
+      relationCode: readString(entry.relationCode),
+      source: readString(entry.source),
+      subjectItemIds: uniqueStrings(entry.subjectItemIds),
+      primaryObservation: readString(entry.primaryObservation),
+      supportingRelation: readString(entry.supportingRelation),
+      humanMeaning: readString(entry.humanMeaning),
+      overallMeaning: readString(entry.overallMeaning),
+      allowedAestheticInferences: Array.isArray(entry.allowedAestheticInferences)
+        ? entry.allowedAestheticInferences.map((inference) => ({
+            code: readString(inference?.code),
+            label: readString(inference?.label),
+          })).filter((inference) => inference.code && inference.label)
+        : [],
+    };
+  };
+  const primary = normalizeEntry(value.primary);
+  if (!primary?.code) return null;
+  return {
+    version: readString(value.version),
+    personaVersion: readString(value.personaVersion),
+    primary,
+    secondary: (Array.isArray(value.secondary) ? value.secondary : []).map(normalizeEntry).filter(Boolean).slice(0, 2),
+    optional: (Array.isArray(value.optional) ? value.optional : []).map(normalizeEntry).filter(Boolean).slice(0, 3),
+    forbiddenClaims: uniqueStrings(value.forbiddenClaims),
   };
 }
 

@@ -90,7 +90,6 @@ test('high-value fixture spans color, pattern, structure, scene, weather, and ev
 test('weak, conflicting, or merely factual observations are omitted instead of padded', () => {
   const weakCases = [
     model({ items: [item('top', '印花T恤', '白色', ['印花']), item('bottom', '印花短裤', '黑色', ['印花'])], relations: [relation('SUBTYPE_FEATURE_PRINT', ['top'])] }),
-    model({ items: [item('top', 'T恤', '蓝色'), item('bottom', '短裤', '绿色')], relations: [relation('DISTINCT_TOP_BOTTOM_COLOR', ['top', 'bottom'])] }),
     model({ items: [item('top', 'T恤')], relations: [relation('STRUCTURE_SINGLE_ITEM', ['top'])] }),
     model({ items: [item('top', 'T恤'), item('bottom', '短裤')], relations: [relation('STRUCTURE_TOP_BOTTOM', ['top', 'bottom'])] }),
     model({ items: [item('top', 'T恤')], relations: [], qualification: {} }),
@@ -104,7 +103,7 @@ test('weak, conflicting, or merely factual observations are omitted instead of p
   assert.ok([...LOW_VALUE_RELATION_CODES].includes('SUBTYPE_FEATURE_PRINT'));
 });
 
-test('strong scene evidence composes with an independent relation instead of being dropped for batch variety', () => {
+test('generic scene eligibility does not override an independent Style Insight relation', () => {
   const source = model({
     scene: 'sport',
     items: [
@@ -116,12 +115,11 @@ test('strong scene evidence composes with an independent relation instead of bei
     qualification: qualification('SPORT_V4_EVIDENCE_SUPPORTED', ['category'], ['top']),
   });
   const [candidate] = buildNaturalTodayCopyCandidates(source);
-  assert.equal(candidate.source, 'evidence_composition');
-  assert.match(candidate.text, /中性色/);
-  assert.match(candidate.text, /散步、日常走动/);
-  assert.deepEqual(candidate.authorizationIds, ['eligibility:SPORT_V4_EVIDENCE_SUPPORTED']);
+  assert.equal(candidate.source, 'style_insight');
+  assert.match(candidate.text, /安静|简单/);
+  assert.doesNotMatch(candidate.text, /散步|走动/);
+  assert.deepEqual(candidate.authorizationIds, []);
   assert.ok(candidate.evidenceFactIds.some((factId) => factId.includes(':authorized')));
-  assert.ok(candidate.evidenceFactIds.some((factId) => factId.includes(':category')));
   const plan = buildNaturalTodayCopyPlan(source, source.relations[0], { candidateId: candidate.candidateId });
   assert.equal(evaluateCopyNaturalness(plan).result, 'PASS');
 });

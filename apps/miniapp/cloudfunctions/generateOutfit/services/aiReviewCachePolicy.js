@@ -24,7 +24,8 @@ function hasMatchingAiReviewIdentity(review, context) {
       && review.promptVersion === context.promptVersion
       && review.reviewVersion === context.reviewVersion
       && review.copyPolicyVersion === context.copyPolicyVersion
-      && review.voicePolicyVersion === context.voicePolicyVersion,
+      && review.voicePolicyVersion === context.voicePolicyVersion
+      && (!context.model || review.model === context.model),
   );
 }
 

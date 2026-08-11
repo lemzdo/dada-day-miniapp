@@ -599,6 +599,7 @@ function assertFinalPresentation(outfits) {
         || (detailNaturalness && detailNaturalness.result !== 'PASS')
         || JSON.stringify(copyContract.todayCopyProvenance) !== JSON.stringify(plan.todayCopyProvenance)
         || JSON.stringify(copyContract.detailCopyProvenance) !== JSON.stringify(plan.detailCopyProvenance)
+        || !xiaodaStyleInsightMatches(outfit, copyContract, contentPlan, plan)
         || !surfaceMetadataMatchesPlan(outfit, plan)
         || !surfaceMetadataMatchesPlan(copyContract, plan)
         || !surfaceMetadataMatchesPlan(contentPlan, plan)) {
@@ -606,6 +607,21 @@ function assertFinalPresentation(outfits) {
       }
     }
   }
+}
+
+function xiaodaStyleInsightMatches(outfit, copyContract, contentPlan, plan) {
+  const planInsight = plan?.xiaodaStyleInsight;
+  const primaryCode = planInsight?.primary?.code;
+  if (planInsight?.version !== 'xiaoda-style-insight-v1' || !primaryCode) return false;
+  const values = [
+    outfit?.xiaodaStyleInsight,
+    copyContract?.xiaodaStyleInsight,
+    contentPlan?.xiaodaStyleInsight,
+    plan?.todayCopyProvenance?.xiaodaStyleInsight,
+    plan?.detailCopyProvenance?.xiaodaStyleInsight,
+  ];
+  return values.every((value) => value?.version === planInsight.version
+    && value?.primary?.code === primaryCode);
 }
 
 function surfaceMetadataMatchesPlan(source, plan) {

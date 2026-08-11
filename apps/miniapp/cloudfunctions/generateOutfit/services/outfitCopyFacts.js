@@ -5,6 +5,7 @@ const COLOR_ALIAS_MAP = {
   '军绿色': ['军绿', '绿色', '绿色系', '低饱和色'],
   '军绿': ['军绿', '绿色', '绿色系', '低饱和色'],
   '白色': ['白色', '白色系'],
+  '灰白色': ['灰白色', '灰色', '灰色系', '白色', '白色系'],
   '灰色': ['灰色', '灰色系'],
   '黑色': ['黑色', '黑色系'],
 };
@@ -108,9 +109,11 @@ function buildOutfitCopyFacts(input = {}) {
       fieldsPresent.material = true;
       allowedFacts.push(`material:${item.material}`);
     }
-    if (item.patternType) {
+    const patternStyleTags = item.styleTags.filter(isPatternStyleTag);
+    if (item.patternType || patternStyleTags.length > 0) {
       fieldsPresent.pattern = true;
-      allowedFacts.push(`pattern:${item.patternType}`);
+      if (item.patternType) allowedFacts.push(`pattern:${item.patternType}`);
+      for (const tag of patternStyleTags) allowedFacts.push(`pattern:${tag}`);
     }
     if (item.fit || item.silhouette) {
       fieldsPresent.fit = true;
@@ -161,6 +164,10 @@ function prepareCopyItemFacts(item, index = 0, instrumentation) {
   };
   delete prepared.raw;
   return prepared;
+}
+
+function isPatternStyleTag(value) {
+  return /印花|图案|条纹|格纹|波点|字母|logo/i.test(readString(value));
 }
 
 function resolvePrecomputedCopyItems(sourceItems, itemFactsContext) {

@@ -1,4 +1,4 @@
-const VOICE_POLICY_VERSION = 'xiaoda-voice-v1';
+const VOICE_POLICY_VERSION = 'xiaoda-voice-v6';
 
 const USER_BENEFIT_CODES = [
   'HOT_DAY_LIGHT_AND_EASY',
@@ -30,6 +30,63 @@ const MECHANICAL_VOICE_TERMS = [
   '明显冲突',
   '基础单品',
   '延续休闲感',
+  '形成呼应',
+  '作为底色',
+  '点睛之笔',
+  '不过于平淡',
+  '不会显得杂乱',
+  '上身清爽',
+  '下身利落',
+  '整身利落得体',
+  '自然简洁',
+  '适合居家日常',
+  '有分寸',
+  '整体没有多余设计',
+  '既有层次又',
+  '视觉落点',
+  '视觉节奏',
+  '自然穿插',
+  '共同维持',
+  '核心单品',
+  '基础得体感',
+  '连成一体',
+  '整身简单自然',
+  '穿得清楚',
+  '轻松耐看',
+  '日常通勤分寸',
+  '颜色存在感',
+  '不抢戏',
+  '稳住了',
+  '形成自然呼应',
+  '自然过渡',
+  '有联系又不单调',
+  '颜色关联',
+  '基础款型',
+  '没有额外设计',
+  '干净区分',
+  '额外加入的颜色',
+  '变化感',
+  '整身没有多余元素',
+  '保持基础形态',
+  '不抢不压',
+  '各司其职',
+  '互不干扰',
+  '这套的价值',
+  '这套的日常感',
+  '松弛感',
+  '主支撑关系',
+  '颜色节奏',
+  '过渡自然',
+  '有联系也不单调',
+  '同色衔接',
+  '不用费心协调',
+  '正式程度接近',
+  '得体感',
+  '颜色关系',
+  '基础休闲款',
+  '上下两头接住',
+  '在中间没有重复',
+  '应付日常办公',
   '更完整',
   '正式度接近',
   '视觉重量',
@@ -53,7 +110,11 @@ const MECHANICAL_VOICE_TERMS = [
 ];
 
 const OVER_CUTE_TERMS = ['宝宝', '绝绝子', '拿捏'];
-const UNSUPPORTED_SENSATION_TERMS = ['不闷', '透气', '保暖', '柔软', '软糯', '不勒', '亲肤', '吸汗'];
+const UNSUPPORTED_SENSATION_TERMS = [
+  '不闷', '透气', '保暖', '柔软', '软糯', '不勒', '亲肤', '吸汗',
+  '毫无负担', '轻松自在', '不费力就',
+  '穿起来轻松', '舒服', '不费力',
+];
 
 function deriveUserBenefitsV1(facts = {}, insights = [], context = {}) {
   const sourceItems = Array.isArray(facts.items) ? facts.items : [];
@@ -276,9 +337,9 @@ function renderXiaodaStylistFallback({ facts = {}, insights = [], benefits = [],
   return {
     overallComment: ensureXiaodaCopy(overallComment, facts),
     advice: ensureXiaodaCopy(advice, facts),
-    reviewVersion: 'stylist-explanation-v4',
-    promptVersion: 'stylist-prompt-v4',
-    copyPolicyVersion: 'human-copy-v1',
+    reviewVersion: 'stylist-explanation-v15',
+    promptVersion: 'stylist-prompt-v16',
+    copyPolicyVersion: 'human-copy-v2',
     voicePolicyVersion: VOICE_POLICY_VERSION,
   };
 }

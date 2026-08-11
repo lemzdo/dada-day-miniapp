@@ -1,4 +1,4 @@
-const COPY_CONTRACT_VERSION = 'recommendation-copy-contract-v7';
+const COPY_CONTRACT_VERSION = 'recommendation-copy-contract-v8';
 
 const REMOTE_AUTHORITY_FIELDS = Object.freeze([
   'id',

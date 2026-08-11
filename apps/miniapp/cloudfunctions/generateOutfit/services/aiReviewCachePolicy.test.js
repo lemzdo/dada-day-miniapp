@@ -17,6 +17,7 @@ function context(overrides = {}) {
     reviewVersion: 'stylist-explanation-v4',
     copyPolicyVersion: 'human-copy-v1',
     voicePolicyVersion: 'xiaoda-voice-v1',
+    model: 'qwen-plus',
     ...overrides,
   };
 }
@@ -32,6 +33,7 @@ function readyReview(overrides = {}) {
     reviewVersion: 'stylist-explanation-v4',
     copyPolicyVersion: 'human-copy-v1',
     voicePolicyVersion: 'xiaoda-voice-v1',
+    model: 'qwen-plus',
     source: 'ai',
     aiComment: { title: '', reason: '这套多说两句很具体。', styleTags: [], tip: '' },
     ...overrides,
@@ -78,6 +80,13 @@ test('cached ai remains reusable when identity and versions match', () => {
   assert.equal(isFallbackAiReview(review), false);
   assert.equal(isReusableAiReview(review, context()), true);
   assert.equal(buildAiReviewCacheDecision(review, context()), 'hit');
+});
+
+test('cached ai is regenerated when the commentary model changes', () => {
+  const review = readyReview({ model: 'qwen-flash' });
+
+  assert.equal(isReusableAiReview(review, context()), false);
+  assert.equal(buildAiReviewCacheDecision(review, context()), 'stale_or_not_ready');
 });
 
 test('new fallback marked non-cacheable is not reusable', () => {

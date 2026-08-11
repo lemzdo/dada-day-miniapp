@@ -132,6 +132,16 @@ function isHot(summary, expectedSchemaVersion = CURRENT_LEDGER_SCHEMA_VERSION) {
 function classification(ms) { return typeof ms !== 'number' ? 'HOTLOAD_STILL_SLOW' : ms < 500 ? 'HOTLOAD_EXCELLENT' : ms <= 1000 ? 'SNAPSHOT_HOTLOAD_OPTIMIZED' : 'HOTLOAD_STILL_SLOW'; }
 function persist(name, value) { fs.mkdirSync(LEDGER_DIR, { recursive: true }); fs.writeFileSync(path.join(LEDGER_DIR, name), `${JSON.stringify(value, null, 2)}\n`); }
 
+async function triggerTodayDetailReturn(mini) {
+  const page = await mini.currentPage();
+  const cards = await page.$$('.outfit-card');
+  if (cards.length === 0) return false;
+  await cards[0].tap();
+  await sleep(500);
+  await mini.navigateBack();
+  return true;
+}
+
 async function todayHot() {
   const session = await connectHealth();
   if (!session) return;
@@ -157,17 +167,15 @@ async function todayHot() {
         do { await sleep(500); summary = summarizeLedger(await readLedger(session.mini)); } while ((summary.runId === previousRunId || !summary.complete) && Date.now() < freshDeadline);
       }
     }
-    if (!isHot(summary) && summary.complete && summary.snapshotRejectReason) {
-      const result = { ...summary, currentPage: (await session.mini.currentPage()).path, hot: false, firstCardClassification: classification(summary.firstCardMs), firstImageClassification: classification(summary.firstImageMs) };
-      persist('hot-direct-acceptance.json', result);
-      json(result);
-      process.exitCode = 2;
-      return;
-    }
     if (!isHot(summary) && summary.complete) {
       const before = summary.runId;
-      await session.mini.switchTab('/pages/wardrobe/index');
-      await session.mini.switchTab('/pages/today/index');
+      const exercisedReturnPath = summary.finalCardCount === 8
+        ? await triggerTodayDetailReturn(session.mini)
+        : false;
+      if (!exercisedReturnPath) {
+        await session.mini.switchTab('/pages/wardrobe/index');
+        await session.mini.switchTab('/pages/today/index');
+      }
       const deadline = Date.now() + 15000;
       do { await sleep(500); summary = summarizeLedger(await readLedger(session.mini)); } while ((summary.runId === before || !summary.complete) && Date.now() < deadline);
     }

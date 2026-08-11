@@ -5,7 +5,7 @@ const test = require('node:test');
 
 const { normalizeDefaultCopyAtResponseBoundary } = require('./recommendationCopyRehydration');
 
-const CONTRACT_VERSION = 'recommendation-copy-contract-v7';
+const CONTRACT_VERSION = 'recommendation-copy-contract-v8';
 const VOICE_VERSION = 'xiaoda-fixed-claim-catalog-v2';
 
 function staleWorkOutfit(extra = {}) {
@@ -38,7 +38,7 @@ function staleWorkOutfit(extra = {}) {
   };
 }
 
-test('stale recommendation favorite history and detail shapes rehydrate to current fixed Claims', () => {
+test('stale recommendation favorite history and detail shapes rehydrate to current Xiaoda insight copy', () => {
   for (const kind of ['recommendation', 'favorite', 'history', 'detail']) {
     const source = staleWorkOutfit({ outfitKind: kind });
     const result = normalizeDefaultCopyAtResponseBoundary(source, {
@@ -49,7 +49,8 @@ test('stale recommendation favorite history and detail shapes rehydrate to curre
     assert.equal(result.copyContractVersion, CONTRACT_VERSION, kind);
     assert.equal(result.voiceBankVersion, VOICE_VERSION, kind);
     assert.equal(result.copyContract.gateResult, 'PASS', kind);
-    assert.equal(result.reason, '衬衫配直筒裤，上班穿比较利落。', kind);
+    assert.match(result.reason, /衬衫.*直筒裤.*利落/, kind);
+    assert.equal(result.copyContract.xiaodaStyleInsight.version, 'xiaoda-style-insight-v1', kind);
     assert.notEqual(result.reason, source.reason, kind);
     assert.equal(result.copyContract.todayReason, result.reason, kind);
   }

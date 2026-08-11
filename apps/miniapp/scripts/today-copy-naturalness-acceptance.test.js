@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 
 const {
   SCENES,
+  auditDetailSamples,
   auditFinalTodayCopy,
   buildCrossSceneComparisons,
   summarizeNaturalnessMetrics,
@@ -29,31 +30,31 @@ function acceptanceData(outfits, candidates = []) {
   };
 }
 
-function outfit(scene, index, todayReason = '粉色上衣配灰色下装，亮色留在上半身。') {
+function outfit(scene, index, todayReason = '上身这件粉色上衣已经很有存在感了，下身搭灰色裤子会清爽很多，其他地方不用再加太多颜色。') {
   const topId = `${scene}-top-${index}`;
   const bottomId = `${scene}-bottom-${index}`;
   return {
     scene,
     clothingIds: [topId, bottomId],
-    copyContractVersion: 'recommendation-copy-contract-v7',
+    copyContractVersion: 'recommendation-copy-contract-v8',
     copyContract: {
-      copyContractVersion: 'recommendation-copy-contract-v7',
+      copyContractVersion: 'recommendation-copy-contract-v8',
       coreEligibilityReasonCode: `${scene.toUpperCase()}_BASELINE`,
       todayReason,
       unsupportedClaimCount: 0,
-      naturalnessGateVersion: 'copy-naturalness-gate-v2',
+      naturalnessGateVersion: 'copy-naturalness-gate-v3',
       naturalnessGateResult: 'PASS',
       naturalnessRiskFlags: [],
       structuralNaturalnessVersion: 'batch-editorial-review-v2',
       structuralNaturalnessResult: 'PASS',
       structuralNaturalnessRiskFlags: [],
       todayCopyProvenance: {
-        version: 'recommendation-natural-language-v3',
+        version: 'recommendation-natural-language-v4',
         surface: 'today',
         scene,
         relationCode: 'TOP_ACCENT_WITH_NEUTRAL_BOTTOM',
         messageIntent: 'color_focal_support',
-        messageCandidateId: 'message.color-focal-support:TOP_ACCENT_WITH_NEUTRAL_BOTTOM:relation',
+        messageCandidateId: 'xiaoda:COLOR_FOCUS_WITH_NEUTRAL_SUPPORT:TOP_ACCENT_WITH_NEUTRAL_BOTTOM',
         messageDimension: 'color',
         openingFamily: 'bright_subject',
         endingFamily: 'quiet_support',
@@ -63,16 +64,16 @@ function outfit(scene, index, todayReason = '粉色上衣配灰色下装，亮�
         text: todayReason,
         clauses: [{
           slot: 'message',
-          templateId: 'message.color-focal-support',
+          templateId: 'xiaoda.today.color-focus-with-neutral-support',
           messageIntent: 'color_focal_support',
           text: todayReason.replace(/。$/, ''),
-          informationKey: 'relation:TOP_ACCENT_WITH_NEUTRAL_BOTTOM',
+          informationKey: 'xiaoda:COLOR_FOCUS_WITH_NEUTRAL_SUPPORT:TOP_ACCENT_WITH_NEUTRAL_BOTTOM',
           subjectItemIds: [topId, bottomId],
           evidenceFactIds: [`item:${topId}:color`, `item:${bottomId}:color`],
           authorizationIds: [],
           relationCode: 'TOP_ACCENT_WITH_NEUTRAL_BOTTOM',
           scene,
-          source: 'presentation_relation',
+          source: 'style_insight',
           valueAssessment: { factAvailable: true, userValue: 3, novelInformation: 3, sceneRelevance: 1, naturalExpressibility: 3, total: 12 },
         }],
       },
@@ -154,4 +155,30 @@ test('naturalness metrics measure exact repetition without random wording', () =
   assert.equal(metrics.lowValueFinalReasonRate, 0);
   assert.equal(metrics.fullReasonDuplicateRate, 0.25);
   assert.equal(metrics.omittedLowValueClauseCount, 4);
+});
+
+test('Detail audit requires two real AI UI comments per scene with Today binding and Xiaoda persona', () => {
+  const samples = SCENES.flatMap((scene) => [0, 1].map((index) => ({
+    scene,
+    cardIndex: index + 1,
+    todayReason: '这件印花T恤已经够有内容了，这条直筒裤简单一点刚刚好。',
+    coreReason: '这件印花T恤已经够有内容了，这条直筒裤简单一点刚刚好。',
+    defaultDetail: '这件印花T恤本身已经把重点放在上身。',
+    paragraphs: ['印花T恤本身已经够有内容，直筒裤没有再加第二种图案，所以整身只有一个重点。'],
+    advice: '',
+  })));
+  assert.deepEqual(auditDetailSamples(samples), {
+    passed: true,
+    failures: [],
+    sampleCount: 8,
+    sceneCounts: { home: 2, work: 2, date: 2, sport: 2 },
+  });
+
+  const broken = samples.slice(1).map((sample, index) => (
+    index === 0 ? { ...sample, coreReason: '页面读了另一条理由' } : sample
+  ));
+  const result = auditDetailSamples(broken);
+  assert.equal(result.passed, false);
+  assert.ok(result.failures.includes('today_detail_binding:0'));
+  assert.ok(result.failures.includes('detail_scene_count:home:1'));
 });

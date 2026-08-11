@@ -38,7 +38,7 @@ const FAVORITES_FIRST_PAGE_CACHE_TTL = 2 * 60 * 1000;
 const FAVORITES_FIRST_PAGE_CACHE_KEY = buildPageCacheKey([
   'favorites',
   'first',
-  'recommendation-copy-contract-v7',
+  'recommendation-copy-contract-v8',
   PAGE_SIZE,
 ]);
 

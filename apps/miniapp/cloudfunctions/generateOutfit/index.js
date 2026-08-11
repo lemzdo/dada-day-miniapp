@@ -4,18 +4,9 @@ const { isDeepStrictEqual } = require('node:util');
 const MODULE_LOADED_AT = Date.now();
 const MODULE_INSTANCE_ID = crypto.randomBytes(4).toString('hex');
 const SERVER_LEDGER_VERSION = 'generateOutfit-phase-ledger-v2';
+const MAX_AI_COMMENT_PROVIDER_ATTEMPTS = 3;
 
-let attachAestheticEvaluation;
-try {
-  ({ attachAestheticEvaluation } = require('./services/aestheticCompatibility.js'));
-} catch (error) {
-  console.error('[CLOUD_RUNTIME_REQUIRE_FAILURE]', {
-    code: error?.code,
-    message: error?.message,
-    stack: error?.stack,
-  });
-  throw error;
-}
+const { attachAestheticEvaluation } = require('./services/aestheticCompatibility');
 const { loadActiveWardrobe } = require('./services/loadActiveWardrobe');
 const {
   createAiReviewServiceError,
@@ -158,8 +149,10 @@ const AI_REVIEW_COLLECTION = 'outfit_ai_reviews';
 const AI_COMMENT_PROMPT_VERSION = STYLIST_PROMPT_VERSION;
 const BAILIAN_BASE_URL = process.env.BAILIAN_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1';
 const AI_COMMENT_PROVIDER = process.env.AI_COMMENT_PROVIDER || 'aliyun-bailian';
-const AI_COMMENT_MODEL = process.env.AI_COMMENT_MODEL || 'qwen-flash';
-const AI_COMMENT_TIMEOUT_MS = Number(process.env.AI_COMMENT_TIMEOUT_MS || 5000);
+const AI_COMMENT_MODEL = process.env.XIAODA_AI_COMMENT_MODEL || 'qwen3.7-max';
+const AI_COMMENT_TIMEOUT_MS = Number(
+  process.env.XIAODA_AI_COMMENT_TIMEOUT_MS || process.env.AI_COMMENT_TIMEOUT_MS || 15000,
+);
 const AI_COMMENT_LEASE_TIMEOUT_MS = Math.max(AI_COMMENT_TIMEOUT_MS + 5000, 10000);
 const AI_COMMENT_FORCE_COOLDOWN_MS = 5 * 1000;
 const RECOMMENDATION_SCENE_LABELS = Object.freeze({
@@ -1046,7 +1039,7 @@ const PUBLIC_OUTFIT_RESPONSE_FIELDS = [
   'styleTags', 'createdAt', 'updatedAt', 'reason', 'reasoning', 'reasonVersion', 'copyContract',
   'copyContractVersion', 'voiceBankVersion', 'riskFlags', 'copyGateResult', 'copyRiskFlags',
   'copyDisplay', 'defaultCopyHidden', 'copyFinalizationMode', 'aestheticEvaluation',
-  'contentPlan', 'items', 'snapshotItems', 'outfitKind', 'outfitReferenceStage',
+  'contentPlan', 'xiaodaStyleInsight', 'items', 'snapshotItems', 'outfitKind', 'outfitReferenceStage',
 ];
 
 function pickPublicOutfitFields(outfit) {
@@ -1079,7 +1072,7 @@ function projectPublicCopyContract(contract) {
     'structuralNaturalnessVersion', 'structuralNaturalnessResult',
     'structuralNaturalnessRiskFlags', 'messageIntent', 'messageCandidateId',
     'structuralNaturalnessWarningFlags', 'messageDimension', 'valueAssessment',
-    'unsupportedClaimCount',
+    'unsupportedClaimCount', 'xiaodaStyleInsight',
   ]) {
     if (Object.prototype.hasOwnProperty.call(contract, field)) projected[field] = contract[field];
   }
@@ -1105,7 +1098,7 @@ function projectPublicContentPlan(contentPlan) {
   const projected = {};
   for (const field of [
     'version', 'sceneIntent', 'items', 'observations', 'primaryBenefit',
-    'secondaryBenefit', 'suggestion',
+    'secondaryBenefit', 'suggestion', 'personaVersion', 'xiaodaStyleInsight',
   ]) {
     if (Object.prototype.hasOwnProperty.call(contentPlan, field)) projected[field] = contentPlan[field];
   }
@@ -1922,11 +1915,18 @@ async function generateAiComment(event) {
   } catch (error) {
     const errorCode = mapAiReviewErrorCode(error);
     if (aiReviewDebug) {
+      const storageCause = error?.cause || error;
       updateAiReviewDebug(aiReviewDebug, {
         fallbackUsed: true,
         fallbackReason: getAiReviewFallbackReason(error),
         saved: false,
         errorCode,
+        ...(errorCode === 'AI_REVIEW_STORAGE_UNAVAILABLE' || errorCode === 'AI_REVIEW_TRANSACTION_UNAVAILABLE'
+          ? {
+              storageErrorCode: String(storageCause?.errCode || storageCause?.code || storageCause?.name || ''),
+              storageErrorMessage: String(storageCause?.errMsg || storageCause?.message || ''),
+            }
+          : {}),
       });
       logAiReviewDebug('fallback', aiReviewDebug);
     } else {
@@ -1992,7 +1992,10 @@ async function buildAiCommentContext(event) {
         aestheticEvaluation: event.aestheticEvaluation,
         reason: event.reason,
       });
-  const source = canonicalizeAiCommentSource(loadedSource);
+  const source = alignAiCommentSourceWithRequestedPresentation(
+    canonicalizeAiCommentSource(loadedSource),
+    payload,
+  );
   if (!source.aestheticEvaluation && payload?.aestheticEvaluation) {
     source.aestheticEvaluation = payload.aestheticEvaluation;
   }
@@ -2073,11 +2076,36 @@ function canonicalizeAiCommentSource(source) {
     weather: source.weatherSnapshot || source.weather,
     mode: 'saved_snapshot',
   });
+  const canonicalStyleInsight = canonical.copyContract?.xiaodaStyleInsight || canonical.xiaodaStyleInsight;
+  const canonicalContentPlan = canonical.contentPlan && canonicalStyleInsight
+    ? { ...canonical.contentPlan, xiaodaStyleInsight: canonicalStyleInsight }
+    : canonical.contentPlan;
   return {
     ...source,
     copyContract: canonical.copyContract,
     ...pickRecommendationCopyContractFields(canonical),
-    ...pickOutfitStoryFields(canonical, source),
+    ...pickOutfitStoryFields({ ...canonical, contentPlan: canonicalContentPlan }, source),
+  };
+}
+
+function alignAiCommentSourceWithRequestedPresentation(source, payload) {
+  if (!source || !payload) return source;
+  const requestedPlan = normalizeContentPlan(payload.contentPlan);
+  const requestedInsight = requestedPlan?.xiaodaStyleInsight;
+  const contractInsight = payload.copyContract?.xiaodaStyleInsight;
+  const currentPresentation = payload.copyContractVersion === COPY_CONTRACT_VERSION
+    && payload.copyContract?.copyContractVersion === COPY_CONTRACT_VERSION
+    && requestedInsight?.version === 'xiaoda-style-insight-v1'
+    && contractInsight?.version === 'xiaoda-style-insight-v1'
+    && requestedInsight.primary?.code
+    && requestedInsight.primary.code === contractInsight.primary?.code;
+  if (!currentPresentation) return source;
+  return {
+    ...source,
+    contentPlan: requestedPlan,
+    contentPlanVersion: requestedPlan.version,
+    sceneIntent: requestedPlan.sceneIntent,
+    primaryBenefitCode: requestedPlan.primaryBenefit,
   };
 }
 
@@ -2161,10 +2189,17 @@ function buildAiCommentItemFromClothing(item) {
   };
 }
 
-async function callAiCommentModel(input, aiReviewDebug) {
+async function callAiCommentModel(
+  input,
+  aiReviewDebug,
+  attempt = 1,
+  retryReasons = [],
+  retryRejectedTerms = [],
+) {
   updateAiReviewDebug(aiReviewDebug, {
     aiAttempted: true,
     providerConfigured: isAiCommentProviderConfigured(),
+    providerAttemptCount: attempt,
   });
   if (AI_COMMENT_PROVIDER !== 'aliyun-bailian') {
     updateAiReviewDebug(aiReviewDebug, {
@@ -2186,7 +2221,7 @@ async function callAiCommentModel(input, aiReviewDebug) {
   }
 
   const fetch = require('node-fetch');
-  const prompt = buildStylistPromptV2(input);
+  const prompt = buildStylistPromptV2(input, { retryReasons, retryRejectedTerms });
   updateAiReviewDebug(aiReviewDebug, {
     providerRequestStarted: true,
     providerConfigured: true,
@@ -2202,11 +2237,12 @@ async function callAiCommentModel(input, aiReviewDebug) {
       },
       body: JSON.stringify({
         model: AI_COMMENT_MODEL,
+        enable_thinking: false,
         messages: [
           { role: 'system', content: prompt.system },
           { role: 'user', content: prompt.user },
         ],
-        temperature: 0.3,
+        temperature: attempt > 1 ? 0.1 : 0.3,
         max_tokens: 700,
         stream: false,
         response_format: { type: 'json_object' },
@@ -2252,6 +2288,17 @@ async function callAiCommentModel(input, aiReviewDebug) {
     });
   } catch (error) {
     const safeRejectReasons = ['SCHEMA_PARSE_FAILED'];
+    if (attempt < MAX_AI_COMMENT_PROVIDER_ATTEMPTS) {
+      updateAiReviewDebug(aiReviewDebug, {
+        validatorResult: 'retrying',
+        validatorRejectReasons: safeRejectReasons,
+        validatorTrace: [{ check: 'json_parse', pass: false, code: 'SCHEMA_PARSE_FAILED', detail: getValidatorRejectReason(error) }],
+        fallbackUsed: false,
+        fallbackReason: '',
+      });
+      logAiReviewDebug('validator_retry', aiReviewDebug);
+      return callAiCommentModel(input, aiReviewDebug, attempt + 1, safeRejectReasons);
+    }
     updateAiReviewDebug(aiReviewDebug, {
       aiRawSummary: createAiRawSummary({
         providerReturned: content !== undefined && content !== null,
@@ -2300,6 +2347,24 @@ async function callAiCommentModel(input, aiReviewDebug) {
       : traceRejectReasons.length > 0
         ? traceRejectReasons
       : [getValidatorRejectReason(error)];
+    const safeRetryTerms = readSafeAiRetryTerms(fallbackTrace);
+    if (attempt < MAX_AI_COMMENT_PROVIDER_ATTEMPTS) {
+      updateAiReviewDebug(aiReviewDebug, {
+        validatorResult: 'retrying',
+        validatorRejectReasons: safeRejectReasons,
+        validatorTrace: [jsonParsePassTrace, ...fallbackTrace],
+        fallbackUsed: false,
+        fallbackReason: '',
+      });
+      logAiReviewDebug('validator_retry', aiReviewDebug);
+      return callAiCommentModel(
+        input,
+        aiReviewDebug,
+        attempt + 1,
+        safeRejectReasons,
+        safeRetryTerms,
+      );
+    }
     updateAiReviewDebug(aiReviewDebug, {
       validatorResult: 'rejected',
       validatorRejectReasons: safeRejectReasons,
@@ -2316,6 +2381,16 @@ async function callAiCommentModel(input, aiReviewDebug) {
     serviceError.validatorRejectReasons = safeRejectReasons;
     throw serviceError;
   }
+}
+
+function readSafeAiRetryTerms(trace) {
+  const safeCodes = new Set(['MECHANICAL_COPY', 'UNSUPPORTED_SENSATION']);
+  return [...new Set((Array.isArray(trace) ? trace : []).flatMap((entry) => {
+    if (!entry || entry.pass !== false || !safeCodes.has(entry.code)) return [];
+    const detail = typeof entry.detail === 'string' ? entry.detail : '';
+    if (!detail.startsWith('matched:')) return [];
+    return detail.slice('matched:'.length).split(',').map((term) => term.trim()).filter(Boolean);
+  }))].slice(0, 8);
 }
 
 function normalizeAiComment(value) {
@@ -2396,6 +2471,7 @@ function normalizeContentPlan(value) {
   if (!value.version || !sceneIntent || !primaryBenefit || items.length === 0) return undefined;
   return {
     version: limitText(value.version, 48),
+    ...(value.personaVersion ? { personaVersion: limitText(value.personaVersion, 48) } : {}),
     sceneIntent,
     items,
     observations: readStringArray(value.observations).slice(0, 8),
@@ -2438,6 +2514,9 @@ function normalizeContentPlan(value) {
       : {}),
     ...(value.defaultTodayReason ? { defaultTodayReason: limitText(value.defaultTodayReason, 160) } : {}),
     ...(value.defaultDetailExplanation ? { defaultDetailExplanation: limitText(value.defaultDetailExplanation, 240) } : {}),
+    ...(value.xiaodaStyleInsight && typeof value.xiaodaStyleInsight === 'object'
+      ? { xiaodaStyleInsight: sanitizePlainObject(value.xiaodaStyleInsight) }
+      : {}),
   };
 }
 
@@ -2534,6 +2613,7 @@ const COPY_CONTRACT_FIELDS = [
   'messageCandidateId',
   'messageDimension',
   'valueAssessment',
+  'xiaodaStyleInsight',
 ];
 
 function pickRecommendationCopyContractFields(primary, fallback) {
@@ -2895,49 +2975,52 @@ async function acquireAiReviewLease(context, { forceRegenerate }) {
           ? current.previousReview
           : null;
 
-      const generatingData = {
-        _openid: context.openid,
-        userId: context.openid,
-        outfitKey: context.outfitKey,
-        scene: context.scene,
-        inputHash: context.inputHash,
-        inputDigest: context.inputDigest,
-        schemaVersion: 3,
-        reviewVersion: context.reviewVersion,
-        promptVersion: context.promptVersion,
-        copyPolicyVersion: context.copyPolicyVersion,
-        voicePolicyVersion: context.voicePolicyVersion,
-        evidenceVersion: context.evidenceVersion,
-        provider: context.provider,
-        model: context.model,
-        status: 'generating',
+      const generatingData = buildAiReviewGeneratingData(context, {
         generationToken,
-        generationStartedAt: now,
-        updatedAt: now,
+        now,
         previousReview,
-      };
+      });
 
-      if (current) {
-        await ref.update({ data: generatingData });
-      } else {
-        await ref.set({
-          data: {
-            ...generatingData,
-            createdAt: now,
-          },
-        });
-      }
+      const generatingDocument = buildAiReviewStoredDocument(
+        current,
+        generatingData,
+        context,
+        { createdAt: now },
+      );
+      await ref.set({ data: generatingDocument });
 
       return {
         acquired: true,
         skippedFallback,
         generationToken,
         review: {
-          ...current,
-          ...generatingData,
+          ...generatingDocument,
           _id: context.reviewId,
         },
       };
+  });
+}
+
+function buildAiReviewGeneratingData(context, { generationToken, now, previousReview }) {
+  return sanitizePlainObject({
+    userId: context.openid,
+    outfitKey: context.outfitKey,
+    scene: context.scene,
+    inputHash: context.inputHash,
+    inputDigest: context.inputDigest,
+    schemaVersion: 3,
+    reviewVersion: context.reviewVersion,
+    promptVersion: context.promptVersion,
+    copyPolicyVersion: context.copyPolicyVersion,
+    voicePolicyVersion: context.voicePolicyVersion,
+    evidenceVersion: context.evidenceVersion,
+    provider: context.provider,
+    model: context.model,
+    status: 'generating',
+    generationToken,
+    generationStartedAt: now,
+    updatedAt: now,
+    previousReview,
   });
 }
 
@@ -2966,9 +3049,25 @@ async function finishAiReviewSuccess(context, generationToken, aiComment) {
       generationStartedAt: null,
       previousReview: null,
     };
-    await ref.update({ data: readyData });
-    return { saved: true, superseded: false, review: { ...current, ...readyData } };
+    const readyDocument = buildAiReviewReadyDocument(current, readyData, context);
+    await ref.set({ data: readyDocument });
+    return { saved: true, superseded: false, review: { ...readyDocument, _id: context.reviewId } };
   });
+}
+
+function buildAiReviewReadyDocument(current, readyData, context) {
+  return buildAiReviewStoredDocument(current, readyData, context);
+}
+
+function buildAiReviewStoredDocument(current, nextData, context, options = {}) {
+  const document = sanitizePlainObject({
+    ...current,
+    ...nextData,
+    _openid: current?._openid || context.openid,
+    createdAt: current?.createdAt || options.createdAt,
+  });
+  delete document._id;
+  return document;
 }
 
 async function finishAiReviewFailure(context, generationToken) {
@@ -2987,8 +3086,13 @@ async function finishAiReviewFailure(context, generationToken) {
       generationStartedAt: null,
       previousReview: null,
     };
-    await ref.update({ data: settledData });
-    return { restored: settlement.restored, superseded: false, review: { ...current, ...settledData } };
+    const settledDocument = buildAiReviewStoredDocument(current, settledData, context);
+    await ref.set({ data: settledDocument });
+    return {
+      restored: settlement.restored,
+      superseded: false,
+      review: { ...settledDocument, _id: context.reviewId },
+    };
   });
 }
 
@@ -5946,6 +6050,10 @@ if (process.env.NODE_ENV === 'test') {
     buildOutfitSaveData,
     buildOutfitReferenceUpdatePayload,
     buildSnapshotRecordData,
+    buildAiReviewGeneratingData,
+    buildAiReviewReadyDocument,
+    buildAiReviewStoredDocument,
+    alignAiCommentSourceWithRequestedPresentation,
     canonicalizeAiCommentSource,
     createRecommendationSceneContract,
     createRecommendationDiagnostics,

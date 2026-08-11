@@ -8,6 +8,7 @@ const {
 } = require('./recommendationCopyFinalization');
 const { evaluateSceneEligibilityV3 } = require('./sceneEligibilityV3');
 const { validateEligibilityReasonPayload } = require('./recommendationEligibilityReason');
+const { canonicalizeRecommendation } = require('./recommendationPresentation');
 
 const CONTRACT_METADATA_FIELDS = [
   'todayClaim',
@@ -60,6 +61,7 @@ function normalizeDefaultCopyAtResponseBoundary(outfit, context = {}) {
     && outfit.copyContract.gateResult === 'PASS'
     && Array.isArray(outfit.copyContract.riskFlags)
     && outfit.copyContract.riskFlags.length === 0
+    && outfit.copyContract?.xiaodaStyleInsight?.version === 'xiaoda-style-insight-v1'
     && (mode === FINALIZATION_MODES.SAVED_SNAPSHOT
       || (typeof outfit.copyContract.coreEligibilityReason === 'string'
         && outfit.copyContract.coreEligibilityReason.trim()
@@ -75,7 +77,17 @@ function normalizeDefaultCopyAtResponseBoundary(outfit, context = {}) {
     batchContext: resolvedContext.batchContext,
   });
 
-  const canonical = compiled.copyContract;
+  const canPresent = compiled?.copyContract?.gateResult === 'PASS'
+    && Array.isArray(compiled?.copyContract?.riskFlags)
+    && compiled.copyContract.riskFlags.length === 0
+    && typeof compiled.copyContract.todayReason === 'string'
+    && Boolean(compiled.copyContract.todayReason.trim());
+  const presented = canPresent
+    ? canonicalizeRecommendation(compiled, {
+        scene: resolvedContext.scene ?? outfit.scene,
+      })
+    : compiled;
+  const canonical = presented.copyContract;
   const patch = {
     copyContract: canonical,
     copyContractVersion: compiled.copyContractVersion,
@@ -83,14 +95,16 @@ function normalizeDefaultCopyAtResponseBoundary(outfit, context = {}) {
     reasonVersion: compiled.reasonVersion,
     reason: canonical.todayReason,
     reasoning: canonical.detailExplanation,
-    contentPlan: mergeContentPlan(outfit.contentPlan, compiled.contentPlan),
+    contentPlan: mergeContentPlan(outfit.contentPlan, presented.contentPlan),
     detailNarrativeViewModel: mergeDetailNarrativeViewModel(
       outfit.detailNarrativeViewModel,
-      compiled.detailNarrativeViewModel,
+      presented.detailNarrativeViewModel,
     ),
     reviewSource: compiled.reviewSource,
-    aiComment: compiled.aiComment,
-    eligibility: compiled.eligibility || compileSource.eligibility,
+    aiComment: presented.aiComment,
+    eligibility: presented.eligibility || compileSource.eligibility,
+    xiaodaStyleInsight: presented.xiaodaStyleInsight,
+    presentationPlan: presented.presentationPlan,
   };
 
   for (const field of CONTRACT_METADATA_FIELDS) patch[field] = canonical[field];
@@ -136,6 +150,8 @@ function mergeContentPlan(existing, compiled) {
     defaultCopy: compiled.defaultCopy,
     defaultTodayReason: compiled.defaultTodayReason,
     defaultDetailExplanation: compiled.defaultDetailExplanation,
+    xiaodaStyleInsight: compiled.xiaodaStyleInsight,
+    personaVersion: compiled.personaVersion,
   };
 }
 

@@ -18,6 +18,8 @@ const BATCH_EDITORIAL_FLAGS = Object.freeze({
 const BATCH_EDITORIAL_WARNING_FLAGS = Object.freeze({
   EXACT_DUPLICATE_WITHOUT_UNUSED_EVIDENCE: 'EXACT_DUPLICATE_WITHOUT_UNUSED_EVIDENCE',
   TEMPLATE_CONCENTRATION_FROM_FACT_DISTRIBUTION: 'TEMPLATE_CONCENTRATION_FROM_FACT_DISTRIBUTION',
+  OPENING_CONCENTRATION: 'OPENING_CONCENTRATION',
+  ENDING_CONCENTRATION: 'ENDING_CONCENTRATION',
 });
 
 const REPETITIVE_FRAMES = Object.freeze([
@@ -91,12 +93,8 @@ function reviewBatchEditorialNaturalness(plans = [], candidatePools = []) {
   if (hasAvoidableMonotony(list, pools, 'messageIntent', (candidate) => candidate.messageIntent)) {
     flags.push(BATCH_EDITORIAL_FLAGS.AVOIDABLE_INTENT_MONOTONY);
   }
-  if (hasAvoidableMonotony(list, pools, 'openingFamily', (candidate) => candidate.openingFamily)) {
-    flags.push(BATCH_EDITORIAL_FLAGS.AVOIDABLE_OPENING_MONOTONY);
-  }
-  if (hasAvoidableMonotony(list, pools, 'endingFamily', (candidate) => candidate.endingFamily)) {
-    flags.push(BATCH_EDITORIAL_FLAGS.AVOIDABLE_ENDING_MONOTONY);
-  }
+  const openingConcentrated = hasAvoidableMonotony(list, pools, 'openingFamily', (candidate) => candidate.openingFamily);
+  const endingConcentrated = hasAvoidableMonotony(list, pools, 'endingFamily', (candidate) => candidate.endingFamily);
   if (hasAvoidableTemplateNameSwap(list, pools)) flags.push(BATCH_EDITORIAL_FLAGS.AVOIDABLE_TEMPLATE_NAME_SWAP);
 
   const frameLimit = Math.max(2, Math.ceil(list.length * 0.5));
@@ -106,6 +104,8 @@ function reviewBatchEditorialNaturalness(plans = [], candidatePools = []) {
   }
 
   const warningFlags = [];
+  if (openingConcentrated) warningFlags.push(BATCH_EDITORIAL_WARNING_FLAGS.OPENING_CONCENTRATION);
+  if (endingConcentrated) warningFlags.push(BATCH_EDITORIAL_WARNING_FLAGS.ENDING_CONCENTRATION);
   if (metrics.exactDuplicateCount > 0 && !flags.includes(BATCH_EDITORIAL_FLAGS.AVOIDABLE_EXACT_DUPLICATE)) {
     warningFlags.push(BATCH_EDITORIAL_WARNING_FLAGS.EXACT_DUPLICATE_WITHOUT_UNUSED_EVIDENCE);
   }
