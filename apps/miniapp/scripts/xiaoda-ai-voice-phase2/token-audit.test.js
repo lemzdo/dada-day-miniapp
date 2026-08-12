@@ -53,5 +53,5 @@ test('v2 payload materially reduces bytes on first eight development fixtures', 
   assert.ok(result.baselineBytes > 0);
   assert.ok(result.v2Bytes > 0);
   assert.ok(result.v2Bytes <= result.baselineBytes * 0.4);
-  console.log(`TOKEN_REDUCTION ${JSON.stringify(result)}`);
+  process.stdout.write(`TOKEN_REDUCTION ${JSON.stringify(result)}\n`);
 });

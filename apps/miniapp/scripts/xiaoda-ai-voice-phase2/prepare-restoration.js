@@ -1,0 +1,1 @@
+'use strict';const fs=require('node:fs');const path=require('node:path');function prepare({sourceDirectory,targetDirectory}){fs.cpSync(path.resolve(sourceDirectory),path.resolve(targetDirectory),{recursive:true,filter:p=>!p.split(path.sep).includes('node_modules')});return {target:targetDirectory,restorationReady:true};}module.exports={prepare};
