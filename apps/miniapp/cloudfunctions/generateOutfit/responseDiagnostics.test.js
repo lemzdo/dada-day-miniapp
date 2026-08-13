@@ -68,6 +68,23 @@ test('response diagnostics keep QA, debug, and total payload inside byte budgets
   diagnostics.timings.eligibilityMs = 2;
   diagnostics.timings.scoringMs = 2;
   diagnostics.timings.batchSelectionMs = 2;
+  diagnostics.stylingIntelligenceShadow = {
+    schemaVersion: 'styling-shadow-telemetry-v2',
+    shadowVersion: 'recommendation-styling-shadow-v2',
+    recommendationCount: 1,
+    shadowExecutionCount: 1,
+    shadowFailureCount: 0,
+    distribution: {
+      materiality: { material: 1, weak: 0, none: 0 },
+      primaryInsightCodes: { COLOR_UNITY: 1 },
+    },
+    sampledPlanCount: 1,
+    planSamples: [{
+      anonymousCaseId: 'case-hash',
+      garments: [{ category: 'top', coarseColor: 'neutral', pattern: 'none' }],
+      primaryInsightCode: 'COLOR_UNITY',
+    }],
+  };
   const logs = [];
   const qaLogs = [];
   const oldLog = console.log;
@@ -111,6 +128,15 @@ test('response diagnostics keep QA, debug, and total payload inside byte budgets
     assert.equal(response.qaBatchAudit.qaGateSummary.qaGatePassed, response.qaBatchAudit.qaGatePassed);
     assert.equal(logs.length, 1);
     assert.equal(logs[0][0], '[RecommendationServerDone]');
+    assert.equal(typeof logs[0][1], 'string');
+    const completionLog = JSON.parse(logs[0][1]);
+    assert.deepEqual(
+      completionLog.stylingIntelligenceShadow.distribution.materiality,
+      { material: 1, weak: 0, none: 0 },
+    );
+    assert.equal(completionLog.stylingIntelligenceShadow.planSamples[0].anonymousCaseId, 'case-hash');
+    assert.equal(logs[0][1].includes('[Object]'), false);
+    assert.equal(/imageUrl|image_url|openid|nickname/i.test(logs[0][1]), false);
     assert.ok(serializedBytes({ label: logs[0][0], payload: logs[0][1] }) < 16 * 1024);
     assert.equal(qaLogs.length, 1);
     assert.equal(qaLogs[0][0], '[RecommendationQA_SERVER]');

@@ -1738,7 +1738,7 @@ function emitRecommendationServerDone({
   budget,
   rejectionReasonCounts,
 }) {
-  console.log('[RecommendationServerDone]', {
+  const payload = {
     auditId,
     scene,
     candidate: debug.candidateCount,
@@ -1753,7 +1753,11 @@ function emitRecommendationServerDone({
     ...(stylingIntelligenceShadow
       ? { stylingIntelligenceShadow }
       : {}),
-  });
+  };
+  // Cloud logging formats nested objects with limited depth, which turns the
+  // Shadow distribution and sampled cases into "[Object]". Emit the already
+  // privacy-bounded payload as one JSON value so offline review can recover it.
+  console.log('[RecommendationServerDone]', JSON.stringify(payload));
 }
 
 function topRejectionReasons(counts) {
