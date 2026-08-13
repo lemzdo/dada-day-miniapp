@@ -17,6 +17,7 @@ function anonymize(data = {}, scene, mode) {
     usage: data.usage || {}, cacheHitCount: Number(data.cacheHitCount || 0), cacheMissCount: Number(data.cacheMissCount || 0),
     planCount: Number(data.planCount || samples.length), renderedCount: Number(data.renderedCount || samples.length),
     automatedContract: data.automatedContract || { passCount: 0, failCount: 0, failureCounts: {} },
+    failureCodes: data.failureCodes || {},
     reviewCases: samples.map((sample) => ({
       anonymousCaseId: sample.anonymousCaseId,
       planHash: sample.planHash,

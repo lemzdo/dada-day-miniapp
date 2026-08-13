@@ -86,3 +86,14 @@ test('benchmark preserves independently failed-open single, batch, and cache pro
   assert.equal(result.cacheProbe.status, 'failed_open');
   assert.equal(Object.keys(result.single.failureCodes).length, 1);
 });
+
+test('cross-plan check ignores overlapping garment labels such as T恤 and 短袖T恤', async () => {
+  const entries = cases().slice(0, 2);
+  entries[0].recommendation.items[0].customName = 'T恤';
+  entries[1].recommendation.items[0].customName = '短袖T恤';
+  const result = await voice.runRecommendationVoiceRendererShadowV2Safely({
+    plans: entries.map((entry) => entry.plan), recommendations: entries.map((entry) => entry.recommendation),
+    apiKey: 'stub', mode: 'batch', cacheMode: 'bypass', invoke: invokeStub({ count: 0 }),
+  });
+  assert.equal(result.automatedContract.failureCounts.CROSS_PLAN_CONTAMINATION, undefined);
+});

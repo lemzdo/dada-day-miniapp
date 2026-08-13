@@ -334,7 +334,8 @@ function validateShadowCopy(copy, input, allInputs = []) {
   if (UNSUPPORTED_FACT_TERMS.some((term) => text.includes(term))) failures.push('UNSUPPORTED_FACT');
   const ownGarments = new Set(input.garments);
   const foreignGarments = [...new Set(readArray(allInputs).flatMap((entry) => readArray(entry?.garments)))]
-    .filter((garment) => !ownGarments.has(garment));
+    .filter((garment) => !ownGarments.has(garment))
+    .filter((garment) => ![...ownGarments].some((own) => garment.includes(own) || own.includes(garment)));
   if (foreignGarments.some((garment) => text.includes(garment))) failures.push('CROSS_PLAN_CONTAMINATION');
   if (input.expressionMode === 'baseline') {
     if (!['简单', '日常', '基础', '直接', '普通', '利落'].some((term) => text.includes(term))) failures.push('BASELINE_RESTRAINT');
