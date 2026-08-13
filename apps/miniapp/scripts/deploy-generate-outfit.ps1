@@ -13,16 +13,19 @@ $stageParent = Join-Path $ProjectPath ('.generateOutfit-deploy-' + [guid]::NewGu
 $stageRoot = Join-Path $stageParent 'generateOutfit'
 $deploymentMarker = 'generateOutfit-deploy-' + (Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmssfff') + '-' + [guid]::NewGuid().ToString('N')
 
-$status = & git -C $repoRoot status --porcelain
+$status = & git -C $repoRoot status --porcelain -- 'apps/miniapp/cloudfunctions/generateOutfit'
 if ($LASTEXITCODE -ne 0) { throw 'Unable to read git status.' }
-if ($status) { throw 'Deployment requires a clean git worktree.' }
+if ($status) { throw 'Deployment requires a clean generateOutfit source tree.' }
 
 & node $checker $functionRoot
 if ($LASTEXITCODE -ne 0) { throw 'generateOutfit package integrity check failed; deployment was not attempted.' }
 
 New-Item -ItemType Directory -Path $stageRoot -Force | Out-Null
 try {
-  $sourceFiles = Get-ChildItem -LiteralPath $functionRoot -Recurse -File | Where-Object { $_.FullName -notmatch "\\node_modules\\" }
+  $sourceFiles = Get-ChildItem -LiteralPath $functionRoot -Recurse -File | Where-Object {
+    $_.FullName -notmatch "\\node_modules\\" -and
+    $_.Name -notmatch "\.(test|fixtures|harness|report)(\.test)?\.js$"
+  }
   foreach ($sourceFile in $sourceFiles) {
     $relative = $sourceFile.FullName.Substring($functionRoot.Length).TrimStart('\', '/')
     $destination = Join-Path $stageRoot $relative

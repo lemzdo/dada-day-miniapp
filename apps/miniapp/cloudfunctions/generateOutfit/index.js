@@ -7,6 +7,10 @@ const SERVER_LEDGER_VERSION = 'generateOutfit-phase-ledger-v2';
 const MAX_AI_COMMENT_PROVIDER_ATTEMPTS = 3;
 
 const { attachAestheticEvaluation } = require('./services/aestheticCompatibility');
+const {
+  isRecommendationStylingShadowEnabled,
+  runRecommendationStylingShadowV2Safely,
+} = require('./services/recommendationStylingShadowV2');
 const { loadActiveWardrobe } = require('./services/loadActiveWardrobe');
 const {
   createAiReviewServiceError,
@@ -442,6 +446,17 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
       debugCandidatePoolProjection: event.debugCandidatePoolProjection === true,
     };
   }
+  // Phase A shadow branch: consume only selected-candidate facts and evidence.
+  // It intentionally runs before, and independently from, Legacy Presentation.
+  const stylingShadow = isRecommendationStylingShadowEnabled(event)
+    ? runRecommendationStylingShadowV2Safely({
+        recommendations,
+        scene,
+        weather,
+        recommendationInstanceSeed: `${diagnostics.auditId}:${candidatePoolIdentity.identityHash}`,
+      })
+    : null;
+  diagnostics.stylingIntelligenceShadow = stylingShadow?.diagnostics || null;
   let snapshotPromise = null;
   let snapshotOps = null;
   let snapshotUpsertStartedAt = 0;
@@ -1556,6 +1571,7 @@ function finalizeRecommendationResponse({
     auditId: diagnostics.auditId,
     scene: responseData.scene,
     debug: responseData.debug,
+    stylingIntelligenceShadow: diagnostics.stylingIntelligenceShadow,
     budget,
     rejectionReasonCounts,
   });
@@ -1714,7 +1730,14 @@ function truncateQaForResponseBudget(audit) {
   audit.archetypeHistogram = (audit.archetypeHistogram || []).slice(0, 3);
 }
 
-function emitRecommendationServerDone({ auditId, scene, debug, budget, rejectionReasonCounts }) {
+function emitRecommendationServerDone({
+  auditId,
+  scene,
+  debug,
+  stylingIntelligenceShadow,
+  budget,
+  rejectionReasonCounts,
+}) {
   console.log('[RecommendationServerDone]', {
     auditId,
     scene,
@@ -1727,6 +1750,9 @@ function emitRecommendationServerDone({ auditId, scene, debug, budget, rejection
     responseBytes: budget.totalDataBytes,
     qaBytes: budget.qaBytes,
     buildVersion: CLOUD_BUILD_VERSION,
+    ...(stylingIntelligenceShadow
+      ? { stylingIntelligenceShadow }
+      : {}),
   });
 }
 
