@@ -21,6 +21,23 @@ function blindReview(artifact) {
     sealedModelMap: Object.fromEntries(modelMapEntries),
   };
 }
-function pick(row) { return { planCount: row.planCount, renderedCount: row.renderedCount, requestCount: row.requestCount, latencyMs: row.latencyMs, providerLatencyMs: row.providerLatencyMs, usage: row.usage, automatedContract: row.automatedContract, reviewCases: row.reviewCases }; }
-function finalizeReview(review) { if (!review?.entries?.length || review.entries.some((entry) => !entry.judgment || CRITERIA.some((criterion) => typeof entry.judgment[criterion] !== 'boolean'))) throw new Error('REVIEW_INCOMPLETE'); return { version: 'voice-renderer-v2-shadow-review-summary-v1', status: 'REVIEWED', judgments: review.entries.map((entry) => ({ reviewId: entry.reviewId, judgment: entry.judgment })) }; }
+function pick(row) { return { reviewCases: row.reviewCases }; }
+function finalizeReview(review, sealedModelMap = {}) {
+  const validPreference = new Set(['A', 'B', 'TIE', 'BOTH_FAIL', 'NO_COVERAGE']);
+  if (!review?.entries?.length || review.entries.some((entry) => {
+    const judgment = entry.judgment;
+    return !judgment || !validPreference.has(judgment.preferred)
+      || ['A', 'B'].some((label) => CRITERIA.some((criterion) => typeof judgment[label]?.[criterion] !== 'boolean'))
+      || typeof judgment.notes !== 'string';
+  })) throw new Error('REVIEW_INCOMPLETE');
+  return {
+    version: 'voice-renderer-v2-shadow-review-summary-v1',
+    status: 'SOL_REVIEWED',
+    judgments: review.entries.map((entry) => ({
+      reviewId: entry.reviewId,
+      judgment: entry.judgment,
+      revealedModes: sealedModelMap[entry.reviewId] || null,
+    })),
+  };
+}
 module.exports = { CRITERIA, blindReview, finalizeReview };

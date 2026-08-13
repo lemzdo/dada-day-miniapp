@@ -74,3 +74,15 @@ test('feature flag and authorization are explicit', () => {
   voice.authorizeRecommendationVoiceRendererBenchmark(event, { compare: true });
   assert.equal(voice.isRecommendationVoiceRendererShadowEnabled(event, {}), true);
 });
+
+test('benchmark preserves independently failed-open single, batch, and cache probe diagnostics', async () => {
+  const [entry] = cases();
+  const result = await voice.runRecommendationVoiceRendererBenchmarkV2Safely({
+    plans: [entry.plan], recommendations: [entry.recommendation], apiKey: null,
+  });
+  assert.equal(result.status, 'partially_failed_open');
+  assert.equal(result.single.status, 'failed_open');
+  assert.equal(result.batch.status, 'failed_open');
+  assert.equal(result.cacheProbe.status, 'failed_open');
+  assert.equal(Object.keys(result.single.failureCodes).length, 1);
+});

@@ -33,14 +33,14 @@ function anonymize(data = {}, scene, mode) {
   };
 }
 
-async function runCloud({ artifactDirectory = path.resolve(__dirname, '../../../../artifacts/voice-renderer-v2-shadow-benchmark'), tokenFile, deps = {}, repetitions = 1 } = {}) {
+async function runCloud({ artifactDirectory = path.resolve(__dirname, '../../../../artifacts/voice-renderer-v2-shadow-benchmark'), tokenFile, deps = {}, repetitions = 1, scenes = SCENES } = {}) {
   const file = tokenFile || path.resolve(__dirname, '../../../../artifacts/voice-renderer-v2-lab/.cloud-benchmark-token');
   const token = fs.readFileSync(file, 'utf8').trim();
   const session = deps.mini ? null : await ensureDevToolsDirectSession({ deps });
   const mini = deps.mini || session.mini;
   const records = [];
   try {
-    for (const scene of SCENES) for (let repetition = 1; repetition <= repetitions; repetition += 1) {
+    for (const scene of scenes) for (let repetition = 1; repetition <= repetitions; repetition += 1) {
       const result = await callGenerateOutfit(mini, {
         action: 'generate', benchmarkToken: token, voiceRendererRealPlanBenchmark: true,
         diagnostics: true, scene, maxResults: 4,
@@ -60,7 +60,7 @@ async function runCloud({ artifactDirectory = path.resolve(__dirname, '../../../
       records.push({ scene, repetition, mode: 'cache_probe', ...anonymize(benchmark.cacheProbe || {}, scene, 'cache_probe') });
     }
   } finally { if (!deps.mini && mini?.disconnect) mini.disconnect(); }
-  const artifact = { version: 'voice-renderer-v2-shadow-benchmark-v1', status: 'complete', scenes: SCENES.slice(), repetitions, records };
+  const artifact = { version: 'voice-renderer-v2-shadow-benchmark-v1', status: 'complete', scenes: scenes.slice(), repetitions, records };
   fs.mkdirSync(artifactDirectory, { recursive: true });
   fs.writeFileSync(path.join(artifactDirectory, 'raw-runs.json'), `${JSON.stringify(artifact, null, 2)}\n`, 'utf8');
   return artifact;

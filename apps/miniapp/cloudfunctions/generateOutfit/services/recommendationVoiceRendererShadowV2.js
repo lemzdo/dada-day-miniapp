@@ -70,14 +70,13 @@ async function runRecommendationVoiceRendererShadowV2Safely(input = {}) {
 }
 
 async function runRecommendationVoiceRendererBenchmarkV2Safely(input = {}) {
-  try {
-    clearRecommendationVoiceRendererShadowCache();
-    const [single, batch] = await Promise.all([
-      runRecommendationVoiceRendererShadowV2({ ...input, mode: 'single', cacheMode: 'bypass', includeReview: true }),
-      runRecommendationVoiceRendererShadowV2({ ...input, mode: 'batch', cacheMode: 'use', includeReview: true }),
-    ]);
-    const cacheProbe = await runRecommendationVoiceRendererShadowV2({ ...input, mode: 'single', cacheMode: 'use', includeReview: false });
-    return {
+  clearRecommendationVoiceRendererShadowCache();
+  const [single, batch] = await Promise.all([
+    runRecommendationVoiceRendererShadowV2Safely({ ...input, mode: 'single', cacheMode: 'bypass', includeReview: true }),
+    runRecommendationVoiceRendererShadowV2Safely({ ...input, mode: 'batch', cacheMode: 'use', includeReview: true }),
+  ]);
+  const cacheProbe = await runRecommendationVoiceRendererShadowV2Safely({ ...input, mode: 'single', cacheMode: 'use', includeReview: false });
+  return {
       version: RECOMMENDATION_VOICE_RENDERER_SHADOW_VERSION,
       status: single.status === 'completed' && batch.status === 'completed' ? 'completed' : 'partially_failed_open',
       benchmark: true,
@@ -90,10 +89,7 @@ async function runRecommendationVoiceRendererBenchmarkV2Safely(input = {}) {
       single,
       batch,
       cacheProbe,
-    };
-  } catch (error) {
-    return { ...buildFailOpenResult(error, input), benchmark: true };
-  }
+  };
 }
 
 async function runRecommendationVoiceRendererShadowV2({
