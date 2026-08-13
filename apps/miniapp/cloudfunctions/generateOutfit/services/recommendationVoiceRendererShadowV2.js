@@ -340,10 +340,14 @@ function validateShadowCopy(copy, input, allInputs = []) {
   if (input.expressionMode === 'baseline') {
     if (!['简单', '日常', '基础', '直接', '普通', '利落'].some((term) => text.includes(term))) failures.push('BASELINE_RESTRAINT');
   } else {
-    const groups = meaningGroups(input.primary?.insightId, input.primary?.meaning);
-    for (const group of groups) if (!group.some((term) => text.includes(term))) failures.push('MEANING_NOT_PRESERVED');
+    failures.push(...validateMeaningPreservation(input.primary?.insightId, input.primary?.meaning, text));
   }
   return { pass: failures.length === 0, failures: [...new Set(failures)] };
+}
+function validateMeaningPreservation(insightId, meaning, text) {
+  const failures = [];
+  for (const group of meaningGroups(insightId, meaning)) if (!group.some((term) => readText(text).includes(term))) failures.push('MEANING_NOT_PRESERVED');
+  return [...new Set(failures)];
 }
 function meaningGroups(insightId, meaning) {
   const code = readText(insightId).split(':')[0];
@@ -355,6 +359,7 @@ function meaningGroups(insightId, meaning) {
     SILHOUETTE_CONTRAST: [['一紧一松', '修身'], ['轮廓', '阔腿', '宽松']],
     PROPORTION_LAYERING: [['长短', '层次', '比例']],
     WEATHER_LAYERING: [['温度', '天气', '层次']],
+    SCENE_HOME_RELAXED_STRUCTURE: [['居家'], ['放松']],
     SCENE_WORK_STRUCTURED_SET: [['上班', '通勤'], ['完整', '清楚']],
     SCENE_WORK_SIMPLE_ONEPIECE: [['上班', '通勤'], ['简洁', '明确']],
     SCENE_SPORT_PURPOSE_SET: [['运动'], ['明确', '完整']],
@@ -392,4 +397,5 @@ module.exports = {
   runRecommendationVoiceRendererBenchmarkV2Safely,
   runRecommendationVoiceRendererShadowV2,
   runRecommendationVoiceRendererShadowV2Safely,
+  validateMeaningPreservation,
 };

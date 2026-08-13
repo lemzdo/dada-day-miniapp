@@ -97,3 +97,11 @@ test('cross-plan check ignores overlapping garment labels such as T恤 and 短�
   });
   assert.equal(result.automatedContract.failureCounts.CROSS_PLAN_CONTAMINATION, undefined);
 });
+
+test('home relaxed paraphrases preserve the authorized scene meaning', async () => {
+  assert.deepEqual(voice.validateMeaningPreservation(
+    'SCENE_HOME_RELAXED_STRUCTURE:items:evidence',
+    '吊带裙组成适合居家的放松组合。',
+    '吊带裙很适合居家放松时穿。',
+  ), []);
+});
