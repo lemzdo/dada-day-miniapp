@@ -85,6 +85,24 @@ test('response diagnostics keep QA, debug, and total payload inside byte budgets
       primaryInsightCode: 'COLOR_UNITY',
     }],
   };
+  diagnostics.recommendationVoiceRendererShadow = {
+    version: 'recommendation-voice-renderer-shadow-v2.0',
+    status: 'completed',
+    contractVersion: 'voice-contract-v2.0-lab1',
+    modelRouteVersion: 'voice-renderer-model-route-v1-max',
+    model: 'qwen3.7-max',
+    executionMode: 'single',
+    planCount: 1,
+    renderedCount: 1,
+    shadowFailureCount: 0,
+    cacheHitCount: 0,
+    cacheMissCount: 1,
+    requestCount: 1,
+    latencyMs: 123,
+    providerLatencyMs: 120,
+    usage: { promptTokens: 10, completionTokens: 8, totalTokens: 18, cachedTokens: 0 },
+    planIdentities: [{ planHash: 'plan-hash', contractVersion: 'voice-contract-v2.0-lab1', modelRouteVersion: 'voice-renderer-model-route-v1-max', cacheHit: false }],
+  };
   const logs = [];
   const qaLogs = [];
   const oldLog = console.log;
@@ -135,6 +153,8 @@ test('response diagnostics keep QA, debug, and total payload inside byte budgets
       { material: 1, weak: 0, none: 0 },
     );
     assert.equal(completionLog.stylingIntelligenceShadow.planSamples[0].anonymousCaseId, 'case-hash');
+    assert.equal(completionLog.recommendationVoiceRendererShadow.model, 'qwen3.7-max');
+    assert.equal(completionLog.recommendationVoiceRendererShadow.planIdentities[0].planHash, 'plan-hash');
     assert.equal(logs[0][1].includes('[Object]'), false);
     assert.equal(/imageUrl|image_url|openid|nickname/i.test(logs[0][1]), false);
     assert.ok(serializedBytes({ label: logs[0][0], payload: logs[0][1] }) < 16 * 1024);
@@ -148,6 +168,32 @@ test('response diagnostics keep QA, debug, and total payload inside byte budgets
     console.log = oldLog;
     console.info = oldInfo;
   }
+});
+
+test('token-authorized voice benchmark can return anonymous review diagnostics while normal shadow cannot', () => {
+  const internals = loadInternals();
+  const render = (shadow) => {
+    const diagnostics = internals.createRecommendationDiagnostics({ diagnostics: true });
+    diagnostics.recommendationVoiceRendererShadow = shadow;
+    const oldLog = console.log;
+    console.log = () => {};
+    try {
+      return internals.finalizeRecommendationResponse({
+        sceneContract: internals.createRecommendationSceneContract('home'),
+        diagnostics,
+        qaResult: null,
+        data: { outfits: [], debug: { timings: diagnostics.timings, responseBytes: {} }, meta: {} },
+      });
+    } finally { console.log = oldLog; }
+  };
+  const ordinary = render({ benchmark: false, reviewSamples: [{ text: 'must stay server-side' }] });
+  assert.equal(ordinary.diagnostics.voiceRendererShadowBenchmark, undefined);
+  const authorized = render({
+    benchmark: true,
+    single: { reviewSamples: [{ anonymousCaseId: 'case', planHash: 'hash', text: '单条结果' }] },
+    batch: { reviewSamples: [{ anonymousCaseId: 'case', planHash: 'hash', text: '批量结果' }] },
+  });
+  assert.equal(authorized.diagnostics.voiceRendererShadowBenchmark.batch.reviewSamples[0].text, '批量结果');
 });
 
 test('QA-disabled response does not build or return an audit object', () => {

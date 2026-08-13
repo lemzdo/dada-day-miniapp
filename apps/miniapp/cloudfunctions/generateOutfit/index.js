@@ -11,6 +11,9 @@ const {
   isRecommendationStylingShadowEnabled,
   runRecommendationStylingShadowV2Safely,
 } = require('./services/recommendationStylingShadowV2');
+const {
+  buildRecommendationVoiceRendererExecution,
+} = require('./services/recommendationVoiceRendererShadowV2');
 const { loadActiveWardrobe } = require('./services/loadActiveWardrobe');
 const {
   createAiReviewServiceError,
@@ -457,6 +460,8 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
       })
     : null;
   diagnostics.stylingIntelligenceShadow = stylingShadow?.diagnostics || null;
+  const voiceRendererExecution = buildRecommendationVoiceRendererExecution(event, stylingShadow, recommendations);
+  const voiceRendererShadowPromise = voiceRendererExecution.promise || Promise.resolve(null);
   let snapshotPromise = null;
   let snapshotOps = null;
   let snapshotUpsertStartedAt = 0;
@@ -539,6 +544,7 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
   };
   let poolPersist = null;
   if (recommendations.length === 0) {
+    diagnostics.recommendationVoiceRendererShadow = await voiceRendererShadowPromise;
     poolPersist = await candidatePoolPersistPromise;
     if (poolPersist && poolPersist.status !== 'saved') {
       recommendationBatchId = undefined;
@@ -708,6 +714,7 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
     copyHiddenCount,
     canonicalRecommendations,
   } = await cardCompilationPromise;
+  diagnostics.recommendationVoiceRendererShadow = await voiceRendererShadowPromise;
   poolPersist = await candidatePoolPersistPromise;
   if (poolPersist && poolPersist.status !== 'saved') {
     recommendationBatchId = undefined;
@@ -1552,6 +1559,9 @@ function finalizeRecommendationResponse({
   if (diagnostics.diagnosticsRequested === true) {
     responseData.diagnostics = {
       performance: buildRecommendationPerformanceLedger(diagnostics, budget, responseData),
+      ...(diagnostics.recommendationVoiceRendererShadow?.benchmark === true
+        ? { voiceRendererShadowBenchmark: diagnostics.recommendationVoiceRendererShadow }
+        : {}),
     };
   }
   budget = measureRecommendationResponse(responseData);
@@ -1572,6 +1582,7 @@ function finalizeRecommendationResponse({
     scene: responseData.scene,
     debug: responseData.debug,
     stylingIntelligenceShadow: diagnostics.stylingIntelligenceShadow,
+    recommendationVoiceRendererShadow: diagnostics.recommendationVoiceRendererShadow,
     budget,
     rejectionReasonCounts,
   });
@@ -1735,6 +1746,7 @@ function emitRecommendationServerDone({
   scene,
   debug,
   stylingIntelligenceShadow,
+  recommendationVoiceRendererShadow,
   budget,
   rejectionReasonCounts,
 }) {
@@ -1752,6 +1764,9 @@ function emitRecommendationServerDone({
     buildVersion: CLOUD_BUILD_VERSION,
     ...(stylingIntelligenceShadow
       ? { stylingIntelligenceShadow }
+      : {}),
+    ...(recommendationVoiceRendererShadow
+      ? { recommendationVoiceRendererShadow }
       : {}),
   };
   // Cloud logging formats nested objects with limited depth, which turns the

@@ -150,6 +150,8 @@ function authorized(token) {
   return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
 }
 
+function authorizeVoiceRendererV2BenchmarkToken(token) { return authorized(token); }
+
 function sanitizeUsage(usage) {
   return {
     prompt_tokens: Number(usage?.prompt_tokens) || 0,
@@ -188,4 +190,11 @@ function stableStringify(value) {
 function sha256(value) { return crypto.createHash('sha256').update(String(value)).digest('hex'); }
 function isObject(value) { return Boolean(value) && typeof value === 'object' && !Array.isArray(value); }
 
-module.exports = { ACTION, assertRendererInput, assertRequest, parseOutputs, runVoiceRendererV2Benchmark };
+module.exports = {
+  ACTION,
+  assertRendererInput,
+  assertRequest,
+  authorizeVoiceRendererV2BenchmarkToken,
+  parseOutputs,
+  runVoiceRendererV2Benchmark,
+};

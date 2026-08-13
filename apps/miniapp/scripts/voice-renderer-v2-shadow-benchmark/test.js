@@ -1,0 +1,10 @@
+const assert = require('node:assert/strict');
+const test = require('node:test');
+const { anonymize } = require('./run-cloud');
+const { blindReview, finalizeReview, CRITERIA } = require('./review');
+const { summarize } = require('./report');
+
+function artifact() { const records = []; for (const scene of ['home', 'work', 'date', 'sport']) for (const mode of ['single', 'batch']) records.push({ scene, repetition: 1, mode, planCount: 2, renderedCount: 2, requestCount: mode === 'single' ? 2 : 1, latencyMs: 10, providerLatencyMs: 8, usage: { totalTokens: 4 }, cacheHitCount: 0, cacheMissCount: 2, planHashes: ['p1', 'p2'], reviewCases: [{ anonymousCaseId: 'case', planHash: 'p1', authorizedMeaning: 'meaning', text: mode === 'single' ? '文案甲' : '文案乙' }] }); return { status: 'complete', scenes: ['home', 'work', 'date', 'sport'], repetitions: 1, records }; }
+
+test('cloud artifact excludes raw ids while retaining anonymous Chinese review material', () => { const data = anonymize({ status: 'completed', reviewSamples: [{ anonymousCaseId: 'a', planHash: 'hash', insightId: 'secret-insight', authorizedMeaning: '授权意思', garments: ['上衣'], allowedClaims: ['claim'], text: '自然文案' }], requestCount: 1, planCount: 1, renderedCount: 1 }, 'home', 'single'); assert.equal(data.status, 'completed'); assert.equal(data.reviewCases.length, 1); assert.doesNotMatch(JSON.stringify(data), /secret-insight/); assert.match(JSON.stringify(data), /授权意思|自然文案/); const report = summarize(artifact()); assert.equal(report.recordCount, 8); assert.equal(report.singleVsBatch.single, 4); });
+test('blind review keeps mode mapping sealed and finalize requires all criteria', () => { const prepared = blindReview(artifact()); assert.equal(prepared.review.entries.length, 4); assert.doesNotMatch(JSON.stringify(prepared.review), /"single"|"batch"/); assert.match(JSON.stringify(prepared.sealedModelMap), /"single"|"batch"/); assert.throws(() => finalizeReview(prepared.review), /REVIEW_INCOMPLETE/); for (const entry of prepared.review.entries) entry.judgment = Object.fromEntries(CRITERIA.map((criterion) => [criterion, true])); assert.equal(finalizeReview(prepared.review).status, 'REVIEWED'); });

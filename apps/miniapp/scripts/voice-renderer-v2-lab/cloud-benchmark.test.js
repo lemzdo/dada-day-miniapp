@@ -30,6 +30,9 @@ test('stages an independent token-gated action without modifying production sour
   assert.doesNotMatch(fs.readFileSync(path.join(SOURCE, 'index.js'), 'utf8'), /voiceRendererV2Benchmark/);
   const staged = fs.readFileSync(path.join(target, 'index.js'), 'utf8');
   assert.match(staged, /action === 'voiceRendererV2Benchmark'/);
+  assert.match(staged, /event\.voiceRendererRealPlanBenchmark === true/);
+  assert.match(staged, /authorizeRecommendationVoiceRendererBenchmark\(event, \{ compare: true, review: true \}\)/);
+  assert.match(staged, /delete event\.benchmarkToken/);
   assert.ok(staged.indexOf("action === 'voiceRendererV2Benchmark'") < staged.indexOf("action === 'transport_probe'"));
 }));
 

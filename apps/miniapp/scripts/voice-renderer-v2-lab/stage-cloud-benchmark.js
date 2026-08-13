@@ -40,11 +40,11 @@ function stageCloudBenchmark({ sourceDirectory, targetDirectory, token }) {
     let stagedIndex = fs.readFileSync(indexFile, 'utf8');
     stagedIndex = stagedIndex.replace(
       REQUIRE_MARKER,
-      `${REQUIRE_MARKER}\nconst { runVoiceRendererV2Benchmark } = require('./benchmarkVoiceRendererV2');`,
+      `${REQUIRE_MARKER}\nconst { authorizeVoiceRendererV2BenchmarkToken, runVoiceRendererV2Benchmark } = require('./benchmarkVoiceRendererV2');\nconst { authorizeRecommendationVoiceRendererBenchmark } = require('./services/recommendationVoiceRendererShadowV2');`,
     );
     stagedIndex = stagedIndex.replace(
       HANDLER_MARKER,
-      `${HANDLER_MARKER}\n  if (action === '${ACTION}') {\n    try { return ok(await runVoiceRendererV2Benchmark(event)); }\n    catch (error) { return fail(error); }\n  }`,
+      `${HANDLER_MARKER}\n  if (action === '${ACTION}') {\n    try { return ok(await runVoiceRendererV2Benchmark(event)); }\n    catch (error) { return fail(error); }\n  }\n  if (action === 'generate' && event.voiceRendererRealPlanBenchmark === true) {\n    if (!authorizeVoiceRendererV2BenchmarkToken(event.benchmarkToken)) return fail(new Error('BENCHMARK_NOT_AUTHORIZED'));\n    authorizeRecommendationVoiceRendererBenchmark(event, { compare: true, review: true });\n    event.shadowStylingIntelligence = true;\n    delete event.benchmarkToken;\n    delete event.voiceRendererRealPlanBenchmark;\n  }`,
     );
     if (!stagedIndex.includes(ACTION)) throw new Error('INJECTION_FAILED');
     fs.writeFileSync(indexFile, stagedIndex, 'utf8');
