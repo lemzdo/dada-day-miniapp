@@ -83,6 +83,25 @@ test('telemetry v2 samples are anonymous coarse cases with conditional shape fie
   assert.doesNotMatch(JSON.stringify(sample), /raw|image|https?:|openid|nickname|wardrobe|profile|prompt|itemId|#|colorPalette/i);
 });
 
+test('telemetry normalizes production Chinese scene and garment categories', () => {
+  const shadow = require('./recommendationStylingShadowV2');
+  const fixture = recommendationStylingShadowV2Fixtures.find((entry) => entry.id === 'primary-pattern-focus');
+  const input = materializeFixture(fixture);
+  input.items = [
+    { ...input.items[0], category: '上衣' },
+    { ...input.items[1], category: '下装' },
+    { category: '鞋子', colorPalette: [{ name: 'gray', hex: '#888888' }] },
+  ];
+  const result = shadow.runRecommendationStylingShadowV2Safely({
+    recommendations: [input], scene: '居家', telemetrySampleRate: 1,
+  });
+  const sample = result.diagnostics.planSamples[0];
+  assert.equal(result.diagnostics.sceneCategory, 'home');
+  assert.equal(sample.sceneCategory, 'home');
+  assert.deepEqual(sample.garments.map((garment) => garment.category), ['top', 'bottom', 'shoes']);
+  assert.doesNotMatch(JSON.stringify(sample), /raw|image|https?:|openid|nickname|wardrobe|profile|prompt|itemId|#|colorPalette/i);
+});
+
 test('Narrative Plan is deterministic across recommendation instance ids', () => {
   const fixture = recommendationStylingShadowV2Fixtures[0];
   const input = materializeFixture(fixture);

@@ -5,6 +5,7 @@ const {
 } = require('./recommendationNarrativePlanV2');
 const { STYLING_INSIGHT_CANDIDATE_VERSION } = require('./stylingInsightCandidateV2');
 const { STYLING_INSIGHT_RESOLVER_VERSION } = require('./stylingInsightResolverV2');
+const { normalizeCategory } = require('../shared/sceneEligibilityFacts');
 
 const RECOMMENDATION_STYLING_SHADOW_VERSION = 'recommendation-styling-shadow-v2.2';
 const RECOMMENDATION_STYLING_TELEMETRY_SCHEMA_VERSION = 'styling-shadow-telemetry-v2';
@@ -265,7 +266,7 @@ function buildCoarseGarmentFacts(recommendation, plan) {
   const evidenceTypes = new Set(readRelevantEvidenceTypes(plan));
   const includeShape = evidenceTypes.has('silhouette_relation') || evidenceTypes.has('proportion_relation');
   return readArray(recommendation?.items).map((item) => ({
-    category: normalizeGarmentCategory(item?.category),
+    category: normalizeGarmentCategory(item),
     coarseColor: normalizeCoarseColor(readPrimaryColor(item)),
     pattern: normalizePattern(item?.aestheticFeatures?.patternType),
     ...(includeShape ? {
@@ -275,8 +276,8 @@ function buildCoarseGarmentFacts(recommendation, plan) {
   }));
 }
 
-function normalizeGarmentCategory(value) {
-  const category = typeof value === 'string' ? value.trim().toLowerCase() : '';
+function normalizeGarmentCategory(item) {
+  const category = normalizeCategory(item || {});
   if (['top', 'bottom', 'onepiece', 'outerwear', 'shoes', 'accessory'].includes(category)) return category;
   return 'other';
 }
@@ -355,7 +356,16 @@ function sumCandidateMateriality(plans) {
 
 function normalizeSceneCategory(value) {
   const scene = typeof value === 'string' ? value.trim().toLowerCase() : '';
-  return ['home', 'work', 'date', 'sport'].includes(scene) ? scene : 'other';
+  return {
+    home: 'home',
+    '居家': 'home',
+    work: 'work',
+    '上班': 'work',
+    date: 'date',
+    '约会': 'date',
+    sport: 'sport',
+    '运动': 'sport',
+  }[scene] || 'other';
 }
 
 function shortHash(value) {
