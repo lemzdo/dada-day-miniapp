@@ -22,7 +22,7 @@ async function run({
   outputDir = path.resolve(__dirname, '../../../../artifacts/voice-renderer-v2-lab'),
   invoke = invokeProvider,
 } = {}) {
-  if (!apiKey) throw new Error('PROVIDER_KEY_MISSING');
+  if (invoke === invokeProvider && !apiKey) throw new Error('PROVIDER_KEY_MISSING');
   if (!Number.isInteger(repetitions) || repetitions < 1 || repetitions > 5) throw new Error('REPETITIONS_RANGE');
   const goldPlans = buildGoldPlans();
   const inputs = goldPlans.map(buildRendererInput);
@@ -56,6 +56,7 @@ async function run({
         requestFingerprint: hash({ modelAlias: 'controlled-variable', ...request, model: 'controlled-variable' }),
         outputs,
         checks,
+        ...(response.benchmarkMetadata ? { benchmarkMetadata: response.benchmarkMetadata } : {}),
       });
       atomicJson(path.join(outputDir, 'raw-runs.json'), buildArtifact(goldPlans, inputs, calls, repetitions, modelAliases));
     }
