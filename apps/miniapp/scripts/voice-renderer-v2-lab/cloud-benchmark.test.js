@@ -38,6 +38,11 @@ test('cloud helper rejects unauthorized, extra, and forbidden inputs before prov
   const input = buildRendererInput(buildGoldPlans()[0]);
   const request = { action: helper.ACTION, benchmarkToken: token, modelAlias: 'max', promptVersion: PROMPT_VERSION, inputVersion: INPUT_VERSION, inputs: [input] };
   assert.throws(() => helper.assertRequest({ ...request, benchmarkToken: undefined }), /BENCHMARK_NOT_AUTHORIZED/);
+  assert.doesNotThrow(() => helper.assertRequest({
+    ...request,
+    tcbContext: { platform: 'cloudbase' },
+    userInfo: { openId: 'platform-injected' },
+  }));
   assert.throws(() => helper.assertRequest({ ...request, systemPrompt: 'override' }), /EVENT_KEY_NOT_ALLOWED:systemPrompt/);
   assert.throws(() => helper.assertRequest({ ...request, inputs: [{ ...input, reason: 'legacy' }] }), /INPUT_KEY_NOT_ALLOWED:reason/);
   assert.throws(() => helper.assertRequest({ ...request, inputs: [{ ...input, wardrobe: [] }] }), /INPUT_KEY_NOT_ALLOWED:wardrobe/);

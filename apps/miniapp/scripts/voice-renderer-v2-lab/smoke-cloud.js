@@ -28,12 +28,12 @@ async function smokeCloud({
     if (normalProbe.code !== 0) throw new Error('NORMAL_PATH_PROBE_FAILED');
     const unauthorized = await callGenerateOutfit(mini, request({ benchmarkToken: undefined }));
     if (unauthorized.code !== 1 || !String(unauthorized.message).includes('BENCHMARK_NOT_AUTHORIZED')) {
-      throw new Error('UNAUTHORIZED_GATE_FAILED');
+      throw new Error(`UNAUTHORIZED_GATE_FAILED:${unauthorized.code}:${unauthorized.message}`);
     }
     const forbiddenInput = { ...request().inputs[0], reason: 'must be rejected before provider' };
     const forbidden = await callGenerateOutfit(mini, request({ inputs: [forbiddenInput] }));
     if (forbidden.code !== 1 || !String(forbidden.message).includes('INPUT_KEY_NOT_ALLOWED:reason')) {
-      throw new Error('MINIMAL_INPUT_GATE_FAILED');
+      throw new Error(`MINIMAL_INPUT_GATE_FAILED:${forbidden.code}:${forbidden.message}`);
     }
     const valid = await callGenerateOutfit(mini, request());
     if (valid.code !== 0 || valid.data?.outputs?.length !== 1 || valid.data?.requestedModel !== 'qwen3.7-max') {

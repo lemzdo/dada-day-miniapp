@@ -10,7 +10,10 @@ const PERSONA_VERSION = __VOICE_RENDERER_V2_PERSONA_VERSION__;
 const SYSTEM_PROMPT = __VOICE_RENDERER_V2_SYSTEM_PROMPT__;
 const MODEL_ALLOWLIST = Object.freeze(__VOICE_RENDERER_V2_MODEL_ALLOWLIST__);
 const GENERATION_PARAMETERS = Object.freeze(__VOICE_RENDERER_V2_GENERATION_PARAMETERS__);
-const EVENT_KEYS = new Set(['action', 'benchmarkToken', 'modelAlias', 'promptVersion', 'inputVersion', 'inputs']);
+const EVENT_KEYS = new Set([
+  'action', 'benchmarkToken', 'modelAlias', 'promptVersion', 'inputVersion', 'inputs',
+  'tcbContext', 'userInfo',
+]);
 const INPUT_KEYS = new Set([
   'inputVersion', 'planId', 'task', 'surface', 'personaVersion', 'expressionMode',
   'primary', 'garments', 'allowedClaims', 'scene', 'languageConstraints',

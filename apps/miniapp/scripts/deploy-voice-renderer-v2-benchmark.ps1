@@ -32,5 +32,20 @@ if ([string]::IsNullOrWhiteSpace($CliPath)) {
   if ($cliCandidates.Count -ne 1) { throw "Expected exactly one WeChat DevTools CLI, found $($cliCandidates.Count)." }
   $CliPath = $cliCandidates[0].FullName
 }
-& $CliPath cloud functions deploy --env $EnvironmentId --paths $stageRoot --remote-npm-install --report --project $ProjectPath --port $Port
-if ($LASTEXITCODE -ne 0) { throw "Voice Renderer benchmark deployment failed with exit code $LASTEXITCODE." }
+$previousErrorPreference = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+$deploymentOutput = & $CliPath cloud functions deploy --env $EnvironmentId --paths $stageRoot --remote-npm-install --report --project $ProjectPath --port $Port 2>&1
+$deploymentExitCode = $LASTEXITCODE
+$ErrorActionPreference = $previousErrorPreference
+$deploymentOutput | ForEach-Object { Write-Host $_ }
+$deploymentText = $deploymentOutput -join "`n"
+if ($deploymentExitCode -ne 0 -or $deploymentText -match '(?im)^\s*[×x]\s|initialize error|deployment failed') {
+  throw "Voice Renderer benchmark deployment failed with exit code $deploymentExitCode."
+}
+
+# The DevTools full deploy can report success before existing nested runtime directories are refreshed.
+# Explicitly refresh the two checked runtime roots; this does not alter the production source tree.
+foreach ($runtimeDirectory in @('services', 'shared')) {
+  & $CliPath cloud functions inc-deploy --env $EnvironmentId --path $stageRoot --file $runtimeDirectory --project $ProjectPath --port $Port
+  if ($LASTEXITCODE -ne 0) { throw "Runtime directory refresh failed: $runtimeDirectory" }
+}
