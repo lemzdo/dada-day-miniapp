@@ -42,7 +42,7 @@ async function run({
       const outputs = parseRendererOutputs(rawContent, inputs);
       const checks = outputs.map((output) => {
         const goldPlan = goldPlans.find((plan) => plan.planId === output.planId);
-        return { caseId: goldPlan.caseId, ...validateRendererOutput(output, goldPlan) };
+        return { caseId: goldPlan.caseId, planId: goldPlan.planId, ...validateRendererOutput(output, goldPlan) };
       });
       calls.push({
         modelAlias,
