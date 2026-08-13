@@ -46,6 +46,20 @@ if ($deploymentExitCode -ne 0 -or $deploymentText -match '(?im)^\s*[×x]\s|initi
 # The DevTools full deploy can report success before existing nested runtime directories are refreshed.
 # Explicitly refresh the two checked runtime roots; this does not alter the production source tree.
 foreach ($runtimeDirectory in @('services', 'shared')) {
-  & $CliPath cloud functions inc-deploy --env $EnvironmentId --path $stageRoot --file $runtimeDirectory --project $ProjectPath --port $Port
-  if ($LASTEXITCODE -ne 0) { throw "Runtime directory refresh failed: $runtimeDirectory" }
+  $refreshed = $false
+  for ($attempt = 1; $attempt -le 5; $attempt += 1) {
+    $previousErrorPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $refreshOutput = & $CliPath cloud functions inc-deploy --env $EnvironmentId --path $stageRoot --file $runtimeDirectory --project $ProjectPath --port $Port 2>&1
+    $refreshExitCode = $LASTEXITCODE
+    $ErrorActionPreference = $previousErrorPreference
+    $refreshOutput | ForEach-Object { Write-Host $_ }
+    $refreshText = $refreshOutput -join "`n"
+    if ($refreshExitCode -eq 0 -and $refreshText -notmatch '(?im)^\s*[脳x×]\s|incremental deploy failed|\[error\]') {
+      $refreshed = $true
+      break
+    }
+    if ($attempt -lt 5) { Start-Sleep -Seconds 5 }
+  }
+  if (-not $refreshed) { throw "Runtime directory refresh failed: $runtimeDirectory" }
 }
