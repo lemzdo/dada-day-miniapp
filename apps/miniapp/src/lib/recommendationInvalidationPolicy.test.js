@@ -16,14 +16,31 @@ const profile = {
   temperatureSensitivity: 'normal',
 };
 
-test('hard profile constraints invalidate the visible batch', () => {
-  for (const next of [
-    { ...profile, genderPreference: 'female' },
-    { ...profile, fitPreference: 'loose' },
+test('ranking-only profile fields never invalidate the visible batch by field change alone', () => {
+  const currentOutfits = [{
+    items: [{ category: 'top', fit: 'regular', styleTags: ['中性'] }],
+  }];
+  assert.equal(classifyRecommendationProfileInvalidationPolicy(
+    profile,
+    { ...profile, genderPreference: 'female_style', fitPreference: 'loose' },
+    currentOutfits,
+  ), 'soft');
+});
+
+test('a newly added avoid tag is hard only when it matches the current visible batch', () => {
+  const currentOutfits = [{
+    items: [{ category: 'top', material: '羊毛混纺', styleTags: ['通勤'] }],
+  }];
+  assert.equal(classifyRecommendationProfileInvalidationPolicy(
+    profile,
     { ...profile, avoidTags: ['羊毛'] },
-  ]) {
-    assert.equal(classifyRecommendationProfileInvalidationPolicy(profile, next), 'hard');
-  }
+    currentOutfits,
+  ), 'hard');
+  assert.equal(classifyRecommendationProfileInvalidationPolicy(
+    profile,
+    { ...profile, avoidTags: ['皮革'] },
+    currentOutfits,
+  ), 'soft');
   assert.deepEqual(getRecommendationMutationBehavior('preference_changed', 'hard'), {
     keepVisibleBatch: false,
     clearTodayCache: true,
@@ -42,9 +59,14 @@ test('soft preference and new-clothing changes keep the correct batch visible', 
   assert.equal(getRecommendationMutationBehavior('wardrobe_added', 'soft').message, '新衣服已加入，正在更新搭配');
 });
 
-test('array order is semantic for preference constraints', () => {
-  assert.equal(classifyRecommendationProfileInvalidationPolicy(profile, {
-    ...profile,
-    avoidTags: ['羊毛', '皮革'],
-  }), 'hard');
+test('existing avoid-tag order changes and removals are soft', () => {
+  const previous = { ...profile, avoidTags: ['羊毛', '皮革'] };
+  assert.equal(classifyRecommendationProfileInvalidationPolicy(previous, {
+    ...previous,
+    avoidTags: ['皮革', '羊毛'],
+  }), 'soft');
+  assert.equal(classifyRecommendationProfileInvalidationPolicy(previous, {
+    ...previous,
+    avoidTags: ['羊毛'],
+  }), 'soft');
 });

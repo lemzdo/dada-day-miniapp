@@ -238,7 +238,11 @@ export default function StylePreferencesPage() {
     });
     await invalidateAfterProfileMutation({
       authContext,
-      recommendationImpact: classifyRecommendationProfileInvalidation(previousProfile, nextProfile),
+      recommendationImpact: classifyRecommendationProfileInvalidation(
+        previousProfile,
+        nextProfile,
+        { authContext },
+      ),
       dirtyReason: 'preference_changed',
     });
     if (!isFlowCurrent(authContext, flowRuntimeKey)) return false;

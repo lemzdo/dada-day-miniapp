@@ -1,7 +1,7 @@
 import { clearUserPageCacheByPrefix } from './userPageCache';
 import { getUserStorageSync, setUserStorageSync } from './userStorage';
 import type { ActiveAuthContext } from '@/stores/userStore';
-import type { RecommendationProfile } from '@starter-template/types';
+import type { Outfit, RecommendationProfile } from '@starter-template/types';
 import {
   classifyRecommendationProfileInvalidationPolicy,
 } from './recommendationInvalidationPolicy';
@@ -40,6 +40,9 @@ export const TODAY_WARDROBE_INPUT_VERSION_KEY = 'today:recommendationInput:wardr
 export const TODAY_PROFILE_INPUT_VERSION_KEY = 'today:recommendationInput:profileVersion';
 export const TODAY_RECOMMENDATION_DIRTY_KEY = 'today:recommendationInput:dirty';
 export const TODAY_RECOMMENDATION_HARD_INVALID_KEY = 'today:recommendationInput:hardInvalid';
+const TODAY_RESTORE_SNAPSHOT_KEY = 'today:outfitReturnSnapshot:recommendation-copy-contract-v8';
+const TODAY_RESTORE_SNAPSHOT_VERSION = 4;
+const TODAY_RESTORE_SNAPSHOT_TTL_MS = 10 * 60 * 1000;
 
 export async function invalidateWardrobeCache(options: CacheInvalidationOptions = {}): Promise<void> {
   await safeClearPrefix(PAGE_CACHE_PREFIXES.wardrobe, options);
@@ -151,8 +154,13 @@ export async function invalidateAfterProfileMutation(options: RecommendationMuta
 export function classifyRecommendationProfileInvalidation(
   previous: RecommendationProfile,
   next: RecommendationProfile,
+  options: CacheInvalidationOptions = {},
 ): RecommendationInvalidationImpact {
-  return classifyRecommendationProfileInvalidationPolicy(previous, next) as RecommendationInvalidationImpact;
+  return classifyRecommendationProfileInvalidationPolicy(
+    previous,
+    next,
+    readCurrentVisibleTodayBatch(options),
+  ) as RecommendationInvalidationImpact;
 }
 
 export function getTodayRecommendationDirty(
@@ -215,4 +223,17 @@ async function safeClearPrefix(prefix: string, options: CacheInvalidationOptions
 function bumpRecommendationInputVersion(storageKey: string, options: CacheInvalidationOptions) {
   const current = Number(getUserStorageSync<number>(storageKey, { authContext: options.authContext })) || 0;
   setUserStorageSync(storageKey, Math.max(Date.now(), current + 1), { authContext: options.authContext });
+}
+
+function readCurrentVisibleTodayBatch(options: CacheInvalidationOptions): Outfit[] {
+  const snapshot = getUserStorageSync<{
+    version?: number;
+    generatedAt?: number;
+    outfits?: Outfit[];
+  }>(TODAY_RESTORE_SNAPSHOT_KEY, { authContext: options.authContext });
+  if (snapshot?.version !== TODAY_RESTORE_SNAPSHOT_VERSION
+    || !Number.isFinite(Number(snapshot.generatedAt))
+    || Date.now() - Number(snapshot.generatedAt) > TODAY_RESTORE_SNAPSHOT_TTL_MS
+    || !Array.isArray(snapshot.outfits)) return [];
+  return snapshot.outfits;
 }
