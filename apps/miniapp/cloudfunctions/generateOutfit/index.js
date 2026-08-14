@@ -882,6 +882,7 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
     generatedAt: now,
     recommendationBatchId,
     copyMode: 'new_recommendation',
+    canonicalCopyEnabled: canonicalCopyRuntimeV2Enabled,
     assetRecords: outfitRecords,
   });
   diagnostics.databaseOps.reads += hydratedOutfits.length > 0 ? 2 : 0;
@@ -3740,6 +3741,7 @@ async function enrichOutfitsState(outfits, {
   generatedAt,
   recommendationBatchId,
   copyMode = 'saved_snapshot',
+  canonicalCopyEnabled = true,
   assetRecords,
 }) {
   const keys = uniqueStrings(outfits.map((outfit) => outfit.outfitKey || getOutfitKey(outfit.clothingIds || [])));
@@ -3776,7 +3778,9 @@ async function enrichOutfitsState(outfits, {
       recommendationBatchId: outfit.recommendationBatchId || recommendationBatchId,
       generatedAt: outfit.generatedAt || generatedAt,
     };
-    const canonicalCopy = resolveCanonicalCopyForStorage(outfit, asset);
+    const canonicalCopy = resolveCanonicalCopyForStorage(outfit, asset, {
+      allowCachedFallback: canonicalCopyEnabled,
+    });
     const withCanonicalCopy = canonicalCopy
       ? applyCanonicalCopyToOutfit(enriched, canonicalCopy)
       : enriched;

@@ -136,7 +136,7 @@ function assertRecommendationCanonicalCopiesV2(outfits = []) {
   return true;
 }
 
-function resolveCanonicalCopyForStorage(base = {}, current = {}) {
+function resolveCanonicalCopyForStorage(base = {}, current = {}, { allowCachedFallback = true } = {}) {
   const next = normalizeCanonicalCopy(base?.canonicalRecommendationCopyV2);
   const cached = normalizeCanonicalCopy(current?.canonicalRecommendationCopyV2);
   if (cached?.source === 'ai_cache'
@@ -145,7 +145,7 @@ function resolveCanonicalCopyForStorage(base = {}, current = {}) {
     && cached.renderInputFingerprint === next?.renderInputFingerprint) {
     return cached;
   }
-  return next || cached || null;
+  return next || (allowCachedFallback ? cached : null) || null;
 }
 
 function applyCanonicalCopyToOutfit(outfit = {}, copy = null) {

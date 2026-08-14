@@ -138,6 +138,11 @@ test('durable AI copy is reused only for the same render input fingerprint', () 
   }, {
     canonicalRecommendationCopyV2: ready,
   }).text, base.canonicalRecommendationCopyV2.text);
+  assert.equal(runtime.resolveCanonicalCopyForStorage({}, {
+    canonicalRecommendationCopyV2: ready,
+  }, {
+    allowCachedFallback: false,
+  }), null);
 });
 
 test('failed materialization preserves safe text and exposes a retryable state', () => {
