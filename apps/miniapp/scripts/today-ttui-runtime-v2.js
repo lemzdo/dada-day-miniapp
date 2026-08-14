@@ -9,6 +9,8 @@ const {
 } = require('./devtools-direct-session');
 
 const ARTIFACT_ROOT = path.resolve(__dirname, '../../artifacts/today-ttui-runtime-v2');
+const TRANSPORT_KEY = 'generateOutfit:acceptance-transport:v1';
+const PERFORMANCE_KEY = 'generateOutfit:performance-ledger:v1';
 
 function nowId(prefix = 'ttui') {
   return `${prefix}-${new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)}-${crypto.randomBytes(4).toString('hex')}`;
@@ -119,10 +121,12 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   const active = ledger?.active || ledger?.history?.at(-1) || null;
+  const transport = await mini.evaluate((key) => globalThis.wx?.getStorageSync?.(key) || null, TRANSPORT_KEY);
+  const performance = await mini.evaluate((key) => globalThis.wx?.getStorageSync?.(key) || null, PERFORMANCE_KEY);
   const artifact = {
     runId, scenario, startedAt, endedAt: Date.now(), triggerResult,
     bridge: { marker: bridge.marker, ready: bridge.ready, sceneKey: bridge.sceneKey },
-    ledger: active, client: segmentDurations(active || {}),
+    ledger: active, transport, performance, server: serverSegments(performance || {}), client: segmentDurations(active || {}),
   };
   return artifact;
 }
