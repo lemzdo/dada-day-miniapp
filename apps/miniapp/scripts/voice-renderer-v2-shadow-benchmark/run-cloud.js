@@ -49,7 +49,7 @@ async function runCloud({ artifactDirectory = path.resolve(__dirname, '../../../
       if (result.code !== 0) throw new Error(`REAL_PLAN_BENCHMARK:${result.message || 'unknown'}`);
       const benchmark = result.data?.diagnostics?.voiceRendererShadowBenchmark;
       if (!benchmark?.benchmark) throw new Error('REAL_PLAN_BENCHMARK_DIAGNOSTICS_MISSING');
-      for (const mode of ['single', 'batch']) {
+      for (const mode of ['single', 'batch', 'flash']) {
         records.push({
           scene, repetition, mode,
           samePlanSet: benchmark.samePlanSet === true,

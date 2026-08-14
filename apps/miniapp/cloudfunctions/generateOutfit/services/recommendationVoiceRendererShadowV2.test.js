@@ -14,7 +14,7 @@ function invokeStub(counter) {
   return async ({ request }) => {
     counter.count += 1;
     const inputs = JSON.parse(request.messages[1].content);
-    return { status: 200, body: { model: 'qwen3.7-max', usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 }, choices: [{ message: { content: JSON.stringify(inputs.map((input) => ({ planId: input.planId, insightId: input.primary?.insightId || null, text: input.primary?.meaning || `${input.garments[0]}是一套简单日常的搭配。` }))) } }] } };
+    return { status: 200, body: { model: request.model, usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 }, choices: [{ message: { content: JSON.stringify(inputs.map((input) => ({ planId: input.planId, insightId: input.primary?.insightId || null, text: input.primary?.meaning || `${input.garments[0]}是一套简单日常的搭配。` }))) } }] } };
   };
 }
 
@@ -65,14 +65,31 @@ test('single and batch bind exact plans and aggregate requests/tokens', async ()
   assert.equal(benchmark.qualityNotDegraded, true);
   assert.equal(benchmark.single.automatedContract.failCount, 0);
   assert.equal(benchmark.batch.automatedContract.failCount, 0);
+  assert.equal(benchmark.flash.automatedContract.failCount, 0);
+  assert.equal(benchmark.flash.model, 'qwen-flash');
   assert.equal(benchmark.cacheProbe.requestCount, 0);
   assert.equal(benchmark.cacheProbe.cacheHitCount, entries.length);
 });
 
-test('feature flag and authorization are explicit', () => {
+test('feature flag, authorization, and critical-path waiting are explicit', async () => {
   const event = {}; assert.equal(voice.isRecommendationVoiceRendererShadowEnabled(event, {}), false);
   voice.authorizeRecommendationVoiceRendererBenchmark(event, { compare: true });
   assert.equal(voice.isRecommendationVoiceRendererShadowEnabled(event, {}), true);
+  const normal = voice.buildRecommendationVoiceRendererExecution(
+    {},
+    { plans: [] },
+    [],
+    { RECOMMENDATION_CANONICAL_COPY_V2_ENABLED: 'true' },
+  );
+  const benchmark = voice.buildRecommendationVoiceRendererExecution(
+    event,
+    { plans: [] },
+    [],
+    {},
+  );
+  assert.equal(normal.waitForResult, false);
+  assert.equal(benchmark.waitForResult, true);
+  await Promise.all([normal.promise, benchmark.promise]);
 });
 
 test('benchmark preserves independently failed-open single, batch, and cache probe diagnostics', async () => {
@@ -83,6 +100,7 @@ test('benchmark preserves independently failed-open single, batch, and cache pro
   assert.equal(result.status, 'partially_failed_open');
   assert.equal(result.single.status, 'failed_open');
   assert.equal(result.batch.status, 'failed_open');
+  assert.equal(result.flash.status, 'failed_open');
   assert.equal(result.cacheProbe.status, 'failed_open');
   assert.equal(Object.keys(result.single.failureCodes).length, 1);
 });

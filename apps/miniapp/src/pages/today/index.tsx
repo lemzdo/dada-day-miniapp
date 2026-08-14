@@ -6,6 +6,10 @@ import { useAuthRuntime } from '@/hooks/useAuthRuntime';
 import {
   TODAY_PROFILE_INPUT_VERSION_KEY,
   TODAY_WARDROBE_INPUT_VERSION_KEY,
+  clearTodayRecommendationDirty,
+  clearTodayRecommendationHardInvalid,
+  getTodayRecommendationDirty,
+  hasTodayRecommendationHardInvalid,
   invalidateAfterOutfitFavoriteMutation,
   invalidateAfterOutfitWornMutation,
 } from '@/lib/cacheInvalidation';
@@ -225,7 +229,6 @@ interface TodayRestoreSnapshotInput {
 const TODAY_RESTORE_SNAPSHOT_KEY = 'today:outfitReturnSnapshot:recommendation-copy-contract-v8';
 const TODAY_SCENE_SNAPSHOT_STORAGE_PREFIX = 'today:sceneSnapshot:recommendation-copy-contract-v8';
 const TODAY_RESTORE_SNAPSHOT_TTL_MS = 10 * 60 * 1000;
-const WARDROBE_REFRESH_STORAGE_KEY = 'wardrobeNeedsRefresh';
 const TODAY_TIME_OF_DAY: TimeOfDay = 'all_day';
 
 const SCENES = [
@@ -311,6 +314,7 @@ export default function TodayPage() {
   const [recommendationBatchId, setRecommendationBatchId] = useState<string | undefined>(undefined);
   const [batchLimited, setBatchLimited] = useState(false);
   const [batchExhausted, setBatchExhausted] = useState(false);
+  const [showDelayedRequestHint, setShowDelayedRequestHint] = useState(false);
   const requestSeq = useRef(0);
   const activeRequestSeqRef = useRef<number | null>(null);
   const intentCounterRef = useRef(0);
@@ -331,6 +335,8 @@ export default function TodayPage() {
   const hasRecommendationsRef = useRef(true);
   const batchLimitedRef = useRef(false);
   const batchExhaustedRef = useRef(false);
+  const dirtyRefreshInFlightRef = useRef(false);
+  const hardRefreshInFlightRef = useRef(false);
   const countContractRef = useRef<RecommendationCountContract | undefined>(undefined);
   const recommendationNoticeRef = useRef('');
   const clientImageTimingRef = useRef<ClientImageTiming | null>(null);
@@ -449,11 +455,17 @@ export default function TodayPage() {
     const authContext = captureAuthContext();
     if (!authContext) return;
     markTodayPerformanceStage('localIdentityReady');
+    if (lastHandledRuntimeKeyRef.current === runtimeKey
+      && hasTodayRecommendationHardInvalid({ authContext })) {
+      void refreshHardInvalidRecommendation(authContext);
+      return;
+    }
     // A resumed Today tab is a normal restore entry, not only a return from
     // outfit detail. Keep the detail-intent gate for detail-specific callers,
     // but never let it suppress the user-scoped hot snapshot on a fresh run.
     recordTodayRestoreDispatchAttempt();
-    restoreTodaySnapshotFromDetail(authContext, { requireReturnIntent: false });
+    const restored = restoreTodaySnapshotFromDetail(authContext, { requireReturnIntent: false });
+    if (restored) void refreshDirtyRecommendation(authContext);
     const syncedOutfit = consumeOutfitStateSync({ authContext });
     if (syncedOutfit) {
       updateOutfitsByKey(syncedOutfit, syncedOutfit, authContext);
@@ -480,7 +492,13 @@ export default function TodayPage() {
     // before WeatherCard finishes location/auth/cloud work. Weather changes
     // continue through handleWeatherChange as a background refresh afterwards.
     recordTodayRestoreDispatchAttempt();
-    restoreTodaySnapshotFromDetail(captureAuthContext(), { requireReturnIntent: false });
+    const authContext = captureAuthContext();
+    if (authContext && hasTodayRecommendationHardInvalid({ authContext })) {
+      void refreshHardInvalidRecommendation(authContext);
+      return;
+    }
+    const restored = restoreTodaySnapshotFromDetail(authContext, { requireReturnIntent: false });
+    if (restored && authContext) void refreshDirtyRecommendation(authContext);
     if (currentWeatherRef.current) {
       void handleWeatherChange(currentWeatherRef.current, {
         weatherMode: currentWeatherModeRef.current,
@@ -547,6 +565,51 @@ export default function TodayPage() {
       if (!silent) setLoadingForRequest(joinedContext.requestSeq);
     }
     return run.promise;
+  }
+
+  async function refreshDirtyRecommendation(authContext: ActiveAuthContext) {
+    if (dirtyRefreshInFlightRef.current || outfitsRef.current.length === 0) return;
+    const dirty = getTodayRecommendationDirty({ authContext });
+    if (!dirty) return;
+    dirtyRefreshInFlightRef.current = true;
+    setRecommendationNotice(dirty.message);
+    try {
+      const refreshed = await requestRecommendations({
+        intentId: nextRecommendationIntentId(`dirty-${dirty.reason}`),
+        sceneKey: selectedSceneKeyRef.current,
+        weather: currentWeatherRef.current,
+        weatherMode: currentWeatherModeRef.current,
+        silent: true,
+        trigger: dirty.reason,
+      });
+      if (refreshed && isAuthContextCurrent(authContext)) {
+        clearTodayRecommendationDirty({ authContext });
+        setRecommendationNotice('');
+      }
+    } finally {
+      dirtyRefreshInFlightRef.current = false;
+    }
+  }
+
+  async function refreshHardInvalidRecommendation(authContext: ActiveAuthContext) {
+    if (hardRefreshInFlightRef.current) return;
+    hardRefreshInFlightRef.current = true;
+    resetUserState();
+    setRecommendationNotice('正在重新搭配…');
+    try {
+      const refreshed = await requestRecommendations({
+        intentId: nextRecommendationIntentId('hard-invalid'),
+        sceneKey: selectedSceneKeyRef.current,
+        weather: currentWeatherRef.current,
+        weatherMode: currentWeatherModeRef.current,
+        trigger: 'hard-invalid',
+      });
+      if (refreshed && isAuthContextCurrent(authContext)) {
+        clearTodayRecommendationHardInvalid({ authContext });
+      }
+    } finally {
+      hardRefreshInFlightRef.current = false;
+    }
   }
 
   async function fetchRecommendations({
@@ -1243,7 +1306,11 @@ export default function TodayPage() {
     }
 
     try {
-      if (outfitsRef.current.length > 0) markTodayPerformanceStage('backgroundRefreshStart');
+      const hasVisibleBatch = outfitsRef.current.length > 0;
+      if (hasVisibleBatch) {
+        markTodayPerformanceStage('backgroundRefreshStart');
+        setRecommendationNotice('天气变了，正在更新搭配…');
+      }
       const refreshed = await requestRecommendations({
         intentId: outfitsRef.current.length === 0
           ? entryIntentIdRef.current
@@ -1254,7 +1321,10 @@ export default function TodayPage() {
         silent: outfitsRef.current.length > 0,
         trigger: options.forceRefresh ? 'weather-force' : 'weather',
       });
-      if (outfitsRef.current.length > 0) markTodayPerformanceStage('backgroundRefreshEnd');
+      if (hasVisibleBatch) {
+        markTodayPerformanceStage('backgroundRefreshEnd');
+        setRecommendationNotice(refreshed ? '已按最新天气更新' : '天气更新暂时失败，先保留当前搭配');
+      }
       markTodayPerformanceStage('weatherEnd');
       return refreshed ? 'refreshed' : 'failed';
     } catch (error) {
@@ -1619,19 +1689,10 @@ export default function TodayPage() {
     if (snapshot.selectedSceneKey !== selectedSceneKeyRef.current) { markTodayPerformanceStage('snapshotRejectReason', 'SCENE'); return false; }
     if (snapshot.scene !== selectedSceneRef.current) { markTodayPerformanceStage('snapshotRejectReason', 'SCENE_TAG'); return false; }
     if (snapshot.sceneSnapshotKey !== getSceneSnapshotKey(snapshot.scene, getSnapshotWeatherFingerprint(snapshot))) { markTodayPerformanceStage('snapshotRejectReason', 'FINGERPRINT'); return false; }
-    if (hasWardrobeRefreshSignal()) { markTodayPerformanceStage('snapshotRejectReason', 'WARDROBE_REFRESH'); return false; }
     if (!snapshot.outfits.every(hasCurrentNewRecommendationCopy)) { markTodayPerformanceStage('snapshotRejectReason', 'COPY_CONTRACT'); return false; }
     const valid = isValidSceneSnapshotCountState(snapshot);
     if (!valid) markTodayPerformanceStage('snapshotRejectReason', 'COUNT_CONTRACT');
     return valid;
-  }
-
-  function hasWardrobeRefreshSignal() {
-    try {
-      return Boolean(getUserStorageSync(WARDROBE_REFRESH_STORAGE_KEY));
-    } catch {
-      return false;
-    }
   }
 
   function getRecommendationInputVersions(authContext?: ActiveAuthContext | null) {
@@ -2133,6 +2194,14 @@ export default function TodayPage() {
   }
 
   const currentOutfit = outfits[currentIndex];
+  useEffect(() => {
+    if (!loading && !operation) {
+      setShowDelayedRequestHint(false);
+      return undefined;
+    }
+    const timer = setTimeout(() => setShowDelayedRequestHint(true), 300);
+    return () => clearTimeout(timer);
+  }, [loading, operation]);
   const isRefreshing = operation === 'refresh';
   const isNoMoreRecommendations = isNoMoreRecommendationState({
     batchExhausted,
@@ -2243,7 +2312,7 @@ export default function TodayPage() {
       </View>
 
       <View className="outfit-section">
-        {loading && !currentOutfit && (
+        {loading && !currentOutfit && showDelayedRequestHint && (
           <View className="loading-state">
             <View className="loading-spinner" />
             <Text className="loading-text">{getProductStateCopy('loading')}</Text>
@@ -2289,7 +2358,7 @@ export default function TodayPage() {
 
         {currentOutfit && (
           <View className="recommendation-browser">
-            {loading && (
+            {loading && showDelayedRequestHint && (
               <View className="scene-loading-overlay">
                 <View className="loading-spinner small" />
                 <Text className="scene-loading-text">{getProductStateCopy('refreshing')}</Text>
@@ -2397,7 +2466,7 @@ export default function TodayPage() {
             </View>
 
             <View className={`refresh-btn ${isRefreshing || isNoMoreRecommendations ? 'disabled' : ''}`} onClick={() => { void handleRefresh(); }}>
-              <Text className="refresh-text">{isRefreshing ? '正在找灵感...' : isNoMoreRecommendations ? '这一轮已看完' : '换一批灵感'}</Text>
+              <Text className="refresh-text">{isRefreshing && showDelayedRequestHint ? '正在换一批…' : isNoMoreRecommendations ? '这一轮已看完' : '换一批灵感'}</Text>
             </View>
           </View>
         )}

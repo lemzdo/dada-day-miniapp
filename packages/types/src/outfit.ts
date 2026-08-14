@@ -666,6 +666,22 @@ export interface AestheticCompatibilityEvaluationV1 {
   evidence: AestheticEvidenceV1[];
 }
 
+export interface RecommendationCanonicalCopyV2 {
+  version: 'recommendation-canonical-copy-runtime-v2.0';
+  batchIndex: number;
+  batchTotal: number;
+  planHash: string;
+  renderInputFingerprint: string;
+  source: 'ai_cache' | 'safe' | 'legacy_emergency';
+  text: string;
+  aiState: 'ready' | 'materializing' | 'not_requested';
+  contractVersion: string;
+  model: string;
+  modelRouteVersion: string;
+  safeRendererVersion: string;
+  safeFailureCode?: string;
+}
+
 export interface Outfit {
   id: string;
   userId: string;
@@ -793,6 +809,7 @@ export interface Outfit {
   evidenceCodes?: string[];
   aiComment?: OutfitAiComment;
   aestheticEvaluation?: AestheticCompatibilityEvaluationV1;
+  canonicalRecommendationCopyV2?: RecommendationCanonicalCopyV2;
 }
 
 export interface OutfitScores {
@@ -977,6 +994,8 @@ export interface RecommendationPerformanceLedger {
 }
 
 export interface RecommendationDiagnosticsTimings {
+  tCoreMs?: number;
+  tSafeMs?: number;
   dataLoadMs: number;
   identityMs: number;
   candidatePoolLoadMs: number;
@@ -1352,6 +1371,15 @@ export interface RecommendResponse {
     placeholderTitleCount?: number;
     qaGatePassed?: boolean;
     qaBlockReasons?: string[];
+    canonicalCopyRuntimeV2?: {
+      version: string;
+      status: 'ready' | 'partially_failed_open';
+      expectedCopyCount: number;
+      resolvedCopyCount: number;
+      aiCacheHitCount: number;
+      safeCopyCount: number;
+      legacyEmergencyCount: number;
+    };
   };
 }
 

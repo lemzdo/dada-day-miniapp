@@ -4,6 +4,8 @@ const { validateRecommendationNarrativePlanV2 } = require('./recommendationNarra
 const {
   VOICE_RENDERER_CONTRACT_VERSION,
   VOICE_RENDERER_GENERATION_PARAMETERS,
+  VOICE_RENDERER_FLASH_MODEL,
+  VOICE_RENDERER_FLASH_MODEL_ROUTE_VERSION,
   VOICE_RENDERER_INPUT_VERSION,
   VOICE_RENDERER_MODEL,
   VOICE_RENDERER_MODEL_ROUTE_VERSION,
@@ -40,6 +42,7 @@ function readRecommendationVoiceRendererBenchmarkConfig(event) {
 
 function isRecommendationVoiceRendererShadowEnabled(event = {}, env = process.env) {
   return env.RECOMMENDATION_VOICE_RENDERER_SHADOW_ENABLED === 'true'
+    || env.RECOMMENDATION_CANONICAL_COPY_V2_ENABLED === 'true'
     || authorizedBenchmarkEvents.has(event);
 }
 
@@ -49,10 +52,12 @@ function buildRecommendationVoiceRendererExecution(event, stylingShadow, recomme
   const common = { plans: readArray(stylingShadow.plans), recommendations: readArray(recommendations) };
   if (benchmark?.compare) return {
     enabled: true,
+    waitForResult: true,
     promise: runRecommendationVoiceRendererBenchmarkV2Safely(common),
   };
   return {
     enabled: true,
+    waitForResult: false,
     promise: runRecommendationVoiceRendererShadowV2Safely({
       ...common,
       mode: 'single',
@@ -71,14 +76,24 @@ async function runRecommendationVoiceRendererShadowV2Safely(input = {}) {
 
 async function runRecommendationVoiceRendererBenchmarkV2Safely(input = {}) {
   clearRecommendationVoiceRendererShadowCache();
-  const [single, batch] = await Promise.all([
+  const [single, batch, flash] = await Promise.all([
     runRecommendationVoiceRendererShadowV2Safely({ ...input, mode: 'single', cacheMode: 'bypass', includeReview: true }),
     runRecommendationVoiceRendererShadowV2Safely({ ...input, mode: 'batch', cacheMode: 'use', includeReview: true }),
+    runRecommendationVoiceRendererShadowV2Safely({
+      ...input,
+      mode: 'batch',
+      cacheMode: 'bypass',
+      includeReview: true,
+      model: VOICE_RENDERER_FLASH_MODEL,
+      modelRouteVersion: VOICE_RENDERER_FLASH_MODEL_ROUTE_VERSION,
+    }),
   ]);
   const cacheProbe = await runRecommendationVoiceRendererShadowV2Safely({ ...input, mode: 'single', cacheMode: 'use', includeReview: false });
   return {
       version: RECOMMENDATION_VOICE_RENDERER_SHADOW_VERSION,
-      status: single.status === 'completed' && batch.status === 'completed' ? 'completed' : 'partially_failed_open',
+      status: single.status === 'completed' && batch.status === 'completed' && flash.status === 'completed'
+        ? 'completed'
+        : 'partially_failed_open',
       benchmark: true,
       contractVersion: VOICE_RENDERER_CONTRACT_VERSION,
       modelRouteVersion: VOICE_RENDERER_MODEL_ROUTE_VERSION,
@@ -88,6 +103,8 @@ async function runRecommendationVoiceRendererBenchmarkV2Safely(input = {}) {
       exactTextAgreementCount: countExactTextAgreement(single.reviewSamples, batch.reviewSamples),
       single,
       batch,
+      flash,
+      modelComparison: { max: batch, flash },
       cacheProbe,
   };
 }
@@ -100,6 +117,9 @@ async function runRecommendationVoiceRendererShadowV2({
   includeReview = false,
   apiKey = process.env.BAILIAN_API_KEY || process.env.DASHSCOPE_API_KEY,
   baseUrl = process.env.BAILIAN_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+  model = VOICE_RENDERER_MODEL,
+  modelRouteVersion = VOICE_RENDERER_MODEL_ROUTE_VERSION,
+  generationParameters = VOICE_RENDERER_GENERATION_PARAMETERS,
   invoke = invokeProvider,
 } = {}) {
   const startedAt = Date.now();
@@ -107,42 +127,64 @@ async function runRecommendationVoiceRendererShadowV2({
   const entries = matchPlansToRecommendations(plans, recommendations).map(({ plan, recommendation }) => ({
     plan,
     input: buildRendererInputFromNarrativePlan(plan, recommendation),
-  }));
+  })).map((entry) => {
+    const renderInputFingerprint = buildRenderInputFingerprint(entry.input, {
+      model,
+      modelRouteVersion,
+      generationParameters,
+    });
+    return {
+      ...entry,
+      renderInputFingerprint,
+      cacheKey: buildCacheKey(renderInputFingerprint),
+    };
+  });
   const resolved = [];
   const misses = [];
   for (const entry of entries) {
-    const cacheKey = buildCacheKey(entry.plan);
-    const cached = cacheMode === 'use' ? shadowCopyCache.get(cacheKey) : null;
-    if (cached) resolved.push({ ...cached, cacheHit: true });
-    else misses.push({ ...entry, cacheKey });
+    const cached = cacheMode === 'use' ? shadowCopyCache.get(entry.cacheKey) : null;
+    if (cached) {
+      resolved.push(buildCopyRecord(entry.plan, entry.input, cached, true, entry.renderInputFingerprint));
+    } else {
+      misses.push(entry);
+    }
   }
   const groups = mode === 'batch' ? chunk(misses, 8) : misses.map((entry) => [entry]);
   const callResults = await Promise.all(groups.map(async (group) => {
     const callStartedAt = Date.now();
-    const request = buildVoiceRendererV2Request(group.map((entry) => entry.input));
+    const request = buildVoiceRendererV2Request(group.map((entry) => entry.input), {
+      model,
+      generationParameters,
+    });
     const response = await invoke({ apiKey, baseUrl, request });
     if (Number(response.status) !== 200) throw new Error(`VOICE_RENDERER_HTTP:${response.status}`);
-    if (response.body?.model !== VOICE_RENDERER_MODEL) throw new Error('VOICE_RENDERER_MODEL_MISMATCH');
+    if (response.body?.model !== model) throw new Error('VOICE_RENDERER_MODEL_MISMATCH');
     const outputs = parseVoiceRendererV2Outputs(response.body?.choices?.[0]?.message?.content, group.map((entry) => entry.input));
     outputs.forEach((output) => {
       const entry = group.find((candidate) => candidate.input.planId === output.planId);
       if (!entry) throw new Error('VOICE_RENDERER_OUTPUT_PLAN_BINDING');
-      const copy = buildCopyRecord(entry.plan, entry.input, output, false);
+      const copy = buildCopyRecord(entry.plan, entry.input, output, false, entry.renderInputFingerprint);
       if (cacheMode === 'use') writeCache(entry.cacheKey, copy);
     });
     return {
       copies: outputs.map((output) => {
         const entry = group.find((candidate) => candidate.input.planId === output.planId);
-        return buildCopyRecord(entry.plan, entry.input, output, false);
+        return buildCopyRecord(entry.plan, entry.input, output, false, entry.renderInputFingerprint);
       }),
       planCount: group.length,
       latencyMs: Date.now() - callStartedAt,
+      ttftMs: Number(response.ttftMs) || Date.now() - callStartedAt,
       usage: sanitizeUsage(response.body?.usage),
     };
   }));
-  const calls = callResults.map(({ copies, ...call }) => call);
+  const calls = callResults.map((call) => ({
+    planCount: call.planCount,
+    latencyMs: call.latencyMs,
+    ttftMs: call.ttftMs,
+    usage: call.usage,
+  }));
   resolved.push(...callResults.flatMap((result) => result.copies));
-  const ordered = entries.map((entry) => resolved.find((copy) => copy.planHash === entry.plan.planHash));
+  const ordered = entries.map((entry) => resolved.find((copy) => copy.planId === entry.plan.planId));
   if (ordered.some((entry) => !entry)) throw new Error('VOICE_RENDERER_RESULT_COMPLETENESS');
   const usage = sumUsage(calls.map((call) => call.usage));
   const cacheHitCount = ordered.filter((entry) => entry.cacheHit).length;
@@ -151,8 +193,8 @@ async function runRecommendationVoiceRendererShadowV2({
     version: RECOMMENDATION_VOICE_RENDERER_SHADOW_VERSION,
     status: 'completed',
     contractVersion: VOICE_RENDERER_CONTRACT_VERSION,
-    modelRouteVersion: VOICE_RENDERER_MODEL_ROUTE_VERSION,
-    model: VOICE_RENDERER_MODEL,
+    modelRouteVersion,
+    model,
     executionMode: mode,
     planCount: entries.length,
     renderedCount: ordered.length,
@@ -161,6 +203,7 @@ async function runRecommendationVoiceRendererShadowV2({
     cacheMissCount: entries.length - cacheHitCount,
     requestCount: calls.length,
     latencyMs: Date.now() - startedAt,
+    ttftMs: calls.length > 0 ? Math.max(...calls.map((call) => call.ttftMs || 0)) : 0,
     providerLatencyMs: calls.reduce((sum, call) => sum + call.latencyMs, 0),
     usage,
     automatedContract: {
@@ -168,7 +211,7 @@ async function runRecommendationVoiceRendererShadowV2({
       failCount: checks.filter((check) => !check.pass).length,
       failureCounts: countValues(checks.flatMap((check) => check.failures)),
     },
-    planIdentities: ordered.map(toPlanIdentity),
+    planIdentities: ordered.map((copy) => toPlanIdentity(copy, modelRouteVersion)),
     ...(includeReview ? { reviewSamples: ordered.slice(0, MAX_REVIEW_SAMPLES).map(toReviewSample) } : {}),
   };
 }
@@ -178,7 +221,11 @@ function buildRendererInputFromNarrativePlan(plan, recommendation = {}) {
   if (!validation.valid) throw new Error(`VOICE_RENDERER_PLAN_INVALID:${validation.errors[0] || 'unknown'}`);
   const items = readArray(recommendation.items);
   const itemById = new Map(items.map((item) => [readItemId(item), item]));
-  const garments = plan.identity.outfitComposition.itemIds.map((itemId) => readGarmentName(itemById.get(itemId))).filter(Boolean);
+  const selectedItemIds = new Set(plan.identity.outfitComposition.itemIds);
+  const garments = items
+    .filter((item) => selectedItemIds.has(readItemId(item)))
+    .map(readGarmentName)
+    .filter(Boolean);
   if (garments.length === 0) throw new Error('VOICE_RENDERER_PLAN_GARMENTS');
   const primary = plan.insights.primary;
   const permission = primary
@@ -243,12 +290,15 @@ async function invokeProvider({ apiKey, baseUrl, request }) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 25000);
   let response;
+  const startedAt = Date.now();
+  let ttftMs = 0;
   try {
     response = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST', signal: controller.signal,
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(request),
     });
+    ttftMs = Date.now() - startedAt;
   } finally {
     clearTimeout(timeout);
   }
@@ -256,7 +306,7 @@ async function invokeProvider({ apiKey, baseUrl, request }) {
   let body;
   try { body = JSON.parse(text); } catch { throw new Error(`VOICE_RENDERER_PROVIDER_JSON:${response.status}`); }
   if (!response.ok) throw new Error(`VOICE_RENDERER_PROVIDER_HTTP:${response.status}:${body?.error?.code || 'unknown'}`);
-  return { status: response.status, body };
+  return { status: response.status, body, ttftMs, totalLatencyMs: Date.now() - startedAt };
 }
 
 function matchPlansToRecommendations(plans, recommendations) {
@@ -269,11 +319,11 @@ function matchPlansToRecommendations(plans, recommendations) {
   });
 }
 
-function buildCopyRecord(plan, input, output, cacheHit) {
+function buildCopyRecord(plan, input, output, cacheHit, renderInputFingerprint) {
   return {
     planId: plan.planId,
     planHash: plan.planHash,
-    insightId: output.insightId,
+    insightId: input.primary?.insightId || null,
     text: output.text,
     expressionMode: plan.expressionStrategy.mode,
     primaryInsightCode: plan.insights.primary?.insightCode || null,
@@ -281,10 +331,48 @@ function buildCopyRecord(plan, input, output, cacheHit) {
     authorizedMeaning: input.primary?.meaning || null,
     garments: input.garments.slice(),
     allowedClaims: input.allowedClaims.slice(),
+    renderInputFingerprint,
     cacheHit,
   };
 }
-function buildCacheKey(plan) { return `${plan.planHash}:${VOICE_RENDERER_CONTRACT_VERSION}:${VOICE_RENDERER_MODEL_ROUTE_VERSION}`; }
+function buildRenderInputFingerprint(input, options = {}) {
+  return crypto.createHash('sha256').update(stableSerialize({
+    semanticMeaning: input?.primary?.meaning || null,
+    expressionMode: input?.expressionMode,
+    subjectGarments: readArray(input?.primary?.subjectGarments),
+    garments: readArray(input?.garments),
+    allowedClaims: readArray(input?.allowedClaims).slice().sort(),
+    scene: readText(input?.scene) || null,
+    personaVersion: input?.personaVersion,
+    contractVersion: VOICE_RENDERER_CONTRACT_VERSION,
+    modelRouteVersion: readText(options.modelRouteVersion) || VOICE_RENDERER_MODEL_ROUTE_VERSION,
+    model: readText(options.model) || VOICE_RENDERER_MODEL,
+    generationParameters: options.generationParameters || VOICE_RENDERER_GENERATION_PARAMETERS,
+    locale: input?.languageConstraints?.locale || 'zh-CN',
+  })).digest('hex');
+}
+function buildCacheKey(renderInputFingerprint) { return `voice-copy-v2:${renderInputFingerprint}`; }
+function readCachedRecommendationVoiceCopies({
+  plans = [], recommendations = [], model = VOICE_RENDERER_MODEL,
+  modelRouteVersion = VOICE_RENDERER_MODEL_ROUTE_VERSION,
+  generationParameters = VOICE_RENDERER_GENERATION_PARAMETERS,
+} = {}) {
+  return matchPlansToRecommendations(plans, recommendations).map(({ plan, recommendation }) => {
+    const input = buildRendererInputFromNarrativePlan(plan, recommendation);
+    const renderInputFingerprint = buildRenderInputFingerprint(input, {
+      model, modelRouteVersion, generationParameters,
+    });
+    const cached = shadowCopyCache.get(buildCacheKey(renderInputFingerprint));
+    return {
+      planId: plan.planId,
+      planHash: plan.planHash,
+      renderInputFingerprint,
+      copy: cached
+        ? buildCopyRecord(plan, input, cached, true, renderInputFingerprint)
+        : null,
+    };
+  });
+}
 function writeCache(key, copy) {
   if (shadowCopyCache.has(key)) shadowCopyCache.delete(key);
   shadowCopyCache.set(key, { ...copy, cacheHit: false });
@@ -296,8 +384,8 @@ function buildFailOpenResult(error, input = {}) {
     version: RECOMMENDATION_VOICE_RENDERER_SHADOW_VERSION,
     status: 'failed_open',
     contractVersion: VOICE_RENDERER_CONTRACT_VERSION,
-    modelRouteVersion: VOICE_RENDERER_MODEL_ROUTE_VERSION,
-    model: VOICE_RENDERER_MODEL,
+    modelRouteVersion: input.modelRouteVersion || VOICE_RENDERER_MODEL_ROUTE_VERSION,
+    model: input.model || VOICE_RENDERER_MODEL,
     executionMode: input.mode === 'batch' ? 'batch' : 'single',
     planCount: readArray(input.plans).length,
     renderedCount: 0,
@@ -314,7 +402,7 @@ function buildFailOpenResult(error, input = {}) {
     ...(input.includeReview ? { reviewSamples: [] } : {}),
   };
 }
-function toPlanIdentity(copy) { return { planHash: copy.planHash, contractVersion: VOICE_RENDERER_CONTRACT_VERSION, modelRouteVersion: VOICE_RENDERER_MODEL_ROUTE_VERSION, cacheHit: copy.cacheHit }; }
+function toPlanIdentity(copy, modelRouteVersion = VOICE_RENDERER_MODEL_ROUTE_VERSION) { return { planHash: copy.planHash, renderInputFingerprint: copy.renderInputFingerprint, contractVersion: VOICE_RENDERER_CONTRACT_VERSION, modelRouteVersion, cacheHit: copy.cacheHit }; }
 function toReviewSample(copy) { return { anonymousCaseId: shortHash(copy.planHash), planHash: copy.planHash, insightIdHash: shortHash(copy.insightId || 'baseline'), expressionMode: copy.expressionMode, primaryInsightCode: copy.primaryInsightCode, sceneCategory: copy.sceneCategory, authorizedMeaning: copy.authorizedMeaning, garments: copy.garments.slice(), allowedClaims: copy.allowedClaims.slice(), text: copy.text, cacheHit: copy.cacheHit }; }
 function samePlanSet(left, right) { return readArray(left).map((entry) => entry.planHash).sort().join('|') === readArray(right).map((entry) => entry.planHash).sort().join('|'); }
 function isBatchQualityNotDegraded(single, batch) {
@@ -377,7 +465,21 @@ function sanitizeUsage(usage = {}) { return { promptTokens: Number(usage.prompt_
 function sumUsage(entries) { return entries.reduce((sum, entry) => ({ promptTokens: sum.promptTokens + entry.promptTokens, completionTokens: sum.completionTokens + entry.completionTokens, totalTokens: sum.totalTokens + entry.totalTokens, cachedTokens: sum.cachedTokens + entry.cachedTokens }), sanitizeUsage()); }
 function chunk(values, size) { const groups = []; for (let index = 0; index < values.length; index += size) groups.push(values.slice(index, index + size)); return groups; }
 function joinNames(values) { return values.length <= 1 ? values[0] : `${values.slice(0, -1).join('、')}和${values.at(-1)}`; }
-function readGarmentName(item) { return limitText(item?.customName || item?.displayName || item?.subCategory || item?.subcategory || item?.name || item?.category || '单品', 32); }
+function readGarmentName(item) {
+  const value = item?.customName || item?.displayName || item?.subCategory
+    || item?.subcategory || item?.name || item?.category || '单品';
+  const text = readText(value);
+  const normalized = text.toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const labels = {
+    top: '上衣', 'warm top': '上衣', shirt: '衬衫', blouse: '衬衫',
+    bottom: '下装', 'warm bottom': '下装', pants: '长裤', trousers: '长裤', skirt: '半裙',
+    shoes: '鞋子', shoe: '鞋子', 'business shoe': '皮鞋', sneakers: '运动鞋',
+    outerwear: '外套', jacket: '外套', coat: '外套',
+    onepiece: '连衣裙', 'one piece': '连衣裙', dress: '连衣裙',
+    accessory: '配饰', unknown: '单品',
+  };
+  return limitText(labels[normalized] || text || '单品', 32);
+}
 function readItemId(item) { return readText(item?._id || item?.id || item?.clothingId || item?.itemId); }
 function sceneLabel(value) { return ({ home: '居家', '居家': '居家', work: '上班', '上班': '上班', date: '约会', '约会': '约会', sport: '运动', '运动': '运动' })[readText(value).toLowerCase()] || ''; }
 function limitText(value, max) { return [...readText(value)].slice(0, max).join(''); }
@@ -385,14 +487,23 @@ function shortHash(value) { return crypto.createHash('sha256').update(String(val
 function readErrorCode(error) { return limitText(error?.businessCode || error?.code || error?.message || error?.name || 'VOICE_RENDERER_UNKNOWN', 80).replace(/[^A-Z0-9_:.-]/gi, '_'); }
 function readText(value) { return typeof value === 'string' ? value.trim() : ''; }
 function readArray(value) { return Array.isArray(value) ? value : []; }
+function stableSerialize(value) {
+  if (Array.isArray(value)) return `[${value.map(stableSerialize).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableSerialize(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
 
 module.exports = {
   RECOMMENDATION_VOICE_RENDERER_SHADOW_VERSION,
   authorizeRecommendationVoiceRendererBenchmark,
   buildRecommendationVoiceRendererExecution,
+  buildRenderInputFingerprint,
   buildRendererInputFromNarrativePlan,
   clearRecommendationVoiceRendererShadowCache,
   isRecommendationVoiceRendererShadowEnabled,
+  readCachedRecommendationVoiceCopies,
   readRecommendationVoiceRendererBenchmarkConfig,
   runRecommendationVoiceRendererBenchmarkV2Safely,
   runRecommendationVoiceRendererShadowV2,

@@ -18,6 +18,7 @@ async function runCloud({
     return await run({
       outputDir: artifactDirectory,
       repetitions,
+      modelAliases: ['max', 'flash'],
       invoke: createCloudInvoke(mini, token),
     });
   } finally {

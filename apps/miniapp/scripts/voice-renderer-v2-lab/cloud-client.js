@@ -73,6 +73,7 @@ function createCloudInvoke(mini, benchmarkToken) {
         promptVersion: data.promptVersion,
         inputVersion: data.inputVersion,
         providerLatencyMs: data.providerLatencyMs,
+        ttftMs: data.ttftMs,
         requestShape: data.requestShape,
         promptSha256: data.promptSha256,
         inputSha256: data.inputSha256,

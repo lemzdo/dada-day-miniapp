@@ -14,6 +14,11 @@ const {
 const {
   buildRecommendationVoiceRendererExecution,
 } = require('./services/recommendationVoiceRendererShadowV2');
+const {
+  attachRecommendationCanonicalCopiesV2,
+  buildRecommendationCanonicalCopyBatchV2,
+  isRecommendationCanonicalCopyRuntimeV2Enabled,
+} = require('./services/recommendationCanonicalCopyRuntimeV2');
 const { loadActiveWardrobe } = require('./services/loadActiveWardrobe');
 const {
   createAiReviewServiceError,
@@ -451,7 +456,8 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
   }
   // Phase A shadow branch: consume only selected-candidate facts and evidence.
   // It intentionally runs before, and independently from, Legacy Presentation.
-  const stylingShadow = isRecommendationStylingShadowEnabled(event)
+  const canonicalCopyRuntimeV2Enabled = isRecommendationCanonicalCopyRuntimeV2Enabled(event);
+  const stylingShadow = (isRecommendationStylingShadowEnabled(event) || canonicalCopyRuntimeV2Enabled)
     ? runRecommendationStylingShadowV2Safely({
         recommendations,
         scene,
@@ -460,8 +466,48 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
       })
     : null;
   diagnostics.stylingIntelligenceShadow = stylingShadow?.diagnostics || null;
+  if (canonicalCopyRuntimeV2Enabled) {
+    diagnostics.timings.tCoreMs = Date.now() - diagnostics.startedAt;
+  }
   const voiceRendererExecution = buildRecommendationVoiceRendererExecution(event, stylingShadow, recommendations);
   const voiceRendererShadowPromise = voiceRendererExecution.promise || Promise.resolve(null);
+  if (voiceRendererExecution.enabled && voiceRendererExecution.waitForResult !== true) {
+    diagnostics.recommendationVoiceRendererShadow = {
+      status: 'materializing_non_blocking',
+      waitForResult: false,
+      planCount: stylingShadow?.plans?.length || 0,
+    };
+    voiceRendererShadowPromise.then((result) => {
+      console.log('[RecommendationVoiceRendererMaterialized]', {
+        auditId: diagnostics.auditId,
+        status: result?.status || 'unknown',
+        latencyMs: result?.latencyMs || 0,
+        ttftMs: result?.ttftMs || 0,
+        cacheHitCount: result?.cacheHitCount || 0,
+        cacheMissCount: result?.cacheMissCount || 0,
+      });
+    });
+  }
+  const safeCopyStartedAt = Date.now();
+  const canonicalCopyBatchV2 = canonicalCopyRuntimeV2Enabled
+    ? buildRecommendationCanonicalCopyBatchV2({
+        plans: stylingShadow?.plans || [],
+        recommendations,
+        aiMaterializationRequested: voiceRendererExecution.enabled === true,
+      })
+    : null;
+  if (canonicalCopyRuntimeV2Enabled) {
+    diagnostics.timings.tSafeMs = Date.now() - safeCopyStartedAt;
+    diagnostics.canonicalCopyRuntimeV2 = {
+      version: canonicalCopyBatchV2.version,
+      status: canonicalCopyBatchV2.status,
+      expectedCopyCount: canonicalCopyBatchV2.expectedCopyCount,
+      resolvedCopyCount: canonicalCopyBatchV2.resolvedCopyCount,
+      aiCacheHitCount: canonicalCopyBatchV2.aiCacheHitCount,
+      safeCopyCount: canonicalCopyBatchV2.safeCopyCount,
+      legacyEmergencyCount: canonicalCopyBatchV2.legacyEmergencyCount,
+    };
+  }
   let snapshotPromise = null;
   let snapshotOps = null;
   let snapshotUpsertStartedAt = 0;
@@ -487,7 +533,13 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
         diagnostics.timings.cardPreparation.finalizationMs = Date.now() - finalizationStartedAt;
         const finalRecommendations = finalized.finalRecommendations;
         const canonicalizationStartedAt = Date.now();
-        const canonicalRecommendations = canonicalizeRecommendationBatch(finalRecommendations, { scene });
+        let canonicalRecommendations = canonicalizeRecommendationBatch(finalRecommendations, { scene });
+        if (canonicalCopyBatchV2) {
+          canonicalRecommendations = attachRecommendationCanonicalCopiesV2(
+            canonicalRecommendations,
+            canonicalCopyBatchV2,
+          );
+        }
         diagnostics.timings.cardPreparation.canonicalizationMs = Date.now() - canonicalizationStartedAt;
         const snapshotInputStartedAt = Date.now();
         diagnostics.snapshotPayloadBytes = serializedBytes(canonicalRecommendations);
@@ -544,7 +596,9 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
   };
   let poolPersist = null;
   if (recommendations.length === 0) {
-    diagnostics.recommendationVoiceRendererShadow = await voiceRendererShadowPromise;
+    if (voiceRendererExecution.waitForResult === true) {
+      diagnostics.recommendationVoiceRendererShadow = await voiceRendererShadowPromise;
+    }
     poolPersist = await candidatePoolPersistPromise;
     if (poolPersist && poolPersist.status !== 'saved') {
       recommendationBatchId = undefined;
@@ -609,6 +663,9 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
     requestedCandidatePoolIdPresent: diagnostics.requestedCandidatePoolIdPresent ?? false,
     requestedCandidatePoolIdLength: diagnostics.requestedCandidatePoolIdLength ?? 0,
     countContract: responseCountContract,
+    ...(diagnostics.canonicalCopyRuntimeV2
+      ? { canonicalCopyRuntimeV2: diagnostics.canonicalCopyRuntimeV2 }
+      : {}),
     ...(diagnostics.diagnosticsRequested === true && diagnostics.performanceOnly !== true
       ? { phaseLedger: diagnostics.phases }
       : {}),
@@ -714,7 +771,9 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
     copyHiddenCount,
     canonicalRecommendations,
   } = await cardCompilationPromise;
-  diagnostics.recommendationVoiceRendererShadow = await voiceRendererShadowPromise;
+  if (voiceRendererExecution.waitForResult === true) {
+    diagnostics.recommendationVoiceRendererShadow = await voiceRendererShadowPromise;
+  }
   poolPersist = await candidatePoolPersistPromise;
   if (poolPersist && poolPersist.status !== 'saved') {
     recommendationBatchId = undefined;
@@ -1061,7 +1120,8 @@ const PUBLIC_OUTFIT_RESPONSE_FIELDS = [
   'styleTags', 'createdAt', 'updatedAt', 'reason', 'reasoning', 'reasonVersion', 'copyContract',
   'copyContractVersion', 'voiceBankVersion', 'riskFlags', 'copyGateResult', 'copyRiskFlags',
   'copyDisplay', 'defaultCopyHidden', 'copyFinalizationMode', 'aestheticEvaluation',
-  'contentPlan', 'xiaodaStyleInsight', 'items', 'snapshotItems', 'outfitKind', 'outfitReferenceStage',
+  'contentPlan', 'xiaodaStyleInsight', 'canonicalRecommendationCopyV2',
+  'items', 'snapshotItems', 'outfitKind', 'outfitReferenceStage',
 ];
 
 function pickPublicOutfitFields(outfit) {

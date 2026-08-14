@@ -614,7 +614,7 @@ export default function UploadConfirmPage() {
       await invalidateAfterConfirmDraftsSaved({ authContext });
       if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
       setUserStorageSync(WARDROBE_REFRESH_STORAGE_KEY, true, { authContext });
-      Taro.showToast({ title: '已保存到衣柜', icon: 'success' });
+      Taro.showToast({ title: '新衣服已加入，正在更新搭配', icon: 'none' });
       setTimeout(() => {
         if (isFlowCurrent(authContext, flowRuntimeKey)) navigateToWardrobe();
       }, 700);

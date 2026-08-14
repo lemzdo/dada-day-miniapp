@@ -1,5 +1,7 @@
 'use strict';
 
+/* global __VOICE_RENDERER_V2_PROMPT_VERSION__, __VOICE_RENDERER_V2_INPUT_VERSION__, __VOICE_RENDERER_V2_PERSONA_VERSION__, __VOICE_RENDERER_V2_SYSTEM_PROMPT__, __VOICE_RENDERER_V2_MODEL_ALLOWLIST__, __VOICE_RENDERER_V2_GENERATION_PARAMETERS__ */
+
 const crypto = require('node:crypto');
 
 const ACTION = 'voiceRendererV2Benchmark';
@@ -93,6 +95,7 @@ async function runVoiceRendererV2Benchmark(event = {}) {
       ],
     }),
   });
+  const ttftMs = Date.now() - startedAt;
   const rawBody = await response.text();
   let providerResponse;
   try { providerResponse = JSON.parse(rawBody); } catch { throw new Error(`PROVIDER_JSON:${response.status}`); }
@@ -109,6 +112,7 @@ async function runVoiceRendererV2Benchmark(event = {}) {
     returnedModel: providerResponse.model,
     httpStatus: response.status,
     providerLatencyMs: Date.now() - startedAt,
+    ttftMs,
     requestShape: {
       batchSize: event.inputs.length,
       temperature: GENERATION_PARAMETERS.temperature,

@@ -2,7 +2,10 @@ import { View, Text, ScrollView } from '@tarojs/components';
 import Taro, { useLoad, useUnload } from '@tarojs/taro';
 import { useCallback, useRef, useState, type ReactNode } from 'react';
 import { useBoundUserFlow } from '@/hooks/useBoundUserFlow';
-import { invalidateAfterProfileMutation } from '@/lib/cacheInvalidation';
+import {
+  classifyRecommendationProfileInvalidation,
+  invalidateAfterProfileMutation,
+} from '@/lib/cacheInvalidation';
 import { updateCloudUserProfile } from '@/lib/cloud';
 import {
   captureAuthContext,
@@ -201,7 +204,7 @@ export default function StylePreferencesPage() {
     try {
       const saved = await saveRecommendationProfileForFlow(profile, authContext, flowRuntimeKey);
       if (!saved) return;
-      Taro.showToast({ title: '已保存风格画像', icon: 'success' });
+      Taro.showToast({ title: '偏好已保存，正在重新搭配', icon: 'none' });
       initialSnapshot.current = profile;
       saveTimerRef.current = setTimeout(() => {
         if (isFlowCurrent(authContext, flowRuntimeKey)) goNext();
@@ -226,13 +229,18 @@ export default function StylePreferencesPage() {
     flowRuntimeKey: string | null,
   ) {
     if (!isFlowCurrent(authContext, flowRuntimeKey)) return false;
+    const previousProfile = useUserStore.getState().recommendationProfile;
     await updateCloudUserProfile(nextProfile);
     if (!isFlowCurrent(authContext, flowRuntimeKey)) return false;
     useUserStore.setState({
       recommendationProfile: nextProfile,
       preferredStyles: nextProfile.styleTags,
     });
-    await invalidateAfterProfileMutation({ authContext });
+    await invalidateAfterProfileMutation({
+      authContext,
+      recommendationImpact: classifyRecommendationProfileInvalidation(previousProfile, nextProfile),
+      dirtyReason: 'preference_changed',
+    });
     if (!isFlowCurrent(authContext, flowRuntimeKey)) return false;
     return true;
   }
@@ -256,7 +264,7 @@ export default function StylePreferencesPage() {
               const saved = await saveRecommendationProfileForFlow(profileRef.current, activeAuthContext, flowRuntimeKey);
               if (saved && isFlowCurrent(activeAuthContext, flowRuntimeKey)) {
                 initialSnapshot.current = profileRef.current;
-                Taro.showToast({ title: '已保存风格画像', icon: 'success' });
+                Taro.showToast({ title: '偏好已保存，正在重新搭配', icon: 'none' });
               }
             } catch (error) {
               console.error('Save recommendation profile failed:', error);

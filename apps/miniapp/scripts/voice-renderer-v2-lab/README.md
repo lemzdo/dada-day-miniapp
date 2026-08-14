@@ -4,7 +4,7 @@
 
 - `gold-plans.js`：从已确认的 Shadow fixtures 构建 Gold Narrative Plans。
 - `core.js`：最小模型输入、Voice Contract V2 prompt、输出绑定与自动检查。
-- `run.js`：使用相同 prompt、输入和生成参数，对 `qwen3.7-max` / `qwen3.7-plus` 各重复运行。
+- `run.js`：使用相同 prompt、输入和生成参数运行受控模型对比；当前云端入口只比较 `qwen3.7-max` / `qwen-flash`，不继续优化 Plus。
 - `prepare-cloud-benchmark.js` / `stage-cloud-benchmark.js`：从生产源码创建独立 staging 副本，注入 token 门控的最小云端 benchmark action，生产源码保持不变。
 - `cloud-helper-template.js`：固定 Prompt、模型白名单、请求/输出白名单；Key 只从云函数环境读取。
 - `smoke-cloud.js` / `run-cloud.js`：经微信开发者工具验证隔离门控并运行真实 B.0 批次。

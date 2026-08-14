@@ -51,6 +51,7 @@ async function run({
         repetition,
         startedAt,
         latencyMs: Date.now() - started,
+        ttftMs: Number(response.ttftMs) || Date.now() - started,
         httpStatus: response.status,
         usage: response.body?.usage || null,
         requestFingerprint: hash({ modelAlias: 'controlled-variable', ...request, model: 'controlled-variable' }),
@@ -67,12 +68,14 @@ async function run({
 }
 
 async function invokeProvider({ apiKey, baseUrl, request }) {
+  const startedAt = Date.now();
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
     signal: AbortSignal.timeout(120000),
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
   });
+  const ttftMs = Date.now() - startedAt;
   const text = await response.text();
   let body;
   try {
@@ -81,7 +84,7 @@ async function invokeProvider({ apiKey, baseUrl, request }) {
     throw new Error(`PROVIDER_JSON:${response.status}`);
   }
   if (!response.ok) throw new Error(`PROVIDER_HTTP:${response.status}:${body?.error?.code || 'unknown'}`);
-  return { status: response.status, body };
+  return { status: response.status, body, ttftMs, totalLatencyMs: Date.now() - startedAt };
 }
 
 function buildArtifact(goldPlans, inputs, calls, repetitions, modelAliases = Object.keys(MODEL_ALLOWLIST)) {

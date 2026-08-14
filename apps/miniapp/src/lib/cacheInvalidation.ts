@@ -1,6 +1,7 @@
 import { clearUserPageCacheByPrefix } from './userPageCache';
 import { getUserStorageSync, setUserStorageSync } from './userStorage';
 import type { ActiveAuthContext } from '@/stores/userStore';
+import type { RecommendationProfile } from '@starter-template/types';
 
 export const PAGE_CACHE_PREFIXES = {
   wardrobe: 'wardrobe',
@@ -17,8 +18,25 @@ interface CacheInvalidationOptions {
   authContext?: ActiveAuthContext | null;
 }
 
+type RecommendationInvalidationImpact = 'hard' | 'soft';
+
+interface RecommendationMutationOptions extends CacheInvalidationOptions {
+  recommendationImpact?: RecommendationInvalidationImpact;
+  dirtyReason?: TodayRecommendationDirtyReason;
+}
+
+export type TodayRecommendationDirtyReason = 'wardrobe_added' | 'preference_changed';
+
+export interface TodayRecommendationDirtyState {
+  reason: TodayRecommendationDirtyReason;
+  message: string;
+  createdAt: number;
+}
+
 export const TODAY_WARDROBE_INPUT_VERSION_KEY = 'today:recommendationInput:wardrobeVersion';
 export const TODAY_PROFILE_INPUT_VERSION_KEY = 'today:recommendationInput:profileVersion';
+export const TODAY_RECOMMENDATION_DIRTY_KEY = 'today:recommendationInput:dirty';
+export const TODAY_RECOMMENDATION_HARD_INVALID_KEY = 'today:recommendationInput:hardInvalid';
 
 export async function invalidateWardrobeCache(options: CacheInvalidationOptions = {}): Promise<void> {
   await safeClearPrefix(PAGE_CACHE_PREFIXES.wardrobe, options);
@@ -54,12 +72,17 @@ export async function invalidateHistoryCache(options: CacheInvalidationOptions =
   await safeClearPrefix(PAGE_CACHE_PREFIXES.history, options);
 }
 
-export async function invalidateAfterWardrobeMutation(options: CacheInvalidationOptions = {}): Promise<void> {
-  bumpRecommendationInputVersion(TODAY_WARDROBE_INPUT_VERSION_KEY, options);
+export async function invalidateAfterWardrobeMutation(options: RecommendationMutationOptions = {}): Promise<void> {
+  const impact = options.recommendationImpact ?? 'hard';
+  if (impact === 'hard') {
+    bumpRecommendationInputVersion(TODAY_WARDROBE_INPUT_VERSION_KEY, options);
+    markTodayRecommendationHardInvalid(options);
+  }
+  else markTodayRecommendationDirty(options.dirtyReason ?? 'wardrobe_added', options);
   await safeClearPrefixes(
     [
       PAGE_CACHE_PREFIXES.wardrobe,
-      PAGE_CACHE_PREFIXES.today,
+      ...(impact === 'hard' ? [PAGE_CACHE_PREFIXES.today] : []),
       PAGE_CACHE_PREFIXES.outfitDetail,
       PAGE_CACHE_PREFIXES.profile,
       PAGE_CACHE_PREFIXES.favorites,
@@ -95,27 +118,86 @@ export async function invalidateAfterUploadTaskMutation(options: CacheInvalidati
 }
 
 export async function invalidateAfterConfirmDraftsSaved(options: CacheInvalidationOptions = {}): Promise<void> {
-  bumpRecommendationInputVersion(TODAY_WARDROBE_INPUT_VERSION_KEY, options);
+  markTodayRecommendationDirty('wardrobe_added', options);
   await safeClearPrefixes(
     [
       PAGE_CACHE_PREFIXES.uploadTasks,
       PAGE_CACHE_PREFIXES.wardrobe,
-      PAGE_CACHE_PREFIXES.today,
       PAGE_CACHE_PREFIXES.profile,
     ],
     options,
   );
 }
 
-export async function invalidateAfterProfileMutation(options: CacheInvalidationOptions = {}): Promise<void> {
-  bumpRecommendationInputVersion(TODAY_PROFILE_INPUT_VERSION_KEY, options);
+export async function invalidateAfterProfileMutation(options: RecommendationMutationOptions = {}): Promise<void> {
+  const impact = options.recommendationImpact ?? 'hard';
+  if (impact === 'hard') {
+    bumpRecommendationInputVersion(TODAY_PROFILE_INPUT_VERSION_KEY, options);
+    markTodayRecommendationHardInvalid(options);
+  }
+  else markTodayRecommendationDirty(options.dirtyReason ?? 'preference_changed', options);
   await safeClearPrefixes(
     [
       PAGE_CACHE_PREFIXES.profile,
-      PAGE_CACHE_PREFIXES.today,
+      ...(impact === 'hard' ? [PAGE_CACHE_PREFIXES.today] : []),
     ],
     options,
   );
+}
+
+export function classifyRecommendationProfileInvalidation(
+  previous: RecommendationProfile,
+  next: RecommendationProfile,
+): RecommendationInvalidationImpact {
+  const hardFields: Array<keyof RecommendationProfile> = ['genderPreference', 'fitPreference', 'avoidTags'];
+  return hardFields.some((field) => JSON.stringify(previous[field]) !== JSON.stringify(next[field]))
+    ? 'hard'
+    : 'soft';
+}
+
+export function getTodayRecommendationDirty(
+  options: CacheInvalidationOptions = {},
+): TodayRecommendationDirtyState | null {
+  const value = getUserStorageSync<TodayRecommendationDirtyState>(
+    TODAY_RECOMMENDATION_DIRTY_KEY,
+    { authContext: options.authContext },
+  );
+  return value && typeof value === 'object' ? value : null;
+}
+
+export function clearTodayRecommendationDirty(options: CacheInvalidationOptions = {}): void {
+  setUserStorageSync(TODAY_RECOMMENDATION_DIRTY_KEY, null, { authContext: options.authContext });
+}
+
+export function hasTodayRecommendationHardInvalid(options: CacheInvalidationOptions = {}): boolean {
+  return Boolean(getUserStorageSync<boolean>(
+    TODAY_RECOMMENDATION_HARD_INVALID_KEY,
+    { authContext: options.authContext },
+  ));
+}
+
+export function clearTodayRecommendationHardInvalid(options: CacheInvalidationOptions = {}): void {
+  setUserStorageSync(TODAY_RECOMMENDATION_HARD_INVALID_KEY, false, { authContext: options.authContext });
+}
+
+function markTodayRecommendationDirty(
+  reason: TodayRecommendationDirtyReason,
+  options: CacheInvalidationOptions,
+) {
+  const message = reason === 'preference_changed'
+    ? '偏好已保存，正在重新搭配'
+    : '新衣服已加入，正在更新搭配';
+  setUserStorageSync(TODAY_RECOMMENDATION_DIRTY_KEY, {
+    reason,
+    message,
+    createdAt: Date.now(),
+  }, { authContext: options.authContext });
+}
+
+function markTodayRecommendationHardInvalid(options: CacheInvalidationOptions) {
+  setUserStorageSync(TODAY_RECOMMENDATION_HARD_INVALID_KEY, true, {
+    authContext: options.authContext,
+  });
 }
 
 async function safeClearPrefixes(prefixes: string[], options: CacheInvalidationOptions): Promise<void> {

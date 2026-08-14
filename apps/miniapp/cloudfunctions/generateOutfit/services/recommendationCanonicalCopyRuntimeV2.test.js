@@ -21,12 +21,24 @@ function invokeStub() {
 
 test('canonical batch fixes batchTotal to the complete returned outfit batch on first response', () => {
   const entries = makeEntries();
-  const outfits = entries.map(({ recommendation }) => ({ ...recommendation }));
+  const outfits = entries.map(({ recommendation }) => ({
+    ...recommendation,
+    reason: 'legacy',
+    copyContract: { todayReason: 'legacy' },
+  }));
   const batch = runtime.buildRecommendationCanonicalCopyBatchV2({ plans: entries.map((x) => x.plan), recommendations: outfits });
   const attached = runtime.attachRecommendationCanonicalCopiesV2(outfits, batch);
   assert.equal(attached.length, outfits.length);
   assert.deepEqual(attached.map((item) => item.canonicalRecommendationCopyV2.batchTotal), [3, 3, 3]);
   assert.deepEqual(attached.map((item) => item.canonicalRecommendationCopyV2.batchIndex), [0, 1, 2]);
+  assert.deepEqual(
+    attached.map((item) => item.copyContract.todayReason),
+    attached.map((item) => item.canonicalRecommendationCopyV2.text),
+  );
+  assert.deepEqual(
+    attached.map((item) => item.reason),
+    attached.map((item) => item.canonicalRecommendationCopyV2.text),
+  );
 });
 
 test('source precedence is ai_cache then safe then legacy emergency', async () => {

@@ -6,13 +6,13 @@ const {
 const VOICE_BANK_VERSION = 'xiaoda-fixed-claim-catalog-v2';
 
 const PRODUCT_STATE_COPY = Object.freeze([
-  Object.freeze({ id: 'productStateCopy.loading', state: 'loading', text: '小搭正在看天气和衣橱信息，稍等一下。' }),
+  Object.freeze({ id: 'productStateCopy.loading', state: 'loading', text: '正在给你搭今天这套…' }),
   Object.freeze({ id: 'productStateCopy.empty', state: 'empty', text: '衣橱里还没有可以搭配的衣物，先添加几件常穿的吧。' }),
   Object.freeze({ id: 'productStateCopy.exhausted', state: 'exhausted', text: '这一轮可用方案已经看完，换个场景再试也可以。' }),
   Object.freeze({ id: 'productStateCopy.stale-waiting', state: 'stale_waiting', text: '衣橱信息有变化，新建议还在准备，请稍等一下。' }),
   Object.freeze({ id: 'productStateCopy.retry', state: 'retry', text: '刚才没有加载成功，可以稍后再试一次。' }),
   Object.freeze({ id: 'productStateCopy.error-neutral', state: 'error_neutral', text: '这次暂时没拿到结果，已为你保留当前页面。' }),
-  Object.freeze({ id: 'productStateCopy.refreshing', state: 'refreshing', text: '衣橱信息有更新，小搭正在重新整理建议。' }),
+  Object.freeze({ id: 'productStateCopy.refreshing', state: 'refreshing', text: '正在重新搭配…' }),
 ]);
 
 const LIMITED_SCENE_COPY = Object.freeze({

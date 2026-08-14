@@ -3,6 +3,8 @@ const VOICE_RENDERER_CONTRACT_VERSION = 'voice-contract-v2.0-lab1';
 const VOICE_RENDERER_PERSONA_VERSION = 'xiaoda-friend-stylist-v2';
 const VOICE_RENDERER_MODEL_ROUTE_VERSION = 'voice-renderer-model-route-v1-max';
 const VOICE_RENDERER_MODEL = 'qwen3.7-max';
+const VOICE_RENDERER_FLASH_MODEL_ROUTE_VERSION = 'voice-renderer-model-route-v1-flash';
+const VOICE_RENDERER_FLASH_MODEL = 'qwen-flash';
 const VOICE_RENDERER_GENERATION_PARAMETERS = Object.freeze({
   temperature: 0.3,
   top_p: 0.8,
@@ -36,12 +38,14 @@ function buildVoiceRendererV2SystemPrompt() {
   ].join('\n');
 }
 
-function buildVoiceRendererV2Request(inputs) {
+function buildVoiceRendererV2Request(inputs, options = {}) {
   if (!Array.isArray(inputs) || inputs.length === 0 || inputs.length > 8) throw new Error('VOICE_RENDERER_INPUT_COUNT');
   inputs.forEach(assertVoiceRendererV2Input);
+  const model = readText(options.model) || VOICE_RENDERER_MODEL;
+  const generationParameters = options.generationParameters || VOICE_RENDERER_GENERATION_PARAMETERS;
   return {
-    model: VOICE_RENDERER_MODEL,
-    ...VOICE_RENDERER_GENERATION_PARAMETERS,
+    model,
+    ...generationParameters,
     messages: [
       { role: 'system', content: buildVoiceRendererV2SystemPrompt() },
       { role: 'user', content: JSON.stringify(inputs) },
@@ -90,6 +94,8 @@ module.exports = {
   VOICE_RENDERER_INPUT_VERSION,
   VOICE_RENDERER_MODEL,
   VOICE_RENDERER_MODEL_ROUTE_VERSION,
+  VOICE_RENDERER_FLASH_MODEL,
+  VOICE_RENDERER_FLASH_MODEL_ROUTE_VERSION,
   VOICE_RENDERER_PERSONA_VERSION,
   assertVoiceRendererV2Input,
   buildVoiceRendererV2Request,
