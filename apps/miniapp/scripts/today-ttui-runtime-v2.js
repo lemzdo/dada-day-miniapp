@@ -108,7 +108,10 @@ async function clearMeasurementState(mini) {
 }
 
 async function prepareValidSnapshot(mini, timeoutMs = 30000) {
-  if (await readSnapshot(mini)) return { prepared: false, reason: 'existing_valid_snapshot' };
+  const prepareStartedAt = Date.now();
+  const existing = await readSnapshot(mini);
+  if (isUsableSnapshot(existing, prepareStartedAt)) return { prepared: false, reason: 'existing_valid_snapshot' };
+  if (existing) await invalidateRestoreSnapshot(mini);
   const bridge = await waitForBridge(mini, timeoutMs);
   const runId = nowId('ttui-prepare');
   await mini.evaluate(async (payload) => globalThis.__d1dTodayDiagnostics.triggerRefresh(payload), {
@@ -116,10 +119,21 @@ async function prepareValidSnapshot(mini, timeoutMs = 30000) {
   });
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (await readSnapshot(mini)) return { prepared: true, reason: 'refresh_completed', sceneKey: bridge.sceneKey };
+    const snapshot = await readSnapshot(mini);
+    if (isUsableSnapshot(snapshot, prepareStartedAt) && Number(snapshot.generatedAt) >= prepareStartedAt) {
+      return { prepared: true, reason: 'refresh_completed', sceneKey: bridge.sceneKey };
+    }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error('TTUI_VALID_SNAPSHOT_PREPARATION_TIMEOUT');
+}
+
+function isUsableSnapshot(snapshot, now = Date.now()) {
+  if (!snapshot || Number(snapshot.version) !== 4) return false;
+  if (!Number.isFinite(Number(snapshot.generatedAt)) || now - Number(snapshot.generatedAt) > 10 * 60 * 1000) return false;
+  if (!Array.isArray(snapshot.outfits) || snapshot.outfits.length === 0) return false;
+  if (snapshot.outfits.some((outfit) => !outfit?.canonicalRecommendationCopyV2?.text)) return false;
+  return true;
 }
 
 async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 30000 } = {}) {
@@ -173,17 +187,32 @@ async function runCli({ scenario = 'A', samples = 1, skipBuild = false } = {}) {
   const artifacts = [];
   try {
     for (let index = 0; index < Math.max(1, Number(samples) || 1); index += 1) {
-      const artifact = await runScenario({ scenario, mini: session.mini });
-      artifact.directory = writeArtifact(scenario, artifact);
-      artifacts.push(artifact);
+      try {
+        const artifact = await runScenario({ scenario, mini: session.mini });
+        artifact.directory = writeArtifact(scenario, artifact);
+        artifacts.push(artifact);
+      } catch (error) {
+        const diagnostic = { runId: nowId(`ttui-${scenario}-failed`), scenario, valid: false, error: String(error?.stack || error), artifact: error?.artifact || null };
+        diagnostic.directory = writeArtifact(scenario, diagnostic);
+        throw Object.assign(error, { diagnosticArtifact: diagnostic.directory });
+      }
     }
-    return { scenario, samples: artifacts.length, artifacts, summary: summarizeArtifacts(artifacts.map((artifact) => ({ ...serverSegments(artifact.ledger?.server || {}), ...artifact.client }))) };
+    return {
+      scenario,
+      samples: artifacts.length,
+      artifacts,
+      summary: summarizeArtifacts(artifacts.map((artifact) => ({
+        ...artifact.server,
+        ...artifact.client,
+        clientTotalMs: artifact.transport?.clientTotalMs,
+      }))),
+    };
   } finally {
     try { await session.mini.disconnect(); } catch {}
   }
 }
 
-module.exports = { ARTIFACT_ROOT, readLedger, readSnapshot, segmentDurations, serverSegments, summarize, summarizeArtifacts, writeArtifact, waitForBridge, invalidateRestoreSnapshot, runScenario, runCli };
+module.exports = { ARTIFACT_ROOT, readLedger, readSnapshot, segmentDurations, serverSegments, summarize, summarizeArtifacts, writeArtifact, waitForBridge, invalidateRestoreSnapshot, isUsableSnapshot, runScenario, runCli };
 
 if (require.main === module) {
   const args = new Map(process.argv.slice(2).map((arg) => {

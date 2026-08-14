@@ -2,11 +2,11 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { invalidateRestoreSnapshot, readSnapshot, runScenario } = require('./today-ttui-runtime-v2');
+const { invalidateRestoreSnapshot, isUsableSnapshot, readSnapshot, runScenario } = require('./today-ttui-runtime-v2');
 
 function miniMock() {
   const store = new Map([
-    ['d1d:userStorage:v1:user-a:today:outfitReturnSnapshot:recommendation-copy-contract-v8', { version: 4, outfits: [{ id: 'outfit-1' }] }],
+    ['d1d:userStorage:v1:user-a:today:outfitReturnSnapshot:recommendation-copy-contract-v8', { version: 4, generatedAt: Date.now(), outfits: [{ id: 'outfit-1', canonicalRecommendationCopyV2: { text: 'copy' } }] }],
     ['today:outfitReturnSnapshot:recommendation-copy-contract-v8', { bad: true }],
   ]);
   return {
@@ -22,7 +22,9 @@ function miniMock() {
 
 test('runner reads and invalidates only scoped v4 restore snapshots', async () => {
   const mini = miniMock();
-  assert.deepEqual(await readSnapshot(mini), { version: 4, outfits: [{ id: 'outfit-1' }] });
+  const snapshot = await readSnapshot(mini);
+  assert.equal(snapshot.version, 4);
+  assert.equal(snapshot.outfits[0].id, 'outfit-1');
   const result = await invalidateRestoreSnapshot(mini);
   assert.deepEqual(result.removedKeys, ['d1d:userStorage:v1:user-a:today:outfitReturnSnapshot:recommendation-copy-contract-v8']);
   assert.equal(mini.store.has('today:outfitReturnSnapshot:recommendation-copy-contract-v8'), true);
@@ -32,7 +34,7 @@ test('scenario A performs reLaunch and waits for a complete ledger without trigg
   const mini = miniMock();
   mini.evaluate = async (fn, arg) => {
     if (String(fn).includes('__d1dTodayDiagnostics')) return { marker: 'd1d-today-production-handler-v1', ready: true, sceneKey: 'home' };
-    if (String(fn).includes('getStorageInfoSync')) return { version: 4, outfits: [{ id: 'outfit-1' }] };
+    if (String(fn).includes('getStorageInfoSync')) return mini.store.get('d1d:userStorage:v1:user-a:today:outfitReturnSnapshot:recommendation-copy-contract-v8');
     if (arg === 'today:performance-ledger:v1') return { active: { complete: true, stages: { firstCardMounted: 1 }, generateOutfitRequestCount: 0, durations: {} } };
     if (arg === 'generateOutfit:performance-ledger:v1' || arg === 'generateOutfit:acceptance-transport:v1') return null;
     return fn(arg);
@@ -40,4 +42,11 @@ test('scenario A performs reLaunch and waits for a complete ledger without trigg
   const artifact = await runScenario({ scenario: 'A', mini, timeoutMs: 100 });
   assert.equal(artifact.scenario, 'A');
   assert.equal(artifact.triggerResult, null);
+});
+
+test('expired or incomplete v4 snapshots are rejected before A preparation', () => {
+  const base = { version: 4, generatedAt: Date.now() - 11 * 60 * 1000, outfits: [{ canonicalRecommendationCopyV2: { text: 'copy' } }] };
+  assert.equal(isUsableSnapshot(base), false);
+  assert.equal(isUsableSnapshot({ ...base, generatedAt: Date.now() }), true);
+  assert.equal(isUsableSnapshot({ ...base, generatedAt: Date.now(), outfits: [] }), false);
 });
