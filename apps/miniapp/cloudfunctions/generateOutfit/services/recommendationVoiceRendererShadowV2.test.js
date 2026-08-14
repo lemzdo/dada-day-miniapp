@@ -105,3 +105,34 @@ test('home relaxed paraphrases preserve the authorized scene meaning', async () 
     '吊带裙很适合居家放松时穿。',
   ), []);
 });
+
+test('renderInputFingerprint ignores recommendation instance, debug, and plan hash identity', () => {
+  const [entry] = cases();
+  const input = voice.buildRendererInputFromNarrativePlan(entry.plan, entry.recommendation);
+  const base = voice.buildRenderInputFingerprint(input);
+  const sameMeaning = { ...input, planId: 'other-instance', debug: { requestId: 'debug-only' } };
+  assert.equal(voice.buildRenderInputFingerprint(sameMeaning), base);
+});
+
+test('renderInputFingerprint changes for semantic, garment, claim, route, and generation changes', () => {
+  const [entry] = cases();
+  const input = voice.buildRendererInputFromNarrativePlan(entry.plan, entry.recommendation);
+  const base = voice.buildRenderInputFingerprint(input);
+  assert.notEqual(voice.buildRenderInputFingerprint({ ...input, primary: { ...input.primary, meaning: `${input.primary.meaning}，换一种表达` } }), base);
+  assert.notEqual(voice.buildRenderInputFingerprint({ ...input, garments: [...input.garments, '围巾'] }), base);
+  assert.notEqual(voice.buildRenderInputFingerprint({ ...input, allowedClaims: [...input.allowedClaims, 'new-claim'] }), base);
+  assert.notEqual(voice.buildRenderInputFingerprint(input, { modelRouteVersion: 'route-v-next' }), base);
+  assert.notEqual(voice.buildRenderInputFingerprint(input, { generationParameters: { temperature: 0.9 } }), base);
+});
+
+test('successful renderer response writes fingerprint-addressed cache', async () => {
+  voice.clearRecommendationVoiceRendererShadowCache();
+  const [entry] = cases();
+  const counter = { count: 0 };
+  const first = await voice.runRecommendationVoiceRendererShadowV2Safely({ plans: [entry.plan], recommendations: [entry.recommendation], apiKey: 'stub', cacheMode: 'use', invoke: invokeStub(counter) });
+  const cached = voice.readCachedRecommendationVoiceCopies({ plans: [entry.plan], recommendations: [entry.recommendation] });
+  assert.equal(first.status, 'completed');
+  assert.equal(counter.count, 1);
+  assert.equal(cached[0].copy.cacheHit, true);
+  assert.equal(cached[0].renderInputFingerprint, first.planIdentities[0].renderInputFingerprint);
+});
