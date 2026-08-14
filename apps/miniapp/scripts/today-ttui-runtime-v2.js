@@ -115,14 +115,18 @@ async function prepareValidSnapshot(mini, timeoutMs = 30000) {
   if (existing) await invalidateRestoreSnapshot(mini);
   const bridge = await waitForBridge(mini, timeoutMs);
   const runId = nowId('ttui-prepare');
-  await mini.evaluate(async (payload) => globalThis.__d1dTodayDiagnostics.triggerRefresh(payload), {
+  const triggerResult = await mini.evaluate(async (payload) => globalThis.__d1dTodayDiagnostics.triggerFullCompute(payload), {
     acceptanceRunId: runId, captureId: `${runId}-capture`,
   });
+  if (triggerResult === false) {
+    const bridgeState = await mini.evaluate(() => globalThis.__d1dTodayDiagnostics?.readCopyAcceptanceState?.() || null);
+    throw Object.assign(new Error('TTUI_VALID_SNAPSHOT_PREPARATION_REJECTED'), { bridgeState, triggerResult });
+  }
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const snapshot = await readSnapshot(mini);
     if (isUsableSnapshot(snapshot, prepareStartedAt) && Number(snapshot.generatedAt) >= prepareStartedAt) {
-      return { prepared: true, reason: 'refresh_completed', sceneKey: bridge.sceneKey };
+      return { prepared: true, reason: 'full_compute_completed', sceneKey: bridge.sceneKey };
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
