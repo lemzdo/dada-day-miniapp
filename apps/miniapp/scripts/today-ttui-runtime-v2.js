@@ -101,6 +101,15 @@ async function invalidateRestoreSnapshot(mini) {
   });
 }
 
+async function markHardInvalid(mini) {
+  return mini.evaluate(() => {
+    const info = globalThis.wx?.getStorageInfoSync?.() || { keys: [] };
+    const key = (info.keys || []).find((entry) => String(entry).startsWith('d1d:userStorage:v1:') && String(entry).includes('today:recommendationInput:hardInvalid'));
+    if (key) globalThis.wx?.setStorageSync?.(key, true);
+    return { key, marked: Boolean(key) };
+  });
+}
+
 async function clearMeasurementState(mini) {
   return mini.evaluate((keys) => {
     keys.forEach((key) => globalThis.wx?.removeStorageSync?.(key));
@@ -150,7 +159,11 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
     await prepareValidSnapshot(mini, timeoutMs);
     await clearMeasurementState(mini);
   }
-  if (scenario === 'C') await invalidateRestoreSnapshot(mini);
+  if (scenario === 'C') {
+    if (typeof mini.switchTab === 'function') await mini.switchTab({ url: '/pages/wardrobe/index' });
+    await markHardInvalid(mini);
+    await invalidateRestoreSnapshot(mini);
+  }
   if (typeof mini.reLaunch === 'function') await mini.reLaunch('/pages/today/index');
   const bridge = await waitForBridge(mini, timeoutMs);
   let triggerResult = null;
@@ -163,7 +176,11 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
   let ledger = null;
   while (Date.now() < deadline) {
     ledger = await readLedger(mini);
-    if (ledger?.history?.some((entry) => entry?.complete) || ledger?.active?.complete) break;
+    const candidates = [ledger?.active, ...(ledger?.history || [])].filter(Boolean);
+    const current = scenario === 'B'
+      ? candidates.find((entry) => Number(entry?.stages?.userActionStart) >= startedAt && entry?.complete)
+      : candidates.find((entry) => Number(entry?.startedAt) >= startedAt && entry?.complete) || candidates.at(-1);
+    if (current) { ledger = { ...ledger, active: current }; break; }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   const active = ledger?.active || ledger?.history?.at(-1) || null;
@@ -178,13 +195,15 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
       completeLedger: active?.complete === true,
       firstUsablePaint: Number(active?.stages?.firstImageLoaded || active?.stages?.firstCardMounted) > 0,
       requestCount: Number(active?.generateOutfitRequestCount) || 0,
+      executionMode: active?.executionMode || active?.stages?.executionMode || '',
+      hardInvalidRejected: scenario !== 'C' || (active?.executionMode && active.executionMode !== 'HOT'),
       noCloudBeforeUsablePaint: scenario !== 'A' || !Number.isFinite(Number(active?.stages?.generateOutfitRequestStart)) || Number(active.stages.generateOutfitRequestStart) > Number(active?.stages?.firstImageLoaded || active?.stages?.firstCardMounted || Infinity),
       scenarioAZeroCloudRequests: scenario === 'A' ? (Number(active?.generateOutfitRequestCount) || 0) === 0 : true,
       canonicalCopyReady: !expectedRuntimeV2 || (Array.isArray(active?.outfits) && active.outfits.every((outfit, index, all) => outfit?.canonicalRecommendationCopyV2?.text && ['safe', 'ai_cache'].includes(outfit.canonicalRecommendationCopyV2.source) && outfit.canonicalRecommendationCopyV2.batchIndex === index && outfit.canonicalRecommendationCopyV2.batchTotal === all.length)),
       usableCard: usableState?.batchIndex === 1 && Number(usableState?.batchTotal) > 0 && usableState?.hasOutfit === true && usableState?.copyTextPresent === true && usableState?.canFavorite === true && usableState?.canOpenDetail === true && (Number(usableState?.batchTotal) !== 8 || usableState?.canSwipe === true),
     },
   };
-  if (!artifact.validation.completeLedger || !artifact.validation.firstUsablePaint || !artifact.validation.noCloudBeforeUsablePaint || !artifact.validation.canonicalCopyReady || !artifact.validation.usableCard) {
+  if (!artifact.validation.completeLedger || !artifact.validation.firstUsablePaint || !artifact.validation.noCloudBeforeUsablePaint || !artifact.validation.canonicalCopyReady || !artifact.validation.usableCard || !artifact.validation.hardInvalidRejected) {
     throw Object.assign(new Error('TTUI_SCENARIO_INVARIANT_FAILED'), { artifact });
   }
   return artifact;
