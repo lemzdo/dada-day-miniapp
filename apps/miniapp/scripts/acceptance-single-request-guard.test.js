@@ -115,6 +115,40 @@ test('a new run replaces stale blocker state instead of inheriting its count', a
   }
 });
 
+test('post-response canonical copy materialization is observed without contaminating the synchronous request', async () => {
+  const calls = [];
+  const original = async (options) => { calls.push(options); return { result: { data: {} } }; };
+  const previousWx = globalThis.wx;
+  const previousGuard = globalThis.__d1dAcceptanceSingleRequestGuard;
+  globalThis.wx = { cloud: { callFunction: original } };
+  try {
+    const mini = { evaluate: (fn, value) => Promise.resolve(fn(value)) };
+    await installAcceptanceSingleRequestGuard(mini, {
+      acceptanceRunId: 'v2-run',
+      captureId: 'v2-capture',
+    });
+    await globalThis.wx.cloud.callFunction({
+      name: 'generateOutfit',
+      data: { acceptanceRunId: 'v2-run', captureId: 'v2-capture' },
+    });
+    await globalThis.wx.cloud.callFunction({
+      name: 'generateOutfit',
+      data: { action: 'materializeRecommendationCopyV2', recommendationBatchId: 'batch-1' },
+    });
+    const state = globalThis.__d1dAcceptanceSingleRequestGuard;
+    assert.equal(state.capturedRequestCount, 1);
+    assert.equal(state.backgroundMaterializationRequestCount, 1);
+    assert.equal(state.ordinaryRequestCount, 0);
+    assert.equal(state.contaminated, false);
+    assert.equal(calls.length, 2);
+    await resetAcceptanceSingleRequestGuard(mini);
+  } finally {
+    globalThis.wx = previousWx;
+    if (previousGuard === undefined) delete globalThis.__d1dAcceptanceSingleRequestGuard;
+    else globalThis.__d1dAcceptanceSingleRequestGuard = previousGuard;
+  }
+});
+
 test('ordinary Today, weather, and scene requests always pass through without a user-visible error', async () => {
   const calls = [];
   const original = async (options) => { calls.push(options); return { ok: true }; };

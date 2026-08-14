@@ -372,7 +372,9 @@ async function runAcceptance({ skipBuild = false } = {}) {
       writeJson(artifactDirectory, 'failed-capture.json', capture || { status: 'missing' });
       throw new Error(`acceptance capture did not fulfill: ${capture?.status || 'missing'}: ${capture?.error || 'no error detail'}`);
     }
-    if (guard.contaminated || guard.ordinaryRequestCount !== 0 || guard.observedRequestCount !== 1) {
+    const expectedObservedRequestCount = 1 + (guard.backgroundMaterializationRequestCount || 0);
+    if (guard.contaminated || guard.ordinaryRequestCount !== 0
+      || guard.observedRequestCount !== expectedObservedRequestCount) {
       throw Object.assign(new Error('formal measurement was contaminated by another generateOutfit request'), { guard });
     }
     const requestValidation = validateProductionRequest(capture.originalRequestData);

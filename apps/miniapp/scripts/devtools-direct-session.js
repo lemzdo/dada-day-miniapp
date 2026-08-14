@@ -228,6 +228,7 @@ async function installAcceptanceSingleRequestGuard(mini, { acceptanceRunId, capt
       observedRequestCount: 0,
       explicitRequestCount: 0,
       ordinaryRequestCount: 0,
+      backgroundMaterializationRequestCount: 0,
       contaminated: false,
       activeGenerateOutfitCalls: 0,
       lastGenerateOutfitSettledAt: null,
@@ -247,9 +248,13 @@ async function installAcceptanceSingleRequestGuard(mini, { acceptanceRunId, capt
         const requestData = callOptions.data && typeof callOptions.data === 'object' ? callOptions.data : {};
         const isExplicitAcceptanceRequest = requestData.acceptanceRunId === registry.acceptanceRunId
           && requestData.captureId === registry.captureId;
+        const isBackgroundMaterializationRequest = requestData.action === 'materializeRecommendationCopyV2';
         if (isExplicitAcceptanceRequest) {
           registry.explicitRequestCount += 1;
           registry.capturedRequestCount += 1;
+        }
+        else if (isBackgroundMaterializationRequest) {
+          registry.backgroundMaterializationRequestCount += 1;
         }
         else {
           registry.ordinaryRequestCount += 1;
@@ -368,6 +373,7 @@ async function installAcceptanceSingleRequestGuard(mini, { acceptanceRunId, capt
       capturedRequestCount: registry.capturedRequestCount,
       explicitRequestCount: registry.explicitRequestCount,
       ordinaryRequestCount: registry.ordinaryRequestCount,
+      backgroundMaterializationRequestCount: registry.backgroundMaterializationRequestCount,
       contaminated: registry.contaminated,
       installedTargets: Object.keys(registry.targets),
     };
@@ -390,6 +396,7 @@ async function readAcceptanceSingleRequestGuard(mini) {
       observedRequestCount: guard.observedRequestCount || 0,
       explicitRequestCount: guard.explicitRequestCount,
       ordinaryRequestCount: guard.ordinaryRequestCount,
+      backgroundMaterializationRequestCount: guard.backgroundMaterializationRequestCount || 0,
       contaminated: guard.contaminated === true,
       activeGenerateOutfitCalls: guard.activeGenerateOutfitCalls || 0,
       lastGenerateOutfitSettledAt: guard.lastGenerateOutfitSettledAt || null,
