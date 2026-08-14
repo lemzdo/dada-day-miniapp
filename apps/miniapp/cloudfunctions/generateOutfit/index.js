@@ -17,6 +17,7 @@ const {
 } = require('./services/recommendationVoiceRendererShadowV2');
 const {
   applyCanonicalCopyToOutfit,
+  assertRecommendationCanonicalCopiesV2,
   attachRecommendationCanonicalCopiesV2,
   buildFailedCanonicalCopy,
   buildMaterializedCanonicalCopy,
@@ -884,7 +885,8 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
     assetRecords: outfitRecords,
   });
   diagnostics.databaseOps.reads += hydratedOutfits.length > 0 ? 2 : 0;
-  assertFinalPresentation(hydratedOutfits, scene);
+  if (canonicalCopyRuntimeV2Enabled) assertRecommendationCanonicalCopiesV2(hydratedOutfits);
+  else assertFinalPresentation(hydratedOutfits, scene);
   diagnostics.timings.enrichMs = Date.now() - enrichStartedAt;
   recordServerPhase(diagnostics, 'presentationEnrichment', enrichStartedAt);
   if (hydratedOutfits.length !== finalRecommendationCount

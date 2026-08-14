@@ -47,6 +47,27 @@ test('canonical batch fixes batchTotal to the complete returned outfit batch on 
     attached.map((item) => item.recommendationVoiceMaterializationV2.plan.planId),
     entries.map((entry) => entry.plan.planId),
   );
+  assert.equal(runtime.assertRecommendationCanonicalCopiesV2(attached), true);
+});
+
+test('V2 response invariant validates the visible canonical copy instead of the legacy presentation reason', () => {
+  const [entry] = makeEntries(1);
+  const outfits = [{
+    ...entry.recommendation,
+    reason: 'legacy presentation reason',
+    copyContract: { todayReason: 'legacy presentation reason' },
+  }];
+  const batch = runtime.buildRecommendationCanonicalCopyBatchV2({
+    plans: [entry.plan],
+    recommendations: outfits,
+  });
+  const attached = runtime.attachRecommendationCanonicalCopiesV2(outfits, batch, [entry.plan]);
+  assert.notEqual(attached[0].reason, 'legacy presentation reason');
+  assert.equal(runtime.assertRecommendationCanonicalCopiesV2(attached), true);
+  assert.throws(() => runtime.assertRecommendationCanonicalCopiesV2([{
+    ...attached[0],
+    reason: 'stale legacy reason',
+  }]), /canonical recommendation copy v2 invariant failed/);
 });
 
 test('source precedence is ai_cache then safe then legacy emergency', async () => {

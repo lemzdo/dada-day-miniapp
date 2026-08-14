@@ -14,6 +14,8 @@ const {
 
 const RECOMMENDATION_CANONICAL_COPY_RUNTIME_VERSION = 'recommendation-canonical-copy-runtime-v2.0';
 const authorizedRuntimeEvents = new WeakSet();
+const CANONICAL_COPY_SOURCES = new Set(['safe', 'ai_cache', 'legacy_emergency']);
+const CANONICAL_COPY_AI_STATES = new Set(['not_requested', 'materializing', 'ready', 'failed']);
 
 function authorizeRecommendationCanonicalCopyRuntimeV2(event) {
   if (!event || typeof event !== 'object') throw new Error('CANONICAL_COPY_RUNTIME_EVENT');
@@ -116,6 +118,24 @@ function attachRecommendationCanonicalCopiesV2(outfits = [], batch = null, plans
   });
 }
 
+function assertRecommendationCanonicalCopiesV2(outfits = []) {
+  const visible = Array.isArray(outfits) ? outfits : [];
+  visible.forEach((outfit, index) => {
+    const canonical = normalizeCanonicalCopy(outfit?.canonicalRecommendationCopyV2);
+    if (!canonical
+      || canonical.version !== RECOMMENDATION_CANONICAL_COPY_RUNTIME_VERSION
+      || canonical.batchIndex !== index
+      || canonical.batchTotal !== visible.length
+      || !CANONICAL_COPY_SOURCES.has(canonical.source)
+      || !CANONICAL_COPY_AI_STATES.has(canonical.aiState)
+      || readText(outfit?.reason) !== canonical.text
+      || (outfit?.copyContract && readText(outfit.copyContract.todayReason) !== canonical.text)) {
+      throw new Error('canonical recommendation copy v2 invariant failed');
+    }
+  });
+  return true;
+}
+
 function resolveCanonicalCopyForStorage(base = {}, current = {}) {
   const next = normalizeCanonicalCopy(base?.canonicalRecommendationCopyV2);
   const cached = normalizeCanonicalCopy(current?.canonicalRecommendationCopyV2);
@@ -200,6 +220,7 @@ function readText(value) { return typeof value === 'string' ? value.trim() : '';
 module.exports = {
   RECOMMENDATION_CANONICAL_COPY_RUNTIME_VERSION,
   applyCanonicalCopyToOutfit,
+  assertRecommendationCanonicalCopiesV2,
   attachRecommendationCanonicalCopiesV2,
   authorizeRecommendationCanonicalCopyRuntimeV2,
   buildFailedCanonicalCopy,
