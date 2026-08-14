@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { hasCurrentNewRecommendationCopy } = require('../src/utils/recommendationCopyContract');
 const {
   ensureDevToolsDirectSession,
   TODAY_PERFORMANCE_LEDGER_KEY,
@@ -132,11 +133,11 @@ function isUsableSnapshot(snapshot, now = Date.now()) {
   if (!snapshot || Number(snapshot.version) !== 4) return false;
   if (!Number.isFinite(Number(snapshot.generatedAt)) || now - Number(snapshot.generatedAt) > 10 * 60 * 1000) return false;
   if (!Array.isArray(snapshot.outfits) || snapshot.outfits.length === 0) return false;
-  if (snapshot.outfits.some((outfit) => !outfit?.canonicalRecommendationCopyV2?.text)) return false;
+  if (snapshot.outfits.some((outfit) => !hasCurrentNewRecommendationCopy(outfit))) return false;
   return true;
 }
 
-async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 30000 } = {}) {
+async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 30000, expectedRuntimeV2 = false } = {}) {
   if (!mini) throw new Error('TTUI_MINI_REQUIRED');
   const runId = nowId(`ttui-${scenario}`);
   const startedAt = Date.now();
@@ -173,22 +174,23 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
       firstUsablePaint: Number(active?.stages?.firstImageLoaded || active?.stages?.firstCardMounted) > 0,
       requestCount: Number(active?.generateOutfitRequestCount) || 0,
       scenarioAZeroCloudRequests: scenario === 'A' ? (Number(active?.generateOutfitRequestCount) || 0) === 0 : true,
+      canonicalCopyReady: !expectedRuntimeV2 || (Array.isArray(active?.outfits) && active.outfits.every((outfit, index, all) => outfit?.canonicalRecommendationCopyV2?.text && ['safe', 'ai_cache'].includes(outfit.canonicalRecommendationCopyV2.source) && outfit.canonicalRecommendationCopyV2.batchIndex === index && outfit.canonicalRecommendationCopyV2.batchTotal === all.length)),
     },
   };
-  if (!artifact.validation.completeLedger || !artifact.validation.firstUsablePaint || !artifact.validation.scenarioAZeroCloudRequests) {
+  if (!artifact.validation.completeLedger || !artifact.validation.firstUsablePaint || !artifact.validation.scenarioAZeroCloudRequests || !artifact.validation.canonicalCopyReady) {
     throw Object.assign(new Error('TTUI_SCENARIO_INVARIANT_FAILED'), { artifact });
   }
   return artifact;
 }
 
-async function runCli({ scenario = 'A', samples = 1, skipBuild = false } = {}) {
+async function runCli({ scenario = 'A', samples = 1, skipBuild = false, expectedRuntimeV2 = false } = {}) {
   if (!skipBuild) throw new Error('TTUI_RUNNER_REQUIRES_PREBUILT_MINIAPP_USE_SKIP_BUILD');
   const session = await ensureDevToolsDirectSession();
   const artifacts = [];
   try {
     for (let index = 0; index < Math.max(1, Number(samples) || 1); index += 1) {
       try {
-        const artifact = await runScenario({ scenario, mini: session.mini });
+        const artifact = await runScenario({ scenario, mini: session.mini, expectedRuntimeV2 });
         artifact.directory = writeArtifact(scenario, artifact);
         artifacts.push(artifact);
       } catch (error) {
@@ -218,7 +220,7 @@ if (require.main === module) {
   const args = new Map(process.argv.slice(2).map((arg) => {
     const [key, value = 'true'] = arg.replace(/^--/, '').split('='); return [key, value];
   }));
-  runCli({ scenario: String(args.get('scenario') || 'A').toUpperCase(), samples: Number(args.get('samples') || 1), skipBuild: args.get('skip-build') === 'true' })
+  runCli({ scenario: String(args.get('scenario') || 'A').toUpperCase(), samples: Number(args.get('samples') || 1), skipBuild: args.get('skip-build') === 'true', expectedRuntimeV2: args.get('expect-runtime-v2') === 'true' })
     .then((result) => process.stdout.write(`${JSON.stringify(result, null, 2)}\n`))
     .catch((error) => { process.stderr.write(`${error.stack || error}\n`); process.exitCode = 1; });
 }

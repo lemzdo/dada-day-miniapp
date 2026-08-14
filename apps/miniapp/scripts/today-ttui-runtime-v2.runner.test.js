@@ -5,8 +5,10 @@ const test = require('node:test');
 const { invalidateRestoreSnapshot, isUsableSnapshot, readSnapshot, runScenario } = require('./today-ttui-runtime-v2');
 
 function miniMock() {
+  const copyContract = { copyContractVersion: 'recommendation-copy-contract-v8', voiceBankVersion: 'xiaoda-fixed-claim-catalog-v2', gateResult: 'PASS', riskFlags: [], naturalnessGateVersion: 'copy-naturalness-gate-v3', naturalnessGateResult: 'PASS', naturalnessRiskFlags: [], structuralNaturalnessResult: 'PASS', structuralNaturalnessRiskFlags: [], xiaodaStyleInsight: { version: 'xiaoda-style-insight-v3' }, todayCopyProvenance: {}, todayReason: 'copy', coreEligibilityReason: 'reason', coreEligibilityReasonCode: 'code', coreEligibilityEvidence: ['e'] };
+  const outfit = { id: 'outfit-1', copyContractVersion: 'recommendation-copy-contract-v8', voiceBankVersion: 'xiaoda-fixed-claim-catalog-v2', copyFinalizationMode: 'new_recommendation', copyContract };
   const store = new Map([
-    ['d1d:userStorage:v1:user-a:today:outfitReturnSnapshot:recommendation-copy-contract-v8', { version: 4, generatedAt: Date.now(), outfits: [{ id: 'outfit-1', canonicalRecommendationCopyV2: { text: 'copy' } }] }],
+    ['d1d:userStorage:v1:user-a:today:outfitReturnSnapshot:recommendation-copy-contract-v8', { version: 4, generatedAt: Date.now(), outfits: [outfit] }],
     ['today:outfitReturnSnapshot:recommendation-copy-contract-v8', { bad: true }],
   ]);
   return {
@@ -45,7 +47,8 @@ test('scenario A performs reLaunch and waits for a complete ledger without trigg
 });
 
 test('expired or incomplete v4 snapshots are rejected before A preparation', () => {
-  const base = { version: 4, generatedAt: Date.now() - 11 * 60 * 1000, outfits: [{ canonicalRecommendationCopyV2: { text: 'copy' } }] };
+  const copyContract = { copyContractVersion: 'recommendation-copy-contract-v8', voiceBankVersion: 'xiaoda-fixed-claim-catalog-v2', gateResult: 'PASS', riskFlags: [], naturalnessGateVersion: 'copy-naturalness-gate-v3', naturalnessGateResult: 'PASS', naturalnessRiskFlags: [], structuralNaturalnessResult: 'PASS', structuralNaturalnessRiskFlags: [], xiaodaStyleInsight: { version: 'xiaoda-style-insight-v3' }, todayCopyProvenance: {}, todayReason: 'copy', coreEligibilityReason: 'reason', coreEligibilityReasonCode: 'code', coreEligibilityEvidence: ['e'] };
+  const base = { version: 4, generatedAt: Date.now() - 11 * 60 * 1000, outfits: [{ copyContractVersion: 'recommendation-copy-contract-v8', voiceBankVersion: 'xiaoda-fixed-claim-catalog-v2', copyFinalizationMode: 'new_recommendation', copyContract }] };
   assert.equal(isUsableSnapshot(base), false);
   assert.equal(isUsableSnapshot({ ...base, generatedAt: Date.now() }), true);
   assert.equal(isUsableSnapshot({ ...base, generatedAt: Date.now(), outfits: [] }), false);
