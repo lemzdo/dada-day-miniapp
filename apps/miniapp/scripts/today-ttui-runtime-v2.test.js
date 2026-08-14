@@ -5,11 +5,18 @@ const test = require('node:test');
 const { segmentDurations, serverSegments, summarizeArtifacts } = require('./today-ttui-runtime-v2');
 
 test('TTUI segments derive client state and usable paint from Today ledger stages', () => {
-  const result = segmentDurations({ stages: { todayOnShow: 100, firstCardMounted: 160, firstImageLoaded: 220, responseAdaptStart: 120, responseAdaptEnd: 150 }, durations: {} });
+  const result = segmentDurations({ stages: { todayOnShow: 100, firstCardMounted: 160, firstImageLoaded: 220, responseAdaptStart: 120, responseAdaptEnd: 150, setOutfitsCalled: 170 }, durations: {} });
   assert.equal(result.firstCardPaintMs, 60);
   assert.equal(result.firstImagePaintMs, 120);
   assert.equal(result.usablePaintMs, 120);
-  assert.equal(result.clientStateMs, 30);
+  assert.equal(result.clientStateMs, 50);
+});
+
+test('TTUI refresh segments start at the user action instead of page entry', () => {
+  const result = segmentDurations({ stages: { todayOnShow: 100, userActionStart: 500, firstCardMounted: 650, firstImageLoaded: 800 }, durations: {} });
+  assert.equal(result.firstCardPaintMs, 150);
+  assert.equal(result.firstImagePaintMs, 300);
+  assert.equal(result.usablePaintMs, 300);
 });
 
 test('TTUI server segments prefer runtime V2 proxies and retain persistence separately', () => {

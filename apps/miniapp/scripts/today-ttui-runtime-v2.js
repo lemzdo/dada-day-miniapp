@@ -12,6 +12,7 @@ const {
 const ARTIFACT_ROOT = path.resolve(__dirname, '../../../artifacts/today-ttui-runtime-v2');
 const TRANSPORT_KEY = 'generateOutfit:acceptance-transport:v1';
 const PERFORMANCE_KEY = 'generateOutfit:performance-ledger:v1';
+const HARD_INVALID_ACCEPTANCE_KEY = 'today:ttui-hard-invalid-acceptance:v1';
 
 function nowId(prefix = 'ttui') {
   return `${prefix}-${new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)}-${crypto.randomBytes(4).toString('hex')}`;
@@ -35,10 +36,10 @@ function segmentDurations(record = {}) {
   const duration = (name, start, end) => Number(d[name]) || (Number(s[end]) - Number(s[start])) || 0;
   return {
     clientToCloudMs: duration('generateOutfitRequest', 'generateOutfitRequestStart', 'generateOutfitResponseEnd'),
-    clientStateMs: duration('responseAdapt', 'responseAdaptStart', 'responseAdaptEnd'),
-    firstCardPaintMs: duration('onShowToFirstCard', 'todayOnShow', 'firstCardMounted'),
-    firstImagePaintMs: duration('onShowToFirstImage', 'todayOnShow', 'firstImageLoaded'),
-    usablePaintMs: Number(s.firstImageLoaded || s.firstCardMounted) - Number(s.todayOnShow) || 0,
+    clientStateMs: duration('responseToStateUpdate', 'responseAdaptStart', 'setOutfitsCalled') || duration('responseAdapt', 'responseAdaptStart', 'responseAdaptEnd'),
+    firstCardPaintMs: duration('actionToFirstCard', 'userActionStart', 'firstCardMounted') || duration('onShowToFirstCard', 'todayOnShow', 'firstCardMounted'),
+    firstImagePaintMs: duration('actionToFirstImage', 'userActionStart', 'firstImageLoaded') || duration('onShowToFirstImage', 'todayOnShow', 'firstImageLoaded'),
+    usablePaintMs: Number(s.firstImageLoaded || s.firstCardMounted) - Number(s.userActionStart || s.todayOnShow) || 0,
     snapshotReadMs: duration('snapshotRead', 'snapshotReadStart', 'snapshotReadEnd'),
     snapshotValidationMs: duration('snapshotValidation', 'snapshotValidationStart', 'snapshotValidationEnd'),
   };
@@ -101,20 +102,65 @@ async function invalidateRestoreSnapshot(mini) {
   });
 }
 
-async function markHardInvalid(mini) {
-  return mini.evaluate(() => {
+async function markHardInvalid(mini, acceptanceRequest) {
+  return mini.evaluate((payload) => {
     const info = globalThis.wx?.getStorageInfoSync?.() || { keys: [] };
-    const key = (info.keys || []).find((entry) => String(entry).startsWith('d1d:userStorage:v1:') && String(entry).includes('today:recommendationInput:hardInvalid'));
-    if (key) globalThis.wx?.setStorageSync?.(key, true);
+    const keys = info.keys || [];
+    const existingKey = keys.find((entry) => String(entry).startsWith('d1d:userStorage:v1:') && String(entry).includes('today:recommendationInput:hardInvalid'));
+    const snapshotKey = keys.find((entry) => String(entry).startsWith('d1d:userStorage:v1:') && String(entry).includes('today:outfitReturnSnapshot:recommendation-copy-contract-v8'));
+    const key = existingKey || (snapshotKey
+      ? `${String(snapshotKey).split(':today:outfitReturnSnapshot:')[0]}:today:recommendationInput:hardInvalid`
+      : null);
+    if (key) globalThis.wx?.setStorageSync?.(key, payload?.acceptanceRunId && payload?.captureId
+      ? { acceptanceDiagnostics: payload, markedAt: Date.now() }
+      : true);
+    if (payload?.acceptanceRunId && payload?.captureId) {
+      globalThis.wx?.setStorageSync?.('today:ttui-hard-invalid-acceptance:v1', payload);
+    }
     return { key, marked: Boolean(key) };
-  });
+  }, acceptanceRequest);
+}
+
+async function prepareHardInvalidAndRelaunch(mini, acceptanceRequest) {
+  return mini.evaluate((payload) => {
+    const info = globalThis.wx?.getStorageInfoSync?.() || { keys: [] };
+    const keys = info.keys || [];
+    const snapshotKeys = keys.filter((entry) => String(entry).startsWith('d1d:userStorage:v1:') && String(entry).includes('today:outfitReturnSnapshot:recommendation-copy-contract-v8'));
+    const existingKey = keys.find((entry) => String(entry).startsWith('d1d:userStorage:v1:') && String(entry).includes('today:recommendationInput:hardInvalid'));
+    const snapshotKey = snapshotKeys[0];
+    const key = existingKey || (snapshotKey
+      ? `${String(snapshotKey).split(':today:outfitReturnSnapshot:')[0]}:today:recommendationInput:hardInvalid`
+      : null);
+    if (!key) throw new Error('TTUI_HARD_INVALID_SCOPED_KEY_MISSING');
+    globalThis.wx?.setStorageSync?.(key, {
+      acceptanceDiagnostics: payload,
+      markedAt: Date.now(),
+    });
+    globalThis.wx?.setStorageSync?.('today:ttui-hard-invalid-acceptance:v1', payload);
+    snapshotKeys.forEach((entry) => globalThis.wx?.removeStorageSync?.(entry));
+    globalThis.wx?.reLaunch?.({ url: '/pages/today/index' });
+    return { key, marked: Boolean(globalThis.wx?.getStorageSync?.(key)), removedKeys: snapshotKeys };
+  }, acceptanceRequest);
+}
+
+async function waitForTodayIdle(mini, timeoutMs = 30000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const state = await mini.evaluate(() => {
+      const bridge = globalThis.__d1dTodayDiagnostics;
+      return { present: Boolean(bridge), ready: bridge?.ready === true };
+    });
+    if (!state?.present || state.ready) return state;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error('TODAY_DIAGNOSTICS_IDLE_TIMEOUT');
 }
 
 async function clearMeasurementState(mini) {
   return mini.evaluate((keys) => {
     keys.forEach((key) => globalThis.wx?.removeStorageSync?.(key));
     return keys;
-  }, [TRANSPORT_KEY, PERFORMANCE_KEY, TODAY_PERFORMANCE_LEDGER_KEY]);
+  }, [TRANSPORT_KEY, PERFORMANCE_KEY, TODAY_PERFORMANCE_LEDGER_KEY, HARD_INVALID_ACCEPTANCE_KEY]);
 }
 
 async function prepareValidSnapshot(mini, timeoutMs = 30000) {
@@ -154,56 +200,113 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
   if (!mini) throw new Error('TTUI_MINI_REQUIRED');
   const runId = nowId(`ttui-${scenario}`);
   const startedAt = Date.now();
+  let actionStartedAt = startedAt;
+  let previousBatchId = null;
   await clearMeasurementState(mini);
   if (scenario === 'A') {
     await prepareValidSnapshot(mini, timeoutMs);
     await clearMeasurementState(mini);
   }
   if (scenario === 'C') {
-    if (typeof mini.switchTab === 'function') await mini.switchTab({ url: '/pages/wardrobe/index' });
-    await markHardInvalid(mini);
-    await invalidateRestoreSnapshot(mini);
+    await waitForBridge(mini, timeoutMs);
+    await waitForTodayIdle(mini, timeoutMs);
+    const previousState = await mini.evaluate(() => globalThis.__d1dTodayDiagnostics?.readCopyAcceptanceState?.() || null);
+    previousBatchId = previousState?.recommendationBatchId || null;
+    if (typeof mini.switchTab === 'function') await mini.switchTab('/pages/wardrobe/index');
+    actionStartedAt = Date.now();
+    const hardInvalidPreparation = await prepareHardInvalidAndRelaunch(mini, { ...request, acceptanceRunId: runId, captureId: `${runId}-capture` });
+    request = { ...request, hardInvalidPreparation };
   }
-  if (typeof mini.reLaunch === 'function') await mini.reLaunch('/pages/today/index');
+  if (scenario !== 'C' && typeof mini.reLaunch === 'function') {
+    if (scenario === 'A') actionStartedAt = Date.now();
+    await mini.reLaunch('/pages/today/index');
+  }
   const bridge = await waitForBridge(mini, timeoutMs);
+  const baselineLedger = await readLedger(mini);
+  const baselineRunId = baselineLedger?.active?.runId || null;
   let triggerResult = null;
   if (scenario === 'B') {
+    const previousState = await mini.evaluate(() => globalThis.__d1dTodayDiagnostics?.readCopyAcceptanceState?.() || null);
+    previousBatchId = previousState?.recommendationBatchId || null;
+    actionStartedAt = Date.now();
     triggerResult = await mini.evaluate(async (payload) => globalThis.__d1dTodayDiagnostics.triggerRefresh(payload), {
       ...request, acceptanceRunId: runId, captureId: `${runId}-capture`,
     });
   }
   const deadline = Date.now() + timeoutMs;
   let ledger = null;
+  let active = null;
+  let transport = null;
+  let performance = null;
+  let copyState = null;
+  let usableState = null;
+  let observedUsableAt = 0;
   while (Date.now() < deadline) {
     ledger = await readLedger(mini);
     const candidates = [ledger?.active, ...(ledger?.history || [])].filter(Boolean);
-    const current = scenario === 'B'
-      ? candidates.find((entry) => Number(entry?.stages?.userActionStart) >= startedAt && entry?.complete)
-      : candidates.find((entry) => Number(entry?.startedAt) >= startedAt && entry?.complete) || candidates.at(-1);
-    if (current) { ledger = { ...ledger, active: current }; break; }
+    active = scenario === 'B'
+      ? candidates.find((entry) => entry?.runId !== baselineRunId && entry?.executionMode === 'REFRESH' && Number.isFinite(Number(entry?.stages?.userActionStart)) && entry?.complete)
+      : candidates.find((entry) => entry?.complete) || null;
+    transport = await mini.evaluate((key) => globalThis.wx?.getStorageSync?.(key) || null, TRANSPORT_KEY);
+    performance = await mini.evaluate((key) => globalThis.wx?.getStorageSync?.(key) || null, PERFORMANCE_KEY);
+    copyState = await mini.evaluate(() => globalThis.__d1dTodayDiagnostics?.readCopyAcceptanceState?.() || null);
+    usableState = await mini.evaluate(() => globalThis.__d1dTodayDiagnostics?.readUsableCardState?.() || null);
+    const usable = usableState?.batchIndex === 1
+      && Number(usableState?.batchTotal) > 0
+      && usableState?.hasOutfit === true
+      && usableState?.copyTextPresent === true
+      && usableState?.canFavorite === true
+      && usableState?.canOpenDetail === true
+      && (Number(usableState?.batchTotal) !== 8 || usableState?.canSwipe === true);
+    const correlatedRequest = transport?.acceptanceRunId === runId && Number(performance?.serverTotalMs) > 0;
+    const batchTransitioned = !previousBatchId || (copyState?.recommendationBatchId && copyState.recommendationBatchId !== previousBatchId);
+    const ready = scenario === 'A'
+      ? Boolean(active?.complete && usable)
+      : scenario === 'B'
+        ? Boolean(active?.complete && correlatedRequest && usable)
+        : Boolean(correlatedRequest && batchTransitioned && usable && Number(transport?.callFunctionPromiseResolved) > 0);
+    if (ready) {
+      observedUsableAt = Date.now();
+      if (active) ledger = { ...ledger, active };
+      break;
+    }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  const active = ledger?.active || ledger?.history?.at(-1) || null;
-  const transport = await mini.evaluate((key) => globalThis.wx?.getStorageSync?.(key) || null, TRANSPORT_KEY);
-  const performance = await mini.evaluate((key) => globalThis.wx?.getStorageSync?.(key) || null, PERFORMANCE_KEY);
-  const usableState = await mini.evaluate(() => globalThis.__d1dTodayDiagnostics?.readUsableCardState?.() || null);
+  active = active || ledger?.active || ledger?.history?.at(-1) || null;
+  const clientSegments = segmentDurations(active || {});
+  const measuredTtuiMs = observedUsableAt > 0 ? observedUsableAt - actionStartedAt : 0;
+  const correlatedClientRoundTripMs = Number(transport?.clientTotalMs);
+  if (Number.isFinite(correlatedClientRoundTripMs) && correlatedClientRoundTripMs > 0) {
+    clientSegments.clientToCloudMs = correlatedClientRoundTripMs;
+  }
+  clientSegments.usablePaintMs = measuredTtuiMs;
+  clientSegments.postResponseUsableMs = observedUsableAt > 0 && Number(transport?.callFunctionPromiseResolved) > 0
+    ? Math.max(0, observedUsableAt - Number(transport.callFunctionPromiseResolved))
+    : 0;
+  if (clientSegments.postResponseUsableMs > 0) {
+    clientSegments.clientStateMs = clientSegments.postResponseUsableMs;
+  }
   const artifact = {
-    runId, scenario, startedAt, endedAt: Date.now(), triggerResult,
+    runId, scenario, startedAt, actionStartedAt, observedUsableAt, endedAt: Date.now(), triggerResult, hardInvalidPreparation: request.hardInvalidPreparation || null,
     bridge: { marker: bridge.marker, ready: bridge.ready, sceneKey: bridge.sceneKey },
-    ledger: active, transport, performance, usableState, server: serverSegments(performance || {}), client: segmentDurations(active || {}),
+    previousBatchId, ledger: active, transport, performance, copyState, usableState, server: serverSegments(performance || {}), client: clientSegments,
     validation: {
-      completeLedger: active?.complete === true,
-      firstUsablePaint: Number(active?.stages?.firstImageLoaded || active?.stages?.firstCardMounted) > 0,
+      completeLedger: scenario === 'C' ? observedUsableAt > 0 : active?.complete === true,
+      firstUsablePaint: observedUsableAt > 0,
       requestCount: Number(active?.generateOutfitRequestCount) || 0,
       executionMode: active?.executionMode || active?.stages?.executionMode || '',
-      hardInvalidRejected: scenario !== 'C' || (active?.executionMode && active.executionMode !== 'HOT'),
+      scenarioBRefreshRun: scenario !== 'B' || (active?.executionMode === 'REFRESH' && (Number(active?.generateOutfitRequestCount) || 0) === 1),
+      scenarioCColdRun: scenario !== 'C' || (transport?.acceptanceRunId === runId && Number(performance?.serverTotalMs) > 0),
+      scenarioCCorrelatedRequest: scenario !== 'C' || (transport?.acceptanceRunId === runId && Number(performance?.serverTotalMs) > 0),
+      scenarioCNoStaleBatchPaint: scenario !== 'C' || (observedUsableAt >= Number(transport?.callFunctionPromiseResolved) && (!previousBatchId || copyState?.recommendationBatchId !== previousBatchId)),
+      hardInvalidRejected: scenario !== 'C' || (transport?.acceptanceRunId === runId && (!previousBatchId || copyState?.recommendationBatchId !== previousBatchId)),
       noCloudBeforeUsablePaint: scenario !== 'A' || !Number.isFinite(Number(active?.stages?.generateOutfitRequestStart)) || Number(active.stages.generateOutfitRequestStart) > Number(active?.stages?.firstImageLoaded || active?.stages?.firstCardMounted || Infinity),
       scenarioAZeroCloudRequests: scenario === 'A' ? (Number(active?.generateOutfitRequestCount) || 0) === 0 : true,
-      canonicalCopyReady: !expectedRuntimeV2 || (Array.isArray(active?.outfits) && active.outfits.every((outfit, index, all) => outfit?.canonicalRecommendationCopyV2?.text && ['safe', 'ai_cache'].includes(outfit.canonicalRecommendationCopyV2.source) && outfit.canonicalRecommendationCopyV2.batchIndex === index && outfit.canonicalRecommendationCopyV2.batchTotal === all.length)),
+      canonicalCopyReady: !expectedRuntimeV2 || (Array.isArray(copyState?.outfits) && copyState.outfits.length > 0 && copyState.outfits.every((outfit, index, all) => outfit?.canonicalRecommendationCopyV2?.text && ['safe', 'ai_cache'].includes(outfit.canonicalRecommendationCopyV2.source) && outfit.canonicalRecommendationCopyV2.batchIndex === index && outfit.canonicalRecommendationCopyV2.batchTotal === all.length)),
       usableCard: usableState?.batchIndex === 1 && Number(usableState?.batchTotal) > 0 && usableState?.hasOutfit === true && usableState?.copyTextPresent === true && usableState?.canFavorite === true && usableState?.canOpenDetail === true && (Number(usableState?.batchTotal) !== 8 || usableState?.canSwipe === true),
     },
   };
-  if (!artifact.validation.completeLedger || !artifact.validation.firstUsablePaint || !artifact.validation.noCloudBeforeUsablePaint || !artifact.validation.canonicalCopyReady || !artifact.validation.usableCard || !artifact.validation.hardInvalidRejected) {
+  if (!artifact.validation.completeLedger || !artifact.validation.firstUsablePaint || !artifact.validation.noCloudBeforeUsablePaint || !artifact.validation.canonicalCopyReady || !artifact.validation.usableCard || !artifact.validation.scenarioBRefreshRun || !artifact.validation.scenarioCColdRun || !artifact.validation.scenarioCCorrelatedRequest || !artifact.validation.scenarioCNoStaleBatchPaint || !artifact.validation.hardInvalidRejected) {
     throw Object.assign(new Error('TTUI_SCENARIO_INVARIANT_FAILED'), { artifact });
   }
   return artifact;
@@ -233,6 +336,7 @@ async function runCli({ scenario = 'A', samples = 1, skipBuild = false, expected
         ...artifact.server,
         ...artifact.client,
         clientTotalMs: artifact.transport?.clientTotalMs,
+        serverTotalMs: artifact.server?.totalMs,
       }))),
     };
   } finally {
@@ -240,7 +344,7 @@ async function runCli({ scenario = 'A', samples = 1, skipBuild = false, expected
   }
 }
 
-module.exports = { ARTIFACT_ROOT, readLedger, readSnapshot, segmentDurations, serverSegments, summarize, summarizeArtifacts, writeArtifact, waitForBridge, invalidateRestoreSnapshot, isUsableSnapshot, runScenario, runCli };
+module.exports = { ARTIFACT_ROOT, readLedger, readSnapshot, segmentDurations, serverSegments, summarize, summarizeArtifacts, writeArtifact, waitForBridge, waitForTodayIdle, invalidateRestoreSnapshot, markHardInvalid, prepareHardInvalidAndRelaunch, isUsableSnapshot, runScenario, runCli };
 
 if (require.main === module) {
   const args = new Map(process.argv.slice(2).map((arg) => {

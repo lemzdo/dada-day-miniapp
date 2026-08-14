@@ -5,6 +5,7 @@ import { WeatherCard, type WeatherRecommendationRefreshResult } from '@/componen
 import { useAuthRuntime } from '@/hooks/useAuthRuntime';
 import {
   TODAY_PROFILE_INPUT_VERSION_KEY,
+  TODAY_RECOMMENDATION_HARD_INVALID_KEY,
   TODAY_WARDROBE_INPUT_VERSION_KEY,
   clearTodayRecommendationDirty,
   clearTodayRecommendationHardInvalid,
@@ -79,6 +80,7 @@ import {
   recordTodayRestoreException,
   recordTodayRestoreFunctionEntered,
   recordTodayRestoreReturn,
+  readTodayPerformanceLedger,
   startTodayPerformanceRun,
   subscribeTodayPerformanceLedger,
   type TodayPerformanceLedgerSnapshot,
@@ -156,6 +158,32 @@ interface TodayFullComputeAcceptanceRequest {
   weatherModeOverride?: 'disabled';
 }
 
+const TODAY_HARD_INVALID_ACCEPTANCE_KEY = 'today:ttui-hard-invalid-acceptance:v1';
+
+function consumeHardInvalidAcceptanceRequest(
+  authContext?: ActiveAuthContext | null,
+): TodayFullComputeAcceptanceRequest | undefined {
+  if (!isTodayDiagnosticsRuntime()) return undefined;
+  try {
+    const value = Taro.getStorageSync(TODAY_HARD_INVALID_ACCEPTANCE_KEY) as TodayFullComputeAcceptanceRequest | '';
+    Taro.removeStorageSync(TODAY_HARD_INVALID_ACCEPTANCE_KEY);
+    if (value
+      && typeof value.acceptanceRunId === 'string'
+      && typeof value.captureId === 'string') return value;
+    const marker = getUserStorageSync<{
+      acceptanceDiagnostics?: TodayFullComputeAcceptanceRequest;
+    }>(TODAY_RECOMMENDATION_HARD_INVALID_KEY, { authContext });
+    const diagnostics = marker?.acceptanceDiagnostics;
+    return diagnostics
+      && typeof diagnostics.acceptanceRunId === 'string'
+      && typeof diagnostics.captureId === 'string'
+      ? diagnostics
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 interface TodayDiagnosticsBridge {
   marker: 'd1d-today-production-handler-v1';
   copyAcceptanceBuild: 'today-copy-naturalness-v3';
@@ -166,7 +194,18 @@ interface TodayDiagnosticsBridge {
   releaseCaptureLock: () => void;
   readCopyAcceptanceState: () => {
     sceneKey: SceneKey;
+    recommendationBatchId?: string;
     outfits: Outfit[];
+  };
+  readUsableCardState: () => {
+    batchIndex: number;
+    batchTotal: number;
+    hasOutfit: boolean;
+    copyTextPresent: boolean;
+    copySource: string;
+    canSwipe: boolean;
+    canFavorite: boolean;
+    canOpenDetail: boolean;
   };
 }
 
@@ -475,9 +514,8 @@ export default function TodayPage() {
     const authContext = captureAuthContext();
     if (!authContext) return;
     markTodayPerformanceStage('localIdentityReady');
-    if (lastHandledRuntimeKeyRef.current === runtimeKey
-      && hasTodayRecommendationHardInvalid({ authContext })) {
-      void refreshHardInvalidRecommendation(authContext);
+    if (hasTodayRecommendationHardInvalid({ authContext })) {
+      void refreshHardInvalidRecommendation(authContext, consumeHardInvalidAcceptanceRequest(authContext));
       return;
     }
     // A resumed Today tab is a normal restore entry, not only a return from
@@ -514,7 +552,7 @@ export default function TodayPage() {
     recordTodayRestoreDispatchAttempt();
     const authContext = captureAuthContext();
     if (authContext && hasTodayRecommendationHardInvalid({ authContext })) {
-      void refreshHardInvalidRecommendation(authContext);
+      void refreshHardInvalidRecommendation(authContext, consumeHardInvalidAcceptanceRequest(authContext));
       return;
     }
     const restored = restoreTodaySnapshotFromDetail(authContext, { requireReturnIntent: false });
@@ -611,7 +649,10 @@ export default function TodayPage() {
     }
   }
 
-  async function refreshHardInvalidRecommendation(authContext: ActiveAuthContext) {
+  async function refreshHardInvalidRecommendation(
+    authContext: ActiveAuthContext,
+    acceptanceDiagnostics?: TodayFullComputeAcceptanceRequest,
+  ) {
     if (hardRefreshInFlightRef.current) return;
     hardRefreshInFlightRef.current = true;
     resetUserState();
@@ -623,6 +664,7 @@ export default function TodayPage() {
         weather: currentWeatherRef.current,
         weatherMode: currentWeatherModeRef.current,
         trigger: 'hard-invalid',
+        acceptanceDiagnostics,
       });
       if (refreshed && isAuthContextCurrent(authContext)) {
         clearTodayRecommendationHardInvalid({ authContext });
@@ -838,6 +880,9 @@ export default function TodayPage() {
       Taro.showToast({ title: NO_MORE_NEW_OUTFITS_NOTICE, icon: 'none' });
       return false;
     }
+    startTodayPerformanceRun();
+    markTodayPerformanceStage('userActionStart');
+    markTodayPerformanceStage('executionMode', 'REFRESH');
     shouldRestoreFromDetailRef.current = false;
     const weatherForRefresh = acceptanceDiagnostics?.weatherModeOverride === 'disabled'
       ? undefined
@@ -874,6 +919,7 @@ export default function TodayPage() {
     try {
       const weatherFingerprintForRefresh = getRecommendationWeatherFingerprint(weatherForRefresh);
       logRecommendationStart(requestContext, 'refresh', Boolean(weatherForRefresh));
+      markTodayPerformanceStage('generateOutfitRequestStart');
       const cloudRequestStartedAt = Date.now();
       const data = await generateCloudOutfit({
         date: getToday(),
@@ -897,6 +943,13 @@ export default function TodayPage() {
       const cloudRoundTripMs = Date.now() - cloudRequestStartedAt;
       const responseReceivedAt = Date.now();
       const transport = getCloudResponseTransportDiagnostics(data);
+      markTodayPerformanceStage('responseAdaptStart');
+      markTodayPerformanceStage('generateOutfitResponseEnd');
+      markTodayPerformanceStage('auditId', getRecommendationAuditId(data, auditId));
+      markTodayPerformanceStage('executionMode', 'REFRESH');
+      if (typeof (data as { code?: unknown }).code === 'number' || typeof (data as { code?: unknown }).code === 'string') {
+        markTodayPerformanceStage('responseCode', String((data as unknown as { code: number | string }).code));
+      }
 
       if (!isRecommendationIntentCurrent(intent) || !isAuthContextCurrent(authContext)) return false;
       const currentInputSignature = getRecommendationInputSignature({
@@ -925,6 +978,7 @@ export default function TodayPage() {
         return false;
       }
       const eligibleApiOutfits = data.outfits.filter(hasCurrentNewRecommendationCopy);
+      markTodayPerformanceStage('responseAdaptEnd');
       logRecommendationResponse(requestContext, data, 'refresh', eligibleApiOutfits.length);
       logRecommendationQa(data, auditId);
       if (eligibleApiOutfits.length > 0) {
@@ -939,6 +993,7 @@ export default function TodayPage() {
         currentIndexRef.current = 0;
         recommendationBatchIdRef.current = data.recommendationBatchId ?? nextOutfits[0]?.recommendationBatchId;
         setOutfits(nextOutfits);
+        markTodayPerformanceStage('setOutfitsCalled');
         setCurrentIndex(0);
         setHasRecommendations(true);
         setMissingRoles([]);
@@ -2244,6 +2299,7 @@ export default function TodayPage() {
       sceneKey: selectedSceneKeyRef.current,
       readCopyAcceptanceState: () => ({
         sceneKey: selectedSceneKeyRef.current,
+        recommendationBatchId: recommendationBatchIdRef.current,
         outfits: outfitsRef.current.map((outfit) => ({
           id: outfit.id,
           outfitKey: outfit.outfitKey,
@@ -2251,8 +2307,29 @@ export default function TodayPage() {
           clothingIds: outfit.clothingIds,
           copyContractVersion: outfit.copyContractVersion,
           copyContract: outfit.copyContract,
+          canonicalRecommendationCopyV2: outfit.canonicalRecommendationCopyV2,
         } as Outfit)),
       }),
+      readUsableCardState: () => {
+        const batch = outfitsRef.current;
+        const index = currentIndexRef.current;
+        const outfit = batch[index];
+        const canonicalCopy = outfit?.canonicalRecommendationCopyV2;
+        const copyText = canonicalCopy?.text
+          || outfit?.copyContract?.todayReason
+          || outfit?.reason
+          || '';
+        return {
+          batchIndex: outfit ? index + 1 : 0,
+          batchTotal: batch.length,
+          hasOutfit: Boolean(outfit && Array.isArray(outfit.clothingIds) && outfit.clothingIds.length > 0),
+          copyTextPresent: Boolean(copyText.trim()),
+          copySource: canonicalCopy?.source || 'legacy',
+          canSwipe: batch.length > 1,
+          canFavorite: Boolean(outfit?.id) && operation !== 'favorite',
+          canOpenDetail: Boolean(outfit?.id),
+        };
+      },
       releaseCaptureLock: () => {
         copyAcceptanceCaptureLockRef.current = false;
       },
@@ -2601,8 +2678,18 @@ function RecommendationImage({
         onLoad={() => {
           markImageSessionReady(src, cacheIdentity);
           setStatus('loaded');
-          markTodayPerformanceStage('firstImageLoaded');
-          completeTodayPerformanceRun();
+          const performanceRun = readTodayPerformanceLedger().active;
+          const setOutfitsAt = performanceRun?.stages.setOutfitsCalled;
+          const firstCardMountedAt = performanceRun?.stages.firstCardMounted;
+          if (
+            performanceRun?.complete !== true
+            && typeof setOutfitsAt === 'number'
+            && typeof firstCardMountedAt === 'number'
+            && firstCardMountedAt >= setOutfitsAt
+          ) {
+            markTodayPerformanceStage('firstImageLoaded');
+            completeTodayPerformanceRun();
+          }
         }}
         onError={() => {
           markImageSessionFailed(src, cacheIdentity);

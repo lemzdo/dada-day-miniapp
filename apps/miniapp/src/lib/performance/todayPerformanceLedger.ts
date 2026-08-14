@@ -6,7 +6,7 @@ export const TODAY_PERFORMANCE_LEDGER_SCHEMA_VERSION = 3;
 const HISTORY_LIMIT = 5;
 const PUBLISH_DEBOUNCE_MS = 250;
 
-export type TodayPerformanceExecutionMode = 'HOT' | 'COLD' | 'UNKNOWN';
+export type TodayPerformanceExecutionMode = 'HOT' | 'COLD' | 'REFRESH' | 'UNKNOWN';
 export type TodayRestoreReturnReason =
   | 'NO_LOCAL_AUTH'
   | 'AUTH_CONTEXT_STALE'
@@ -24,7 +24,7 @@ export type TodayPerformanceStage =
   | 'statusApplyStart' | 'statusApplyEnd' | 'setOutfitsCalled'
   | 'reactCommitAfterOutfits' | 'firstCardMounted' | 'firstImageLoadStart'
   | 'firstImageLoaded' | 'generateOutfitRequestStart' | 'generateOutfitResponseEnd'
-  | 'responseAdaptStart' | 'responseAdaptEnd' | 'snapshotPersistStart' | 'snapshotPersistEnd'
+  | 'userActionStart' | 'responseAdaptStart' | 'responseAdaptEnd' | 'snapshotPersistStart' | 'snapshotPersistEnd'
   | 'backgroundRefreshStart' | 'backgroundRefreshEnd' | 'finalCardCount'
   | 'generateOutfitRequestCount' | 'executionMode' | 'responseCode' | 'auditId'
   | 'runComplete';
@@ -187,7 +187,7 @@ export function markTodayPerformanceStage(stage: TodayPerformanceStage, value?: 
   if (stage === 'generateOutfitRequestStart') active.generateOutfitRequestCount += 1;
   if (stage === 'generateOutfitRequestStart') active.stages.generateOutfitRequestCount = active.generateOutfitRequestCount;
   if (stage === 'finalCardCount' && typeof value === 'number') active.finalCardCount = value;
-  if (stage === 'executionMode' && (value === 'HOT' || value === 'COLD')) active.executionMode = value;
+  if (stage === 'executionMode' && (value === 'HOT' || value === 'COLD' || value === 'REFRESH')) active.executionMode = value;
   if (stage === 'locationPermissionResolved') markTodayPerformanceDuration('permissionUserWaitMs', 'locationPermissionPromptStart', 'locationPermissionResolved');
   if (stage === 'finalCardCount' || stage === 'snapshotRejectReason') publishNow();
   else publish();
@@ -207,11 +207,13 @@ export function completeTodayPerformanceRun() {
   current.completedAt = now();
   current.stages.runComplete = current.completedAt;
   current.complete = true;
-  for (const stage of ['appOrPageEntry', 'todayComponentEnter', 'todayOnLoad', 'todayOnShow', 'identityStart', 'localIdentityReady', 'identityRemoteStart', 'identityRemoteEnd', 'identityReady', 'sceneReady', 'weatherStart', 'weatherEnd', 'locationPermissionPromptStart', 'locationPermissionResolved', 'snapshotReadStart', 'snapshotReadEnd', 'snapshotParseEnd', 'snapshotValidationStart', 'snapshotValidationEnd', 'snapshotFound', 'snapshotValid', 'snapshotRejectReason', 'snapshotCardCount', 'statusApplyStart', 'statusApplyEnd', 'setOutfitsCalled', 'reactCommitAfterOutfits', 'firstCardMounted', 'firstImageLoadStart', 'firstImageLoaded', 'generateOutfitRequestStart', 'generateOutfitResponseEnd', 'responseAdaptEnd', 'snapshotPersistStart', 'snapshotPersistEnd', 'backgroundRefreshStart', 'backgroundRefreshEnd', 'finalCardCount', 'generateOutfitRequestCount', 'executionMode', 'responseCode', 'auditId'] as TodayPerformanceStage[]) {
+  for (const stage of ['appOrPageEntry', 'todayComponentEnter', 'todayOnLoad', 'todayOnShow', 'identityStart', 'localIdentityReady', 'identityRemoteStart', 'identityRemoteEnd', 'identityReady', 'sceneReady', 'weatherStart', 'weatherEnd', 'locationPermissionPromptStart', 'locationPermissionResolved', 'snapshotReadStart', 'snapshotReadEnd', 'snapshotParseEnd', 'snapshotValidationStart', 'snapshotValidationEnd', 'snapshotFound', 'snapshotValid', 'snapshotRejectReason', 'snapshotCardCount', 'statusApplyStart', 'statusApplyEnd', 'setOutfitsCalled', 'reactCommitAfterOutfits', 'firstCardMounted', 'firstImageLoadStart', 'firstImageLoaded', 'userActionStart', 'generateOutfitRequestStart', 'generateOutfitResponseEnd', 'responseAdaptStart', 'responseAdaptEnd', 'snapshotPersistStart', 'snapshotPersistEnd', 'backgroundRefreshStart', 'backgroundRefreshEnd', 'finalCardCount', 'generateOutfitRequestCount', 'executionMode', 'responseCode', 'auditId'] as TodayPerformanceStage[]) {
     if (current.stages[stage] === undefined) current.stages[stage] = stage === 'snapshotRejectReason' ? 'NOT_OBSERVED' : 'NOT_OBSERVED';
   }
   markTodayPerformanceDuration('onShowToFirstCard', 'todayOnShow', 'firstCardMounted');
   markTodayPerformanceDuration('onShowToFirstImage', 'todayOnShow', 'firstImageLoaded');
+  markTodayPerformanceDuration('actionToFirstCard', 'userActionStart', 'firstCardMounted');
+  markTodayPerformanceDuration('actionToFirstImage', 'userActionStart', 'firstImageLoaded');
   markTodayPerformanceDuration('request', 'generateOutfitRequestStart', 'generateOutfitResponseEnd');
   markTodayPerformanceDuration('permissionUserWaitMs', 'locationPermissionPromptStart', 'locationPermissionResolved');
   history = [current, ...history.filter((item) => item.runId !== current.runId)].slice(0, HISTORY_LIMIT);
