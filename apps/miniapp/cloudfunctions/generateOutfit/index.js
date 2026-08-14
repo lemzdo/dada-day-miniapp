@@ -1243,6 +1243,9 @@ function projectRecommendationResponseOutfits(outfits) {
     if (projected.contentPlan && typeof projected.contentPlan === 'object') {
       projected.contentPlan = projectPublicContentPlan(projected.contentPlan);
     }
+    if (projected.xiaodaStyleInsight && typeof projected.xiaodaStyleInsight === 'object') {
+      projected.xiaodaStyleInsight = projectPublicXiaodaStyleInsight(projected.xiaodaStyleInsight);
+    }
     if (projected.aestheticEvaluation && typeof projected.aestheticEvaluation === 'object') {
       projected.aestheticEvaluation = { ...projected.aestheticEvaluation };
       if (!Array.isArray(projected.aestheticEvaluation.evidenceCodes)
@@ -1311,6 +1314,34 @@ function projectPublicCopyContract(contract) {
   projected.coreEligibilityEvidence = (Array.isArray(contract.coreEligibilityEvidence)
     ? contract.coreEligibilityEvidence
     : []).map(projectPublicEligibilityEvidence);
+  if (projected.todayCopyProvenance && typeof projected.todayCopyProvenance === 'object') {
+    projected.todayCopyProvenance = projectPublicCopyProvenance(projected.todayCopyProvenance);
+  }
+  if (projected.detailCopyProvenance && typeof projected.detailCopyProvenance === 'object') {
+    projected.detailCopyProvenance = projectPublicCopyProvenance(projected.detailCopyProvenance);
+  }
+  if (projected.xiaodaStyleInsight && typeof projected.xiaodaStyleInsight === 'object') {
+    projected.xiaodaStyleInsight = projectPublicXiaodaStyleInsight(projected.xiaodaStyleInsight);
+  }
+  return projected;
+}
+
+function projectPublicCopyProvenance(provenance) {
+  const projected = {};
+  for (const field of [
+    'version', 'surface', 'scene', 'relationCode', 'messageIntent', 'messageDimension',
+    'openingFamily', 'endingFamily', 'compositionPattern', 'text', 'fallbackStrategy',
+  ]) {
+    if (Object.prototype.hasOwnProperty.call(provenance, field)) projected[field] = provenance[field];
+  }
+  return projected;
+}
+
+function projectPublicXiaodaStyleInsight(insight) {
+  const projected = {};
+  for (const field of ['version', 'personaVersion']) {
+    if (Object.prototype.hasOwnProperty.call(insight, field)) projected[field] = insight[field];
+  }
   return projected;
 }
 
@@ -1333,6 +1364,9 @@ function projectPublicContentPlan(contentPlan) {
     'secondaryBenefit', 'suggestion', 'personaVersion', 'xiaodaStyleInsight',
   ]) {
     if (Object.prototype.hasOwnProperty.call(contentPlan, field)) projected[field] = contentPlan[field];
+  }
+  if (projected.xiaodaStyleInsight && typeof projected.xiaodaStyleInsight === 'object') {
+    projected.xiaodaStyleInsight = projectPublicXiaodaStyleInsight(projected.xiaodaStyleInsight);
   }
   return projected;
 }

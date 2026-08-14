@@ -322,6 +322,7 @@ test('eight-card normal response keeps raw fact carriers out of the business pay
       items: [{ id: `top-${index}`, slot: 'top', role: 'core', displayName: 'top' }],
       presentationFactSignature: 's'.repeat(4096),
       defaultCopy: { todayReason: 'reason', detailExplanation: 'detail' },
+      xiaodaStyleInsight: { version: 'xiaoda-style-insight-v3', personaVersion: 'v6', secondary: rawFacts },
     },
     copyContract: {
       copyContractVersion: 'recommendation-copy-contract-v8',
@@ -341,6 +342,9 @@ test('eight-card normal response keeps raw fact carriers out of the business pay
       todayEvidenceSources: rawFacts,
       detailEvidenceSources: rawFacts,
       selectedDifferentiator: { evidenceFactIds: rawFacts },
+      todayCopyProvenance: { version: 'v5', text: 'reason', clauses: rawFacts, xiaodaStyleInsight: { secondary: rawFacts } },
+      detailCopyProvenance: { version: 'v5', text: 'detail', clauses: rawFacts },
+      xiaodaStyleInsight: { version: 'xiaoda-style-insight-v3', personaVersion: 'v6', primary: rawFacts, secondary: rawFacts },
     },
     presentationPlan: { factModel: { facts: rawFacts }, selectedDifferentiator: rawFacts },
     selectedDifferentiator: { evidenceFactIds: rawFacts },
@@ -360,11 +364,17 @@ test('eight-card normal response keeps raw fact carriers out of the business pay
   assert.equal(Object.hasOwn(projected[0], 'selectedDifferentiator'), false);
   assert.equal(Object.hasOwn(projected[0].copyContract, 'todayEvidenceSources'), false);
   assert.equal(Object.hasOwn(projected[0].copyContract, 'selectedDifferentiator'), false);
+  assert.equal(Object.hasOwn(projected[0].copyContract.todayCopyProvenance, 'clauses'), false);
+  assert.equal(Object.hasOwn(projected[0].copyContract.detailCopyProvenance, 'clauses'), false);
+  assert.equal(Object.hasOwn(projected[0].copyContract.xiaodaStyleInsight, 'secondary'), false);
   assert.equal(Object.hasOwn(projected[0].copyContract.coreEligibilityEvidence[0], 'sourceDetail'), false);
   assert.equal(projected[0].copyContract.coreEligibilityEvidence[0].factId, `fact-0`);
   assert.deepEqual(Object.keys(projected[0].contentPlan).sort(), [
-    'items', 'primaryBenefit', 'sceneIntent', 'version',
+    'items', 'primaryBenefit', 'sceneIntent', 'version', 'xiaodaStyleInsight',
   ]);
+  assert.deepEqual(projected[0].contentPlan.xiaodaStyleInsight, {
+    version: 'xiaoda-style-insight-v3', personaVersion: 'v6',
+  });
   assert.equal(Object.hasOwn(projected[0].aestheticEvaluation, 'evidence'), false);
   const largest = internals.measureRecommendationResponseBreakdown(normal, 10);
   assert.equal(largest[0].path, 'response.outfits');
