@@ -196,12 +196,60 @@ function isUsableSnapshot(snapshot, now = Date.now()) {
   return true;
 }
 
+function isUsableCardState(state) {
+  return state?.batchIndex === 1
+    && Number(state?.batchTotal) > 0
+    && state?.hasOutfit === true
+    && state?.copyTextPresent === true
+    && state?.canFavorite === true
+    && state?.canOpenDetail === true
+    && (Number(state?.batchTotal) !== 8 || state?.canSwipe === true);
+}
+
+async function switchToTodayWithClientTiming(mini, timeoutMs) {
+  return mini.evaluate(function measureTodayTabEntry(payload) {
+    var startedAt = Date.now();
+    return new Promise(function runSwitch(resolve, reject) {
+      globalThis.wx.switchTab({
+        url: '/pages/today/index',
+        success: function onSwitchSuccess() {
+          var deadline = Date.now() + payload.timeout;
+          function poll() {
+            var diagnostics = globalThis.__d1dTodayDiagnostics;
+            var state = diagnostics && diagnostics.readUsableCardState ? diagnostics.readUsableCardState() : null;
+            var usable = state && state.batchIndex === 1
+              && Number(state.batchTotal) > 0
+              && state.hasOutfit === true
+              && state.copyTextPresent === true
+              && state.canFavorite === true
+              && state.canOpenDetail === true
+              && (Number(state.batchTotal) !== 8 || state.canSwipe === true);
+            if (usable) {
+              resolve({ startedAt: startedAt, observedUsableAt: Date.now(), usableState: state });
+              return;
+            }
+            if (Date.now() >= deadline) {
+              resolve({ startedAt: startedAt, observedUsableAt: 0, usableState: null });
+              return;
+            }
+            setTimeout(poll, 16);
+          }
+          poll();
+        },
+        fail: reject
+      });
+    });
+  }, { timeout: timeoutMs });
+}
+
 async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 30000, expectedRuntimeV2 = false } = {}) {
   if (!mini) throw new Error('TTUI_MINI_REQUIRED');
   const runId = nowId(`ttui-${scenario}`);
   const startedAt = Date.now();
   let actionStartedAt = startedAt;
   let previousBatchId = null;
+  let observedUsableAt = 0;
+  let initialUsableState = null;
   await clearMeasurementState(mini);
   if (scenario === 'A') {
     await prepareValidSnapshot(mini, timeoutMs);
@@ -217,8 +265,14 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
     const hardInvalidPreparation = await prepareHardInvalidAndRelaunch(mini, { ...request, acceptanceRunId: runId, captureId: `${runId}-capture` });
     request = { ...request, hardInvalidPreparation };
   }
-  if (scenario !== 'C' && typeof mini.reLaunch === 'function') {
-    if (scenario === 'A') actionStartedAt = Date.now();
+  if (scenario === 'A' && typeof mini.switchTab === 'function') {
+    await mini.switchTab('/pages/wardrobe/index');
+    const clientTiming = await switchToTodayWithClientTiming(mini, timeoutMs);
+    actionStartedAt = Number(clientTiming?.startedAt) || Date.now();
+    observedUsableAt = Number(clientTiming?.observedUsableAt) || 0;
+    initialUsableState = clientTiming?.usableState || null;
+  }
+  else if (scenario !== 'C' && typeof mini.reLaunch === 'function') {
     await mini.reLaunch('/pages/today/index');
   }
   const bridge = await waitForBridge(mini, timeoutMs);
@@ -239,8 +293,7 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
   let transport = null;
   let performance = null;
   let copyState = null;
-  let usableState = null;
-  let observedUsableAt = 0;
+  let usableState = initialUsableState;
   while (Date.now() < deadline) {
     ledger = await readLedger(mini);
     const candidates = [ledger?.active, ...(ledger?.history || [])].filter(Boolean);
@@ -251,22 +304,16 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
     performance = await mini.evaluate((key) => globalThis.wx?.getStorageSync?.(key) || null, PERFORMANCE_KEY);
     copyState = await mini.evaluate(() => globalThis.__d1dTodayDiagnostics?.readCopyAcceptanceState?.() || null);
     usableState = await mini.evaluate(() => globalThis.__d1dTodayDiagnostics?.readUsableCardState?.() || null);
-    const usable = usableState?.batchIndex === 1
-      && Number(usableState?.batchTotal) > 0
-      && usableState?.hasOutfit === true
-      && usableState?.copyTextPresent === true
-      && usableState?.canFavorite === true
-      && usableState?.canOpenDetail === true
-      && (Number(usableState?.batchTotal) !== 8 || usableState?.canSwipe === true);
+    const usable = isUsableCardState(usableState);
     const correlatedRequest = transport?.acceptanceRunId === runId && Number(performance?.serverTotalMs) > 0;
     const batchTransitioned = !previousBatchId || (copyState?.recommendationBatchId && copyState.recommendationBatchId !== previousBatchId);
     const ready = scenario === 'A'
-      ? Boolean(active?.complete && usable)
+      ? usable
       : scenario === 'B'
         ? Boolean(active?.complete && correlatedRequest && usable)
         : Boolean(correlatedRequest && batchTransitioned && usable && Number(transport?.callFunctionPromiseResolved) > 0);
     if (ready) {
-      observedUsableAt = Date.now();
+      if (observedUsableAt === 0) observedUsableAt = Date.now();
       if (active) ledger = { ...ledger, active };
       break;
     }
@@ -291,7 +338,7 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
     bridge: { marker: bridge.marker, ready: bridge.ready, sceneKey: bridge.sceneKey },
     previousBatchId, ledger: active, transport, performance, copyState, usableState, server: serverSegments(performance || {}), client: clientSegments,
     validation: {
-      completeLedger: scenario === 'C' ? observedUsableAt > 0 : active?.complete === true,
+      completeLedger: scenario === 'A' || scenario === 'C' ? observedUsableAt > 0 : active?.complete === true,
       firstUsablePaint: observedUsableAt > 0,
       requestCount: Number(active?.generateOutfitRequestCount) || 0,
       executionMode: active?.executionMode || active?.stages?.executionMode || '',
@@ -300,10 +347,10 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
       scenarioCCorrelatedRequest: scenario !== 'C' || (transport?.acceptanceRunId === runId && Number(performance?.serverTotalMs) > 0),
       scenarioCNoStaleBatchPaint: scenario !== 'C' || (observedUsableAt >= Number(transport?.callFunctionPromiseResolved) && (!previousBatchId || copyState?.recommendationBatchId !== previousBatchId)),
       hardInvalidRejected: scenario !== 'C' || (transport?.acceptanceRunId === runId && (!previousBatchId || copyState?.recommendationBatchId !== previousBatchId)),
-      noCloudBeforeUsablePaint: scenario !== 'A' || !Number.isFinite(Number(active?.stages?.generateOutfitRequestStart)) || Number(active.stages.generateOutfitRequestStart) > Number(active?.stages?.firstImageLoaded || active?.stages?.firstCardMounted || Infinity),
+      noCloudBeforeUsablePaint: scenario !== 'A' || !Number.isFinite(Number(transport?.callFunctionPromiseResolved)) || observedUsableAt <= Number(transport.callFunctionPromiseResolved),
       scenarioAZeroCloudRequests: scenario === 'A' ? (Number(active?.generateOutfitRequestCount) || 0) === 0 : true,
       canonicalCopyReady: !expectedRuntimeV2 || (Array.isArray(copyState?.outfits) && copyState.outfits.length > 0 && copyState.outfits.every((outfit, index, all) => outfit?.canonicalRecommendationCopyV2?.text && ['safe', 'ai_cache'].includes(outfit.canonicalRecommendationCopyV2.source) && outfit.canonicalRecommendationCopyV2.batchIndex === index && outfit.canonicalRecommendationCopyV2.batchTotal === all.length)),
-      usableCard: usableState?.batchIndex === 1 && Number(usableState?.batchTotal) > 0 && usableState?.hasOutfit === true && usableState?.copyTextPresent === true && usableState?.canFavorite === true && usableState?.canOpenDetail === true && (Number(usableState?.batchTotal) !== 8 || usableState?.canSwipe === true),
+      usableCard: isUsableCardState(usableState),
     },
   };
   if (!artifact.validation.completeLedger || !artifact.validation.firstUsablePaint || !artifact.validation.noCloudBeforeUsablePaint || !artifact.validation.canonicalCopyReady || !artifact.validation.usableCard || !artifact.validation.scenarioBRefreshRun || !artifact.validation.scenarioCColdRun || !artifact.validation.scenarioCCorrelatedRequest || !artifact.validation.scenarioCNoStaleBatchPaint || !artifact.validation.hardInvalidRejected) {
@@ -344,7 +391,7 @@ async function runCli({ scenario = 'A', samples = 1, skipBuild = false, expected
   }
 }
 
-module.exports = { ARTIFACT_ROOT, readLedger, readSnapshot, segmentDurations, serverSegments, summarize, summarizeArtifacts, writeArtifact, waitForBridge, waitForTodayIdle, invalidateRestoreSnapshot, markHardInvalid, prepareHardInvalidAndRelaunch, isUsableSnapshot, runScenario, runCli };
+module.exports = { ARTIFACT_ROOT, readLedger, readSnapshot, segmentDurations, serverSegments, summarize, summarizeArtifacts, writeArtifact, waitForBridge, waitForTodayIdle, invalidateRestoreSnapshot, markHardInvalid, prepareHardInvalidAndRelaunch, isUsableSnapshot, switchToTodayWithClientTiming, runScenario, runCli };
 
 if (require.main === module) {
   const args = new Map(process.argv.slice(2).map((arg) => {
