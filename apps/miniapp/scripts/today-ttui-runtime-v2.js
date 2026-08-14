@@ -127,6 +127,12 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
     runId, scenario, startedAt, endedAt: Date.now(), triggerResult,
     bridge: { marker: bridge.marker, ready: bridge.ready, sceneKey: bridge.sceneKey },
     ledger: active, transport, performance, server: serverSegments(performance || {}), client: segmentDurations(active || {}),
+    validation: {
+      completeLedger: active?.complete === true,
+      firstUsablePaint: Number(active?.stages?.firstImageLoaded || active?.stages?.firstCardMounted) > 0,
+      requestCount: Number(active?.generateOutfitRequestCount) || 0,
+      scenarioAZeroCloudRequests: scenario === 'A' ? (Number(active?.generateOutfitRequestCount) || 0) === 0 : true,
+    },
   };
   return artifact;
 }
