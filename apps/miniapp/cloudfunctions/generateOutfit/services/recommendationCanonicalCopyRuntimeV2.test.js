@@ -27,7 +27,11 @@ test('canonical batch fixes batchTotal to the complete returned outfit batch on 
     copyContract: { todayReason: 'legacy' },
   }));
   const batch = runtime.buildRecommendationCanonicalCopyBatchV2({ plans: entries.map((x) => x.plan), recommendations: outfits });
-  const attached = runtime.attachRecommendationCanonicalCopiesV2(outfits, batch);
+  const attached = runtime.attachRecommendationCanonicalCopiesV2(
+    outfits,
+    batch,
+    entries.map((entry) => entry.plan),
+  );
   assert.equal(attached.length, outfits.length);
   assert.deepEqual(attached.map((item) => item.canonicalRecommendationCopyV2.batchTotal), [3, 3, 3]);
   assert.deepEqual(attached.map((item) => item.canonicalRecommendationCopyV2.batchIndex), [0, 1, 2]);
@@ -38,6 +42,10 @@ test('canonical batch fixes batchTotal to the complete returned outfit batch on 
   assert.deepEqual(
     attached.map((item) => item.reason),
     attached.map((item) => item.canonicalRecommendationCopyV2.text),
+  );
+  assert.deepEqual(
+    attached.map((item) => item.recommendationVoiceMaterializationV2.plan.planId),
+    entries.map((entry) => entry.plan.planId),
   );
 });
 
@@ -77,4 +85,55 @@ test('partial plan failure is fail-open and never changes outfit count', () => {
   const attached = runtime.attachRecommendationCanonicalCopiesV2(outfits, batch);
   assert.equal(batch.status, 'partially_failed_open');
   assert.equal(attached.length, outfits.length);
+});
+
+test('durable AI copy is reused only for the same render input fingerprint', () => {
+  const [entry] = makeEntries(1);
+  const batch = runtime.buildRecommendationCanonicalCopyBatchV2({
+    plans: [entry.plan],
+    recommendations: [entry.recommendation],
+    aiMaterializationRequested: true,
+  });
+  const [base] = runtime.attachRecommendationCanonicalCopiesV2(
+    [{ ...entry.recommendation, copyContract: { todayReason: 'legacy' } }],
+    batch,
+    [entry.plan],
+  );
+  const ready = runtime.buildMaterializedCanonicalCopy(base.canonicalRecommendationCopyV2, {
+    text: 'AI ready copy',
+    renderInputFingerprint: base.canonicalRecommendationCopyV2.renderInputFingerprint,
+  });
+  assert.equal(ready.source, 'ai_cache');
+  assert.equal(ready.aiState, 'ready');
+  assert.equal(runtime.resolveCanonicalCopyForStorage(base, {
+    canonicalRecommendationCopyV2: ready,
+  }).text, 'AI ready copy');
+  assert.equal(runtime.resolveCanonicalCopyForStorage({
+    ...base,
+    canonicalRecommendationCopyV2: {
+      ...base.canonicalRecommendationCopyV2,
+      renderInputFingerprint: 'new-fingerprint',
+    },
+  }, {
+    canonicalRecommendationCopyV2: ready,
+  }).text, base.canonicalRecommendationCopyV2.text);
+});
+
+test('failed materialization preserves safe text and exposes a retryable state', () => {
+  voice.clearRecommendationVoiceRendererShadowCache();
+  const [entry] = makeEntries(1);
+  const batch = runtime.buildRecommendationCanonicalCopyBatchV2({
+    plans: [entry.plan],
+    recommendations: [entry.recommendation],
+    aiMaterializationRequested: true,
+  });
+  const canonical = runtime.attachRecommendationCanonicalCopiesV2(
+    [{ ...entry.recommendation, copyContract: { todayReason: 'legacy' } }],
+    batch,
+    [entry.plan],
+  )[0].canonicalRecommendationCopyV2;
+  const failed = runtime.buildFailedCanonicalCopy(canonical, 'VOICE_TIMEOUT');
+  assert.equal(failed.aiState, 'failed');
+  assert.equal(failed.aiFailureCode, 'VOICE_TIMEOUT');
+  assert.equal(failed.text, canonical.text);
 });

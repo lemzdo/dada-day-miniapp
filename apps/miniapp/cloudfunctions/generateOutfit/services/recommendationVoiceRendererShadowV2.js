@@ -42,7 +42,6 @@ function readRecommendationVoiceRendererBenchmarkConfig(event) {
 
 function isRecommendationVoiceRendererShadowEnabled(event = {}, env = process.env) {
   return env.RECOMMENDATION_VOICE_RENDERER_SHADOW_ENABLED === 'true'
-    || env.RECOMMENDATION_CANONICAL_COPY_V2_ENABLED === 'true'
     || authorizedBenchmarkEvents.has(event);
 }
 
@@ -112,9 +111,11 @@ async function runRecommendationVoiceRendererBenchmarkV2Safely(input = {}) {
 async function runRecommendationVoiceRendererShadowV2({
   plans = [],
   recommendations = [],
+  preparedEntries = [],
   mode = 'single',
   cacheMode = 'use',
   includeReview = false,
+  includeCopies = false,
   apiKey = process.env.BAILIAN_API_KEY || process.env.DASHSCOPE_API_KEY,
   baseUrl = process.env.BAILIAN_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
   model = VOICE_RENDERER_MODEL,
@@ -124,10 +125,12 @@ async function runRecommendationVoiceRendererShadowV2({
 } = {}) {
   const startedAt = Date.now();
   if (!['single', 'batch'].includes(mode)) throw new Error('VOICE_RENDERER_MODE');
-  const entries = matchPlansToRecommendations(plans, recommendations).map(({ plan, recommendation }) => ({
-    plan,
-    input: buildRendererInputFromNarrativePlan(plan, recommendation),
-  })).map((entry) => {
+  const entries = (readArray(preparedEntries).length > 0
+    ? readArray(preparedEntries).map(normalizePreparedMaterializationEntry)
+    : matchPlansToRecommendations(plans, recommendations).map(({ plan, recommendation }) => ({
+        plan,
+        input: buildRendererInputFromNarrativePlan(plan, recommendation),
+      }))).map((entry) => {
     const renderInputFingerprint = buildRenderInputFingerprint(entry.input, {
       model,
       modelRouteVersion,
@@ -212,7 +215,40 @@ async function runRecommendationVoiceRendererShadowV2({
       failureCounts: countValues(checks.flatMap((check) => check.failures)),
     },
     planIdentities: ordered.map((copy) => toPlanIdentity(copy, modelRouteVersion)),
+    ...(includeCopies ? { materializedCopies: ordered.map((copy) => ({ ...copy })) } : {}),
     ...(includeReview ? { reviewSamples: ordered.slice(0, MAX_REVIEW_SAMPLES).map(toReviewSample) } : {}),
+  };
+}
+
+function buildRecommendationVoiceMaterializationEntry(plan, recommendation) {
+  const input = buildRendererInputFromNarrativePlan(plan, recommendation);
+  return {
+    version: 'recommendation-voice-materialization-input-v2.0',
+    plan: {
+      planId: plan.planId,
+      planHash: plan.planHash,
+      expressionStrategy: { mode: plan.expressionStrategy.mode },
+      insights: {
+        primary: plan.insights.primary
+          ? { insightCode: plan.insights.primary.insightCode }
+          : null,
+      },
+      relevantContext: plan.relevantContext ? { ...plan.relevantContext } : {},
+    },
+    input,
+  };
+}
+
+function normalizePreparedMaterializationEntry(entry) {
+  if (entry?.version !== 'recommendation-voice-materialization-input-v2.0'
+    || !readText(entry?.plan?.planId)
+    || !readText(entry?.plan?.planHash)
+    || !entry?.input) {
+    throw new Error('VOICE_RENDERER_PREPARED_ENTRY_INVALID');
+  }
+  return {
+    plan: entry.plan,
+    input: entry.input,
   };
 }
 
@@ -380,6 +416,7 @@ function writeCache(key, copy) {
 }
 function clearRecommendationVoiceRendererShadowCache() { shadowCopyCache.clear(); }
 function buildFailOpenResult(error, input = {}) {
+  const inputCount = readArray(input.preparedEntries).length || readArray(input.plans).length;
   return {
     version: RECOMMENDATION_VOICE_RENDERER_SHADOW_VERSION,
     status: 'failed_open',
@@ -387,17 +424,17 @@ function buildFailOpenResult(error, input = {}) {
     modelRouteVersion: input.modelRouteVersion || VOICE_RENDERER_MODEL_ROUTE_VERSION,
     model: input.model || VOICE_RENDERER_MODEL,
     executionMode: input.mode === 'batch' ? 'batch' : 'single',
-    planCount: readArray(input.plans).length,
+    planCount: inputCount,
     renderedCount: 0,
     shadowFailureCount: 1,
     failureCodes: { [readErrorCode(error)]: 1 },
     cacheHitCount: 0,
-    cacheMissCount: readArray(input.plans).length,
+    cacheMissCount: inputCount,
     requestCount: 0,
     latencyMs: 0,
     providerLatencyMs: 0,
     usage: sanitizeUsage(),
-    automatedContract: { passCount: 0, failCount: readArray(input.plans).length, failureCounts: { SHADOW_FAIL_OPEN: 1 } },
+    automatedContract: { passCount: 0, failCount: inputCount, failureCounts: { SHADOW_FAIL_OPEN: 1 } },
     planIdentities: [],
     ...(input.includeReview ? { reviewSamples: [] } : {}),
   };
@@ -498,6 +535,7 @@ function stableSerialize(value) {
 module.exports = {
   RECOMMENDATION_VOICE_RENDERER_SHADOW_VERSION,
   authorizeRecommendationVoiceRendererBenchmark,
+  buildRecommendationVoiceMaterializationEntry,
   buildRecommendationVoiceRendererExecution,
   buildRenderInputFingerprint,
   buildRendererInputFromNarrativePlan,

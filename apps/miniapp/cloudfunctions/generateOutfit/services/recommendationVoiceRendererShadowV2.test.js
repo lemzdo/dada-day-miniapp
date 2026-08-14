@@ -75,11 +75,17 @@ test('feature flag, authorization, and critical-path waiting are explicit', asyn
   const event = {}; assert.equal(voice.isRecommendationVoiceRendererShadowEnabled(event, {}), false);
   voice.authorizeRecommendationVoiceRendererBenchmark(event, { compare: true });
   assert.equal(voice.isRecommendationVoiceRendererShadowEnabled(event, {}), true);
-  const normal = voice.buildRecommendationVoiceRendererExecution(
+  const canonicalOnly = voice.buildRecommendationVoiceRendererExecution(
     {},
     { plans: [] },
     [],
     { RECOMMENDATION_CANONICAL_COPY_V2_ENABLED: 'true' },
+  );
+  const normal = voice.buildRecommendationVoiceRendererExecution(
+    {},
+    { plans: [] },
+    [],
+    { RECOMMENDATION_VOICE_RENDERER_SHADOW_ENABLED: 'true' },
   );
   const benchmark = voice.buildRecommendationVoiceRendererExecution(
     event,
@@ -87,9 +93,10 @@ test('feature flag, authorization, and critical-path waiting are explicit', asyn
     [],
     {},
   );
+  assert.equal(canonicalOnly.enabled, false);
   assert.equal(normal.waitForResult, false);
   assert.equal(benchmark.waitForResult, true);
-  await Promise.all([normal.promise, benchmark.promise]);
+  await Promise.all([canonicalOnly.promise, normal.promise, benchmark.promise]);
 });
 
 test('benchmark preserves independently failed-open single, batch, and cache probe diagnostics', async () => {
@@ -153,4 +160,35 @@ test('successful renderer response writes fingerprint-addressed cache', async ()
   assert.equal(counter.count, 1);
   assert.equal(cached[0].copy.cacheHit, true);
   assert.equal(cached[0].renderInputFingerprint, first.planIdentities[0].renderInputFingerprint);
+});
+
+test('durable materialization entry runs without the full Narrative Plan', async () => {
+  const [entry] = cases();
+  const prepared = voice.buildRecommendationVoiceMaterializationEntry(entry.plan, entry.recommendation);
+  assert.equal(Object.hasOwn(prepared.plan, 'claimPermission'), false);
+  assert.equal(Object.hasOwn(prepared.plan, 'limitations'), false);
+  const result = await voice.runRecommendationVoiceRendererShadowV2Safely({
+    preparedEntries: [prepared],
+    apiKey: 'stub',
+    cacheMode: 'bypass',
+    includeCopies: true,
+    invoke: invokeStub({ count: 0 }),
+  });
+  assert.equal(result.status, 'completed');
+  assert.equal(result.materializedCopies.length, 1);
+  assert.equal(result.materializedCopies[0].planId, entry.plan.planId);
+});
+
+test('prepared materialization fail-open diagnostics keep the input count', async () => {
+  const [entry] = cases();
+  const prepared = voice.buildRecommendationVoiceMaterializationEntry(entry.plan, entry.recommendation);
+  const result = await voice.runRecommendationVoiceRendererShadowV2Safely({
+    preparedEntries: [prepared],
+    apiKey: null,
+    cacheMode: 'bypass',
+  });
+  assert.equal(result.status, 'failed_open');
+  assert.equal(result.planCount, 1);
+  assert.equal(result.cacheMissCount, 1);
+  assert.equal(result.automatedContract.failCount, 1);
 });

@@ -13,11 +13,16 @@ const {
 } = require('./services/recommendationStylingShadowV2');
 const {
   buildRecommendationVoiceRendererExecution,
+  runRecommendationVoiceRendererShadowV2Safely,
 } = require('./services/recommendationVoiceRendererShadowV2');
 const {
+  applyCanonicalCopyToOutfit,
   attachRecommendationCanonicalCopiesV2,
+  buildFailedCanonicalCopy,
+  buildMaterializedCanonicalCopy,
   buildRecommendationCanonicalCopyBatchV2,
   isRecommendationCanonicalCopyRuntimeV2Enabled,
+  resolveCanonicalCopyForStorage,
 } = require('./services/recommendationCanonicalCopyRuntimeV2');
 const { loadActiveWardrobe } = require('./services/loadActiveWardrobe');
 const {
@@ -200,6 +205,9 @@ exports.main = async (event = {}) => {
     if (action === 'listOutfitHistory') return ok(await listOutfitHistory(event));
     if (action === 'getAiComment') return ok(await getAiComment(event));
     if (action === 'aiComment') return ok(await generateAiComment(event));
+    if (action === 'materializeRecommendationCopyV2') {
+      return ok(await materializeRecommendationCanonicalCopyV2(event));
+    }
 
     return ok(await generate(event, recommendationDiagnostics));
   } catch (error) {
@@ -468,6 +476,12 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
   diagnostics.stylingIntelligenceShadow = stylingShadow?.diagnostics || null;
   if (canonicalCopyRuntimeV2Enabled) {
     diagnostics.timings.tCoreMs = Date.now() - diagnostics.startedAt;
+    diagnostics.runtimeV2 = {
+      enabled: true,
+      plansReadyAt: Date.now(),
+      aiOnNecessaryCriticalPath: false,
+      aiMaterializationMode: 'post_response_action',
+    };
   }
   const voiceRendererExecution = buildRecommendationVoiceRendererExecution(event, stylingShadow, recommendations);
   const voiceRendererShadowPromise = voiceRendererExecution.promise || Promise.resolve(null);
@@ -493,11 +507,12 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
     ? buildRecommendationCanonicalCopyBatchV2({
         plans: stylingShadow?.plans || [],
         recommendations,
-        aiMaterializationRequested: voiceRendererExecution.enabled === true,
+        aiMaterializationRequested: canonicalCopyRuntimeV2Enabled || voiceRendererExecution.enabled === true,
       })
     : null;
   if (canonicalCopyRuntimeV2Enabled) {
     diagnostics.timings.tSafeMs = Date.now() - safeCopyStartedAt;
+    diagnostics.runtimeV2.safeReadyAt = Date.now();
     diagnostics.canonicalCopyRuntimeV2 = {
       version: canonicalCopyBatchV2.version,
       status: canonicalCopyBatchV2.status,
@@ -538,6 +553,7 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
           canonicalRecommendations = attachRecommendationCanonicalCopiesV2(
             canonicalRecommendations,
             canonicalCopyBatchV2,
+            stylingShadow?.plans || [],
           );
         }
         diagnostics.timings.cardPreparation.canonicalizationMs = Date.now() - canonicalizationStartedAt;
@@ -834,6 +850,13 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
   debug.missingRoles = availability.missingRoles;
   debug.missingFacts = availability.missingFacts;
   const outfitRecords = await snapshotPromise;
+  if (diagnostics.canonicalCopyRuntimeV2) {
+    diagnostics.canonicalCopyRuntimeV2.durableAiCacheHitCount = outfitRecords.filter((record) => (
+      record?.canonicalRecommendationCopyV2?.source === 'ai_cache'
+      && record?.canonicalRecommendationCopyV2?.aiState === 'ready'
+    )).length;
+    debug.canonicalCopyRuntimeV2 = { ...diagnostics.canonicalCopyRuntimeV2 };
+  }
   diagnostics.timings.snapshotUpsertMs = Date.now() - snapshotUpsertStartedAt;
   recordServerPhase(diagnostics, 'snapshotPersistence', snapshotUpsertStartedAt);
   diagnostics.snapshotPersistence = snapshotOps;
@@ -976,6 +999,130 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
     },
     },
   });
+}
+
+async function materializeRecommendationCanonicalCopyV2(event, {
+  database = db,
+  runVoiceRenderer = runRecommendationVoiceRendererShadowV2Safely,
+} = {}) {
+  if (!isRecommendationCanonicalCopyRuntimeV2Enabled(event)) {
+    throw createBusinessError('CANONICAL_COPY_RUNTIME_V2_DISABLED', 'canonical copy runtime v2 is disabled');
+  }
+  const { OPENID } = cloud.getWXContext();
+  const recommendationBatchId = readString(event.recommendationBatchId);
+  if (!recommendationBatchId || recommendationBatchId.length > 160) {
+    throw createBusinessError('CANONICAL_COPY_BATCH_ID_INVALID', 'recommendationBatchId is required');
+  }
+  const response = await database.collection('outfits')
+    .where({ _openid: OPENID, recommendationBatchId })
+    .limit(8)
+    .get();
+  const records = (Array.isArray(response.data) ? response.data : [])
+    .filter((record) => record?._id && record?.canonicalRecommendationCopyV2)
+    .sort((left, right) => (
+      Number(left.canonicalRecommendationCopyV2?.batchIndex)
+      - Number(right.canonicalRecommendationCopyV2?.batchIndex)
+    ));
+  if (records.length === 0) {
+    return {
+      version: 'recommendation-canonical-copy-materialization-v2.0',
+      status: 'not_found',
+      recommendationBatchId,
+      recordCount: 0,
+      materializedCount: 0,
+    };
+  }
+  const pending = records.filter((record) => {
+    const canonical = record.canonicalRecommendationCopyV2;
+    return !(canonical.source === 'ai_cache' && canonical.aiState === 'ready')
+      && record.recommendationVoiceMaterializationV2;
+  });
+  if (pending.length === 0) {
+    return {
+      version: 'recommendation-canonical-copy-materialization-v2.0',
+      status: 'ready_cache_hit',
+      recommendationBatchId,
+      recordCount: records.length,
+      materializedCount: 0,
+      cacheHitCount: records.length,
+    };
+  }
+  const result = await runVoiceRenderer({
+    preparedEntries: pending.map((record) => record.recommendationVoiceMaterializationV2),
+    mode: 'batch',
+    cacheMode: 'use',
+    includeCopies: true,
+  });
+  if (result.status !== 'completed') {
+    const failureCode = Object.keys(result.failureCodes || {})[0] || 'VOICE_RENDERER_FAILED';
+    await Promise.all(pending.map((record) => persistCanonicalCopyMaterialization(database, record, {
+      status: 'failed',
+      failureCode,
+    })));
+    return {
+      version: 'recommendation-canonical-copy-materialization-v2.0',
+      status: 'failed_open',
+      recommendationBatchId,
+      recordCount: records.length,
+      materializedCount: 0,
+      failureCode,
+      latencyMs: Number(result.latencyMs) || 0,
+    };
+  }
+  const copiesByPlanId = new Map((Array.isArray(result.materializedCopies) ? result.materializedCopies : [])
+    .map((copy) => [copy.planId, copy]));
+  let materializedCount = 0;
+  let mismatchCount = 0;
+  await Promise.all(pending.map(async (record) => {
+    const planId = record.recommendationVoiceMaterializationV2?.plan?.planId;
+    const copy = copiesByPlanId.get(planId);
+    const canonical = buildMaterializedCanonicalCopy(record.canonicalRecommendationCopyV2, copy);
+    if (!canonical) {
+      await persistCanonicalCopyMaterialization(database, record, {
+        status: 'failed',
+        failureCode: 'VOICE_RENDERER_COPY_MISMATCH',
+      });
+      mismatchCount += 1;
+      return;
+    }
+    await persistCanonicalCopyMaterialization(database, record, { status: 'ready', canonical });
+    materializedCount += 1;
+  }));
+  return {
+    version: 'recommendation-canonical-copy-materialization-v2.0',
+    status: mismatchCount === 0 ? 'ready' : 'partially_failed_open',
+    recommendationBatchId,
+    recordCount: records.length,
+    materializedCount,
+    mismatchCount,
+    cacheHitCount: Number(result.cacheHitCount) || 0,
+    latencyMs: Number(result.latencyMs) || 0,
+    ttftMs: Number(result.ttftMs) || 0,
+  };
+}
+
+async function persistCanonicalCopyMaterialization(database, record, update) {
+  const existing = record.canonicalRecommendationCopyV2;
+  const canonical = update.status === 'ready'
+    ? update.canonical
+    : buildFailedCanonicalCopy(existing, update.failureCode);
+  if (!canonical) return;
+  const text = canonical.text;
+  const copyContract = record.copyContract
+    ? { ...record.copyContract, todayReason: text }
+    : record.copyContract;
+  const data = {
+    canonicalRecommendationCopyV2: replaceDocumentField(database, canonical),
+    reason: text,
+    reasoning: text,
+    ...(copyContract ? { copyContract: replaceDocumentField(database, copyContract) } : {}),
+    updatedAt: new Date().toISOString(),
+  };
+  await database.collection('outfits').doc(record._id).update({ data });
+}
+
+function replaceDocumentField(database, value) {
+  return typeof database?.command?.set === 'function' ? database.command.set(value) : value;
 }
 
 function createRecommendationSceneContract(inputScene) {
@@ -1695,6 +1842,22 @@ function buildRecommendationPerformanceLedger(diagnostics, budget, responseData)
     candidatePoolPayloadBytes: Math.max(0, Number(diagnostics.candidatePoolPayloadBytes) || 0),
     responsePayloadBytes: Math.max(0, Number(budget?.totalDataBytes) || 0),
     candidateMetrics: diagnostics.candidateMetrics || {},
+    runtimeV2: diagnostics.runtimeV2?.enabled === true
+      ? {
+          enabled: true,
+          tReadServerProxyMs: Number(phaseByName.get('userAndWardrobeRead')?.duration) || 0,
+          tCoreInclusiveMs: Number(diagnostics.timings?.tCoreMs) || 0,
+          tCorePhaseProxyMs: (Number(phaseByName.get('candidateGeneration')?.duration) || 0)
+            + (Number(phaseByName.get('cardCompilation')?.duration) || 0),
+          tSafeMs: Number(diagnostics.timings?.tSafeMs) || 0,
+          tAiNecessaryCriticalPathMs: 0,
+          aiOnNecessaryCriticalPath: diagnostics.runtimeV2.aiOnNecessaryCriticalPath === true,
+          aiMaterializationMode: diagnostics.runtimeV2.aiMaterializationMode,
+          plansReadyAt: Number(diagnostics.runtimeV2.plansReadyAt) || 0,
+          safeReadyAt: Number(diagnostics.runtimeV2.safeReadyAt) || 0,
+          canonicalCopy: diagnostics.canonicalCopyRuntimeV2 || {},
+        }
+      : { enabled: false },
     cardPreparation: {
       ...compactPerformanceNumbers(diagnostics.timings?.cardPreparation),
       toTempOutfitMs: Number(diagnostics.timings?.cardPreparation?.canonicalRecommendationConstructionMs) || 0,
@@ -3611,9 +3774,13 @@ async function enrichOutfitsState(outfits, {
       recommendationBatchId: outfit.recommendationBatchId || recommendationBatchId,
       generatedAt: outfit.generatedAt || generatedAt,
     };
-    return normalizeDefaultCopyAtResponseBoundary(enriched, {
-      scene: enriched.scene,
-      weather: enriched.weatherSnapshot || enriched.weather,
+    const canonicalCopy = resolveCanonicalCopyForStorage(outfit, asset);
+    const withCanonicalCopy = canonicalCopy
+      ? applyCanonicalCopyToOutfit(enriched, canonicalCopy)
+      : enriched;
+    return normalizeDefaultCopyAtResponseBoundary(withCanonicalCopy, {
+      scene: withCanonicalCopy.scene,
+      weather: withCanonicalCopy.weatherSnapshot || withCanonicalCopy.weather,
       mode: copyMode,
     });
   });
@@ -3839,6 +4006,9 @@ function buildSnapshotRecordData(base, { aiComment, outfitKey, now, source }) {
     ...(base.reasonVersion ? { reasonVersion: base.reasonVersion } : {}),
     ...pickRecommendationCopyContractFields(base),
     ...pickOutfitStoryFields(base),
+    ...(base.canonicalRecommendationCopyV2
+      ? { canonicalRecommendationCopyV2: base.canonicalRecommendationCopyV2 }
+      : {}),
     ...reviewFields,
   };
 }
@@ -3996,6 +4166,9 @@ function toSnapshotOutfit(item, kind) {
     reasoning: item.reasoning || item.reason,
     reasonVersion: item.reasonVersion,
     ...pickRecommendationCopyContractFields(item),
+    ...(item.canonicalRecommendationCopyV2
+      ? { canonicalRecommendationCopyV2: item.canonicalRecommendationCopyV2 }
+      : {}),
     eligibility: item.eligibility,
     eligibilityReason: cloneEligibilityReason(item.eligibilityReason),
     ...pickOutfitStoryFields(item),
@@ -4097,13 +4270,24 @@ function buildOutfitSaveData(base, { outfitKey, now, patch, current }) {
     ...reviewFields,
     updatedAt: now,
   };
+  const canonicalCopy = resolveCanonicalCopyForStorage(base, current);
+  if (canonicalCopy) Object.assign(data, applyCanonicalCopyToOutfit(data, canonicalCopy));
+  const materializationInput = base.recommendationVoiceMaterializationV2
+    || current?.recommendationVoiceMaterializationV2;
+  if (materializationInput) data.recommendationVoiceMaterializationV2 = materializationInput;
   data.recommendationContentHash = buildRecommendationContentHash(data);
   return data;
 }
 
 function buildOutfitReferenceUpdatePayload(data) {
   const payload = { ...data };
-  for (const field of ['selectedDifferentiator', 'presentationPlan', 'copyContract']) {
+  for (const field of [
+    'selectedDifferentiator',
+    'presentationPlan',
+    'copyContract',
+    'canonicalRecommendationCopyV2',
+    'recommendationVoiceMaterializationV2',
+  ]) {
     if (Object.prototype.hasOwnProperty.call(payload, field)) {
       payload[field] = db.command.set(payload[field]);
     }
@@ -4375,7 +4559,8 @@ const RECOMMENDATION_OWNED_REFERENCE_FIELDS = [
   'eligibility', 'eligibilityReason', 'scores', 'aestheticEvaluation', 'scoreExplanations',
   'generationType', 'source', 'recommendationBatchId', 'generatedAt', 'styleTags', 'reason',
   'reasoning', 'reasonVersion', 'presentationPlan', 'copyContract', 'copyContractVersion',
-  'voiceBankVersion', 'selectedDifferentiator', 'contentPlan', 'recommendationContentHash', 'updatedAt',
+  'voiceBankVersion', 'selectedDifferentiator', 'contentPlan', 'canonicalRecommendationCopyV2',
+  'recommendationVoiceMaterializationV2', 'recommendationContentHash', 'updatedAt',
 ];
 const RECOMMENDATION_REFERENCE_UPDATE_CONCURRENCY = 8;
 const RECOMMENDATION_REFERENCE_VOLATILE_FIELDS = new Set([
@@ -6173,7 +6358,9 @@ if (process.env.NODE_ENV === 'test') {
     upsertRecommendationOutfitsBatch,
     measureRecommendationResponse,
     measureRecommendationResponseFields,
+    materializeRecommendationCanonicalCopyV2,
     normalizeOutfitPayload,
+    persistCanonicalCopyMaterialization,
     generateRuleRecommendations,
     buildRankingScore,
     scoreCandidate,

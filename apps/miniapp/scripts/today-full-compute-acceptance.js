@@ -134,6 +134,18 @@ function summarizeQuality(data, request) {
     return typeof copy !== 'string' || copy.trim().length === 0;
   }).length;
   const countContract = data?.countContract || {};
+  const canonicalRuntimeEnabled = Boolean(data?.debug?.canonicalCopyRuntimeV2);
+  const canonicalCopyFailures = canonicalRuntimeEnabled
+    ? outfits.filter((outfit, index) => {
+        const canonical = outfit?.canonicalRecommendationCopyV2;
+        return !canonical
+          || canonical.batchIndex !== index
+          || canonical.batchTotal !== outfits.length
+          || typeof canonical.text !== 'string'
+          || canonical.text.trim().length === 0
+          || canonical.text !== outfit?.copyContract?.todayReason;
+      }).length
+    : 0;
   const countContractPassed = outfits.length === 8
     && Number(countContract.expectedCardCount) === 8
     && Number(countContract.returnedCardCount) === 8;
@@ -146,6 +158,7 @@ function summarizeQuality(data, request) {
     diversity: new Set(outfitKeys).size === outfits.length,
     semantic: missingSemanticCopy === 0,
     copyGate: copyGateFailures === 0,
+    canonicalRuntimeV2: !canonicalRuntimeEnabled || canonicalCopyFailures === 0,
   };
   return {
     passed: Object.values(checks).every(Boolean),
@@ -156,7 +169,31 @@ function summarizeQuality(data, request) {
     missingAesthetic,
     missingScores,
     missingSemanticCopy,
+    canonicalCopyFailures,
     uniqueOutfitCount: new Set(outfitKeys).size,
+  };
+}
+
+function buildRuntimeV2Timing(performance = {}) {
+  const phases = Array.isArray(performance.phases) ? performance.phases : [];
+  const phaseByName = new Map(phases.map((phase) => [phase?.phase, phase]));
+  const runtime = performance.runtimeV2 && typeof performance.runtimeV2 === 'object'
+    ? performance.runtimeV2
+    : {};
+  return {
+    enabled: runtime.enabled === true,
+    tReadServerProxyMs: Number(runtime.tReadServerProxyMs)
+      || Number(phaseByName.get('userAndWardrobeRead')?.duration)
+      || 0,
+    tCoreInclusiveMs: Number(runtime.tCoreInclusiveMs) || 0,
+    tCorePhaseProxyMs: Number(runtime.tCorePhaseProxyMs)
+      || (Number(phaseByName.get('candidateGeneration')?.duration) || 0)
+        + (Number(phaseByName.get('cardCompilation')?.duration) || 0),
+    tSafeMs: Number(runtime.tSafeMs) || 0,
+    tAiNecessaryCriticalPathMs: Number(runtime.tAiNecessaryCriticalPathMs) || 0,
+    aiOnNecessaryCriticalPath: runtime.aiOnNecessaryCriticalPath === true,
+    aiMaterializationMode: runtime.aiMaterializationMode || '',
+    canonicalCopy: runtime.canonicalCopy || {},
   };
 }
 
@@ -287,6 +324,7 @@ function buildSummary({ capture, transport, performance, data, requestValidation
       state: moduleAgeAtStartMs <= 1500 ? 'cold' : 'warm',
     },
     candidateMetrics: performance.candidateMetrics || {},
+    runtimeV2: buildRuntimeV2Timing(performance),
     quality,
     guard: {
       capturedRequestCount: guard.capturedRequestCount,
@@ -415,6 +453,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  buildRuntimeV2Timing,
   businessMutationPaths,
   inferSnapshotMode,
   responsePayloadBreakdown,

@@ -735,6 +735,24 @@ export async function generateCloudOutfit(params: RecommendRequest = {}) {
   return result;
 }
 
+export async function materializeCloudRecommendationCopyV2(recommendationBatchId: string) {
+  return callCloudFunction<{
+    version: string;
+    status: 'ready' | 'ready_cache_hit' | 'partially_failed_open' | 'failed_open' | 'not_found';
+    recommendationBatchId: string;
+    recordCount: number;
+    materializedCount: number;
+    cacheHitCount?: number;
+    mismatchCount?: number;
+    failureCode?: string;
+    latencyMs?: number;
+    ttftMs?: number;
+  }>('generateOutfit', {
+    action: 'materializeRecommendationCopyV2',
+    recommendationBatchId,
+  });
+}
+
 export async function probeGenerateOutfitTransport(
   kind: 'small' | 'payload',
   payloadBytes?: number,

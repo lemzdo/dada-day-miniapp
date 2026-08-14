@@ -2,6 +2,9 @@ import { clearUserPageCacheByPrefix } from './userPageCache';
 import { getUserStorageSync, setUserStorageSync } from './userStorage';
 import type { ActiveAuthContext } from '@/stores/userStore';
 import type { RecommendationProfile } from '@starter-template/types';
+import {
+  classifyRecommendationProfileInvalidationPolicy,
+} from './recommendationInvalidationPolicy';
 
 export const PAGE_CACHE_PREFIXES = {
   wardrobe: 'wardrobe',
@@ -149,10 +152,7 @@ export function classifyRecommendationProfileInvalidation(
   previous: RecommendationProfile,
   next: RecommendationProfile,
 ): RecommendationInvalidationImpact {
-  const hardFields: Array<keyof RecommendationProfile> = ['genderPreference', 'fitPreference', 'avoidTags'];
-  return hardFields.some((field) => JSON.stringify(previous[field]) !== JSON.stringify(next[field]))
-    ? 'hard'
-    : 'soft';
+  return classifyRecommendationProfileInvalidationPolicy(previous, next) as RecommendationInvalidationImpact;
 }
 
 export function getTodayRecommendationDirty(

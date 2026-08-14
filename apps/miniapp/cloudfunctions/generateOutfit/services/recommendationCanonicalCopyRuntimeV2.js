@@ -4,6 +4,7 @@ const {
   VOICE_RENDERER_MODEL_ROUTE_VERSION,
 } = require('./voiceRendererV2Contract');
 const {
+  buildRecommendationVoiceMaterializationEntry,
   readCachedRecommendationVoiceCopies,
 } = require('./recommendationVoiceRendererShadowV2');
 const {
@@ -71,13 +72,19 @@ function buildRecommendationCanonicalCopyBatchV2({
   };
 }
 
-function attachRecommendationCanonicalCopiesV2(outfits = [], batch = null) {
+function attachRecommendationCanonicalCopiesV2(outfits = [], batch = null, plans = []) {
   const visible = Array.isArray(outfits) ? outfits : [];
   if (!batch || !Array.isArray(batch.copies)) return visible;
   const byComposition = new Map(batch.copies.map((copy) => [copy.compositionKey, copy]));
+  const plansByComposition = new Map((Array.isArray(plans) ? plans : []).map((plan) => [
+    compositionKey(plan?.identity?.outfitComposition?.itemIds),
+    plan,
+  ]));
   const total = visible.length;
   return visible.map((outfit, index) => {
-    const copy = byComposition.get(compositionKey(readOutfitItemIds(outfit)));
+    const outfitCompositionKey = compositionKey(readOutfitItemIds(outfit));
+    const copy = byComposition.get(outfitCompositionKey);
+    const plan = plansByComposition.get(outfitCompositionKey);
     const legacyText = readText(outfit?.copyContract?.todayReason || outfit?.reason);
     const text = readText(copy?.text) || legacyText;
     const source = readText(copy?.text) ? copy.source : 'legacy_emergency';
@@ -87,6 +94,9 @@ function attachRecommendationCanonicalCopiesV2(outfits = [], batch = null) {
       ...(outfit?.copyContract
         ? { copyContract: { ...outfit.copyContract, todayReason: text } }
         : {}),
+      ...(plan ? {
+        recommendationVoiceMaterializationV2: buildRecommendationVoiceMaterializationEntry(plan, outfit),
+      } : {}),
       canonicalRecommendationCopyV2: {
         version: RECOMMENDATION_CANONICAL_COPY_RUNTIME_VERSION,
         batchIndex: index,
@@ -104,6 +114,62 @@ function attachRecommendationCanonicalCopiesV2(outfits = [], batch = null) {
       },
     };
   });
+}
+
+function resolveCanonicalCopyForStorage(base = {}, current = {}) {
+  const next = normalizeCanonicalCopy(base?.canonicalRecommendationCopyV2);
+  const cached = normalizeCanonicalCopy(current?.canonicalRecommendationCopyV2);
+  if (cached?.source === 'ai_cache'
+    && cached.aiState === 'ready'
+    && cached.renderInputFingerprint
+    && cached.renderInputFingerprint === next?.renderInputFingerprint) {
+    return cached;
+  }
+  return next || cached || null;
+}
+
+function applyCanonicalCopyToOutfit(outfit = {}, copy = null) {
+  const canonical = normalizeCanonicalCopy(copy);
+  if (!canonical) return outfit;
+  return {
+    ...outfit,
+    reason: canonical.text,
+    reasoning: canonical.text,
+    ...(outfit?.copyContract
+      ? { copyContract: { ...outfit.copyContract, todayReason: canonical.text } }
+      : {}),
+    canonicalRecommendationCopyV2: canonical,
+  };
+}
+
+function buildMaterializedCanonicalCopy(existing, cachedCopy) {
+  const canonical = normalizeCanonicalCopy(existing);
+  const text = readText(cachedCopy?.text);
+  const fingerprint = readText(cachedCopy?.renderInputFingerprint);
+  if (!canonical || !text || !fingerprint || fingerprint !== canonical.renderInputFingerprint) return null;
+  const materialized = {
+    ...canonical,
+    source: 'ai_cache',
+    text,
+    aiState: 'ready',
+  };
+  delete materialized.aiFailureCode;
+  return materialized;
+}
+
+function buildFailedCanonicalCopy(existing, failureCode) {
+  const canonical = normalizeCanonicalCopy(existing);
+  if (!canonical || canonical.aiState === 'ready') return canonical;
+  return {
+    ...canonical,
+    aiState: 'failed',
+    aiFailureCode: readText(failureCode || 'VOICE_RENDERER_FAILED').slice(0, 80),
+  };
+}
+
+function normalizeCanonicalCopy(value) {
+  if (!value || typeof value !== 'object' || !readText(value.text)) return null;
+  return { ...value, text: readText(value.text) };
 }
 
 function matchPlansToRecommendations(plans, recommendations) {
@@ -133,8 +199,12 @@ function readText(value) { return typeof value === 'string' ? value.trim() : '';
 
 module.exports = {
   RECOMMENDATION_CANONICAL_COPY_RUNTIME_VERSION,
+  applyCanonicalCopyToOutfit,
   attachRecommendationCanonicalCopiesV2,
   authorizeRecommendationCanonicalCopyRuntimeV2,
+  buildFailedCanonicalCopy,
+  buildMaterializedCanonicalCopy,
   buildRecommendationCanonicalCopyBatchV2,
   isRecommendationCanonicalCopyRuntimeV2Enabled,
+  resolveCanonicalCopyForStorage,
 };

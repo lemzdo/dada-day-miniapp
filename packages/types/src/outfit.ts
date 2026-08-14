@@ -674,12 +674,13 @@ export interface RecommendationCanonicalCopyV2 {
   renderInputFingerprint: string;
   source: 'ai_cache' | 'safe' | 'legacy_emergency';
   text: string;
-  aiState: 'ready' | 'materializing' | 'not_requested';
+  aiState: 'ready' | 'materializing' | 'failed' | 'not_requested';
   contractVersion: string;
   model: string;
   modelRouteVersion: string;
   safeRendererVersion: string;
   safeFailureCode?: string;
+  aiFailureCode?: string;
 }
 
 export interface Outfit {
@@ -991,6 +992,19 @@ export interface RecommendationPerformanceLedger {
   cardCompilationStartDelayMs?: number;
   snapshotPersistence?: Record<string, number>;
   candidatePoolPersistence?: Record<string, number>;
+  runtimeV2?: {
+    enabled: boolean;
+    tReadServerProxyMs?: number;
+    tCoreInclusiveMs?: number;
+    tCorePhaseProxyMs?: number;
+    tSafeMs?: number;
+    tAiNecessaryCriticalPathMs?: number;
+    aiOnNecessaryCriticalPath?: boolean;
+    aiMaterializationMode?: string;
+    plansReadyAt?: number;
+    safeReadyAt?: number;
+    canonicalCopy?: Record<string, unknown>;
+  };
 }
 
 export interface RecommendationDiagnosticsTimings {
@@ -1377,6 +1391,7 @@ export interface RecommendResponse {
       expectedCopyCount: number;
       resolvedCopyCount: number;
       aiCacheHitCount: number;
+      durableAiCacheHitCount?: number;
       safeCopyCount: number;
       legacyEmergencyCount: number;
     };

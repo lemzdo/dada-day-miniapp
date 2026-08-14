@@ -18,6 +18,7 @@ import {
   generateCloudOutfit,
   getCloudResponseTransportDiagnostics,
   isRecommendationDiagnosticEnvironment,
+  materializeCloudRecommendationCopyV2,
   removeFavoriteOutfit,
   saveFavoriteOutfit,
 } from '@/lib/cloud';
@@ -244,6 +245,25 @@ const SCENE_TAGS: Record<SceneKey, SceneTag> = {
   date: '约会' as SceneTag,
   sport: '运动' as SceneTag,
 };
+
+function scheduleCanonicalCopyMaterialization(data: RecommendResponse) {
+  const recommendationBatchId = data.recommendationBatchId ?? data.outfits[0]?.recommendationBatchId;
+  const needsMaterialization = data.outfits.some((outfit) => {
+    const state = outfit.canonicalRecommendationCopyV2?.aiState;
+    return state === 'materializing' || state === 'failed';
+  });
+  if (!recommendationBatchId || !needsMaterialization) return;
+  setTimeout(() => {
+    void materializeCloudRecommendationCopyV2(recommendationBatchId).catch((error) => {
+      logRecommendationEvent('[RecommendError]', {
+        auditId: 'canonical-copy-materialization',
+        stage: 'canonical-copy-materialization',
+        recommendationBatchIdPresent: true,
+        errorCode: error instanceof Error ? error.message.slice(0, 80) : 'UNKNOWN',
+      });
+    });
+  }, 0);
+}
 
 function getOutfitStatusPatches(outfits: Outfit[]) {
   return outfits.map((outfit) => getOutfitStatusPatch(outfit)).filter((patch) => Boolean(patch.outfitKey));
@@ -786,6 +806,7 @@ export default function TodayPage() {
         transport,
         firstOutfit: nextOutfits[0],
       });
+      scheduleCanonicalCopyMaterialization(data);
       return true;
     } catch (err) {
       if (!isRecommendationIntentCurrent(intent) || !isLatestRequest(seq)) return false;
@@ -964,6 +985,7 @@ export default function TodayPage() {
           transport,
           firstOutfit: nextOutfits[0],
         });
+        scheduleCanonicalCopyMaterialization(data);
         trackOutfitBehaviorEvent(behaviorTrackerRef.current.buildBatchRefreshEvent({
           previousRecommendationBatchId,
           previousOutfits,

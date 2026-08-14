@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
+  buildRuntimeV2Timing,
   businessMutationPaths,
   inferSnapshotMode,
   responsePayloadBreakdown,
@@ -10,6 +11,34 @@ const {
   summarizeQuality,
   validateProductionRequest,
 } = require('./today-full-compute-acceptance');
+
+test('runtime v2 timing separates read, core, safe, and zero critical-path AI', () => {
+  assert.deepEqual(buildRuntimeV2Timing({
+    phases: [
+      { phase: 'userAndWardrobeRead', duration: 12 },
+      { phase: 'candidateGeneration', duration: 40 },
+      { phase: 'cardCompilation', duration: 8 },
+    ],
+    runtimeV2: {
+      enabled: true,
+      tCoreInclusiveMs: 67,
+      tSafeMs: 2,
+      tAiNecessaryCriticalPathMs: 0,
+      aiOnNecessaryCriticalPath: false,
+      aiMaterializationMode: 'post_response_action',
+    },
+  }), {
+    enabled: true,
+    tReadServerProxyMs: 12,
+    tCoreInclusiveMs: 67,
+    tCorePhaseProxyMs: 48,
+    tSafeMs: 2,
+    tAiNecessaryCriticalPathMs: 0,
+    aiOnNecessaryCriticalPath: false,
+    aiMaterializationMode: 'post_response_action',
+    canonicalCopy: {},
+  });
+});
 
 test('production request validation accepts the real retry builder shape plus diagnostics', () => {
   const result = validateProductionRequest({
@@ -76,4 +105,34 @@ test('quality summary requires eight unique consistent PASS cards', () => {
   }, { scene: '居家' });
   assert.equal(quality.passed, true);
   assert.equal(quality.unsupportedClaimCount, 0);
+});
+
+test('quality summary enforces fixed canonical copy total when runtime v2 is enabled', () => {
+  const outfits = Array.from({ length: 8 }, (_, index) => ({
+    outfitKey: `outfit-${index}`,
+    scene: '居家',
+    clothingIds: [`top-${index}`, `bottom-${index}`],
+    items: [{ clothingId: `top-${index}` }, { clothingId: `bottom-${index}` }],
+    copyContract: { gateResult: 'PASS', todayReason: `copy-${index}` },
+    canonicalRecommendationCopyV2: {
+      batchIndex: index,
+      batchTotal: 8,
+      text: `copy-${index}`,
+    },
+    aestheticEvaluation: { score: 80 },
+    scores: { preference: 80, freshness: 80 },
+    reason: `copy-${index}`,
+  }));
+  const quality = summarizeQuality({
+    outfits,
+    debug: { canonicalCopyRuntimeV2: { status: 'ready' } },
+    countContract: { expectedCardCount: 8, returnedCardCount: 8 },
+  }, { scene: '居家' });
+  assert.equal(quality.checks.canonicalRuntimeV2, true);
+  outfits[7].canonicalRecommendationCopyV2.batchTotal = 7;
+  assert.equal(summarizeQuality({
+    outfits,
+    debug: { canonicalCopyRuntimeV2: { status: 'ready' } },
+    countContract: { expectedCardCount: 8, returnedCardCount: 8 },
+  }, { scene: '居家' }).checks.canonicalRuntimeV2, false);
 });
