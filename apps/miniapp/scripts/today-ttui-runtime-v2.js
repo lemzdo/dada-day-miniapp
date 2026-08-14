@@ -8,7 +8,7 @@ const {
   TODAY_PERFORMANCE_LEDGER_KEY,
 } = require('./devtools-direct-session');
 
-const ARTIFACT_ROOT = path.resolve(__dirname, '../../artifacts/today-ttui-runtime-v2');
+const ARTIFACT_ROOT = path.resolve(__dirname, '../../../artifacts/today-ttui-runtime-v2');
 const TRANSPORT_KEY = 'generateOutfit:acceptance-transport:v1';
 const PERFORMANCE_KEY = 'generateOutfit:performance-ledger:v1';
 
@@ -100,10 +100,37 @@ async function invalidateRestoreSnapshot(mini) {
   });
 }
 
+async function clearMeasurementState(mini) {
+  return mini.evaluate((keys) => {
+    keys.forEach((key) => globalThis.wx?.removeStorageSync?.(key));
+    return keys;
+  }, [TRANSPORT_KEY, PERFORMANCE_KEY, TODAY_PERFORMANCE_LEDGER_KEY]);
+}
+
+async function prepareValidSnapshot(mini, timeoutMs = 30000) {
+  if (await readSnapshot(mini)) return { prepared: false, reason: 'existing_valid_snapshot' };
+  const bridge = await waitForBridge(mini, timeoutMs);
+  const runId = nowId('ttui-prepare');
+  await mini.evaluate(async (payload) => globalThis.__d1dTodayDiagnostics.triggerRefresh(payload), {
+    acceptanceRunId: runId, captureId: `${runId}-capture`,
+  });
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await readSnapshot(mini)) return { prepared: true, reason: 'refresh_completed', sceneKey: bridge.sceneKey };
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error('TTUI_VALID_SNAPSHOT_PREPARATION_TIMEOUT');
+}
+
 async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 30000 } = {}) {
   if (!mini) throw new Error('TTUI_MINI_REQUIRED');
   const runId = nowId(`ttui-${scenario}`);
   const startedAt = Date.now();
+  await clearMeasurementState(mini);
+  if (scenario === 'A') {
+    await prepareValidSnapshot(mini, timeoutMs);
+    await clearMeasurementState(mini);
+  }
   if (scenario === 'C') await invalidateRestoreSnapshot(mini);
   if (typeof mini.reLaunch === 'function') await mini.reLaunch('/pages/today/index');
   const bridge = await waitForBridge(mini, timeoutMs);
@@ -134,6 +161,9 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
       scenarioAZeroCloudRequests: scenario === 'A' ? (Number(active?.generateOutfitRequestCount) || 0) === 0 : true,
     },
   };
+  if (!artifact.validation.completeLedger || !artifact.validation.firstUsablePaint || !artifact.validation.scenarioAZeroCloudRequests) {
+    throw Object.assign(new Error('TTUI_SCENARIO_INVARIANT_FAILED'), { artifact });
+  }
   return artifact;
 }
 

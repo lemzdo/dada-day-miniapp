@@ -32,7 +32,9 @@ test('scenario A performs reLaunch and waits for a complete ledger without trigg
   const mini = miniMock();
   mini.evaluate = async (fn, arg) => {
     if (String(fn).includes('__d1dTodayDiagnostics')) return { marker: 'd1d-today-production-handler-v1', ready: true, sceneKey: 'home' };
-    if (String(fn).includes('getStorageInfoSync')) return null;
+    if (String(fn).includes('getStorageInfoSync')) return { version: 4, outfits: [{ id: 'outfit-1' }] };
+    if (arg === 'today:performance-ledger:v1') return { active: { complete: true, stages: { firstCardMounted: 1 }, generateOutfitRequestCount: 0, durations: {} } };
+    if (arg === 'generateOutfit:performance-ledger:v1' || arg === 'generateOutfit:acceptance-transport:v1') return null;
     return fn(arg);
   };
   const artifact = await runScenario({ scenario: 'A', mini, timeoutMs: 100 });
