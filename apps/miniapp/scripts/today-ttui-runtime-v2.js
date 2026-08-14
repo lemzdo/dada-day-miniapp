@@ -169,19 +169,22 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
   const active = ledger?.active || ledger?.history?.at(-1) || null;
   const transport = await mini.evaluate((key) => globalThis.wx?.getStorageSync?.(key) || null, TRANSPORT_KEY);
   const performance = await mini.evaluate((key) => globalThis.wx?.getStorageSync?.(key) || null, PERFORMANCE_KEY);
+  const usableState = await mini.evaluate(() => globalThis.__d1dTodayDiagnostics?.readUsableCardState?.() || null);
   const artifact = {
     runId, scenario, startedAt, endedAt: Date.now(), triggerResult,
     bridge: { marker: bridge.marker, ready: bridge.ready, sceneKey: bridge.sceneKey },
-    ledger: active, transport, performance, server: serverSegments(performance || {}), client: segmentDurations(active || {}),
+    ledger: active, transport, performance, usableState, server: serverSegments(performance || {}), client: segmentDurations(active || {}),
     validation: {
       completeLedger: active?.complete === true,
       firstUsablePaint: Number(active?.stages?.firstImageLoaded || active?.stages?.firstCardMounted) > 0,
       requestCount: Number(active?.generateOutfitRequestCount) || 0,
+      noCloudBeforeUsablePaint: scenario !== 'A' || !Number.isFinite(Number(active?.stages?.generateOutfitRequestStart)) || Number(active.stages.generateOutfitRequestStart) > Number(active?.stages?.firstImageLoaded || active?.stages?.firstCardMounted || Infinity),
       scenarioAZeroCloudRequests: scenario === 'A' ? (Number(active?.generateOutfitRequestCount) || 0) === 0 : true,
       canonicalCopyReady: !expectedRuntimeV2 || (Array.isArray(active?.outfits) && active.outfits.every((outfit, index, all) => outfit?.canonicalRecommendationCopyV2?.text && ['safe', 'ai_cache'].includes(outfit.canonicalRecommendationCopyV2.source) && outfit.canonicalRecommendationCopyV2.batchIndex === index && outfit.canonicalRecommendationCopyV2.batchTotal === all.length)),
+      usableCard: usableState?.batchIndex === 1 && Number(usableState?.batchTotal) > 0 && usableState?.hasOutfit === true && usableState?.copyTextPresent === true && usableState?.canFavorite === true && usableState?.canOpenDetail === true && (Number(usableState?.batchTotal) !== 8 || usableState?.canSwipe === true),
     },
   };
-  if (!artifact.validation.completeLedger || !artifact.validation.firstUsablePaint || !artifact.validation.scenarioAZeroCloudRequests || !artifact.validation.canonicalCopyReady) {
+  if (!artifact.validation.completeLedger || !artifact.validation.firstUsablePaint || !artifact.validation.noCloudBeforeUsablePaint || !artifact.validation.canonicalCopyReady || !artifact.validation.usableCard) {
     throw Object.assign(new Error('TTUI_SCENARIO_INVARIANT_FAILED'), { artifact });
   }
   return artifact;
