@@ -19,7 +19,11 @@ function readLedger(mini) {
 }
 
 function readSnapshot(mini) {
-  return mini.evaluate(() => globalThis.wx?.getStorageSync?.('today:restore-snapshot:v1') || null);
+  return mini.evaluate(() => {
+    const info = globalThis.wx?.getStorageInfoSync?.() || { keys: [] };
+    const key = (info.keys || []).find((entry) => String(entry).startsWith('d1d:userStorage:v1:') && String(entry).includes('today:outfitReturnSnapshot:recommendation-copy-contract-v8'));
+    return key ? globalThis.wx?.getStorageSync?.(key) || null : null;
+  });
 }
 
 function segmentDurations(record = {}) {
@@ -75,4 +79,77 @@ function writeArtifact(scenario, artifact) {
   return directory;
 }
 
-module.exports = { ARTIFACT_ROOT, readLedger, readSnapshot, segmentDurations, serverSegments, summarize, summarizeArtifacts, writeArtifact };
+async function waitForBridge(mini, timeoutMs = 30000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const bridge = await mini.evaluate(() => globalThis.__d1dTodayDiagnostics || null);
+    if (bridge?.marker === 'd1d-today-production-handler-v1' && bridge.ready === true) return bridge;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error('TODAY_DIAGNOSTICS_BRIDGE_TIMEOUT');
+}
+
+async function invalidateRestoreSnapshot(mini) {
+  return mini.evaluate(() => {
+    const info = globalThis.wx?.getStorageInfoSync?.() || { keys: [] };
+    const keys = (info.keys || []).filter((key) => String(key).startsWith('d1d:userStorage:v1:') && String(key).includes('today:outfitReturnSnapshot:recommendation-copy-contract-v8'));
+    keys.forEach((key) => globalThis.wx?.removeStorageSync?.(key));
+    return { removedKeys: keys };
+  });
+}
+
+async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 30000 } = {}) {
+  if (!mini) throw new Error('TTUI_MINI_REQUIRED');
+  const runId = nowId(`ttui-${scenario}`);
+  const startedAt = Date.now();
+  if (scenario === 'C') await invalidateRestoreSnapshot(mini);
+  if (typeof mini.reLaunch === 'function') await mini.reLaunch('/pages/today/index');
+  const bridge = await waitForBridge(mini, timeoutMs);
+  let triggerResult = null;
+  if (scenario === 'B') {
+    triggerResult = await mini.evaluate(async (payload) => globalThis.__d1dTodayDiagnostics.triggerRefresh(payload), {
+      ...request, acceptanceRunId: runId, captureId: `${runId}-capture`,
+    });
+  }
+  const deadline = Date.now() + timeoutMs;
+  let ledger = null;
+  while (Date.now() < deadline) {
+    ledger = await readLedger(mini);
+    if (ledger?.history?.some((entry) => entry?.complete) || ledger?.active?.complete) break;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  const active = ledger?.active || ledger?.history?.at(-1) || null;
+  const artifact = {
+    runId, scenario, startedAt, endedAt: Date.now(), triggerResult,
+    bridge: { marker: bridge.marker, ready: bridge.ready, sceneKey: bridge.sceneKey },
+    ledger: active, client: segmentDurations(active || {}),
+  };
+  return artifact;
+}
+
+async function runCli({ scenario = 'A', samples = 1, skipBuild = false } = {}) {
+  if (!skipBuild) throw new Error('TTUI_RUNNER_REQUIRES_PREBUILT_MINIAPP_USE_SKIP_BUILD');
+  const session = await ensureDevToolsDirectSession();
+  const artifacts = [];
+  try {
+    for (let index = 0; index < Math.max(1, Number(samples) || 1); index += 1) {
+      const artifact = await runScenario({ scenario, mini: session.mini });
+      artifact.directory = writeArtifact(scenario, artifact);
+      artifacts.push(artifact);
+    }
+    return { scenario, samples: artifacts.length, artifacts, summary: summarizeArtifacts(artifacts.map((artifact) => ({ ...serverSegments(artifact.ledger?.server || {}), ...artifact.client }))) };
+  } finally {
+    try { await session.mini.disconnect(); } catch {}
+  }
+}
+
+module.exports = { ARTIFACT_ROOT, readLedger, readSnapshot, segmentDurations, serverSegments, summarize, summarizeArtifacts, writeArtifact, waitForBridge, invalidateRestoreSnapshot, runScenario, runCli };
+
+if (require.main === module) {
+  const args = new Map(process.argv.slice(2).map((arg) => {
+    const [key, value = 'true'] = arg.replace(/^--/, '').split('='); return [key, value];
+  }));
+  runCli({ scenario: String(args.get('scenario') || 'A').toUpperCase(), samples: Number(args.get('samples') || 1), skipBuild: args.get('skip-build') === 'true' })
+    .then((result) => process.stdout.write(`${JSON.stringify(result, null, 2)}\n`))
+    .catch((error) => { process.stderr.write(`${error.stack || error}\n`); process.exitCode = 1; });
+}
