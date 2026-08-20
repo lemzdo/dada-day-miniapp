@@ -74,10 +74,20 @@ function collectPackageFiles(root) {
   return files.sort((a, b) => a.localeCompare(b));
 }
 
+function isDeployableSourceFile(filePath) {
+  return !/(?:\.test|\.fixtures|\.harness|\.report)(?:\.test)?\.js$/i.test(path.basename(filePath));
+}
+
+function collectDeployableFiles(root) {
+  return collectPackageFiles(root).filter(isDeployableSourceFile);
+}
+
 function analyzePackage(root = DEFAULT_ROOT) {
   const resolvedRoot = fs.realpathSync(path.resolve(root));
   const runtimeFiles = collectRuntimeDependencies(resolvedRoot);
-  const packageFiles = new Set(collectPackageFiles(resolvedRoot));
+  // Validate the exact file class copied by deploy-generate-outfit.ps1. This
+  // prevents a runtime dependency from hiding behind the test/fixture filter.
+  const packageFiles = new Set(collectDeployableFiles(resolvedRoot));
   const missingRuntimeFiles = runtimeFiles.filter((file) => !packageFiles.has(file));
   const relativeRuntimeFiles = runtimeFiles.map((file) => normalizeRelative(resolvedRoot, file));
   const relativePackageFiles = [...packageFiles].map((file) => normalizeRelative(resolvedRoot, file));
@@ -120,4 +130,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { DEFAULT_ROOT, analyzePackage, assertPackageIntegrity, collectRuntimeDependencies, readDependencySpecifiers };
+module.exports = { DEFAULT_ROOT, analyzePackage, assertPackageIntegrity, collectRuntimeDependencies, collectDeployableFiles, readDependencySpecifiers };

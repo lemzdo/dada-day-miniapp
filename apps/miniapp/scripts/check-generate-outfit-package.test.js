@@ -27,6 +27,17 @@ test('integrity check fails before deployment when a recursive runtime file is a
   assert.throws(() => analyzePackage(root), /Missing local runtime dependency/);
 });
 
+test('integrity check rejects runtime files excluded from the deployable source set', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'generate-outfit-deploy-filter-'));
+  fs.mkdirSync(path.join(root, 'services'));
+  fs.mkdirSync(path.join(root, 'shared'));
+  fs.writeFileSync(path.join(root, 'index.js'), "require('./services/runtime.test');\n");
+  fs.writeFileSync(path.join(root, 'services', 'runtime.test.js'), 'module.exports = {};\n');
+  const report = analyzePackage(root);
+  assert.equal(report.passed, false);
+  assert.deepEqual(report.missingRuntimeFiles, ['services/runtime.test.js']);
+});
+
 test('deployment wrapper uses an explicit single-function source path', () => {
   const source = fs.readFileSync(DEPLOY_SCRIPT, 'utf8');
   assert.match(source, /cloud functions deploy/);
