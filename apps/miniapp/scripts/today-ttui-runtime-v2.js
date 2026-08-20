@@ -443,12 +443,13 @@ function createUserStyleColdAutomatorAdapter({ mini, timeoutMs = 15000, startInC
     await editor.input.input(changedName);
     const saveButton = await waitForAutomatorElement(editor.page, '.save-button', timeoutMs);
     await saveButton.tap();
-    await waitForUserStylePostSaveRoute(mini, timeoutMs);
+    const postSavePage = await waitForUserStylePostSaveRoute(mini, timeoutMs);
     return {
       changed: true,
       restored: false,
       method: 'automator:wardrobe-grid-item>detail-edit-link>item-input>save-button',
       recoveryEvidence: `changed:${changedName}`,
+      postSaveRoute: String(postSavePage?.path || '').replace(/^\//, ''),
       actionStartedAt,
       restore: async () => {
         await saveNameThroughUi(originalName);
@@ -615,7 +616,11 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
       acceptanceRunId: runId,
       captureId: `${runId}-capture`,
     });
-    actionStartedAt = Number(userStyleColdPreparation.actionStartedAt) || Date.now();
+    // The user-style Cold measurement begins at the normal return-to-Today
+    // action, after the real wardrobe mutation has completed. The edit/save
+    // interval remains preparation evidence and is excluded from action→send.
+    actionStartedAt = Date.now();
+    userStyleColdPreparation = { ...userStyleColdPreparation, actionStartedAt, actionTimestampMethod: 'normal-return-to-today-before-switchTab' };
     if (typeof mini.switchTab !== 'function') throw new Error('TTUI_USER_STYLE_COLD_SWITCH_TAB_REQUIRED');
     await mini.switchTab('/pages/today/index');
   }
