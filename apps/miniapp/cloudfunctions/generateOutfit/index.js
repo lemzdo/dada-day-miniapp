@@ -4370,6 +4370,7 @@ function buildOutfitSaveData(base, { outfitKey, now, patch, current }) {
   const materializationInput = base.recommendationVoiceMaterializationV2
     || current?.recommendationVoiceMaterializationV2;
   if (materializationInput) data.recommendationVoiceMaterializationV2 = materializationInput;
+  data.recommendationContentHash = buildRecommendationContentHash(data);
   return data;
 }
 
@@ -4664,14 +4665,30 @@ const RECOMMENDATION_OWNED_REFERENCE_FIELDS = [
   'generationType', 'source', 'recommendationBatchId', 'generatedAt', 'styleTags', 'reason',
   'reasoning', 'reasonVersion', 'presentationPlan', 'copyContract', 'copyContractVersion',
   'voiceBankVersion', 'selectedDifferentiator', 'contentPlan', 'canonicalRecommendationCopyV2',
-  'recommendationVoiceMaterializationV2', 'updatedAt',
+  'recommendationVoiceMaterializationV2', 'recommendationContentHash', 'updatedAt',
 ];
 const RECOMMENDATION_REFERENCE_UPDATE_CONCURRENCY = 8;
+const RECOMMENDATION_REFERENCE_VOLATILE_FIELDS = new Set([
+  'recommendationBatchId', 'generatedAt', 'recommendationContentHash', 'updatedAt',
+]);
+
+function buildRecommendationContentHash(data) {
+  const stable = {};
+  for (const field of RECOMMENDATION_OWNED_REFERENCE_FIELDS) {
+    if (RECOMMENDATION_REFERENCE_VOLATILE_FIELDS.has(field)) continue;
+    if (Object.prototype.hasOwnProperty.call(data || {}, field)) stable[field] = data[field];
+  }
+  return sha256(JSON.stringify(stable));
+}
 
 function buildRecommendationOwnedReferenceUpdatePayload(data, current) {
   const payload = {};
+  const sameContent = typeof data?.recommendationContentHash === 'string'
+    && data.recommendationContentHash.length > 0
+    && current?.recommendationContentHash === data.recommendationContentHash;
   for (const field of RECOMMENDATION_OWNED_REFERENCE_FIELDS) {
     if (!Object.prototype.hasOwnProperty.call(data || {}, field)) continue;
+    if (sameContent && !RECOMMENDATION_REFERENCE_VOLATILE_FIELDS.has(field)) continue;
     if (current && isDeepStrictEqual(current[field], data[field])) continue;
     payload[field] = data[field];
   }
