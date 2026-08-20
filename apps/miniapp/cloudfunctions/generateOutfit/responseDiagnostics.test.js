@@ -57,12 +57,27 @@ test('Runtime V2 acceptance authorization requires an explicit diagnostic run id
     canonicalCopyRuntimeV2Acceptance: true,
     performanceDiagnostics: true,
     acceptanceRunId: 'run-1',
-    captureId: 'capture-1',
+    captureId: 'run-1-capture',
   };
   assert.equal(isCanonicalCopyRuntimeV2Acceptance(completeEvent), true);
+  assert.equal(isCanonicalCopyRuntimeV2Acceptance({
+    performanceDiagnostics: true,
+    acceptanceRunId: 'ttui-B-20260820-sample',
+    captureId: 'ttui-B-20260820-sample-capture',
+  }), true);
+  assert.equal(isCanonicalCopyRuntimeV2Acceptance({
+    performanceDiagnostics: true,
+    acceptanceRunId: 'ttui-C-20260820-sample',
+    captureId: 'ttui-C-20260820-sample-capture',
+  }), true);
   assert.equal(isCanonicalCopyRuntimeV2Acceptance({ ...completeEvent, performanceDiagnostics: false }), false);
   assert.equal(isCanonicalCopyRuntimeV2Acceptance({ ...completeEvent, acceptanceRunId: '' }), false);
   assert.equal(isCanonicalCopyRuntimeV2Acceptance({ ...completeEvent, captureId: '' }), false);
+  assert.equal(isCanonicalCopyRuntimeV2Acceptance({
+    performanceDiagnostics: true,
+    acceptanceRunId: 'raw-diagnostic',
+    captureId: 'raw-diagnostic-capture',
+  }), false);
   assert.equal(isCanonicalCopyRuntimeV2Acceptance({ performanceDiagnostics: true }), false);
 });
 

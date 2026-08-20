@@ -246,12 +246,15 @@ exports.main = async (event = {}) => {
 };
 
 function isCanonicalCopyRuntimeV2Acceptance(event) {
-  return event?.canonicalCopyRuntimeV2Acceptance === true
-    && event?.performanceDiagnostics === true
-    && typeof event?.acceptanceRunId === 'string'
-    && event.acceptanceRunId.length > 0
-    && typeof event?.captureId === 'string'
-    && event.captureId.length > 0;
+  if (event?.performanceDiagnostics !== true) return false;
+  const acceptanceRunId = typeof event.acceptanceRunId === 'string'
+    ? event.acceptanceRunId
+    : '';
+  const isTtuiCriticalPathRun = acceptanceRunId.startsWith('ttui-B-')
+    || acceptanceRunId.startsWith('ttui-C-');
+  const explicitAcceptance = event.canonicalCopyRuntimeV2Acceptance === true;
+  return (explicitAcceptance || isTtuiCriticalPathRun)
+    && event.captureId === `${acceptanceRunId}-capture`;
 }
 
 function validateCandidatePoolAvailability(recommendations, requestedCount) {
