@@ -345,6 +345,18 @@ async function waitForAutomatorElement(page, selector, timeoutMs = 15000) {
   throw new Error(`TTUI_USER_STYLE_SELECTOR_TIMEOUT:${selector}:route=${page.path}:visible=${JSON.stringify(visible.filter((entry) => entry.present).map((entry) => entry.candidate))}`);
 }
 
+async function waitForUserStylePostSaveRoute(mini, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  const allowed = new Set([USER_STYLE_DETAIL_ROUTE, USER_STYLE_WARDROBE_ROUTE]);
+  while (Date.now() < deadline) {
+    const page = await mini.currentPage();
+    const route = String(page?.path || '').replace(/^\//, '');
+    if (allowed.has(route)) return page;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  throw new Error(`TTUI_USER_STYLE_POST_SAVE_ROUTE_TIMEOUT:allowed=${[...allowed].join(',')}`);
+}
+
 async function prepareUserStyleColdSession(mini, timeoutMs = 30000) {
   if (!mini || typeof mini.reLaunch !== 'function') throw new Error('TTUI_USER_STYLE_SESSION_PREP_RELAUNCH_REQUIRED');
   const startedAt = Date.now();
@@ -420,7 +432,7 @@ function createUserStyleColdAutomatorAdapter({ mini, timeoutMs = 15000, startInC
     await editor.input.input(value);
     const saveButton = await waitForAutomatorElement(editor.page, '.save-button', timeoutMs);
     await saveButton.tap();
-    await waitForAutomatorRoute(mini, USER_STYLE_DETAIL_ROUTE, timeoutMs);
+    await waitForUserStylePostSaveRoute(mini, timeoutMs);
   };
   return async ({ runId }) => {
     const editor = await openNameEditor();
@@ -431,7 +443,7 @@ function createUserStyleColdAutomatorAdapter({ mini, timeoutMs = 15000, startInC
     await editor.input.input(changedName);
     const saveButton = await waitForAutomatorElement(editor.page, '.save-button', timeoutMs);
     await saveButton.tap();
-    await waitForAutomatorRoute(mini, USER_STYLE_DETAIL_ROUTE, timeoutMs);
+    await waitForUserStylePostSaveRoute(mini, timeoutMs);
     return {
       changed: true,
       restored: false,
