@@ -20,6 +20,13 @@ import type {
   UserClothingSubcategory,
   UserClothingMaterial,
   WardrobeCapacity,
+  RecommendationDetailResponseV2,
+  RecommendationHomeLightResponseV2,
+  RecommendationV2Response,
+} from '@starter-template/types';
+import {
+  RECOMMENDATION_V2_RUNTIME_VERSION,
+  RECOMMENDATION_V2_SCHEMA_VERSION,
 } from '@starter-template/types';
 import { CLOUD_ENV_ID } from '@/config/cloud';
 import { buildAuthRuntimeKey } from '@/lib/userRuntimeScope';
@@ -743,6 +750,80 @@ export async function generateCloudOutfit(params: RecommendRequest = {}) {
     }
   }
   return result;
+}
+
+export interface RecommendationV2Request {
+  scene?: string;
+  date?: string;
+  timeOfDay?: string;
+  weather?: Record<string, unknown>;
+  weatherMode?: string;
+  v2BatchId?: string;
+  performanceDiagnostics?: boolean;
+  acceptanceRunId?: string;
+  captureId?: string;
+}
+
+function assertHomeLightV2(value: unknown): RecommendationHomeLightResponseV2 {
+  if (!value || typeof value !== 'object') throw new Error('V2 response is not an object');
+  const response = value as Partial<RecommendationHomeLightResponseV2>;
+  if (response.runtimeVersion !== RECOMMENDATION_V2_RUNTIME_VERSION
+    || response.schemaVersion !== RECOMMENDATION_V2_SCHEMA_VERSION
+    || !response.batch || !response.light
+    || response.batch.runtimeVersion !== RECOMMENDATION_V2_RUNTIME_VERSION
+    || response.light.runtimeVersion !== RECOMMENDATION_V2_RUNTIME_VERSION
+    || response.batch.cardCount !== 8
+    || !Array.isArray(response.batch.order)
+    || response.batch.order.length !== 8
+    || !Array.isArray(response.light.cards)
+    || response.light.cards.length !== 8) {
+    throw new Error('V2 response contract invalid');
+  }
+  const order = response.batch.order;
+  response.light.cards.forEach((card, index) => {
+    if (card.position !== index || card.outfitKey !== order[index]) throw new Error('V2 response order invalid');
+    const forbidden = ['scores', 'eligibility', 'snapshotItems', 'itemsSnapshot', 'copyContract', 'evidence', 'debug'];
+    if (forbidden.some((key) => Object.prototype.hasOwnProperty.call(card as object, key))) throw new Error('V2 response contains forbidden field');
+  });
+  return response as RecommendationHomeLightResponseV2;
+}
+
+export async function generateCloudOutfitV2(params: RecommendationV2Request = {}) {
+  const result = await callCloudFunction<RecommendationV2Response>('generateOutfit', {
+    ...params,
+    runtimeVersion: RECOMMENDATION_V2_RUNTIME_VERSION,
+  });
+  return assertHomeLightV2(result);
+}
+
+export async function getCloudOutfitDetailV2(input: { batchId: string; outfitKey: string; referenceId?: string }) {
+  const result = await callCloudFunction<RecommendationV2Response>('generateOutfit', {
+    action: 'detailV2',
+    runtimeVersion: RECOMMENDATION_V2_RUNTIME_VERSION,
+    ...input,
+  });
+  if (!result || result.runtimeVersion !== RECOMMENDATION_V2_RUNTIME_VERSION
+    || result.schemaVersion !== RECOMMENDATION_V2_SCHEMA_VERSION
+    || !('detailIdentityReady' in result) || result.detailIdentityReady !== true) {
+    throw new Error('V2 detail response contract invalid');
+  }
+  return result as RecommendationDetailResponseV2;
+}
+
+export async function updateCloudOutfitFavoriteV2(input: { batchId: string; outfitKey: string; isFavorite: boolean }) {
+  return callCloudFunction<{ batchId: string; outfitKey: string; isFavorite: boolean }>('generateOutfit', {
+    action: 'favoriteV2',
+    runtimeVersion: RECOMMENDATION_V2_RUNTIME_VERSION,
+    ...input,
+  });
+}
+
+export async function updateCloudOutfitWearV2(input: { batchId: string; outfitKey: string; date?: string }) {
+  return callCloudFunction<{ batchId: string; outfitKey: string; isWornToday: boolean }>('generateOutfit', {
+    action: 'wearV2',
+    runtimeVersion: RECOMMENDATION_V2_RUNTIME_VERSION,
+    ...input,
+  });
 }
 
 export async function materializeCloudRecommendationCopyV2(recommendationBatchId: string) {

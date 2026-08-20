@@ -88,6 +88,13 @@ const {
 } = require('./services/outfitCompositionV1');
 const { buildOutfitCardViewModel } = require('./services/outfitCardViewModel');
 const {
+  projectHomeLightV2,
+  projectBatchCoreV2,
+  RUNTIME_VERSION: RECOMMENDATION_V2_RUNTIME_VERSION,
+  SCHEMA_VERSION: RECOMMENDATION_V2_SCHEMA_VERSION,
+} = require('./services/recommendationV2Projection');
+const { persistRecommendationBatchV2 } = require('./services/recommendationV2BatchRepository');
+const {
   applyWearabilityAndSceneEligibility,
   evaluateOptionalItemPolicy,
   normalizeScene,
@@ -198,6 +205,18 @@ exports.main = async (event = {}) => {
     authorizeRecommendationCanonicalCopyRuntimeV2(event);
   }
   try {
+    if (action === 'detailV2') {
+      if (!shouldUseRecommendationV2(event)) throw createBusinessError('V2_RUNTIME_NOT_ENABLED', 'V2 runtime is disabled');
+      return ok(await getOutfitDetailV2(event));
+    }
+    if (action === 'favoriteV2') {
+      if (!shouldUseRecommendationV2(event)) throw createBusinessError('V2_RUNTIME_NOT_ENABLED', 'V2 runtime is disabled');
+      return ok(await updateFavoriteV2(event));
+    }
+    if (action === 'wearV2') {
+      if (!shouldUseRecommendationV2(event)) throw createBusinessError('V2_RUNTIME_NOT_ENABLED', 'V2 runtime is disabled');
+      return ok(await confirmWearV2(event));
+    }
     if (action === 'detail') return ok(await getOutfitDetail(event));
     if (action === 'renameOutfit') return ok(await renameOutfit(event));
     if (action === 'favorite') return ok(await updateFavorite(event.id, Boolean(event.isFavorite), event.outfit));
@@ -255,6 +274,111 @@ function isCanonicalCopyRuntimeV2Acceptance(event) {
   const explicitAcceptance = event.canonicalCopyRuntimeV2Acceptance === true;
   return (explicitAcceptance || isTtuiCriticalPathRun)
     && event.captureId === `${acceptanceRunId}-capture`;
+}
+
+function isRecommendationV2Acceptance(event) {
+  if (event?.performanceDiagnostics !== true) return false;
+  const runId = typeof event.acceptanceRunId === 'string' ? event.acceptanceRunId : '';
+  return runId.startsWith('ttui-v2-') && event.captureId === `${runId}-capture`;
+}
+
+function shouldUseRecommendationV2(event) {
+  if (process.env.RECOMMENDATION_V2_ENABLED !== 'true') return false;
+  return event?.runtimeVersion === RECOMMENDATION_V2_RUNTIME_VERSION
+    || isRecommendationV2Acceptance(event);
+}
+
+function buildRecommendationV2TodayReason(recommendation) {
+  const candidates = [recommendation?.todayReason, recommendation?.reasoning, recommendation?.primaryBenefit];
+  const reason = candidates.find((value) => typeof value === 'string' && value.trim());
+  return (reason || '适合今天的搭配').trim().slice(0, 160);
+}
+
+async function generateRecommendationV2({
+  event,
+  recommendations,
+  openid,
+  sceneContract,
+  scene,
+  targetDate,
+  timeOfDay,
+  weatherMode,
+  weatherSnapshot,
+  candidatePoolIdentity,
+  now,
+}) {
+  if (!Array.isArray(recommendations) || recommendations.length !== 8) {
+    throw createBusinessError('V2_RECOMMENDATION_COUNT_INVALID', 'V2 requires exactly eight selected recommendations');
+  }
+  const batchId = readString(event.v2BatchId) || `v2-${createRecommendationBatchId(now)}`;
+  const order = recommendations.map((recommendation) => readString(recommendation.outfitKey)
+    || signature((recommendation.items || []).map((item) => item?._id).filter(Boolean)));
+  if (new Set(order).size !== 8 || order.some((key) => !key)) {
+    throw createBusinessError('V2_RECOMMENDATION_IDENTITY_INVALID', 'V2 requires eight unique outfit identities');
+  }
+  // Status is deliberately projected from the selected candidates in parallel. It does not
+  // invoke the Legacy enrichment/state/snapshot path and therefore cannot block its head.
+  const [favoriteMap, wornMap] = await Promise.all([
+    findFavoritesByKeys(openid, order),
+    findTodayHistoryByKeys(openid, order, targetDate),
+  ]);
+  const status = order.map((outfitKey, index) => ({
+    isFavorite: Boolean(favoriteMap.get(outfitKey)) || recommendations[index].isFavorite === true,
+    isWornToday: Boolean(wornMap.get(outfitKey)) || recommendations[index].isWornToday === true,
+  }));
+  const light = projectHomeLightV2(recommendations.map((recommendation, index) => ({
+    referenceId: recommendation.referenceId || `candidate:${order[index]}`,
+    outfitKey: order[index],
+    displayTitle: recommendation.displayTitle || recommendation.title || '今日搭配',
+    todayReason: buildRecommendationV2TodayReason(recommendation),
+    styleTags: recommendation.styleTags,
+    clothingIds: (recommendation.items || []).map((item) => item?._id).filter(Boolean),
+    items: (recommendation.items || []).map((item) => ({
+      clothingId: item?._id,
+      thumbnailUrl: getThumbnailImage(item),
+      imageUrl: getDisplayImage(item),
+      isDeleted: item?.isDeleted === true,
+    })),
+    ...status[index],
+  })), batchId);
+  const coreInput = {
+    batchId,
+    sceneKey: sceneContract.sceneKey,
+    scene,
+    targetDate,
+    timeOfDay,
+    weatherMode,
+    weatherSnapshot,
+    weatherFingerprint: crypto.createHash('sha256').update(JSON.stringify(weatherSnapshot || {})).digest('hex'),
+    inputIdentityHash: candidatePoolIdentity.identityHash,
+    generatedAt: now,
+    countContract: {
+      requestedCardCount: 8,
+      returnedCardCount: 8,
+      limited: recommendations.limited === true,
+      exhausted: recommendations.exhausted === true,
+    },
+    order,
+  };
+  const unsignedCore = projectBatchCoreV2(coreInput);
+  const hashInput = JSON.stringify({ core: unsignedCore, light });
+  const contentHash = crypto.createHash('sha256').update(hashInput).digest('hex');
+  const commitToken = crypto.randomBytes(16).toString('hex');
+  const batch = projectBatchCoreV2({ ...coreInput, contentHash, commitToken });
+  const refs = order.map((outfitKey, position) => ({
+    runtimeVersion: RECOMMENDATION_V2_RUNTIME_VERSION,
+    schemaVersion: RECOMMENDATION_V2_SCHEMA_VERSION,
+    outfitKey,
+    referenceId: light.cards[position].referenceId,
+    clothingIds: light.cards[position].clothingIds,
+  }));
+  const persisted = await persistRecommendationBatchV2({ database: db, openid, batch, refs, now });
+  return {
+    runtimeVersion: RECOMMENDATION_V2_RUNTIME_VERSION,
+    schemaVersion: RECOMMENDATION_V2_SCHEMA_VERSION,
+    batch: projectBatchCoreV2(persisted.batch),
+    light,
+  };
 }
 
 function validateCandidatePoolAvailability(recommendations, requestedCount) {
@@ -478,6 +602,21 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
       candidates: recommendations.candidatePoolCandidates,
       debugCandidatePoolProjection: event.debugCandidatePoolProjection === true,
     };
+  }
+  if (shouldUseRecommendationV2(event)) {
+    return generateRecommendationV2({
+      event,
+      recommendations,
+      openid: OPENID,
+      sceneContract,
+      scene,
+      targetDate,
+      timeOfDay: event.timeOfDay || 'all_day',
+      weatherMode,
+      weatherSnapshot,
+      candidatePoolIdentity,
+      now,
+    });
   }
   diagnostics.progressiveMaterialization = {
     version: 'home-light-materialization-audit-v1',
@@ -2457,6 +2596,78 @@ async function getAiComment(event) {
     saved: false,
     aiReviewDebug,
   });
+}
+
+async function loadV2OutfitPayload(event) {
+  const { OPENID } = cloud.getWXContext();
+  const outfitKey = readString(event.outfitKey);
+  const batchId = readString(event.batchId);
+  if (!outfitKey || !batchId) throw createBusinessError('V2_OUTFIT_IDENTITY_REQUIRED', 'batchId and outfitKey are required');
+  const refResult = await db.collection('recommendation_outfit_refs_v2')
+    .where({ _openid: OPENID, outfitKey, latestBatchId: batchId }).limit(1).get();
+  const ref = refResult.data?.[0];
+  if (!ref || !Array.isArray(ref.clothingIds) || ref.clothingIds.length === 0) {
+    throw createBusinessError('V2_OUTFIT_REFERENCE_NOT_FOUND', 'V2 outfit reference not found');
+  }
+  const clothes = await loadClothesByIds(OPENID, ref.clothingIds);
+  const itemsSnapshot = clothes.map((item) => snapshotFromClothing(item, null, item._id));
+  return {
+    id: undefined,
+    title: '今日搭配',
+    displayTitle: '今日搭配',
+    outfitKey,
+    clothingIds: ref.clothingIds,
+    itemsSnapshot,
+    items: clothes,
+    source: 'recommend',
+    targetDate: event.date || new Date().toISOString().slice(0, 10),
+  };
+}
+
+async function getOutfitDetailV2(event) {
+  const payload = await loadV2OutfitPayload(event);
+  return {
+    runtimeVersion: RECOMMENDATION_V2_RUNTIME_VERSION,
+    schemaVersion: RECOMMENDATION_V2_SCHEMA_VERSION,
+    batchId: event.batchId,
+    outfitKey: event.outfitKey,
+    detailIdentityReady: true,
+    persistedDetailDocumentReady: false,
+    detail: {
+      outfitKey: payload.outfitKey,
+      clothingIds: payload.clothingIds,
+      items: payload.items,
+      displayTitle: payload.displayTitle,
+    },
+  };
+}
+
+async function updateFavoriteV2(event) {
+  const payload = await loadV2OutfitPayload(event);
+  const saved = event.isFavorite === true
+    ? await saveFavoriteOutfit(undefined, payload)
+    : await removeFavoriteOutfit(undefined, payload.outfitKey);
+  return {
+    batchId: event.batchId,
+    outfitKey: event.outfitKey,
+    isFavorite: event.isFavorite === true,
+    snapshot: saved,
+  };
+}
+
+async function confirmWearV2(event) {
+  const payload = await loadV2OutfitPayload(event);
+  const saved = await addOutfitHistory({
+    outfit: payload,
+    source: 'recommendation',
+    date: event.date,
+  });
+  return {
+    batchId: event.batchId,
+    outfitKey: event.outfitKey,
+    isWornToday: true,
+    snapshot: saved,
+  };
 }
 
 async function generateAiComment(event) {
@@ -6815,6 +7026,10 @@ if (process.env.NODE_ENV === 'test') {
     mapCandidatePoolLoadReason,
     resolveEnrichedTitleState,
     isCanonicalCopyRuntimeV2Acceptance,
+    isRecommendationV2Acceptance,
+    shouldUseRecommendationV2,
+    buildRecommendationV2TodayReason,
+    generateRecommendationV2,
     measureCanonicalBatchInput,
     measureHomeLightMaterialization,
     measurePlannedHomeLightMaterialization,
