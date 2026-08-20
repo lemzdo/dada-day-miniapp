@@ -4,6 +4,10 @@ const crypto = require('node:crypto');
 
 const BATCH_COLLECTION = 'recommendation_batches_v2';
 const REF_COLLECTION = 'recommendation_outfit_refs_v2';
+const V2_ENVELOPE_FORBIDDEN_KEYS = new Set([
+  'snapshotItems', 'itemsSnapshot', 'scores', 'eligibility', 'copyContract',
+  'evidence', 'debug', 'fullFacts', 'narrative', 'aiComment', 'historyId',
+]);
 
 function stableReferenceId(openid, outfitKey) {
   return `ref-${crypto.createHash('sha256').update(`${openid}|${outfitKey}`).digest('hex').slice(0, 32)}`;
@@ -20,6 +24,32 @@ function assertBatchInput(batch, refs) {
 
 function refInvalid(ref, key) {
   return !ref || ref.runtimeVersion !== 'today-runtime-v2' || ref.schemaVersion !== 'today-v2' || !key || !ref.referenceId;
+}
+
+function assertV2Envelope(envelope, batch, refs) {
+  if (!envelope || envelope.runtimeVersion !== 'today-runtime-v2' || envelope.schemaVersion !== 'today-v2') {
+    throw new Error('V2_BATCH_ENVELOPE_INVALID');
+  }
+  if (!envelope.core || envelope.core.batchId !== batch.batchId || envelope.core.contentHash !== batch.contentHash
+    || envelope.core.commitToken !== batch.commitToken || !envelope.light
+    || !Array.isArray(envelope.light.cards) || envelope.light.cards.length !== 8) {
+    throw new Error('V2_BATCH_ENVELOPE_CORE_MISMATCH');
+  }
+  const walk = (value) => {
+    if (!value || typeof value !== 'object') return;
+    for (const [key, child] of Object.entries(value)) {
+      if (V2_ENVELOPE_FORBIDDEN_KEYS.has(key)) throw new Error('V2_BATCH_ENVELOPE_FORBIDDEN_FIELD');
+      walk(child);
+    }
+  };
+  walk(envelope);
+  const owner = refs[0]?._openid;
+  envelope.light.cards.forEach((card, index) => {
+    if (!owner || card.position !== index || card.outfitKey !== batch.order[index]
+      || card.referenceId !== stableReferenceId(owner, card.outfitKey)) {
+      throw new Error('V2_BATCH_ENVELOPE_ORDER_INVALID');
+    }
+  });
 }
 
 async function findBatch(database, openid, batchId) {
@@ -52,19 +82,21 @@ function assertStoredBatchComplete(batch, refs, requested) {
   if (refs.length !== 8 || refs.some((ref, index) => ref._openid !== requested._openid || ref.outfitKey !== requested.order[index] || ref.referenceId !== stableReferenceId(requested._openid, ref.outfitKey))) throw new Error('V2_BATCH_REFS_INCOMPLETE');
 }
 
-async function persistRecommendationBatchV2({ database, openid, batch, refs, now = new Date().toISOString() }) {
+async function persistRecommendationBatchV2({ database, openid, batch, refs, envelope, now = new Date().toISOString() }) {
   if (!openid) throw new Error('V2_BATCH_OPENID_REQUIRED');
   assertBatchInput(batch, refs);
+  if (envelope) assertV2Envelope(envelope, batch, refs.map((ref) => ({ ...ref, _openid: openid })));
   let result;
   await database.runTransaction(async (transaction) => {
     const existingBatch = await findBatch(transaction, openid, batch.batchId);
     const existingBatchRefs = existingBatch ? await findRefsForOrder(transaction, openid, batch.order) : [];
     if (existingBatch) {
       assertStoredBatchComplete(existingBatch, existingBatchRefs, { ...batch, _openid: openid });
+      if (envelope) assertV2Envelope(existingBatch.envelope, batch, existingBatchRefs);
       result = { idempotent: true, batch: existingBatch, refs: existingBatchRefs, writes: 0 };
       return;
     }
-    const batchRecord = { ...batch, _openid: openid, createdAt: now, updatedAt: now };
+    const batchRecord = { ...batch, ...(envelope ? { envelope } : {}), _openid: openid, createdAt: now, updatedAt: now };
     await transaction.collection(BATCH_COLLECTION).add({ data: batchRecord });
     const storedRefs = [];
     for (const ref of refs) {
@@ -83,4 +115,4 @@ async function persistRecommendationBatchV2({ database, openid, batch, refs, now
   return result;
 }
 
-module.exports = { BATCH_COLLECTION, REF_COLLECTION, stableReferenceId, assertBatchInput, findBatch, findRef, findBatchRefs, persistRecommendationBatchV2 };
+module.exports = { BATCH_COLLECTION, REF_COLLECTION, stableReferenceId, assertBatchInput, assertV2Envelope, findBatch, findRef, findBatchRefs, persistRecommendationBatchV2 };

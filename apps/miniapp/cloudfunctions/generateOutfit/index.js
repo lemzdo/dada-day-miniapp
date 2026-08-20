@@ -87,13 +87,17 @@ const {
   createCompositionItemFacts,
 } = require('./services/outfitCompositionV1');
 const { buildOutfitCardViewModel } = require('./services/outfitCardViewModel');
+const { compileRecommendationReasonsV2 } = require('./services/recommendationReasonV2');
 const {
   projectHomeLightV2,
   projectBatchCoreV2,
   RUNTIME_VERSION: RECOMMENDATION_V2_RUNTIME_VERSION,
   SCHEMA_VERSION: RECOMMENDATION_V2_SCHEMA_VERSION,
 } = require('./services/recommendationV2Projection');
-const { persistRecommendationBatchV2 } = require('./services/recommendationV2BatchRepository');
+const {
+  persistRecommendationBatchV2,
+  stableReferenceId,
+} = require('./services/recommendationV2BatchRepository');
 const {
   applyWearabilityAndSceneEligibility,
   evaluateOptionalItemPolicy,
@@ -283,15 +287,15 @@ function isRecommendationV2Acceptance(event) {
 }
 
 function shouldUseRecommendationV2(event) {
-  if (process.env.RECOMMENDATION_V2_ENABLED !== 'true') return false;
-  return event?.runtimeVersion === RECOMMENDATION_V2_RUNTIME_VERSION
-    || isRecommendationV2Acceptance(event);
+  if (isRecommendationV2Acceptance(event)) return true;
+  return process.env.RECOMMENDATION_V2_ENABLED === 'true'
+    && event?.runtimeVersion === RECOMMENDATION_V2_RUNTIME_VERSION;
 }
 
-function buildRecommendationV2TodayReason(recommendation) {
-  const candidates = [recommendation?.todayReason, recommendation?.reasoning, recommendation?.primaryBenefit];
-  const reason = candidates.find((value) => typeof value === 'string' && value.trim());
-  return (reason || '适合今天的搭配').trim().slice(0, 160);
+function buildRecommendationV2TodayReason(recommendation, safeReason) {
+  const reason = typeof safeReason === 'string' ? safeReason.trim() : '';
+  if (!reason) throw createBusinessError('V2_SAFE_REASON_INCOMPLETE', 'V2 safe reasons must cover all cards');
+  return reason.slice(0, 160);
 }
 
 async function generateRecommendationV2({
@@ -316,21 +320,30 @@ async function generateRecommendationV2({
   if (new Set(order).size !== 8 || order.some((key) => !key)) {
     throw createBusinessError('V2_RECOMMENDATION_IDENTITY_INVALID', 'V2 requires eight unique outfit identities');
   }
+  const safeReasons = compileRecommendationReasonsV2({
+    outfits: recommendations,
+    scene,
+    weather: weatherSnapshot,
+  });
+  if (!Array.isArray(safeReasons) || safeReasons.length !== 8
+    || safeReasons.some((entry) => typeof entry.reason !== 'string' || !entry.reason.trim())) {
+    throw createBusinessError('V2_SAFE_REASON_INCOMPLETE', 'V2 safe reasons must cover all cards');
+  }
   // Status is deliberately projected from the selected candidates in parallel. It does not
   // invoke the Legacy enrichment/state/snapshot path and therefore cannot block its head.
   const [favoriteMap, wornMap] = await Promise.all([
-    findFavoritesByKeys(openid, order),
-    findTodayHistoryByKeys(openid, order, targetDate),
+    findV2FavoriteKeys(openid, order),
+    findV2WornKeys(openid, order, targetDate),
   ]);
   const status = order.map((outfitKey, index) => ({
     isFavorite: Boolean(favoriteMap.get(outfitKey)) || recommendations[index].isFavorite === true,
     isWornToday: Boolean(wornMap.get(outfitKey)) || recommendations[index].isWornToday === true,
   }));
   const light = projectHomeLightV2(recommendations.map((recommendation, index) => ({
-    referenceId: recommendation.referenceId || `candidate:${order[index]}`,
+    referenceId: stableReferenceId(openid, order[index]),
     outfitKey: order[index],
     displayTitle: recommendation.displayTitle || recommendation.title || '今日搭配',
-    todayReason: buildRecommendationV2TodayReason(recommendation),
+    todayReason: buildRecommendationV2TodayReason(recommendation, safeReasons[index].reason),
     styleTags: recommendation.styleTags,
     clothingIds: (recommendation.items || []).map((item) => item?._id).filter(Boolean),
     items: (recommendation.items || []).map((item) => ({
@@ -361,9 +374,14 @@ async function generateRecommendationV2({
     order,
   };
   const unsignedCore = projectBatchCoreV2(coreInput);
-  const hashInput = JSON.stringify({ core: unsignedCore, light });
+  const hashInput = JSON.stringify({
+    core: { ...unsignedCore, contentHash: '' },
+    light,
+  });
   const contentHash = crypto.createHash('sha256').update(hashInput).digest('hex');
-  const commitToken = crypto.randomBytes(16).toString('hex');
+  const commitToken = crypto.createHash('sha256')
+    .update(`${batchId}|${contentHash}`)
+    .digest('hex');
   const batch = projectBatchCoreV2({ ...coreInput, contentHash, commitToken });
   const refs = order.map((outfitKey, position) => ({
     runtimeVersion: RECOMMENDATION_V2_RUNTIME_VERSION,
@@ -371,8 +389,21 @@ async function generateRecommendationV2({
     outfitKey,
     referenceId: light.cards[position].referenceId,
     clothingIds: light.cards[position].clothingIds,
+    position,
   }));
-  const persisted = await persistRecommendationBatchV2({ database: db, openid, batch, refs, now });
+  const persisted = await persistRecommendationBatchV2({
+    database: db,
+    openid,
+    batch,
+    refs,
+    envelope: {
+      runtimeVersion: RECOMMENDATION_V2_RUNTIME_VERSION,
+      schemaVersion: RECOMMENDATION_V2_SCHEMA_VERSION,
+      core: batch,
+      light,
+    },
+    now,
+  });
   return {
     runtimeVersion: RECOMMENDATION_V2_RUNTIME_VERSION,
     schemaVersion: RECOMMENDATION_V2_SCHEMA_VERSION,
@@ -2603,10 +2634,23 @@ async function loadV2OutfitPayload(event) {
   const outfitKey = readString(event.outfitKey);
   const batchId = readString(event.batchId);
   if (!outfitKey || !batchId) throw createBusinessError('V2_OUTFIT_IDENTITY_REQUIRED', 'batchId and outfitKey are required');
+  const batchResult = await db.collection('recommendation_batches_v2')
+    .where({ _openid: OPENID, batchId }).limit(1).get();
+  const storedBatch = batchResult.data?.[0];
+  const envelope = storedBatch?.envelope;
+  const position = Array.isArray(storedBatch?.order) ? storedBatch.order.indexOf(outfitKey) : -1;
+  const envelopeCard = envelope?.light?.cards?.[position];
+  if (!storedBatch || !envelope || storedBatch.contentHash !== envelope.core?.contentHash
+    || storedBatch.commitToken !== envelope.core?.commitToken || position < 0
+    || envelopeCard?.outfitKey !== outfitKey || envelopeCard?.position !== position
+    || envelopeCard.referenceId !== stableReferenceId(OPENID, outfitKey)) {
+    throw createBusinessError('V2_BATCH_ENVELOPE_INVALID', 'V2 immutable batch envelope invalid');
+  }
   const refResult = await db.collection('recommendation_outfit_refs_v2')
-    .where({ _openid: OPENID, outfitKey, latestBatchId: batchId }).limit(1).get();
+    .where({ _openid: OPENID, outfitKey }).limit(1).get();
   const ref = refResult.data?.[0];
-  if (!ref || !Array.isArray(ref.clothingIds) || ref.clothingIds.length === 0) {
+  if (!ref || ref.referenceId !== stableReferenceId(OPENID, outfitKey)
+    || !Array.isArray(ref.clothingIds) || ref.clothingIds.length === 0) {
     throw createBusinessError('V2_OUTFIT_REFERENCE_NOT_FOUND', 'V2 outfit reference not found');
   }
   const clothes = await loadClothesByIds(OPENID, ref.clothingIds);
@@ -2644,20 +2688,19 @@ async function getOutfitDetailV2(event) {
 
 async function updateFavoriteV2(event) {
   const payload = await loadV2OutfitPayload(event);
-  const saved = event.isFavorite === true
-    ? await saveFavoriteOutfit(undefined, payload)
-    : await removeFavoriteOutfit(undefined, payload.outfitKey);
+  if (event.isFavorite === true) await saveFavoriteOutfit(undefined, payload);
+  else await removeFavoriteOutfit(undefined, payload.outfitKey);
   return {
     batchId: event.batchId,
     outfitKey: event.outfitKey,
     isFavorite: event.isFavorite === true,
-    snapshot: saved,
+    referenceId: stableReferenceId(cloud.getWXContext().OPENID, event.outfitKey),
   };
 }
 
 async function confirmWearV2(event) {
   const payload = await loadV2OutfitPayload(event);
-  const saved = await addOutfitHistory({
+  await addOutfitHistory({
     outfit: payload,
     source: 'recommendation',
     date: event.date,
@@ -2666,7 +2709,7 @@ async function confirmWearV2(event) {
     batchId: event.batchId,
     outfitKey: event.outfitKey,
     isWornToday: true,
-    snapshot: saved,
+    referenceId: stableReferenceId(cloud.getWXContext().OPENID, event.outfitKey),
   };
 }
 
@@ -4416,6 +4459,17 @@ async function findFavoritesByKeys(openid, outfitKeys, diagnostics) {
   return map;
 }
 
+async function findV2FavoriteKeys(openid, outfitKeys) {
+  const keys = uniqueStrings(outfitKeys);
+  if (!keys.length) return new Map();
+  const query = db.collection('favorite_outfits').where({ _openid: openid, outfitKey: db.command.in(keys) });
+  if (typeof query.field === 'function') query.field({ outfitKey: true, deletedAt: true, createdAt: true, favoritedAt: true });
+  const result = await query.limit(100).get();
+  return new Map((result.data || [])
+    .filter((item) => item.outfitKey && !item.deletedAt)
+    .map((item) => [item.outfitKey, item]));
+}
+
 async function findOutfitsByKeys(openid, outfitKeys) {
   const map = new Map();
   const keys = uniqueStrings(outfitKeys);
@@ -4449,6 +4503,17 @@ async function findTodayHistoryByKeys(openid, outfitKeys, targetDate, database =
     }
   }
   return map;
+}
+
+async function findV2WornKeys(openid, outfitKeys, targetDate) {
+  const keys = uniqueStrings(outfitKeys);
+  if (!keys.length) return new Map();
+  const query = db.collection('outfit_history').where({ _openid: openid, outfitKey: db.command.in(keys) });
+  if (typeof query.field === 'function') query.field({ outfitKey: true, wornAt: true, wornDate: true, wearDate: true, targetDate: true, createdAt: true });
+  const result = await query.limit(500).get();
+  return new Map((result.data || [])
+    .filter((item) => item.outfitKey && isHistoryOnDate(item, targetDate))
+    .map((item) => [item.outfitKey, item]));
 }
 
 async function findTodayHistoryByKey(openid, outfitKey, targetDate, database = db) {

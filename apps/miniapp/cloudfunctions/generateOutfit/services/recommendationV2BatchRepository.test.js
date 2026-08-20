@@ -94,3 +94,39 @@ test('V2 repository rejects same batch id with a different hash', async () => {
   await persistRecommendationBatchV2({ database, openid: 'user-1', ...input });
   await assert.rejects(() => persistRecommendationBatchV2({ database, openid: 'user-1', batch: { ...input.batch, contentHash: 'different' }, refs: input.refs }), /V2_BATCH_COMMIT_VALIDATION_FAILED/);
 });
+
+test('V2 envelope is atomic and rejects deep snapshot fields', async () => {
+  const input = fixture('envelope');
+  const envelope = {
+    runtimeVersion: 'today-runtime-v2',
+    schemaVersion: 'today-v2',
+    core: input.batch,
+    light: {
+      runtimeVersion: 'today-runtime-v2',
+      schemaVersion: 'today-v2',
+      batchId: input.batch.batchId,
+      cards: input.refs.map((ref, position) => ({
+        referenceId: stableReferenceId('user-1', ref.outfitKey),
+        outfitKey: ref.outfitKey,
+        position,
+        displayTitle: '今日搭配',
+        todayReason: '适合今天',
+        styleTags: [],
+        clothingIds: ref.clothingIds,
+        items: [],
+        isFavorite: false,
+        isWornToday: false,
+      })),
+    },
+  };
+  const { database, records } = createDatabase();
+  const result = await persistRecommendationBatchV2({ database, openid: 'user-1', ...input, envelope });
+  assert.equal(result.idempotent, false);
+  assert.ok(records.recommendation_batches_v2[0].envelope);
+  await assert.rejects(() => persistRecommendationBatchV2({
+    database,
+    openid: 'user-1',
+    ...input,
+    envelope: { ...envelope, light: { ...envelope.light, cards: envelope.light.cards.map((card) => ({ ...card, snapshotItems: [] })) } },
+  }), /V2_BATCH_ENVELOPE_FORBIDDEN_FIELD|V2_BATCH_COMMIT_VALIDATION_FAILED/);
+});
