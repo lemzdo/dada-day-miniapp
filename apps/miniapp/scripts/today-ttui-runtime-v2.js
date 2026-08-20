@@ -345,6 +345,30 @@ async function waitForAutomatorElement(page, selector, timeoutMs = 15000) {
   throw new Error(`TTUI_USER_STYLE_SELECTOR_TIMEOUT:${selector}:route=${page.path}:visible=${JSON.stringify(visible.filter((entry) => entry.present).map((entry) => entry.candidate))}`);
 }
 
+async function prepareUserStyleColdSession(mini, timeoutMs = 30000) {
+  if (!mini || typeof mini.reLaunch !== 'function') throw new Error('TTUI_USER_STYLE_SESSION_PREP_RELAUNCH_REQUIRED');
+  const startedAt = Date.now();
+  await mini.reLaunch('/pages/today/index');
+  const bridge = await waitForBridge(mini, timeoutMs);
+  await waitForTodayIdle(mini, timeoutMs);
+  const runtime = await mini.evaluate(() => {
+    const bridgeState = globalThis.__d1dTodayDiagnostics || {};
+    const auth = globalThis.__d1dAuthRuntime || globalThis.__d1dAuthContext || null;
+    return {
+      runtimeKey: bridgeState.runtimeKey || auth?.runtimeKey || null,
+      authReady: Boolean(auth?.isAuthenticated || auth?.openid || auth?.userId),
+    };
+  });
+  return {
+    method: 'batch-session-preparation:reLaunch-today+bridge-ready+today-idle',
+    startedAt,
+    completedAt: Date.now(),
+    bridgeReady: bridge.ready === true,
+    runtimeKey: runtime.runtimeKey || null,
+    authReady: runtime.authReady === true,
+  };
+}
+
 /** Built-in real UI adapter. It deliberately has no storage/cloud primitives. */
 function createUserStyleColdAutomatorAdapter({ mini, timeoutMs = 15000 } = {}) {
   if (!mini || typeof mini.switchTab !== 'function' || typeof mini.currentPage !== 'function') {
@@ -673,7 +697,9 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
 async function runCli({ scenario = 'A', samples = 1, skipBuild = false, expectedRuntimeV2 = false, userStyleColdAdapter } = {}) {
   if (!skipBuild) throw new Error('TTUI_RUNNER_REQUIRES_PREBUILT_MINIAPP_USE_SKIP_BUILD');
   const session = await ensureDevToolsDirectSession();
+  let userStyleColdSessionPreparation = null;
   if (scenario === USER_STYLE_COLD_SCENARIO && !userStyleColdAdapter) {
+    userStyleColdSessionPreparation = await prepareUserStyleColdSession(session.mini);
     userStyleColdAdapter = createUserStyleColdAutomatorAdapter({ mini: session.mini });
   }
   const artifacts = [];
@@ -681,6 +707,7 @@ async function runCli({ scenario = 'A', samples = 1, skipBuild = false, expected
     for (let index = 0; index < Math.max(1, Number(samples) || 1); index += 1) {
       try {
         const artifact = await runScenario({ scenario, mini: session.mini, expectedRuntimeV2, userStyleColdAdapter });
+        if (userStyleColdSessionPreparation) artifact.sessionPreparation = userStyleColdSessionPreparation;
         if (scenario === 'B' || scenario === 'C' || scenario === USER_STYLE_COLD_SCENARIO) {
           artifact.transportCalibration = await measureTransportCalibration(session.mini);
           artifact.transportBreakdown = transportSegments(artifact);
@@ -711,7 +738,7 @@ async function runCli({ scenario = 'A', samples = 1, skipBuild = false, expected
   }
 }
 
-module.exports = { ARTIFACT_ROOT, readLedger, readSnapshot, segmentDurations, serverSegments, hardInvalidActionSegments, measureTransportCalibration, transportSegments, summarize, summarizeArtifacts, writeArtifact, waitForBridge, waitForTodayIdle, invalidateRestoreSnapshot, markHardInvalid, prepareHardInvalidAndRelaunch, prepareUserStyleCold, createUserStyleColdAutomatorAdapter, isUsableSnapshot, isFixedEightCardBatch, switchToTodayWithClientTiming, runScenario, runCli };
+module.exports = { ARTIFACT_ROOT, readLedger, readSnapshot, segmentDurations, serverSegments, hardInvalidActionSegments, measureTransportCalibration, transportSegments, summarize, summarizeArtifacts, writeArtifact, waitForBridge, waitForTodayIdle, invalidateRestoreSnapshot, markHardInvalid, prepareHardInvalidAndRelaunch, prepareUserStyleCold, prepareUserStyleColdSession, createUserStyleColdAutomatorAdapter, isUsableSnapshot, isFixedEightCardBatch, switchToTodayWithClientTiming, runScenario, runCli };
 
 if (require.main === module) {
   const args = new Map(process.argv.slice(2).map((arg) => {
