@@ -410,6 +410,10 @@ test('performance-only diagnostics return the ledger without QA or phase duplica
     assert.ok(response.diagnostics.performance);
     assert.equal(response.diagnostics.performance.candidateMetrics.generatedCandidateCount, 320);
     assert.ok(Array.isArray(response.diagnostics.performance.businessPayloadByteBreakdown));
+    assert.equal(typeof response.diagnostics.performance.responseFinalization.buildMs, 'number');
+    assert.equal(typeof response.diagnostics.performance.responseFinalization.serializationMs, 'number');
+    assert.equal(typeof response.diagnostics.performance.serverResponseReadyAt, 'number');
+    assert.equal(typeof response.diagnostics.performance.serverTotalThroughResponseReadyMs, 'number');
     assert.equal(response.debug.phaseLedger, undefined);
     assert.equal(response.qaBatchAudit, undefined);
     assert.ok(internals.measureRecommendationResponse(response).totalDataBytes < 20 * 1024);

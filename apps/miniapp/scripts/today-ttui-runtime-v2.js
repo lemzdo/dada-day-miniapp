@@ -42,6 +42,10 @@ function segmentDurations(record = {}) {
     usablePaintMs: Number(s.firstImageLoaded || s.firstCardMounted) - Number(s.userActionStart || s.todayOnShow) || 0,
     snapshotReadMs: duration('snapshotRead', 'snapshotReadStart', 'snapshotReadEnd'),
     snapshotValidationMs: duration('snapshotValidation', 'snapshotValidationStart', 'snapshotValidationEnd'),
+    normalizeMs: duration('clientNormalize', 'clientNormalizeStart', 'clientNormalizeEnd'),
+    stateCommitMs: duration('stateCommit', 'stateCommitStart', 'stateCommitEnd'),
+    firstUsableRenderMs: duration('stateToFirstUsableRender', 'setOutfitsCalled', 'firstCardMounted'),
+    reactCommitMs: duration('reactCommit', 'setOutfitsCalled', 'reactCommitAfterOutfits'),
   };
 }
 
@@ -53,7 +57,70 @@ function serverSegments(performance = {}) {
   const safe = Number(runtime.tSafeMs) || 0;
   const total = Number(performance.serverTotalMs) || 0;
   const persistence = Number(performance.snapshotPersistence?.durationMs) || phases.get('snapshotPersistence') || 0;
-  return { readMs: read, coreMs: core, safeMs: safe, criticalPersistenceMs: persistence, totalMs: total, aiMs: Number(runtime.tAiNecessaryCriticalPathMs) || 0 };
+  const snapshot = performance.snapshotPersistence || {};
+  const response = performance.responseFinalization || {};
+  return {
+    readMs: read,
+    coreMs: core,
+    safeMs: safe,
+    criticalPersistenceMs: persistence,
+    snapshotBuildMs: Number(snapshot.snapshotBuildMs) || 0,
+    snapshotSerializationMs: Number(snapshot.serializationMs) || 0,
+    snapshotDbReadMs: Number(snapshot.queryReadMs) || 0,
+    snapshotDbWriteMs: Number(snapshot.writeWallMs) || 0,
+    snapshotCommitMs: Number(snapshot.commitMs) || 0,
+    responseBuildMs: Number(response.buildMs) || 0,
+    responseSerializationMs: Number(response.serializationMs) || phases.get('responseSerialization') || 0,
+    totalMs: total,
+    totalThroughResponseReadyMs: Number(performance.serverTotalThroughResponseReadyMs) || total,
+    aiMs: Number(runtime.tAiNecessaryCriticalPathMs) || 0,
+  };
+}
+
+async function measureTransportCalibration(mini) {
+  return mini.evaluate(function measureSmallTransportProbe() {
+    var clientSendAt = Date.now();
+    return globalThis.wx.cloud.callFunction({
+      name: 'generateOutfit',
+      data: { action: 'transport_probe_small', diagnostic: true },
+    }).then(function onProbeResult(raw) {
+      var clientReceiveAt = Date.now();
+      var data = raw && raw.result && raw.result.data;
+      var serverStartAt = Number(data && data.serverHandlerStart) || 0;
+      var serverEndAt = Number(data && data.serverHandlerEnd) || serverStartAt;
+      var clientMidpoint = clientSendAt + ((clientReceiveAt - clientSendAt) / 2);
+      var serverMidpoint = serverStartAt + ((serverEndAt - serverStartAt) / 2);
+      return {
+        clientSendAt: clientSendAt,
+        clientReceiveAt: clientReceiveAt,
+        clientRoundTripMs: clientReceiveAt - clientSendAt,
+        serverStartAt: serverStartAt,
+        serverEndAt: serverEndAt,
+        serverDurationMs: serverEndAt - serverStartAt,
+        clockOffsetEstimateMs: serverMidpoint - clientMidpoint,
+        moduleInstanceId: data && data.moduleInstanceId,
+      };
+    });
+  });
+}
+
+function transportSegments(artifact = {}) {
+  const transport = artifact.transport || {};
+  const performance = artifact.performance || {};
+  const calibration = artifact.transportCalibration || {};
+  const clientSendAt = Number(transport.immediatelyBeforeCallFunction) || 0;
+  const clientReceiveAt = Number(transport.callFunctionPromiseResolved) || 0;
+  const handlerStart = Number(performance.handlerStart) || 0;
+  const responseReadyAt = Number(performance.serverResponseReadyAt) || Number(performance.handlerEnd) || 0;
+  const offset = Number(calibration.clockOffsetEstimateMs);
+  if (!clientSendAt || !clientReceiveAt || !handlerStart || !responseReadyAt || !Number.isFinite(offset)) {
+    return { clientToHandlerMs: 0, returnToClientMs: 0, transportResidualMs: Math.max(0, Number(transport.clientTotalMs) - Number(performance.serverTotalMs)) || 0 };
+  }
+  return {
+    clientToHandlerMs: Math.max(0, (handlerStart - offset) - clientSendAt),
+    returnToClientMs: Math.max(0, clientReceiveAt - (responseReadyAt - offset)),
+    transportResidualMs: Math.max(0, Number(transport.clientTotalMs) - (responseReadyAt - handlerStart)),
+  };
 }
 
 function summarize(values) {
@@ -72,6 +139,18 @@ function summarizeArtifacts(artifacts) {
     cloudToClientMs: Math.max(0, (Number(entry.clientTotalMs) || 0) - (Number(entry.serverTotalMs) || 0)),
     clientStateMs: Number(entry.clientStateMs) || 0,
     usablePaintMs: Number(entry.usablePaintMs) || 0,
+    snapshotBuildMs: Number(entry.snapshotBuildMs) || 0,
+    snapshotSerializationMs: Number(entry.snapshotSerializationMs) || 0,
+    snapshotDbReadMs: Number(entry.snapshotDbReadMs) || 0,
+    snapshotDbWriteMs: Number(entry.snapshotDbWriteMs) || 0,
+    snapshotCommitMs: Number(entry.snapshotCommitMs) || 0,
+    responseBuildMs: Number(entry.responseBuildMs) || 0,
+    responseSerializationMs: Number(entry.responseSerializationMs) || 0,
+    clientToHandlerMs: Number(entry.clientToHandlerMs) || 0,
+    returnToClientMs: Number(entry.returnToClientMs) || 0,
+    normalizeMs: Number(entry.normalizeMs) || 0,
+    stateCommitMs: Number(entry.stateCommitMs) || 0,
+    firstUsableRenderMs: Number(entry.firstUsableRenderMs) || 0,
   }));
   return Object.fromEntries(Object.keys(rows[0] || {}).map((key) => [key, summarize(rows.map((row) => row[key]))]));
 }
@@ -367,6 +446,10 @@ async function runCli({ scenario = 'A', samples = 1, skipBuild = false, expected
     for (let index = 0; index < Math.max(1, Number(samples) || 1); index += 1) {
       try {
         const artifact = await runScenario({ scenario, mini: session.mini, expectedRuntimeV2 });
+        if (scenario === 'B' || scenario === 'C') {
+          artifact.transportCalibration = await measureTransportCalibration(session.mini);
+          artifact.transportBreakdown = transportSegments(artifact);
+        }
         artifact.directory = writeArtifact(scenario, artifact);
         artifacts.push(artifact);
       } catch (error) {
@@ -382,6 +465,7 @@ async function runCli({ scenario = 'A', samples = 1, skipBuild = false, expected
       summary: summarizeArtifacts(artifacts.map((artifact) => ({
         ...artifact.server,
         ...artifact.client,
+        ...artifact.transportBreakdown,
         clientTotalMs: artifact.transport?.clientTotalMs,
         serverTotalMs: artifact.server?.totalMs,
       }))),
@@ -391,7 +475,7 @@ async function runCli({ scenario = 'A', samples = 1, skipBuild = false, expected
   }
 }
 
-module.exports = { ARTIFACT_ROOT, readLedger, readSnapshot, segmentDurations, serverSegments, summarize, summarizeArtifacts, writeArtifact, waitForBridge, waitForTodayIdle, invalidateRestoreSnapshot, markHardInvalid, prepareHardInvalidAndRelaunch, isUsableSnapshot, switchToTodayWithClientTiming, runScenario, runCli };
+module.exports = { ARTIFACT_ROOT, readLedger, readSnapshot, segmentDurations, serverSegments, measureTransportCalibration, transportSegments, summarize, summarizeArtifacts, writeArtifact, waitForBridge, waitForTodayIdle, invalidateRestoreSnapshot, markHardInvalid, prepareHardInvalidAndRelaunch, isUsableSnapshot, switchToTodayWithClientTiming, runScenario, runCli };
 
 if (require.main === module) {
   const args = new Map(process.argv.slice(2).map((arg) => {

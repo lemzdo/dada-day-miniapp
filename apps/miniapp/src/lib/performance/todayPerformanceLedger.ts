@@ -24,7 +24,9 @@ export type TodayPerformanceStage =
   | 'statusApplyStart' | 'statusApplyEnd' | 'setOutfitsCalled'
   | 'reactCommitAfterOutfits' | 'firstCardMounted' | 'firstImageLoadStart'
   | 'firstImageLoaded' | 'generateOutfitRequestStart' | 'generateOutfitResponseEnd'
-  | 'userActionStart' | 'responseAdaptStart' | 'responseAdaptEnd' | 'snapshotPersistStart' | 'snapshotPersistEnd'
+  | 'userActionStart' | 'responseAdaptStart' | 'responseAdaptEnd'
+  | 'clientNormalizeStart' | 'clientNormalizeEnd' | 'stateCommitStart' | 'stateCommitEnd'
+  | 'snapshotPersistStart' | 'snapshotPersistEnd'
   | 'backgroundRefreshStart' | 'backgroundRefreshEnd' | 'finalCardCount'
   | 'generateOutfitRequestCount' | 'executionMode' | 'responseCode' | 'auditId'
   | 'runComplete';
@@ -207,7 +209,7 @@ export function completeTodayPerformanceRun() {
   current.completedAt = now();
   current.stages.runComplete = current.completedAt;
   current.complete = true;
-  for (const stage of ['appOrPageEntry', 'todayComponentEnter', 'todayOnLoad', 'todayOnShow', 'identityStart', 'localIdentityReady', 'identityRemoteStart', 'identityRemoteEnd', 'identityReady', 'sceneReady', 'weatherStart', 'weatherEnd', 'locationPermissionPromptStart', 'locationPermissionResolved', 'snapshotReadStart', 'snapshotReadEnd', 'snapshotParseEnd', 'snapshotValidationStart', 'snapshotValidationEnd', 'snapshotFound', 'snapshotValid', 'snapshotRejectReason', 'snapshotCardCount', 'statusApplyStart', 'statusApplyEnd', 'setOutfitsCalled', 'reactCommitAfterOutfits', 'firstCardMounted', 'firstImageLoadStart', 'firstImageLoaded', 'userActionStart', 'generateOutfitRequestStart', 'generateOutfitResponseEnd', 'responseAdaptStart', 'responseAdaptEnd', 'snapshotPersistStart', 'snapshotPersistEnd', 'backgroundRefreshStart', 'backgroundRefreshEnd', 'finalCardCount', 'generateOutfitRequestCount', 'executionMode', 'responseCode', 'auditId'] as TodayPerformanceStage[]) {
+  for (const stage of ['appOrPageEntry', 'todayComponentEnter', 'todayOnLoad', 'todayOnShow', 'identityStart', 'localIdentityReady', 'identityRemoteStart', 'identityRemoteEnd', 'identityReady', 'sceneReady', 'weatherStart', 'weatherEnd', 'locationPermissionPromptStart', 'locationPermissionResolved', 'snapshotReadStart', 'snapshotReadEnd', 'snapshotParseEnd', 'snapshotValidationStart', 'snapshotValidationEnd', 'snapshotFound', 'snapshotValid', 'snapshotRejectReason', 'snapshotCardCount', 'statusApplyStart', 'statusApplyEnd', 'setOutfitsCalled', 'reactCommitAfterOutfits', 'firstCardMounted', 'firstImageLoadStart', 'firstImageLoaded', 'userActionStart', 'generateOutfitRequestStart', 'generateOutfitResponseEnd', 'responseAdaptStart', 'responseAdaptEnd', 'clientNormalizeStart', 'clientNormalizeEnd', 'stateCommitStart', 'stateCommitEnd', 'snapshotPersistStart', 'snapshotPersistEnd', 'backgroundRefreshStart', 'backgroundRefreshEnd', 'finalCardCount', 'generateOutfitRequestCount', 'executionMode', 'responseCode', 'auditId'] as TodayPerformanceStage[]) {
     if (current.stages[stage] === undefined) current.stages[stage] = stage === 'snapshotRejectReason' ? 'NOT_OBSERVED' : 'NOT_OBSERVED';
   }
   markTodayPerformanceDuration('onShowToFirstCard', 'todayOnShow', 'firstCardMounted');
@@ -215,6 +217,9 @@ export function completeTodayPerformanceRun() {
   markTodayPerformanceDuration('actionToFirstCard', 'userActionStart', 'firstCardMounted');
   markTodayPerformanceDuration('actionToFirstImage', 'userActionStart', 'firstImageLoaded');
   markTodayPerformanceDuration('request', 'generateOutfitRequestStart', 'generateOutfitResponseEnd');
+  markTodayPerformanceDuration('clientNormalize', 'clientNormalizeStart', 'clientNormalizeEnd');
+  markTodayPerformanceDuration('stateCommit', 'stateCommitStart', 'stateCommitEnd');
+  markTodayPerformanceDuration('stateToFirstUsableRender', 'setOutfitsCalled', 'firstCardMounted');
   markTodayPerformanceDuration('permissionUserWaitMs', 'locationPermissionPromptStart', 'locationPermissionResolved');
   history = [current, ...history.filter((item) => item.runId !== current.runId)].slice(0, HISTORY_LIMIT);
   publishNow();

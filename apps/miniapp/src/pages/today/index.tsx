@@ -780,10 +780,12 @@ export default function TodayPage() {
       markTodayPerformanceStage('responseAdaptEnd');
 
       const requestWeatherFingerprint = getRecommendationWeatherFingerprint(weather);
+      markTodayPerformanceStage('clientNormalizeStart');
       const normalizedOutfits = eligibleApiOutfits.map((outfit) => normalizeOutfitSnapshot(outfit));
       mergeSuccessfulSeenBatch(requestContext.sceneKey, getResponseIdentityHash(data), normalizedOutfits);
       setOutfitStatuses(getOutfitStatusPatches(normalizedOutfits), authContext);
       const nextOutfits = applyTodayOutfitStatuses(normalizedOutfits, authContext);
+      markTodayPerformanceStage('clientNormalizeEnd');
       const responseMissingRoles = data.debug?.limitedReason === 'MISSING_REQUIRED_CATEGORY'
         ? (data.missingRoles ?? data.debug.missingRoles ?? [])
         : [];
@@ -801,6 +803,7 @@ export default function TodayPage() {
       outfitsRef.current = nextOutfits;
       currentIndexRef.current = 0;
       recommendationBatchIdRef.current = data.recommendationBatchId ?? nextOutfits[0]?.recommendationBatchId;
+      markTodayPerformanceStage('stateCommitStart');
       setOutfits(nextOutfits);
       markTodayPerformanceStage('setOutfitsCalled');
       setCurrentIndex(0);
@@ -812,6 +815,7 @@ export default function TodayPage() {
       setBatchLimited(Boolean(data.limited));
       setBatchExhausted(Boolean(data.exhausted));
       setRecommendationNotice(nextNotice);
+      markTodayPerformanceStage('stateCommitEnd');
       storeSceneSnapshot({
         sceneKey: requestContext.sceneKey,
         scene,
@@ -983,15 +987,18 @@ export default function TodayPage() {
       logRecommendationQa(data, auditId);
       if (eligibleApiOutfits.length > 0) {
         countContractRef.current = data.countContract;
+        markTodayPerformanceStage('clientNormalizeStart');
         const normalizedOutfits = eligibleApiOutfits.map((outfit) => normalizeOutfitSnapshot(outfit));
         mergeSuccessfulSeenBatch(requestContext.sceneKey, getResponseIdentityHash(data), normalizedOutfits);
         setOutfitStatuses(getOutfitStatusPatches(normalizedOutfits), authContext);
         const nextOutfits = applyTodayOutfitStatuses(normalizedOutfits, authContext);
+        markTodayPerformanceStage('clientNormalizeEnd');
         recommendationWeatherSnapshotRef.current = weatherForRefresh;
         recommendationWeatherFingerprintRef.current = weatherFingerprintForRefresh;
         outfitsRef.current = nextOutfits;
         currentIndexRef.current = 0;
         recommendationBatchIdRef.current = data.recommendationBatchId ?? nextOutfits[0]?.recommendationBatchId;
+        markTodayPerformanceStage('stateCommitStart');
         setOutfits(nextOutfits);
         markTodayPerformanceStage('setOutfitsCalled');
         setCurrentIndex(0);
@@ -1002,6 +1009,7 @@ export default function TodayPage() {
         setBatchLimited(Boolean(data.limited));
         setBatchExhausted(Boolean(data.exhausted));
         setRecommendationNotice(getBatchNotice(data.recommendationNotice, Boolean(data.limited), Boolean(data.exhausted)));
+        markTodayPerformanceStage('stateCommitEnd');
         storeSceneSnapshot({
           sceneKey: requestContext.sceneKey,
           scene: requestContext.sceneLabel,

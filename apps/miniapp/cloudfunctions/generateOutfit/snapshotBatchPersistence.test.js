@@ -302,6 +302,10 @@ test('snapshot persistence round-trips are explicit for all-new, all-existing, a
   });
   assert.equal(allNewCounts.snapshot.dbRoundTrips, 2);
   assert.equal(allNewCounts.snapshot.writeRoundTrips, 1);
+  assert.equal(typeof allNewCounts.snapshot.snapshotBuildMs, 'number');
+  assert.equal(typeof allNewCounts.snapshot.writeWallMs, 'number');
+  assert.equal(typeof allNewCounts.snapshot.transactionCallbackMs, 'number');
+  assert.equal(typeof allNewCounts.snapshot.commitMs, 'number');
 
   const allExistingCounts = { reads: 0, writes: 0 };
   await entry.__test.upsertRecommendationOutfitsBatch({
@@ -313,6 +317,7 @@ test('snapshot persistence round-trips are explicit for all-new, all-existing, a
   });
   assert.equal(allExistingCounts.snapshot.dbRoundTrips, 9);
   assert.equal(allExistingCounts.snapshot.writeRoundTrips, 8);
+  assert.equal(allExistingCounts.snapshot.commitMs, 0);
 
   const mixedCounts = { reads: 0, writes: 0 };
   await entry.__test.upsertRecommendationOutfitsBatch({

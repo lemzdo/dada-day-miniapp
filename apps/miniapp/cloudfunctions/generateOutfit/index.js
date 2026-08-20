@@ -1780,17 +1780,26 @@ function finalizeRecommendationResponse({
 }) {
   diagnostics.stage = 'serialization';
   const serializationStartedAt = Date.now();
+  let responseSerializationMs = 0;
+  const measureResponse = () => {
+    const startedAt = Date.now();
+    const measured = measureRecommendationResponse(responseData);
+    responseSerializationMs += Date.now() - startedAt;
+    return measured;
+  };
+  const responseBuildStartedAt = Date.now();
   const responseData = buildRecommendationResponseData(sceneContract, {
     ...data,
     ...(qaResult?.clientAudit ? { qaBatchAudit: qaResult.clientAudit } : {}),
   });
-  let budget = measureRecommendationResponse(responseData);
+  diagnostics.timings.responseBuildMs = Date.now() - responseBuildStartedAt;
+  let budget = measureResponse();
   syncRecommendationResponseDiagnostics(responseData, diagnostics.timings, budget, qaResult?.clientAudit);
   if (qaResult?.clientAudit) fitQaBatchAuditToBudget(qaResult.clientAudit);
-  budget = measureRecommendationResponse(responseData);
+  budget = measureResponse();
   if (qaResult?.clientAudit && budget.totalDataBytes >= 768 * 1024) {
     truncateQaForResponseBudget(qaResult.clientAudit);
-    budget = measureRecommendationResponse(responseData);
+    budget = measureResponse();
   }
   diagnostics.timings.serializationMs = Date.now() - serializationStartedAt;
   recordServerPhase(diagnostics, 'responseSerialization', serializationStartedAt);
@@ -1808,18 +1817,33 @@ function finalizeRecommendationResponse({
         : {}),
     };
   }
-  budget = measureRecommendationResponse(responseData);
+  budget = measureResponse();
   if (responseData.diagnostics?.performance) {
     responseData.diagnostics.performance.responsePayloadBytes = budget.totalDataBytes;
-    budget = measureRecommendationResponse(responseData);
+    budget = measureResponse();
   }
   syncRecommendationResponseDiagnostics(responseData, diagnostics.timings, budget, qaResult?.clientAudit);
   if (diagnostics.performanceOnly === true || diagnostics.diagnosticsRequested !== true) {
     stripResponseDiagnosticsForBusinessResponse(responseData, { performanceOnly: diagnostics.performanceOnly === true });
-    budget = measureRecommendationResponse(responseData);
+    budget = measureResponse();
     if (responseData.diagnostics?.performance) {
       responseData.diagnostics.performance.responsePayloadBytes = budget.totalDataBytes;
     }
+  }
+  diagnostics.timings.responseSerializationMs = responseSerializationMs;
+  diagnostics.timings.responseFinalizationMs = Date.now() - serializationStartedAt;
+  diagnostics.serverResponseReadyAt = Date.now();
+  if (responseData.diagnostics?.performance) {
+    responseData.diagnostics.performance.responseFinalization = compactPerformanceNumbers({
+      buildMs: diagnostics.timings.responseBuildMs,
+      serializationMs: responseSerializationMs,
+      totalMs: diagnostics.timings.responseFinalizationMs,
+    });
+    responseData.diagnostics.performance.serverResponseReadyAt = diagnostics.serverResponseReadyAt;
+    responseData.diagnostics.performance.serverTotalThroughResponseReadyMs = Math.max(
+      0,
+      diagnostics.serverResponseReadyAt - (Number(diagnostics.handlerStartAt) || Number(diagnostics.startedAt) || 0),
+    );
   }
   emitRecommendationServerDone({
     auditId: diagnostics.auditId,
@@ -3507,12 +3531,25 @@ async function assertOutfitClothesAvailable(openid, clothingIds, database = db) 
   }
 }
 
-async function runOutfitReferenceTransaction(callback) {
+async function runOutfitReferenceTransaction(callback, timing) {
   if (typeof db.runTransaction !== 'function') {
     throw createBusinessError('OUTFIT_REFERENCE_TRANSACTION_UNAVAILABLE', '操作暂时不可用，请稍后再试');
   }
+  const transactionStartedAt = Date.now();
+  let callbackCompletedAt = 0;
   try {
-    return await db.runTransaction(callback, 3);
+    const result = await db.runTransaction(async (transaction) => {
+      const callbackStartedAt = Date.now();
+      const value = await callback(transaction);
+      callbackCompletedAt = Date.now();
+      if (timing) timing.transactionCallbackMs += callbackCompletedAt - callbackStartedAt;
+      return value;
+    }, 3);
+    if (timing) {
+      timing.transactionMs = Date.now() - transactionStartedAt;
+      timing.commitMs += callbackCompletedAt > 0 ? Date.now() - callbackCompletedAt : 0;
+    }
+    return result;
   } catch (error) {
     if (error && error.businessCode) throw error;
     const wrapped = createBusinessError('OUTFIT_REFERENCE_WRITE_FAILED', '操作暂时失败，请稍后再试');
@@ -4352,9 +4389,13 @@ async function upsertRecommendationOutfitsBatch({
       value: {
       inputPreparationMs: 0,
       serializationMs: 0,
+      snapshotBuildMs: 0,
       queryReadMs: 0,
       writeMs: 0,
+      writeWallMs: 0,
       transactionMs: 0,
+      transactionCallbackMs: 0,
+      commitMs: 0,
       responseWaitMs: 0,
       dbRoundTrips: 0,
       writeRoundTrips: 0,
@@ -4484,6 +4525,7 @@ async function upsertRecommendationOutfitsBatch({
     const saved = [];
     const pendingUpdates = [];
     const pendingAdds = [];
+    const snapshotBuildStartedAt = Date.now();
     for (let index = 0; index < records.length; index += 1) {
       const base = records[index];
       const outfitKey = outfitKeys[index];
@@ -4510,6 +4552,7 @@ async function upsertRecommendationOutfitsBatch({
         });
       }
     }
+    if (snapshot) snapshot.snapshotBuildMs += Date.now() - snapshotBuildStartedAt;
 
     for (const pending of pendingUpdates) {
       const writeStartedAt = Date.now();
@@ -4529,7 +4572,9 @@ async function upsertRecommendationOutfitsBatch({
       const updated = { ...pending.current, ...pending.data };
       existingByKey.set(pending.outfitKey, updated);
       if (snapshot) {
-        snapshot.writeMs += Date.now() - writeStartedAt;
+        const writeDurationMs = Date.now() - writeStartedAt;
+        snapshot.writeMs += writeDurationMs;
+        snapshot.writeWallMs += writeDurationMs;
         snapshot.payloadBytes += serializedBytes(pending.data);
         snapshot.writeRoundTrips += 1;
         snapshot.dbRoundTrips += 1;
@@ -4571,7 +4616,9 @@ async function upsertRecommendationOutfitsBatch({
         }
       });
       if (snapshot) {
-        snapshot.writeMs += Date.now() - writeStartedAt;
+        const writeDurationMs = Date.now() - writeStartedAt;
+        snapshot.writeMs += writeDurationMs;
+        snapshot.writeWallMs += writeDurationMs;
         snapshot.writeRoundTrips += 1;
         snapshot.dbRoundTrips += 1;
       }
@@ -4585,9 +4632,9 @@ async function upsertRecommendationOutfitsBatch({
       snapshot.logicalWrites = records.length;
     }
     return saved;
-  });
+  }, snapshot);
   if (snapshot) {
-    snapshot.transactionMs = Date.now() - transactionStartedAt;
+    snapshot.transactionMs = Math.max(snapshot.transactionMs, Date.now() - transactionStartedAt);
     snapshot.responseWaitMs = Math.max(0, snapshot.transactionMs - snapshot.queryReadMs - snapshot.writeMs);
   }
   return result;
@@ -4637,14 +4684,19 @@ async function updateExistingRecommendationReferences({
   now,
   operationCounts,
 }) {
+  const snapshotBuildStartedAt = Date.now();
   const pending = records.map((base, index) => {
     const outfitKey = outfitKeys[index];
     const current = existingByKey.get(outfitKey);
     const data = buildOutfitSaveData(base, { outfitKey, now, patch: {}, current });
     return { current, data, outfitKey };
   });
+  if (operationCounts?.snapshot) {
+    operationCounts.snapshot.snapshotBuildMs += Date.now() - snapshotBuildStartedAt;
+  }
   const saved = new Array(pending.length);
   let nextIndex = 0;
+  const writeWallStartedAt = Date.now();
   const worker = async () => {
     while (nextIndex < pending.length) {
       const index = nextIndex;
@@ -4681,6 +4733,9 @@ async function updateExistingRecommendationReferences({
   await Promise.all(Array.from({
     length: Math.min(RECOMMENDATION_REFERENCE_UPDATE_CONCURRENCY, pending.length),
   }, () => worker()));
+  if (operationCounts?.snapshot) {
+    operationCounts.snapshot.writeWallMs += Date.now() - writeWallStartedAt;
+  }
   return saved;
 }
 
