@@ -7,13 +7,13 @@ const { persistRecommendationBatchV2, stableReferenceId } = require('./recommend
 function fixture(mode) {
   const batchId = `batch-${mode}`;
   const order = Array.from({ length: 8 }, (_, index) => `${mode}-key-${index}`);
-  const batch = { runtimeVersion: 'today-runtime-v2', schemaVersion: 'today-v2', batchId, commitToken: `commit-${mode}`, contentHash: `hash-${mode}`, sceneKey: 'home', scene: '居家', targetDate: '2026-08-20', timeOfDay: 'all_day', weatherMode: 'live', weatherSnapshot: { temp: 28, humidity: 60, weather: '多云', wind: 2, uv: 3 }, weatherFingerprint: 'weather', inputIdentityHash: 'input', generatedAt: '2026-08-20T00:00:00.000Z', cardCount: 8, order, countContract: { expected: 8, actual: 8 } };
-  const refs = order.map((outfitKey, position) => ({ runtimeVersion: 'today-runtime-v2', schemaVersion: 'today-v2', batchId, outfitKey, referenceId: `unstable-${position}`, position, clothingIds: [`clothing-${position}`] }));
+  const batch = { runtimeVersion: 'today-runtime-v2', schemaVersion: 'today-v2', batchId, commitToken: `commit-${mode}`, contentHash: `hash-${mode}`, sceneKey: 'home', scene: '居家', targetDate: '2026-08-20', timeOfDay: 'all_day', weatherMode: 'live', weatherSnapshot: { temp: 28, humidity: 60, weather: '多云', wind: 2, uv: 3 }, weatherFingerprint: 'weather', inputIdentityHash: 'input', generatedAt: '2026-08-20T00:00:00.000Z', cardCount: 8, order, countContract: { requestedCardCount: 8, returnedCardCount: 8, limited: false, exhausted: false } };
+  const refs = order.map((outfitKey, position) => ({ runtimeVersion: 'today-runtime-v2', schemaVersion: 'today-v2', outfitKey, referenceId: `unstable-${position}`, position, clothingIds: [`clothing-${position}`] }));
   return { batch, refs };
 }
 
 function createDatabase(existingKeys = [], options = {}) {
-  const records = { recommendation_batches_v2: [], recommendation_outfit_refs_v2: existingKeys.map((outfitKey) => ({ _id: `old-${outfitKey}`, _openid: 'user-1', outfitKey, batchId: 'old-batch', referenceId: `stable-${outfitKey}`, position: 0 })) };
+  const records = { recommendation_batches_v2: [], recommendation_outfit_refs_v2: existingKeys.map((outfitKey) => ({ _id: `old-${outfitKey}`, _openid: 'user-1', outfitKey, latestBatchId: 'old-batch', referenceId: stableReferenceId('user-1', outfitKey), latestPosition: 0 })) };
   const operations = { transactions: 0, adds: 0, updates: 0, rollbacks: 0 };
   let transactionTail = Promise.resolve();
   const makeDatabase = () => ({
@@ -38,7 +38,7 @@ for (const [mode, existingCount] of [['all-existing', 8], ['mixed', 4], ['all-ne
     assert.equal(records.recommendation_batches_v2.length, 1);
     assert.equal(records.recommendation_outfit_refs_v2.length, 8);
     assert.equal(operations.transactions, 1);
-    assert.deepEqual(first.refs.map((ref) => ref.referenceId), input.refs.map((ref) => existingKeys.includes(ref.outfitKey) ? `stable-${ref.outfitKey}` : stableReferenceId('user-1', ref.outfitKey)));
+    assert.deepEqual(first.refs.map((ref) => ref.referenceId), input.refs.map((ref) => stableReferenceId('user-1', ref.outfitKey)));
     const retry = await persistRecommendationBatchV2({ database, openid: 'user-1', ...input });
     assert.equal(retry.idempotent, true);
     assert.equal(retry.writes, 0);
@@ -55,6 +55,22 @@ test('V2 repository concurrent same-hash calls return one write and one idempote
   assert.equal(records.recommendation_outfit_refs_v2.length, 8);
 });
 
+test('V2 immutable batch membership survives a partially overlapping later batch', async () => {
+  const first = fixture('overlap-a');
+  const second = fixture('overlap-b');
+  first.batch.order = Array.from({ length: 8 }, (_, index) => `overlap-${index}`);
+  first.refs = first.batch.order.map((outfitKey, position) => ({ ...first.refs[position], outfitKey, referenceId: `unstable-${position}` }));
+  second.batch.order = Array.from({ length: 8 }, (_, index) => `overlap-${index + 4}`);
+  second.refs = second.batch.order.map((outfitKey, position) => ({ ...second.refs[position], outfitKey, referenceId: `unstable-${position}` }));
+  const { database } = createDatabase();
+  const firstResult = await persistRecommendationBatchV2({ database, openid: 'user-1', ...first });
+  await persistRecommendationBatchV2({ database, openid: 'user-1', ...second });
+  const retry = await persistRecommendationBatchV2({ database, openid: 'user-1', ...first });
+  assert.equal(firstResult.idempotent, false);
+  assert.equal(retry.idempotent, true);
+  assert.deepEqual(retry.refs.map((ref) => ref.outfitKey), first.batch.order);
+});
+
 test('V2 repository rolls back partial writes and fails closed', async () => {
   const input = fixture('rollback');
   const { database, records, operations } = createDatabase([], { failRefAdd: true });
@@ -68,7 +84,7 @@ test('V2 repository rejects a partial batch before writing', async () => {
   const input = fixture('partial');
   const { database, records } = createDatabase();
   records.recommendation_batches_v2.push({ ...input.batch, _openid: 'user-1' });
-  records.recommendation_outfit_refs_v2.push({ ...input.refs[0], _id: 'partial-ref', _openid: 'user-1' });
+  records.recommendation_outfit_refs_v2.push({ ...input.refs[0], _id: 'partial-ref', _openid: 'user-1', referenceId: stableReferenceId('user-1', input.refs[0].outfitKey) });
   await assert.rejects(() => persistRecommendationBatchV2({ database, openid: 'user-1', ...input }), /V2_BATCH_REFS_INCOMPLETE/);
 });
 

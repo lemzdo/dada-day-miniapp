@@ -48,7 +48,7 @@ export interface RecommendationBatchCoreV2 {
   weatherFingerprint: string;
   inputIdentityHash: string;
   generatedAt: string;
-  countContract: { expected: 8; actual: 8 };
+  countContract: { requestedCardCount: 8; returnedCardCount: 8; limited: boolean; exhausted: boolean };
   notice?: string;
   cardCount: 8;
   order: string[];
@@ -57,10 +57,10 @@ export interface RecommendationBatchCoreV2 {
 export interface RecommendationOutfitRefV2 {
   runtimeVersion: typeof RECOMMENDATION_V2_RUNTIME_VERSION;
   schemaVersion: typeof RECOMMENDATION_V2_SCHEMA_VERSION;
-  batchId: string;
+  latestBatchId: string;
   outfitKey: string;
   referenceId: string;
-  position: number;
+  latestPosition: number;
   clothingIds: string[];
 }
 

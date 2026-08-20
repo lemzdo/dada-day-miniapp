@@ -63,6 +63,13 @@ function projectHomeLightV2(outfits = [], batchId = '') {
 function projectBatchCoreV2(input = {}) {
   const order = Array.isArray(input.order) ? input.order.map(stringValue).filter(Boolean) : [];
   if (order.length !== V2_CARD_COUNT) throw new Error('V2_BATCH_CORE_REQUIRES_EIGHT_ORDER_KEYS');
+  const countContract = {
+    requestedCardCount: Number(input.countContract?.requestedCardCount),
+    returnedCardCount: Number(input.countContract?.returnedCardCount),
+    limited: input.countContract?.limited === true,
+    exhausted: input.countContract?.exhausted === true,
+  };
+  if (countContract.requestedCardCount !== 8 || countContract.returnedCardCount !== 8) throw new Error('V2_BATCH_CORE_COUNT_INVALID');
   return {
     runtimeVersion: RUNTIME_VERSION,
     schemaVersion: SCHEMA_VERSION,
@@ -78,7 +85,7 @@ function projectBatchCoreV2(input = {}) {
     weatherFingerprint: stringValue(input.weatherFingerprint),
     inputIdentityHash: stringValue(input.inputIdentityHash),
     generatedAt: stringValue(input.generatedAt),
-    countContract: { expected: 8, actual: 8 },
+    countContract,
     ...(stringValue(input.notice) ? { notice: stringValue(input.notice) } : {}),
     cardCount: 8,
     order,

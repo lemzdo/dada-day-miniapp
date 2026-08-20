@@ -27,10 +27,10 @@ for (const mode of ['all-existing', 'mixed', 'all-new']) {
 }
 
 test('V2 batch core only contains the batch contract fields', () => {
-  const result = projectBatchCoreV2({ batchId: 'batch-1', commitToken: 'commit-1', contentHash: 'hash-1', sceneKey: 'home', scene: '居家', targetDate: '2026-08-20', timeOfDay: 'all_day', weatherMode: 'live', weatherSnapshot: { temp: 28, humidity: 60, weather: '多云', wind: 2, uv: 3 }, weatherFingerprint: 'weather-1', inputIdentityHash: 'input-1', generatedAt: '2026-08-20T00:00:00.000Z', order: Array.from({ length: 8 }, (_, index) => `key-${index}`), scores: { forbidden: true } });
+  const result = projectBatchCoreV2({ batchId: 'batch-1', commitToken: 'commit-1', contentHash: 'hash-1', sceneKey: 'home', scene: '居家', targetDate: '2026-08-20', timeOfDay: 'all_day', weatherMode: 'live', weatherSnapshot: { temp: 28, humidity: 60, weather: '多云', wind: 2, uv: 3 }, weatherFingerprint: 'weather-1', inputIdentityHash: 'input-1', generatedAt: '2026-08-20T00:00:00.000Z', countContract: { requestedCardCount: 8, returnedCardCount: 8, limited: false, exhausted: false }, order: Array.from({ length: 8 }, (_, index) => `key-${index}`), scores: { forbidden: true } });
   assert.equal(result.cardCount, 8);
   assert.equal('scores' in result, false);
-  assert.deepEqual(result.countContract, { expected: 8, actual: 8 });
+  assert.deepEqual(result.countContract, { requestedCardCount: 8, returnedCardCount: 8, limited: false, exhausted: false });
   assert.equal(result.runtimeVersion, 'today-runtime-v2');
   assert.equal(result.schemaVersion, 'today-v2');
   assert.deepEqual(Object.keys(result.weatherSnapshot).sort(), ['humidity', 'temp', 'uv', 'weather', 'wind']);
