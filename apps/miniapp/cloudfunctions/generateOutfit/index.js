@@ -19,6 +19,7 @@ const {
   applyCanonicalCopyToOutfit,
   assertRecommendationCanonicalCopiesV2,
   attachRecommendationCanonicalCopiesV2,
+  authorizeRecommendationCanonicalCopyRuntimeV2,
   buildFailedCanonicalCopy,
   buildMaterializedCanonicalCopy,
   buildRecommendationCanonicalCopyBatchV2,
@@ -193,6 +194,9 @@ exports.main = async (event = {}) => {
   const recommendationDiagnostics = action === 'generate'
     ? createRecommendationDiagnostics(event, handlerStartedAt)
     : null;
+  if (action === 'generate' && isCanonicalCopyRuntimeV2Acceptance(event)) {
+    authorizeRecommendationCanonicalCopyRuntimeV2(event);
+  }
   try {
     if (action === 'detail') return ok(await getOutfitDetail(event));
     if (action === 'renameOutfit') return ok(await renameOutfit(event));
@@ -240,6 +244,15 @@ exports.main = async (event = {}) => {
     return fail(error);
   }
 };
+
+function isCanonicalCopyRuntimeV2Acceptance(event) {
+  return event?.canonicalCopyRuntimeV2Acceptance === true
+    && event?.performanceDiagnostics === true
+    && typeof event?.acceptanceRunId === 'string'
+    && event.acceptanceRunId.length > 0
+    && typeof event?.captureId === 'string'
+    && event.captureId.length > 0;
+}
 
 function validateCandidatePoolAvailability(recommendations, requestedCount) {
   if (!Array.isArray(recommendations)) {
@@ -6474,5 +6487,6 @@ if (process.env.NODE_ENV === 'test') {
     resolveInitialCacheMissReason,
     mapCandidatePoolLoadReason,
     resolveEnrichedTitleState,
+    isCanonicalCopyRuntimeV2Acceptance,
   };
 }

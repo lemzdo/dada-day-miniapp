@@ -530,33 +530,40 @@ function startKnownDevTools({ spawn = childProcess.spawn, spawnSync = childProce
   return { cliPath, project, servicePort, automatorPort };
 }
 
-async function ensureDevToolsDirectSession({ deps = {}, endpoint, waitMs = 30000, pollMs = 500 } = {}) {
+async function ensureDevToolsDirectSession({
+  deps = {},
+  endpoint,
+  servicePort = Number(process.env.D1D_DEVTOOLS_SERVICE_PORT) || SERVICE_PORT,
+  automatorPort = Number(process.env.D1D_DEVTOOLS_AUTOMATOR_PORT) || AUTOMATOR_PORT,
+  waitMs = 30000,
+  pollMs = 500,
+} = {}) {
   const probe = deps.tcpProbe || tcpProbe;
   const inspect = (port) => portState(port, deps);
-  let service = inspect(SERVICE_PORT);
-  let automator = inspect(AUTOMATOR_PORT);
+  let service = inspect(servicePort);
+  let automator = inspect(automatorPort);
   let started = false;
   if (!service.listening && !automator.listening) {
-    startKnownDevTools(deps);
+    startKnownDevTools({ ...deps, servicePort, automatorPort });
     started = true;
     const deadline = Date.now() + waitMs;
     do {
       await sleep(pollMs);
-      service = inspect(SERVICE_PORT);
-      automator = inspect(AUTOMATOR_PORT);
+      service = inspect(servicePort);
+      automator = inspect(automatorPort);
     } while ((!service.listening || !automator.listening) && Date.now() < deadline);
   }
   if (!service.listening) {
-    throw classifyFailure('DEVTOOLS_SERVICE_UNAVAILABLE', '52849 is not LISTENING', { service, automator, started });
+    throw classifyFailure('DEVTOOLS_SERVICE_UNAVAILABLE', `${servicePort} is not LISTENING`, { service, automator, started });
   }
   if (!automator.listening) {
-    throw classifyFailure('AUTOMATOR_PORT_UNAVAILABLE', '9420 is not LISTENING', { service, automator, started });
+    throw classifyFailure('AUTOMATOR_PORT_UNAVAILABLE', `${automatorPort} is not LISTENING`, { service, automator, started });
   }
-  const automatorTcp = await probe(AUTOMATOR_PORT);
+  const automatorTcp = await probe(automatorPort);
   if (!automatorTcp.ok) {
     throw classifyFailure('AUTOMATOR_PORT_UNAVAILABLE', automatorTcp.error, { service, automator, started });
   }
-  const session = await attachAutomator({ endpoint, deps });
+  const session = await attachAutomator({ endpoint: endpoint || `ws://127.0.0.1:${automatorPort}`, deps });
   try {
     const acquired = await acquireTodayPage(session);
     return { ...session, ...acquired, service, automator, started, state: 'DEVTOOLS_RUNNING_AUTOMATOR_SERVER_LISTENING_AUTOMATOR_ATTACHED' };

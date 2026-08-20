@@ -19,6 +19,16 @@ function invokeStub() {
   };
 }
 
+test('acceptance authorization enables only the exact event while the environment flag stays off', () => {
+  const acceptedEvent = {};
+  const ordinaryEvent = {};
+  const disabledEnv = { RECOMMENDATION_CANONICAL_COPY_V2_ENABLED: 'false' };
+  assert.equal(runtime.isRecommendationCanonicalCopyRuntimeV2Enabled(acceptedEvent, disabledEnv), false);
+  runtime.authorizeRecommendationCanonicalCopyRuntimeV2(acceptedEvent);
+  assert.equal(runtime.isRecommendationCanonicalCopyRuntimeV2Enabled(acceptedEvent, disabledEnv), true);
+  assert.equal(runtime.isRecommendationCanonicalCopyRuntimeV2Enabled(ordinaryEvent, disabledEnv), false);
+});
+
 test('canonical batch fixes batchTotal to the complete returned outfit batch on first response', () => {
   const entries = makeEntries();
   const outfits = entries.map(({ recommendation }) => ({

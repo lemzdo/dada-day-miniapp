@@ -117,6 +117,17 @@ test('existing DevTools ports never start cli auto again', async () => {
   session.mini.disconnect();
 });
 
+test('isolated acceptance ports avoid attaching an existing DevTools window', async () => {
+  const servicePort = 52859;
+  const automatorPort = 9430;
+  const deps = directDeps();
+  deps.readListeners = (port) => [{ address: '127.0.0.1', port, pid: port === servicePort ? 31 : 32 }];
+  const session = await ensureDevToolsDirectSession({ deps, servicePort, automatorPort });
+  assert.equal(session.service.port, servicePort);
+  assert.equal(session.automator.port, automatorPort);
+  session.mini.disconnect();
+});
+
 test('only-down ports start cli once and then attach', async () => {
   let spawnCount = 0;
   let spawnedCommand = '';

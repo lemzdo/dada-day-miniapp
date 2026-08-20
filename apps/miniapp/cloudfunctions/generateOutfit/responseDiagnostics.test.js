@@ -51,6 +51,21 @@ function makeOutfit(index) {
   };
 }
 
+test('Runtime V2 acceptance authorization requires an explicit diagnostic run identity', () => {
+  const { isCanonicalCopyRuntimeV2Acceptance } = loadInternals();
+  const completeEvent = {
+    canonicalCopyRuntimeV2Acceptance: true,
+    performanceDiagnostics: true,
+    acceptanceRunId: 'run-1',
+    captureId: 'capture-1',
+  };
+  assert.equal(isCanonicalCopyRuntimeV2Acceptance(completeEvent), true);
+  assert.equal(isCanonicalCopyRuntimeV2Acceptance({ ...completeEvent, performanceDiagnostics: false }), false);
+  assert.equal(isCanonicalCopyRuntimeV2Acceptance({ ...completeEvent, acceptanceRunId: '' }), false);
+  assert.equal(isCanonicalCopyRuntimeV2Acceptance({ ...completeEvent, captureId: '' }), false);
+  assert.equal(isCanonicalCopyRuntimeV2Acceptance({ performanceDiagnostics: true }), false);
+});
+
 test('response diagnostics keep QA, debug, and total payload inside byte budgets', () => {
   const internals = loadInternals();
   const countContract = buildRecommendationCountContract({ returnedCardCount: 8, remainingUniqueBeforeConsume: 8 });

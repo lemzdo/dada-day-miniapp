@@ -963,6 +963,8 @@ export interface RecommendRequest {
   acceptanceRunId?: string;
   /** Correlates request, response, and ignored acceptance artifacts. */
   captureId?: string;
+  /** Enables Runtime V2 only for one correlated diagnostic acceptance request; the environment flag remains unchanged. */
+  canonicalCopyRuntimeV2Acceptance?: boolean;
   presentationEvidenceMode?: RecommendationPresentationEvidenceMode;
   auditId?: string;
   /** Client-side trigger descriptor (e.g. 'initial', 'refresh', 'scene'). Used by the cloud function to distinguish initial_request from refresh_without_pool_id. */
