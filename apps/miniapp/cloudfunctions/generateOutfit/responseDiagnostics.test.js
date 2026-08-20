@@ -323,6 +323,67 @@ test('normal recommendation cards do not repeat fact-bearing snapshot payloads',
   assert.ok(internals.measureRecommendationResponseFields({ outfits: cards, debug: {}, meta: {} }).outfits > fields.outfits * 2);
 });
 
+test('canonical batch diagnostics conserve bytes and expose home-light increments', () => {
+  const internals = loadInternals();
+  const cards = Array.from({ length: 8 }, (_, index) => ({
+    outfitKey: `key-${index}`,
+    clothingIds: [`item-${index}`],
+    title: `title-${index}`,
+    displayTitle: `title-${index}`,
+    scene: 'home',
+    copyContract: { todayReason: `reason-${index}`, detailExplanation: `detail-${index}` },
+    items: [{
+      _id: `item-${index}`,
+      clothingId: `item-${index}`,
+      category: 'top',
+      imageUrl: `https://cdn.example/${index}.jpg`,
+      factEvidence: Array.from({ length: 5 }, (_, factIndex) => ({ id: `fact-${factIndex}` })),
+    }],
+  }));
+  const batch = internals.measureCanonicalBatchInput(cards);
+  const light = internals.measureHomeLightMaterialization(cards, Date.now());
+  const planned = internals.measurePlannedHomeLightMaterialization({
+    recommendations: cards,
+    canonicalCopyBatch: {
+      version: 'recommendation-canonical-copy-v2',
+      copies: cards.map((_, index) => ({
+        text: `safe-${index}`,
+        source: 'safe',
+        aiState: 'materializing',
+      })),
+    },
+    scene: 'home',
+    targetDate: '2026-08-20',
+    timeOfDay: 'all_day',
+    weatherMode: 'disabled',
+    handlerStartedAt: Date.now(),
+  });
+  assert.equal(batch.totalBytes, batch.measuredBytes);
+  assert.equal(
+    batch.primaryCategories.reduce((sum, category) => sum + category.bytes, 0),
+    batch.totalBytes,
+  );
+  assert.equal(batch.cardBytes.length, 8);
+  assert.ok(batch.topLevelFields.some((item) => item.field === 'items'
+    && item.bytes > 0
+    && item.primaryCategory === 'B'
+    && item.consumerCategories.includes('C')));
+  assert.deepEqual(batch.unclassifiedFields, []);
+  assert.equal(batch.classificationMethod, 'audited_top_level_primary_lifecycle_v1');
+  assert.equal(batch.nestedHotspotsAreNonAdditive, true);
+  assert.equal(light.homeLightCardBytes.length, 8);
+  assert.ok(light.homeLightPayloadBytes < batch.totalBytes);
+  assert.ok(light.tCard2Ms >= light.tCard1Ms);
+  assert.ok(light.tTailMs >= light.tCard2Ms);
+  assert.equal(planned.mode, 'pre_full_card_compilation_home_light_shadow');
+  assert.equal(planned.homeLightCardBytes.length, 8);
+  assert.equal(planned.safeCopyReady, true);
+  assert.equal(planned.statusFieldsReady, false);
+  assert.equal(planned.detailRouteReady, false);
+  assert.ok(planned.tCard2Ms >= planned.tCard1Ms);
+  assert.ok(planned.tTailMs >= planned.tCard2Ms);
+});
+
 test('eight-card normal response keeps raw fact carriers out of the business payload', () => {
   const internals = loadInternals();
   const rawFacts = Array.from({ length: 40 }, (_, index) => ({ id: `fact-${index}`, value: 'x'.repeat(80) }));

@@ -95,6 +95,7 @@ export interface CloudResponseTransportDiagnostics {
   responseAdaptEnd?: number;
   generateOutfitWrapperStart?: number;
   generateOutfitWrapperEnd?: number;
+  clientMilestones?: Record<string, number>;
 }
 
 export function isSupersededCloudResult(value: unknown): value is SupersededCloudResult {
@@ -671,10 +672,12 @@ export async function generateCloudOutfit(params: RecommendRequest = {}) {
   // recommendation cache: the returned ledger must describe this invocation.
   let ttl = hasExclusions ? 0 : CACHE_TTL.outfit;
   if (params.diagnostics === true || params.performanceDiagnostics === true) ttl = 0;
+  const clientMilestones = params.clientMilestones;
   const requestPayload: Record<string, unknown> = {
     ...params,
     auditId: params.auditId || createRecommendationAuditId('cloud'),
   };
+  delete requestPayload.clientMilestones;
   if (isRecommendationDiagnosticEnvironment()
     && !requestPayload.debugRecommendationAudit
     && requestPayload.performanceDiagnostics !== true) {
@@ -687,6 +690,7 @@ export async function generateCloudOutfit(params: RecommendRequest = {}) {
     ...cacheKeyData
   } = requestPayload;
   const generateOutfitWrapperStart = Date.now();
+  if (clientMilestones) clientMilestones.cloudRequestConstructedAt = generateOutfitWrapperStart;
   const result = await callCachedCloudFunction<RecommendResponse>(
     'generateOutfit',
     requestPayload,
@@ -703,6 +707,12 @@ export async function generateCloudOutfit(params: RecommendRequest = {}) {
       ...transport,
       generateOutfitWrapperStart,
       generateOutfitWrapperEnd: Date.now(),
+      ...(clientMilestones ? {
+        clientMilestones: {
+          ...clientMilestones,
+          generateOutfitWrapperStart,
+        },
+      } : {}),
     });
   }
   if (typeof params.acceptanceRunId === 'string' && typeof params.captureId === 'string') {

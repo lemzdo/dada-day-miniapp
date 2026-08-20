@@ -479,6 +479,12 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
       debugCandidatePoolProjection: event.debugCandidatePoolProjection === true,
     };
   }
+  diagnostics.progressiveMaterialization = {
+    version: 'home-light-materialization-audit-v1',
+    mode: 'current_batch_compilation_barrier',
+    tPlanMs: Math.max(0, Date.now() - diagnostics.startedAt),
+    plannedCardCount: recommendations.length,
+  };
   // Phase A shadow branch: consume only selected-candidate facts and evidence.
   // It intentionally runs before, and independently from, Legacy Presentation.
   const canonicalCopyRuntimeV2Enabled = isRecommendationCanonicalCopyRuntimeV2Enabled(event);
@@ -540,6 +546,18 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
       legacyEmergencyCount: canonicalCopyBatchV2.legacyEmergencyCount,
     };
   }
+  if (diagnostics.diagnosticsRequested === true && canonicalCopyBatchV2) {
+    Object.assign(diagnostics.progressiveMaterialization, measurePlannedHomeLightMaterialization({
+      recommendations,
+      canonicalCopyBatch: canonicalCopyBatchV2,
+      scene,
+      targetDate,
+      timeOfDay: event.timeOfDay || 'all_day',
+      weather: weatherSnapshot,
+      weatherMode,
+      handlerStartedAt: diagnostics.startedAt,
+    }));
+  }
   let snapshotPromise = null;
   let snapshotOps = null;
   let snapshotUpsertStartedAt = 0;
@@ -574,6 +592,11 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
           );
         }
         diagnostics.timings.cardPreparation.canonicalizationMs = Date.now() - canonicalizationStartedAt;
+        if (diagnostics.diagnosticsRequested === true) {
+          diagnostics.canonicalBatchInput = measureCanonicalBatchInput(canonicalRecommendations);
+          diagnostics.progressiveMaterialization.currentCanonicalBarrier =
+            measureHomeLightMaterialization(canonicalRecommendations, diagnostics.startedAt);
+        }
         const snapshotInputStartedAt = Date.now();
 
         // The candidate pool id is already stable at this point. Start the
@@ -902,6 +925,7 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
     copyMode: 'new_recommendation',
     canonicalCopyEnabled: canonicalCopyRuntimeV2Enabled,
     assetRecords: outfitRecords,
+    diagnostics,
   });
   diagnostics.databaseOps.reads += hydratedOutfits.length > 0 ? 2 : 0;
   if (canonicalCopyRuntimeV2Enabled) assertRecommendationCanonicalCopiesV2(hydratedOutfits);
@@ -1422,6 +1446,234 @@ function projectSnapshotItemsForCardPreparation(items) {
   }));
 }
 
+function projectHomeLightOutfitForDiagnostics(outfit) {
+  const canonicalCopy = outfit?.canonicalRecommendationCopyV2;
+  return {
+    outfitKey: outfit?.outfitKey,
+    clothingIds: outfit?.clothingIds,
+    title: outfit?.title,
+    displayTitle: outfit?.displayTitle,
+    scene: outfit?.scene,
+    targetDate: outfit?.targetDate,
+    timeOfDay: outfit?.timeOfDay,
+    weatherSnapshot: outfit?.weatherSnapshot,
+    weatherMode: outfit?.weatherMode,
+    reason: canonicalCopy?.text || outfit?.copyContract?.todayReason || outfit?.reason || '',
+    copy: canonicalCopy
+      ? {
+          version: canonicalCopy.version,
+          source: canonicalCopy.source,
+          text: canonicalCopy.text,
+          aiState: canonicalCopy.aiState,
+        }
+      : undefined,
+    items: (Array.isArray(outfit?.items) ? outfit.items : []).map((item) => ({
+      clothingId: item.clothingId,
+      category: item.category,
+      subcategory: item.subcategory,
+      imageUrl: item.imageUrl,
+      displayImageUrl: item.displayImageUrl,
+      thumbnailUrl: item.thumbnailUrl,
+      isDeleted: Boolean(item.isDeleted),
+    })),
+  };
+}
+
+function measurePlannedHomeLightMaterialization({
+  recommendations = [],
+  canonicalCopyBatch,
+  scene,
+  targetDate,
+  timeOfDay,
+  weather,
+  weatherMode,
+  handlerStartedAt = Date.now(),
+} = {}) {
+  const cards = [];
+  const copies = Array.isArray(canonicalCopyBatch?.copies) ? canonicalCopyBatch.copies : [];
+  const projectionStartedAt = process.hrtime.bigint();
+  let card1ProjectionMs = 0;
+  let card2ProjectionMs = 0;
+  for (let index = 0; index < recommendations.length; index += 1) {
+    const recommendation = recommendations[index] || {};
+    const copy = copies[index] || {};
+    const clothingIds = (Array.isArray(recommendation.items) ? recommendation.items : [])
+      .map((item) => item?._id)
+      .filter(Boolean);
+    cards.push({
+      batchIndex: index,
+      batchTotal: recommendations.length,
+      outfitKey: recommendation.outfitKey || getOutfitKey(clothingIds),
+      clothingIds,
+      title: recommendation.title,
+      displayTitle: recommendation.title,
+      scene,
+      targetDate,
+      timeOfDay,
+      ...(weather ? { weatherSnapshot: weather } : {}),
+      weatherMode,
+      reason: copy.text || recommendation.reasoning || '',
+      copy: copy.text ? {
+        version: canonicalCopyBatch.version,
+        source: copy.source,
+        text: copy.text,
+        aiState: copy.aiState,
+      } : undefined,
+      items: (Array.isArray(recommendation.items) ? recommendation.items : []).map((item) => ({
+        clothingId: item?._id,
+        category: item?.category,
+        subcategory: item?.subcategory,
+        imageUrl: item?.imageUrl,
+        displayImageUrl: item?.displayImageUrl,
+        thumbnailUrl: item?.thumbnailUrl,
+        isDeleted: item?.status === DELETED_STATUS,
+      })),
+    });
+    const elapsedMs = Number(process.hrtime.bigint() - projectionStartedAt) / 1_000_000;
+    if (index === 0) card1ProjectionMs = elapsedMs;
+    if (index === 1) card2ProjectionMs = elapsedMs;
+  }
+  const tailProjectionMs = Number(process.hrtime.bigint() - projectionStartedAt) / 1_000_000;
+  const projectionStartFromHandlerMs = Math.max(0, Date.now() - handlerStartedAt);
+  return {
+    mode: 'pre_full_card_compilation_home_light_shadow',
+    tCard1Ms: projectionStartFromHandlerMs + card1ProjectionMs,
+    tCard2Ms: projectionStartFromHandlerMs + (card2ProjectionMs || card1ProjectionMs),
+    tTailMs: projectionStartFromHandlerMs + tailProjectionMs,
+    card1ProjectionMs,
+    card2IncrementalMs: Math.max(0, (card2ProjectionMs || card1ProjectionMs) - card1ProjectionMs),
+    card3ToTailIncrementalMs: Math.max(0, tailProjectionMs - (card2ProjectionMs || card1ProjectionMs)),
+    homeLightPayloadBytes: serializedBytes(cards),
+    homeLightCardBytes: cards.map((card) => serializedBytes(card)),
+    safeCopyReady: true,
+    statusFieldsReady: false,
+    detailRouteReady: false,
+  };
+}
+
+function measureHomeLightMaterialization(outfits, handlerStartedAt = Date.now()) {
+  const cards = [];
+  let tCard1Ms = 0;
+  let tCard2Ms = 0;
+  for (let index = 0; index < outfits.length; index += 1) {
+    cards.push(projectHomeLightOutfitForDiagnostics(outfits[index]));
+    if (index === 0) tCard1Ms = Math.max(0, Date.now() - handlerStartedAt);
+    if (index === 1) tCard2Ms = Math.max(0, Date.now() - handlerStartedAt);
+  }
+  const tTailMs = Math.max(tCard2Ms || tCard1Ms, Date.now() - handlerStartedAt);
+  return {
+    tCard1Ms,
+    tCard2Ms: tCard2Ms || tCard1Ms,
+    tTailMs,
+    card2IncrementalMs: Math.max(0, (tCard2Ms || tCard1Ms) - tCard1Ms),
+    card3ToTailIncrementalMs: Math.max(0, tTailMs - (tCard2Ms || tCard1Ms)),
+    homeLightPayloadBytes: serializedBytes(cards),
+    homeLightCardBytes: cards.map((card) => serializedBytes(card)),
+    statusFieldsReady: false,
+  };
+}
+
+function measureCanonicalBatchInput(records) {
+  const fields = new Map();
+  let structuralBytes = 2 + Math.max(0, records.length - 1) + (records.length * 2);
+  for (const record of records) {
+    let serializedFieldCount = 0;
+    for (const [field, value] of Object.entries(record || {})) {
+      const json = JSON.stringify(value);
+      if (json === undefined) continue;
+      const bytes = serializedBytes(field) + 1 + Buffer.byteLength(json, 'utf8')
+        + (serializedFieldCount > 0 ? 1 : 0);
+      fields.set(field, (fields.get(field) || 0) + bytes);
+      serializedFieldCount += 1;
+    }
+  }
+  const totalBytes = serializedBytes(records);
+  const topLevelFields = [...fields.entries()]
+    .map(([field, bytes]) => ({
+      field,
+      bytes,
+      primaryCategory: classifyCanonicalFieldPrimaryConsumer(field),
+      consumerCategories: classifyCanonicalFieldConsumers(field),
+    }))
+    .sort((left, right) => right.bytes - left.bytes || left.field.localeCompare(right.field));
+  const categoryBytes = new Map([['I', structuralBytes]]);
+  for (const item of topLevelFields) {
+    const category = item.primaryCategory || 'UNCLASSIFIED';
+    categoryBytes.set(category, (categoryBytes.get(category) || 0) + item.bytes);
+  }
+  const primaryCategories = [...categoryBytes.entries()]
+    .map(([category, bytes]) => ({
+      category,
+      bytes,
+      ratio: totalBytes > 0 ? bytes / totalBytes : 0,
+    }))
+    .sort((left, right) => right.bytes - left.bytes || left.category.localeCompare(right.category));
+  return {
+    totalBytes,
+    structuralBytes,
+    measuredBytes: structuralBytes + topLevelFields.reduce((sum, item) => sum + item.bytes, 0),
+    cardBytes: records.map((record) => serializedBytes(record)),
+    topLevelFields,
+    primaryCategories,
+    unclassifiedFields: topLevelFields
+      .filter((item) => item.primaryCategory === 'UNCLASSIFIED')
+      .map((item) => item.field),
+    classificationMethod: 'audited_top_level_primary_lifecycle_v1',
+    nestedHotspots: measureRecommendationResponseBreakdown(records, 80),
+    nestedHotspotsAreNonAdditive: true,
+  };
+}
+
+const CANONICAL_FIELD_PRIMARY_CATEGORY = new Map([
+  ['clothingIds', 'A'], ['outfitKey', 'A'], ['recommendationBatchId', 'A'],
+  ['generatedAt', 'A'], ['generationType', 'A'], ['source', 'A'], ['scene', 'A'],
+  ['targetDate', 'A'], ['timeOfDay', 'A'], ['weatherMode', 'A'],
+  ['id', 'B'], ['outfitId', 'B'], ['title', 'B'], ['displayTitle', 'B'],
+  ['items', 'B'], ['reason', 'B'], ['canonicalRecommendationCopyV2', 'B'],
+  ['snapshotItems', 'C'], ['weather', 'C'], ['weatherSnapshot', 'C'], ['styleTags', 'C'],
+  ['scores', 'C'], ['aestheticEvaluation', 'C'], ['contentPlan', 'C'],
+  ['incomplete', 'C'], ['deletedItemCount', 'C'], ['userTitle', 'C'],
+  ['isFavorite', 'D'], ['favoritedAt', 'D'], ['favoriteOutfitId', 'D'],
+  ['isWornToday', 'E'], ['wornAt', 'E'], ['wornDate', 'E'], ['historyId', 'E'],
+  ['todayHistoryId', 'E'], ['lastWornAt', 'E'],
+  ['recommendationVoiceMaterializationV2', 'F'],
+  ['eligibility', 'G'], ['eligibilityReason', 'G'], ['scoreExplanations', 'G'],
+  ['presentationPlan', 'G'], ['selectedDifferentiator', 'G'], ['copyContract', 'G'],
+  ['copyContractVersion', 'G'], ['reasonVersion', 'G'], ['voiceBankVersion', 'G'],
+  ['debug', 'H'], ['diagnostics', 'H'], ['auditId', 'H'], ['traceId', 'H'],
+  ['reasoning', 'I'], ['itemsSnapshot', 'I'], ['recommendationContentHash', 'I'],
+  ['updatedAt', 'I'],
+]);
+
+const CANONICAL_FIELD_CONSUMER_CATEGORIES = new Map([
+  ['clothingIds', ['A', 'B', 'C', 'D', 'E']],
+  ['outfitKey', ['A', 'B', 'C', 'D', 'E']],
+  ['recommendationBatchId', ['A', 'B', 'C']],
+  ['scene', ['A', 'B', 'C', 'F']],
+  ['weatherMode', ['A', 'B', 'C']],
+  ['items', ['B', 'C']],
+  ['reason', ['B', 'C']],
+  ['canonicalRecommendationCopyV2', ['B', 'C']],
+  ['snapshotItems', ['C', 'D', 'E']],
+  ['weather', ['C', 'D', 'E']],
+  ['weatherSnapshot', ['C', 'D', 'E']],
+  ['scores', ['C', 'G']],
+  ['aestheticEvaluation', ['C', 'G']],
+  ['contentPlan', ['C', 'F', 'G']],
+  ['presentationPlan', ['C', 'F', 'G']],
+  ['selectedDifferentiator', ['C', 'F', 'G']],
+  ['copyContract', ['B', 'C', 'F', 'G']],
+]);
+
+function classifyCanonicalFieldPrimaryConsumer(field) {
+  return CANONICAL_FIELD_PRIMARY_CATEGORY.get(field) || 'UNCLASSIFIED';
+}
+
+function classifyCanonicalFieldConsumers(field) {
+  return CANONICAL_FIELD_CONSUMER_CATEGORIES.get(field)
+    || [classifyCanonicalFieldPrimaryConsumer(field)];
+}
+
 function createRecommendationDiagnostics(event = {}, handlerStartAt = Date.now()) {
   return {
     auditId: readAuditId(event.auditId),
@@ -1921,6 +2173,9 @@ function buildRecommendationPerformanceLedger(diagnostics, budget, responseData)
     candidatePoolPayloadBytes: Math.max(0, Number(diagnostics.candidatePoolPayloadBytes) || 0),
     responsePayloadBytes: Math.max(0, Number(budget?.totalDataBytes) || 0),
     candidateMetrics: diagnostics.candidateMetrics || {},
+    progressiveMaterialization: diagnostics.progressiveMaterialization || {},
+    canonicalBatchInput: diagnostics.canonicalBatchInput || {},
+    statusQueries: diagnostics.statusQueries || {},
     runtimeV2: diagnostics.runtimeV2?.enabled === true
       ? {
           enabled: true,
@@ -3547,6 +3802,7 @@ async function assertOutfitClothesAvailable(openid, clothingIds, database = db) 
       '这套搭配有衣物已移出衣橱，暂时不能继续使用',
     );
   }
+  return clothes;
 }
 
 async function runOutfitReferenceTransaction(callback, timing) {
@@ -3832,13 +4088,19 @@ async function enrichOutfitsState(outfits, {
   copyMode = 'saved_snapshot',
   canonicalCopyEnabled = true,
   assetRecords,
+  diagnostics,
 }) {
   const keys = uniqueStrings(outfits.map((outfit) => outfit.outfitKey || getOutfitKey(outfit.clothingIds || [])));
+  const statusStartedAt = Date.now();
   const [favoriteMap, historyMap, loadedAssetMap] = await Promise.all([
-    findFavoritesByKeys(openid, keys),
-    findTodayHistoryByKeys(openid, keys, targetDate),
+    findFavoritesByKeys(openid, keys, diagnostics),
+    findTodayHistoryByKeys(openid, keys, targetDate, db, diagnostics),
     Array.isArray(assetRecords) ? Promise.resolve(null) : findOutfitsByKeys(openid, keys),
   ]);
+  if (diagnostics?.diagnosticsRequested === true) {
+    diagnostics.statusQueries = diagnostics.statusQueries || {};
+    diagnostics.statusQueries.parallelJoinWallMs = Math.max(0, Date.now() - statusStartedAt);
+  }
   const assetMap = loadedAssetMap || buildOutfitRecordMap(assetRecords);
 
   return outfits.map((outfit) => {
@@ -3920,14 +4182,16 @@ async function enrichSingleOutfitState(outfit, { openid, targetDate }) {
   return enriched[0];
 }
 
-async function findFavoritesByKeys(openid, outfitKeys) {
+async function findFavoritesByKeys(openid, outfitKeys, diagnostics) {
   const map = new Map();
   const keys = uniqueStrings(outfitKeys);
   if (!keys.length) return map;
+  const queryStartedAt = Date.now();
   const res = await db.collection('favorite_outfits')
     .where({ _openid: openid, outfitKey: db.command.in(keys) })
     .limit(100)
     .get();
+  recordStatusQueryDiagnostic(diagnostics, 'favorite', res, queryStartedAt);
   for (const item of res.data || []) {
     if (item.deletedAt || !item.outfitKey) continue;
     const current = map.get(item.outfitKey);
@@ -3953,14 +4217,16 @@ async function findOutfitsByKeys(openid, outfitKeys) {
   return map;
 }
 
-async function findTodayHistoryByKeys(openid, outfitKeys, targetDate, database = db) {
+async function findTodayHistoryByKeys(openid, outfitKeys, targetDate, database = db, diagnostics) {
   const map = new Map();
   const keys = uniqueStrings(outfitKeys);
   if (!keys.length) return map;
+  const queryStartedAt = Date.now();
   const res = await database.collection('outfit_history')
     .where({ _openid: openid, outfitKey: db.command.in(keys) })
     .limit(500)
     .get();
+  recordStatusQueryDiagnostic(diagnostics, 'worn', res, queryStartedAt);
   for (const item of res.data || []) {
     if (!item.outfitKey || !isHistoryOnDate(item, targetDate)) continue;
     const current = map.get(item.outfitKey);
@@ -4008,6 +4274,21 @@ async function saveOutfitExposures({ openid, outfits, scene, batchId, shownAt })
       // Exposure is best-effort telemetry and must not block recommendations.
     }
   }));
+}
+
+function recordStatusQueryDiagnostic(diagnostics, kind, response, queryStartedAt) {
+  if (!diagnostics || diagnostics.diagnosticsRequested !== true) return;
+  const rows = Array.isArray(response?.data) ? response.data : [];
+  const fields = [...new Set(rows.flatMap((row) => Object.keys(row || {})))].sort();
+  diagnostics.statusQueries = diagnostics.statusQueries || {};
+  diagnostics.statusQueries[kind] = {
+    wallMs: Math.max(0, Date.now() - (Number(queryStartedAt) || Date.now())),
+    recordCount: rows.length,
+    readPayloadBytes: serializedBytes(rows),
+    projected: false,
+    fields,
+    collection: kind === 'favorite' ? 'favorite_outfits' : 'outfit_history',
+  };
 }
 
 function uniqueStrings(values) {
@@ -4409,6 +4690,8 @@ async function upsertRecommendationOutfitsBatch({
       serializationMs: 0,
       snapshotBuildMs: 0,
       queryReadMs: 0,
+      readPayloadBytes: 0,
+      readQueries: [],
       writeMs: 0,
       writeWallMs: 0,
       transactionMs: 0,
@@ -4460,10 +4743,23 @@ async function upsertRecommendationOutfitsBatch({
       });
     }
     const existingByKey = buildOutfitRecordMap(existingResponse.data);
+    if (snapshot) {
+      const durationMs = Date.now() - existingReadStartedAt;
+      const payloadBytes = serializedBytes(existingResponse.data || []);
+      snapshot.queryReadMs += durationMs;
+      snapshot.readPayloadBytes += payloadBytes;
+      snapshot.readQueries.push({
+        collection: 'outfits',
+        purpose: 'all_existing_probe',
+        projected: false,
+        recordCount: Array.isArray(existingResponse.data) ? existingResponse.data.length : 0,
+        payloadBytes,
+        durationMs,
+      });
+      snapshot.dbRoundTrips += 1;
+    }
     if (existingByKey.size === records.length) {
       if (snapshot) {
-        snapshot.queryReadMs += Date.now() - existingReadStartedAt;
-        snapshot.dbRoundTrips += 1;
         snapshot.existingRecordCount = records.length;
         snapshot.maxConcurrency = Math.min(RECOMMENDATION_REFERENCE_UPDATE_CONCURRENCY, records.length);
       }
@@ -4499,8 +4795,9 @@ async function upsertRecommendationOutfitsBatch({
     } else {
       const queryReadStartedAt = Date.now();
       if (operationCounts) operationCounts.reads += 1;
+      let validatedClothes;
       try {
-        await assertOutfitClothesAvailable(openid, clothingIds, transaction);
+        validatedClothes = await assertOutfitClothesAvailable(openid, clothingIds, transaction);
       } catch (error) {
         throw annotateOutfitReferenceCause(error, {
           stage: 'clothes_validation_read',
@@ -4509,7 +4806,18 @@ async function upsertRecommendationOutfitsBatch({
         });
       }
       if (snapshot) {
-        snapshot.queryReadMs += Date.now() - queryReadStartedAt;
+        const durationMs = Date.now() - queryReadStartedAt;
+        const payloadBytes = serializedBytes(validatedClothes || []);
+        snapshot.queryReadMs += durationMs;
+        snapshot.readPayloadBytes += payloadBytes;
+        snapshot.readQueries.push({
+          collection: 'clothes',
+          purpose: 'availability_validation',
+          projected: false,
+          recordCount: Array.isArray(validatedClothes) ? validatedClothes.length : 0,
+          payloadBytes,
+          durationMs,
+        });
         snapshot.dbRoundTrips += 1;
       }
     }
@@ -4530,7 +4838,18 @@ async function upsertRecommendationOutfitsBatch({
       });
     }
     if (snapshot) {
-      snapshot.queryReadMs += Date.now() - existingReadStartedAt;
+      const durationMs = Date.now() - existingReadStartedAt;
+      const payloadBytes = serializedBytes(existingResponse.data || []);
+      snapshot.queryReadMs += durationMs;
+      snapshot.readPayloadBytes += payloadBytes;
+      snapshot.readQueries.push({
+        collection: 'outfits',
+        purpose: 'transaction_upsert_lookup',
+        projected: false,
+        recordCount: Array.isArray(existingResponse.data) ? existingResponse.data.length : 0,
+        payloadBytes,
+        durationMs,
+      });
       snapshot.dbRoundTrips += 1;
     }
     const existingByKey = buildOutfitRecordMap(existingResponse.data);
@@ -6493,5 +6812,8 @@ if (process.env.NODE_ENV === 'test') {
     mapCandidatePoolLoadReason,
     resolveEnrichedTitleState,
     isCanonicalCopyRuntimeV2Acceptance,
+    measureCanonicalBatchInput,
+    measureHomeLightMaterialization,
+    measurePlannedHomeLightMaterialization,
   };
 }

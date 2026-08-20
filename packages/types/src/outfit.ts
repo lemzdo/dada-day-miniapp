@@ -963,6 +963,8 @@ export interface RecommendRequest {
   acceptanceRunId?: string;
   /** Correlates request, response, and ignored acceptance artifacts. */
   captureId?: string;
+  /** Dev-only client milestone ledger; stripped by the client before the cloud request is sent. */
+  clientMilestones?: Record<string, number>;
   /** Enables Runtime V2 only for one correlated diagnostic acceptance request; the environment flag remains unchanged. */
   canonicalCopyRuntimeV2Acceptance?: boolean;
   presentationEvidenceMode?: RecommendationPresentationEvidenceMode;
@@ -992,8 +994,63 @@ export interface RecommendationPerformanceLedger {
   candidatePoolPayloadBytes: number;
   responsePayloadBytes: number;
   cardCompilationStartDelayMs?: number;
-  snapshotPersistence?: Record<string, number>;
+  snapshotPersistence?: {
+    [key: string]: unknown;
+    readPayloadBytes?: number;
+    readQueries?: Array<{
+      collection: string;
+      purpose: string;
+      projected: boolean;
+      recordCount: number;
+      payloadBytes: number;
+      durationMs: number;
+    }>;
+  };
   candidatePoolPersistence?: Record<string, number>;
+  progressiveMaterialization?: {
+    version?: string;
+    mode?: string;
+    tPlanMs?: number;
+    plannedCardCount?: number;
+    tCard1Ms?: number;
+    tCard2Ms?: number;
+    tTailMs?: number;
+    card1ProjectionMs?: number;
+    card2IncrementalMs?: number;
+    card3ToTailIncrementalMs?: number;
+    homeLightPayloadBytes?: number;
+    homeLightCardBytes?: number[];
+    statusFieldsReady?: boolean;
+    safeCopyReady?: boolean;
+    detailRouteReady?: boolean;
+    currentCanonicalBarrier?: {
+      tCard1Ms?: number;
+      tCard2Ms?: number;
+      tTailMs?: number;
+      card2IncrementalMs?: number;
+      card3ToTailIncrementalMs?: number;
+      homeLightPayloadBytes?: number;
+      homeLightCardBytes?: number[];
+      statusFieldsReady?: boolean;
+    };
+  };
+  canonicalBatchInput?: {
+    totalBytes?: number;
+    structuralBytes?: number;
+    measuredBytes?: number;
+    cardBytes?: number[];
+    topLevelFields?: Array<{
+      field: string;
+      bytes: number;
+      primaryCategory?: string;
+      consumerCategories?: string[];
+    }>;
+    primaryCategories?: Array<{ category: string; bytes: number; ratio: number }>;
+    unclassifiedFields?: string[];
+    classificationMethod?: string;
+    nestedHotspots?: Array<{ path: string; bytes: number }>;
+    nestedHotspotsAreNonAdditive?: boolean;
+  };
   runtimeV2?: {
     enabled: boolean;
     tReadServerProxyMs?: number;

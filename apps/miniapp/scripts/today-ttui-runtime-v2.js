@@ -59,6 +59,7 @@ function serverSegments(performance = {}) {
   const persistence = Number(performance.snapshotPersistence?.durationMs) || phases.get('snapshotPersistence') || 0;
   const snapshot = performance.snapshotPersistence || {};
   const response = performance.responseFinalization || {};
+  const progressive = performance.progressiveMaterialization || {};
   return {
     readMs: read,
     coreMs: core,
@@ -74,6 +75,69 @@ function serverSegments(performance = {}) {
     totalMs: total,
     totalThroughResponseReadyMs: Number(performance.serverTotalThroughResponseReadyMs) || total,
     aiMs: Number(runtime.tAiNecessaryCriticalPathMs) || 0,
+    tPlanMs: Number(progressive.tPlanMs) || 0,
+    tCard1Ms: Number(progressive.tCard1Ms) || 0,
+    tCard2Ms: Number(progressive.tCard2Ms) || 0,
+    tTailMs: Number(progressive.tTailMs) || 0,
+    card2IncrementalMs: Number(progressive.card2IncrementalMs) || 0,
+    card3ToTailIncrementalMs: Number(progressive.card3ToTailIncrementalMs) || 0,
+    homeLightPayloadBytes: Number(progressive.homeLightPayloadBytes) || 0,
+  };
+}
+
+function hardInvalidActionSegments(artifact = {}) {
+  const preparation = artifact.hardInvalidPreparation || {};
+  const transport = artifact.transport || {};
+  const milestones = transport.clientMilestones || {};
+  const actionStartedAt = Number(artifact.actionStartedAt) || 0;
+  const invalidationStartedAt = Number(preparation.invalidationStartedAt) || 0;
+  const invalidationCompletedAt = Number(preparation.invalidationCompletedAt) || 0;
+  const relaunchRequestedAt = Number(preparation.relaunchRequestedAt) || 0;
+  const wrapperStartedAt = Number(transport.generateOutfitWrapperStart) || 0;
+  const callStartedAt = Number(transport.immediatelyBeforeCallFunction) || 0;
+  return {
+    actionToInvalidationMs: invalidationStartedAt && actionStartedAt
+      ? Math.max(0, invalidationStartedAt - actionStartedAt) : 0,
+    invalidationMs: invalidationCompletedAt && invalidationStartedAt
+      ? Math.max(0, invalidationCompletedAt - invalidationStartedAt) : 0,
+    markerWriteMs: Number(preparation.markerWriteCompletedAt) && Number(preparation.markerWriteStartedAt)
+      ? Math.max(0, Number(preparation.markerWriteCompletedAt) - Number(preparation.markerWriteStartedAt)) : 0,
+    cacheResetMs: Number(preparation.cacheResetCompletedAt) && Number(preparation.cacheResetStartedAt)
+      ? Math.max(0, Number(preparation.cacheResetCompletedAt) - Number(preparation.cacheResetStartedAt)) : 0,
+    invalidationToRelaunchMs: relaunchRequestedAt && invalidationCompletedAt
+      ? Math.max(0, relaunchRequestedAt - invalidationCompletedAt) : 0,
+    relaunchToWrapperMs: wrapperStartedAt && relaunchRequestedAt
+      ? Math.max(0, wrapperStartedAt - relaunchRequestedAt) : 0,
+    wrapperToCallFunctionMs: callStartedAt && wrapperStartedAt
+      ? Math.max(0, callStartedAt - wrapperStartedAt) : 0,
+    relaunchToAcceptanceConsumeMs: Number(milestones.acceptanceConsumedAt) && relaunchRequestedAt
+      ? Math.max(0, Number(milestones.acceptanceConsumedAt) - relaunchRequestedAt) : 0,
+    acceptanceConsumeToHardInvalidDetectedMs: Number(milestones.hardInvalidDetectedAt)
+      && Number(milestones.acceptanceConsumedAt)
+      ? Math.max(0, Number(milestones.hardInvalidDetectedAt) - Number(milestones.acceptanceConsumedAt)) : 0,
+    hardInvalidDetectedToRefreshMs: Number(milestones.hardRefreshStartedAt)
+      && Number(milestones.hardInvalidDetectedAt)
+      ? Math.max(0, Number(milestones.hardRefreshStartedAt) - Number(milestones.hardInvalidDetectedAt)) : 0,
+    runtimeStateResetMs: Number(milestones.runtimeStateResetCompletedAt)
+      && Number(milestones.runtimeStateResetStartedAt)
+      ? Math.max(0, Number(milestones.runtimeStateResetCompletedAt) - Number(milestones.runtimeStateResetStartedAt)) : 0,
+    resetToRequestStartMs: Number(milestones.requestRecommendationsStartedAt)
+      && Number(milestones.runtimeStateResetCompletedAt)
+      ? Math.max(0, Number(milestones.requestRecommendationsStartedAt) - Number(milestones.runtimeStateResetCompletedAt)) : 0,
+    requestIdentityConstructionMs: Number(milestones.requestIdentityConstructedAt)
+      && Number(milestones.requestRecommendationsStartedAt)
+      ? Math.max(0, Number(milestones.requestIdentityConstructedAt) - Number(milestones.requestRecommendationsStartedAt)) : 0,
+    registryDispatchMs: Number(milestones.registryExecuteStartedAt)
+      && Number(milestones.requestIdentityConstructedAt)
+      ? Math.max(0, Number(milestones.registryExecuteStartedAt) - Number(milestones.requestIdentityConstructedAt)) : 0,
+    registryToFetchMs: Number(milestones.fetchRecommendationsStartedAt)
+      && Number(milestones.registryExecuteStartedAt)
+      ? Math.max(0, Number(milestones.fetchRecommendationsStartedAt) - Number(milestones.registryExecuteStartedAt)) : 0,
+    cloudRequestConstructionMs: Number(milestones.cloudRequestConstructedAt)
+      && Number(milestones.cloudRequestConstructionStartedAt)
+      ? Math.max(0, Number(milestones.cloudRequestConstructedAt) - Number(milestones.cloudRequestConstructionStartedAt)) : 0,
+    actionToCallFunctionMs: callStartedAt && actionStartedAt
+      ? Math.max(0, callStartedAt - actionStartedAt) : 0,
   };
 }
 
@@ -202,6 +266,7 @@ async function markHardInvalid(mini, acceptanceRequest) {
 
 async function prepareHardInvalidAndRelaunch(mini, acceptanceRequest) {
   return mini.evaluate((payload) => {
+    const invalidationStartedAt = Date.now();
     const info = globalThis.wx?.getStorageInfoSync?.() || { keys: [] };
     const keys = info.keys || [];
     const snapshotKeys = keys.filter((entry) => String(entry).startsWith('d1d:userStorage:v1:') && String(entry).includes('today:outfitReturnSnapshot:recommendation-copy-contract-v8'));
@@ -211,14 +276,31 @@ async function prepareHardInvalidAndRelaunch(mini, acceptanceRequest) {
       ? `${String(snapshotKey).split(':today:outfitReturnSnapshot:')[0]}:today:recommendationInput:hardInvalid`
       : null);
     if (!key) throw new Error('TTUI_HARD_INVALID_SCOPED_KEY_MISSING');
+    const markerWriteStartedAt = Date.now();
     globalThis.wx?.setStorageSync?.(key, {
       acceptanceDiagnostics: payload,
       markedAt: Date.now(),
     });
     globalThis.wx?.setStorageSync?.('today:ttui-hard-invalid-acceptance:v1', payload);
+    const markerWriteCompletedAt = Date.now();
+    const cacheResetStartedAt = Date.now();
     snapshotKeys.forEach((entry) => globalThis.wx?.removeStorageSync?.(entry));
+    const cacheResetCompletedAt = Date.now();
+    const invalidationCompletedAt = Date.now();
+    const relaunchRequestedAt = Date.now();
     globalThis.wx?.reLaunch?.({ url: '/pages/today/index' });
-    return { key, marked: Boolean(globalThis.wx?.getStorageSync?.(key)), removedKeys: snapshotKeys };
+    return {
+      key,
+      marked: Boolean(globalThis.wx?.getStorageSync?.(key)),
+      removedKeys: snapshotKeys,
+      invalidationStartedAt,
+      markerWriteStartedAt,
+      markerWriteCompletedAt,
+      cacheResetStartedAt,
+      cacheResetCompletedAt,
+      invalidationCompletedAt,
+      relaunchRequestedAt,
+    };
   }, acceptanceRequest);
 }
 
@@ -346,7 +428,12 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
     previousBatchId = previousState?.recommendationBatchId || null;
     if (typeof mini.switchTab === 'function') await mini.switchTab('/pages/wardrobe/index');
     actionStartedAt = Date.now();
-    const hardInvalidPreparation = await prepareHardInvalidAndRelaunch(mini, { ...request, acceptanceRunId: runId, captureId: `${runId}-capture` });
+    const hardInvalidPreparation = await prepareHardInvalidAndRelaunch(mini, {
+      ...request,
+      acceptanceRunId: runId,
+      captureId: `${runId}-capture`,
+      clientMilestones: { actionStartedAt },
+    });
     request = { ...request, hardInvalidPreparation };
   }
   if (scenario === 'A' && typeof mini.switchTab === 'function') {
@@ -368,7 +455,10 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
     previousBatchId = previousState?.recommendationBatchId || null;
     actionStartedAt = Date.now();
     triggerResult = await mini.evaluate(async (payload) => globalThis.__d1dTodayDiagnostics.triggerRefresh(payload), {
-      ...request, acceptanceRunId: runId, captureId: `${runId}-capture`,
+      ...request,
+      acceptanceRunId: runId,
+      captureId: `${runId}-capture`,
+      clientMilestones: { actionStartedAt },
     });
   }
   const deadline = Date.now() + timeoutMs;
@@ -438,6 +528,7 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
       fixedEightCardBatch: isFixedEightCardBatch(usableState, copyState),
     },
   };
+  artifact.actionToRequestBreakdown = hardInvalidActionSegments(artifact);
   if (!artifact.validation.completeLedger || !artifact.validation.firstUsablePaint || !artifact.validation.noCloudBeforeUsablePaint || !artifact.validation.canonicalCopyReady || !artifact.validation.usableCard || !artifact.validation.fixedEightCardBatch || !artifact.validation.scenarioBRefreshRun || !artifact.validation.scenarioCColdRun || !artifact.validation.scenarioCCorrelatedRequest || !artifact.validation.scenarioCNoStaleBatchPaint || !artifact.validation.hardInvalidRejected) {
     throw Object.assign(new Error('TTUI_SCENARIO_INVARIANT_FAILED'), { artifact });
   }
@@ -472,6 +563,7 @@ async function runCli({ scenario = 'A', samples = 1, skipBuild = false, expected
         ...artifact.server,
         ...artifact.client,
         ...artifact.transportBreakdown,
+        ...artifact.actionToRequestBreakdown,
         clientTotalMs: artifact.transport?.clientTotalMs,
         serverTotalMs: artifact.server?.totalMs,
       }))),
@@ -481,7 +573,7 @@ async function runCli({ scenario = 'A', samples = 1, skipBuild = false, expected
   }
 }
 
-module.exports = { ARTIFACT_ROOT, readLedger, readSnapshot, segmentDurations, serverSegments, measureTransportCalibration, transportSegments, summarize, summarizeArtifacts, writeArtifact, waitForBridge, waitForTodayIdle, invalidateRestoreSnapshot, markHardInvalid, prepareHardInvalidAndRelaunch, isUsableSnapshot, isFixedEightCardBatch, switchToTodayWithClientTiming, runScenario, runCli };
+module.exports = { ARTIFACT_ROOT, readLedger, readSnapshot, segmentDurations, serverSegments, hardInvalidActionSegments, measureTransportCalibration, transportSegments, summarize, summarizeArtifacts, writeArtifact, waitForBridge, waitForTodayIdle, invalidateRestoreSnapshot, markHardInvalid, prepareHardInvalidAndRelaunch, isUsableSnapshot, isFixedEightCardBatch, switchToTodayWithClientTiming, runScenario, runCli };
 
 if (require.main === module) {
   const args = new Map(process.argv.slice(2).map((arg) => {

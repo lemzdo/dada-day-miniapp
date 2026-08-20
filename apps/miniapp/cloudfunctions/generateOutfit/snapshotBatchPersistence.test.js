@@ -300,8 +300,15 @@ test('snapshot persistence round-trips are explicit for all-new, all-existing, a
     availableClothingIds: clothingIds,
     operationCounts: allNewCounts,
   });
-  assert.equal(allNewCounts.snapshot.dbRoundTrips, 2);
+  assert.equal(allNewCounts.snapshot.dbRoundTrips, 3);
   assert.equal(allNewCounts.snapshot.writeRoundTrips, 1);
+  assert.equal(allNewCounts.snapshot.readQueries.length, 2);
+  assert.ok(allNewCounts.snapshot.readPayloadBytes > 0);
+  assert.deepEqual(
+    allNewCounts.snapshot.readQueries.map((query) => query.purpose),
+    ['all_existing_probe', 'transaction_upsert_lookup'],
+  );
+  assert.equal(allNewCounts.snapshot.readQueries.every((query) => query.projected === false), true);
   assert.equal(typeof allNewCounts.snapshot.snapshotBuildMs, 'number');
   assert.equal(typeof allNewCounts.snapshot.writeWallMs, 'number');
   assert.equal(typeof allNewCounts.snapshot.transactionCallbackMs, 'number');
@@ -317,6 +324,8 @@ test('snapshot persistence round-trips are explicit for all-new, all-existing, a
   });
   assert.equal(allExistingCounts.snapshot.dbRoundTrips, 9);
   assert.equal(allExistingCounts.snapshot.writeRoundTrips, 8);
+  assert.equal(allExistingCounts.snapshot.readQueries.length, 1);
+  assert.ok(allExistingCounts.snapshot.readPayloadBytes > 0);
   assert.equal(allExistingCounts.snapshot.commitMs, 0);
 
   const mixedCounts = { reads: 0, writes: 0 };
@@ -327,8 +336,9 @@ test('snapshot persistence round-trips are explicit for all-new, all-existing, a
     availableClothingIds: [...clothingIds, ...buildBases(4, 8).flatMap((base) => base.clothingIds)],
     operationCounts: mixedCounts,
   });
-  assert.equal(mixedCounts.snapshot.dbRoundTrips, 6);
+  assert.equal(mixedCounts.snapshot.dbRoundTrips, 7);
   assert.equal(mixedCounts.snapshot.writeRoundTrips, 5);
+  assert.equal(mixedCounts.snapshot.readQueries.length, 2);
   assert.equal(operations.adds, 2);
   assert.equal(operations.updates, 12);
   assert.equal(outfits.length, 12);

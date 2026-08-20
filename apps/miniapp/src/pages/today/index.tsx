@@ -156,6 +156,16 @@ interface TodayFullComputeAcceptanceRequest {
   acceptanceRunId: string;
   captureId: string;
   weatherModeOverride?: 'disabled';
+  clientMilestones?: Record<string, number>;
+}
+
+function markAcceptanceClientMilestone(
+  request: TodayFullComputeAcceptanceRequest | undefined,
+  milestone: string,
+) {
+  if (!request) return;
+  request.clientMilestones ??= {};
+  request.clientMilestones[milestone] = Date.now();
 }
 
 const TODAY_HARD_INVALID_ACCEPTANCE_KEY = 'today:ttui-hard-invalid-acceptance:v1';
@@ -169,7 +179,10 @@ function consumeHardInvalidAcceptanceRequest(
     Taro.removeStorageSync(TODAY_HARD_INVALID_ACCEPTANCE_KEY);
     if (value
       && typeof value.acceptanceRunId === 'string'
-      && typeof value.captureId === 'string') return value;
+      && typeof value.captureId === 'string') {
+      markAcceptanceClientMilestone(value, 'acceptanceConsumedAt');
+      return value;
+    }
     const marker = getUserStorageSync<{
       acceptanceDiagnostics?: TodayFullComputeAcceptanceRequest;
     }>(TODAY_RECOMMENDATION_HARD_INVALID_KEY, { authContext });
@@ -552,7 +565,9 @@ export default function TodayPage() {
     recordTodayRestoreDispatchAttempt();
     const authContext = captureAuthContext();
     if (authContext && hasTodayRecommendationHardInvalid({ authContext })) {
-      void refreshHardInvalidRecommendation(authContext, consumeHardInvalidAcceptanceRequest(authContext));
+      const acceptanceDiagnostics = consumeHardInvalidAcceptanceRequest(authContext);
+      markAcceptanceClientMilestone(acceptanceDiagnostics, 'hardInvalidDetectedAt');
+      void refreshHardInvalidRecommendation(authContext, acceptanceDiagnostics);
       return;
     }
     const restored = restoreTodaySnapshotFromDetail(authContext, { requireReturnIntent: false });
@@ -585,6 +600,7 @@ export default function TodayPage() {
     requestKind?: 'initial' | 'refresh'
     acceptanceDiagnostics?: TodayFullComputeAcceptanceRequest
   }): Promise<boolean> {
+    markAcceptanceClientMilestone(acceptanceDiagnostics, 'requestRecommendationsStartedAt');
     const inputSignature = getRecommendationInputSignature({
       sceneKey,
       weather,
@@ -592,12 +608,14 @@ export default function TodayPage() {
       excludedOutfitKeys,
       requestKind,
     });
+    markAcceptanceClientMilestone(acceptanceDiagnostics, 'requestIdentityConstructedAt');
     const registry = recommendationIntentRegistryRef.current;
     if (!registry) return Promise.resolve(false);
     const run = registry.run<boolean>({
       intentId,
       inputSignature,
       execute: (intent) => {
+        markAcceptanceClientMilestone(acceptanceDiagnostics, 'registryExecuteStartedAt');
         const requestContext = createRecommendationRequestContext(
           sceneKey,
           weatherMode,
@@ -654,8 +672,11 @@ export default function TodayPage() {
     acceptanceDiagnostics?: TodayFullComputeAcceptanceRequest,
   ) {
     if (hardRefreshInFlightRef.current) return;
+    markAcceptanceClientMilestone(acceptanceDiagnostics, 'hardRefreshStartedAt');
     hardRefreshInFlightRef.current = true;
+    markAcceptanceClientMilestone(acceptanceDiagnostics, 'runtimeStateResetStartedAt');
     resetUserState();
+    markAcceptanceClientMilestone(acceptanceDiagnostics, 'runtimeStateResetCompletedAt');
     setRecommendationNotice('正在重新搭配…');
     try {
       const refreshed = await requestRecommendations({
@@ -693,6 +714,7 @@ export default function TodayPage() {
     requestKind?: 'initial' | 'refresh'
     acceptanceDiagnostics?: TodayFullComputeAcceptanceRequest
   }): Promise<boolean> {
+    markAcceptanceClientMilestone(acceptanceDiagnostics, 'fetchRecommendationsStartedAt');
     const seq = requestContext.requestSeq;
     const scene = requestContext.sceneLabel;
     const weatherMode = requestContext.weatherMode;
@@ -714,6 +736,7 @@ export default function TodayPage() {
       markTodayPerformanceStage('executionMode', requestKind === 'initial' ? 'COLD' : 'COLD');
       markTodayPerformanceStage('generateOutfitRequestStart');
       const cloudRequestStartedAt = Date.now();
+      markAcceptanceClientMilestone(acceptanceDiagnostics, 'cloudRequestConstructionStartedAt');
       const data = await generateCloudOutfit({
         date: getToday(),
         scene,
@@ -729,6 +752,7 @@ export default function TodayPage() {
           canonicalCopyRuntimeV2Acceptance: true,
           acceptanceRunId: acceptanceDiagnostics.acceptanceRunId,
           captureId: acceptanceDiagnostics.captureId,
+          clientMilestones: acceptanceDiagnostics.clientMilestones,
         } : {}),
         ...(weather ? { weather } : {}),
         ...(excludedOutfitKeys.length > 0 ? { excludedOutfitKeys } : {}),
@@ -926,6 +950,7 @@ export default function TodayPage() {
       logRecommendationStart(requestContext, 'refresh', Boolean(weatherForRefresh));
       markTodayPerformanceStage('generateOutfitRequestStart');
       const cloudRequestStartedAt = Date.now();
+      markAcceptanceClientMilestone(acceptanceDiagnostics, 'cloudRequestConstructionStartedAt');
       const data = await generateCloudOutfit({
         date: getToday(),
         scene: requestContext.sceneLabel,
@@ -941,6 +966,7 @@ export default function TodayPage() {
           canonicalCopyRuntimeV2Acceptance: true,
           acceptanceRunId: acceptanceDiagnostics.acceptanceRunId,
           captureId: acceptanceDiagnostics.captureId,
+          clientMilestones: acceptanceDiagnostics.clientMilestones,
         } : {}),
         ...(weatherForRefresh ? { weather: weatherForRefresh } : {}),
         ...(typeof previousRecommendationBatchId === 'string' && previousRecommendationBatchId.length > 0 ? { recommendationBatchId: previousRecommendationBatchId } : {}),

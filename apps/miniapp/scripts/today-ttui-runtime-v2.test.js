@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { isFixedEightCardBatch, segmentDurations, serverSegments, summarizeArtifacts, transportSegments } = require('./today-ttui-runtime-v2');
+const { hardInvalidActionSegments, isFixedEightCardBatch, segmentDurations, serverSegments, summarizeArtifacts, transportSegments } = require('./today-ttui-runtime-v2');
 
 test('TTUI acceptance requires the fixed eight-card batch', () => {
   const outfits = Array.from({ length: 8 }, (_, index) => ({ id: `outfit-${index}` }));
@@ -28,7 +28,57 @@ test('TTUI refresh segments start at the user action instead of page entry', () 
 
 test('TTUI server segments prefer runtime V2 proxies and retain persistence separately', () => {
   const result = serverSegments({ serverTotalMs: 100, runtimeV2: { tReadServerProxyMs: 8, tCorePhaseProxyMs: 20, tSafeMs: 3, tAiNecessaryCriticalPathMs: 0 }, phases: [{ phase: 'snapshotPersistence', duration: 40 }], snapshotPersistence: { snapshotBuildMs: 2, serializationMs: 3, queryReadMs: 4, writeWallMs: 5, commitMs: 6 }, responseFinalization: { buildMs: 7, serializationMs: 8 } });
-  assert.deepEqual(result, { readMs: 8, coreMs: 20, safeMs: 3, criticalPersistenceMs: 40, snapshotBuildMs: 2, snapshotSerializationMs: 3, snapshotDbReadMs: 4, snapshotDbWriteMs: 5, snapshotCommitMs: 6, responseBuildMs: 7, responseSerializationMs: 8, totalMs: 100, totalThroughResponseReadyMs: 100, aiMs: 0 });
+  assert.deepEqual(result, { readMs: 8, coreMs: 20, safeMs: 3, criticalPersistenceMs: 40, snapshotBuildMs: 2, snapshotSerializationMs: 3, snapshotDbReadMs: 4, snapshotDbWriteMs: 5, snapshotCommitMs: 6, responseBuildMs: 7, responseSerializationMs: 8, totalMs: 100, totalThroughResponseReadyMs: 100, aiMs: 0, tPlanMs: 0, tCard1Ms: 0, tCard2Ms: 0, tTailMs: 0, card2IncrementalMs: 0, card3ToTailIncrementalMs: 0, homeLightPayloadBytes: 0 });
+});
+
+test('hard-invalid action split isolates invalidation, relaunch and call construction', () => {
+  assert.deepEqual(hardInvalidActionSegments({
+    actionStartedAt: 100,
+    hardInvalidPreparation: {
+      invalidationStartedAt: 110,
+      markerWriteStartedAt: 111,
+      markerWriteCompletedAt: 115,
+      cacheResetStartedAt: 116,
+      cacheResetCompletedAt: 123,
+      invalidationCompletedAt: 125,
+      relaunchRequestedAt: 130,
+    },
+    transport: {
+      generateOutfitWrapperStart: 190,
+      immediatelyBeforeCallFunction: 192,
+      clientMilestones: {
+        acceptanceConsumedAt: 150,
+        hardInvalidDetectedAt: 152,
+        hardRefreshStartedAt: 155,
+        runtimeStateResetStartedAt: 156,
+        runtimeStateResetCompletedAt: 160,
+        requestRecommendationsStartedAt: 161,
+        requestIdentityConstructedAt: 164,
+        registryExecuteStartedAt: 165,
+        fetchRecommendationsStartedAt: 166,
+        cloudRequestConstructionStartedAt: 170,
+        cloudRequestConstructedAt: 173,
+      },
+    },
+  }), {
+    actionToInvalidationMs: 10,
+    invalidationMs: 15,
+    markerWriteMs: 4,
+    cacheResetMs: 7,
+    invalidationToRelaunchMs: 5,
+    relaunchToWrapperMs: 60,
+    wrapperToCallFunctionMs: 2,
+    relaunchToAcceptanceConsumeMs: 20,
+    acceptanceConsumeToHardInvalidDetectedMs: 2,
+    hardInvalidDetectedToRefreshMs: 3,
+    runtimeStateResetMs: 4,
+    resetToRequestStartMs: 1,
+    requestIdentityConstructionMs: 3,
+    registryDispatchMs: 1,
+    registryToFetchMs: 1,
+    cloudRequestConstructionMs: 3,
+    actionToCallFunctionMs: 92,
+  });
 });
 
 test('TTUI client segments split normalize, state scheduling, and first usable render', () => {
