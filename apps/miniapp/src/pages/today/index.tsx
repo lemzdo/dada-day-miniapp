@@ -2554,7 +2554,14 @@ export default function TodayPage() {
         }
         if (loading || operation) throw new Error('Today recommendation handler is busy');
         copyAcceptanceCaptureLockRef.current = true;
-        return handleRefresh({ ...request, performanceDiagnostics: true });
+        const acceptanceRequest = { ...request, performanceDiagnostics: true };
+        // Keep the strict acceptance bridge on the V2 dispatcher explicitly.
+        // This remains memory-only when the product flag is OFF; ordinary UI
+        // refresh continues through the legacy dispatcher below.
+        if (isStrictV2Acceptance(acceptanceRequest)) {
+          return handleV2Refresh(acceptanceRequest);
+        }
+        return handleRefresh(acceptanceRequest);
       },
     };
     diagnosticsGlobal.__d1dTodayDiagnostics = bridge;

@@ -21,3 +21,9 @@ test('memory-only acceptance disables user mutations and storage writes', () => 
   assert.match(source, /v2MemoryOnly\) return/);
   assert.match(source, /!memoryOnly\) setUserStorageSync/);
 });
+
+test('strict acceptance bridge explicitly dispatches V2 refresh with Flag OFF', () => {
+  assert.match(source, /const acceptanceRequest = \{ \.\.\.request, performanceDiagnostics: true \};/);
+  assert.match(source, /if \(isStrictV2Acceptance\(acceptanceRequest\)\) \{\s*return handleV2Refresh\(acceptanceRequest\);/);
+  assert.match(source, /return handleRefresh\(acceptanceRequest\);/);
+});
