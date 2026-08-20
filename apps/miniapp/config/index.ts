@@ -14,7 +14,14 @@ const config = defineConfig({
   sourceRoot: 'src',
   outputRoot: 'dist',
   plugins: ['@tarojs/plugin-platform-weapp', '@tarojs/plugin-platform-h5'],
-  defineConstants: {},
+  // Taro does not provide a Node `process` object in the mini-program
+  // runtime. Keep the build-time flag explicit so the client bundle cannot
+  // emit a free `process.env` reference (the default remains OFF).
+  defineConstants: {
+    'process.env.TARO_APP_RECOMMENDATION_V2_ENABLED': JSON.stringify(
+      process.env.TARO_APP_RECOMMENDATION_V2_ENABLED || 'false',
+    ),
+  },
   copy: {
     patterns: [],
     options: {},
