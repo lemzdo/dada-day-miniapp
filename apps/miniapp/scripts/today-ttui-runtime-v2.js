@@ -313,7 +313,7 @@ async function prepareHardInvalidAndRelaunch(mini, acceptanceRequest) {
 async function prepareUserStyleCold(mini, adapter, payload) {
   if (typeof adapter !== 'function') throw new Error('TTUI_USER_STYLE_COLD_ADAPTER_REQUIRED');
   const result = await adapter({ mini, ...payload, scenario: 'user-style-cold', requireRecoveryEvidence: true });
-  if (!result || result.changed !== true || result.restored !== true
+  if (!result || result.changed !== true || (result.restored !== true && typeof result.restore !== 'function')
     || typeof result.method !== 'string' || typeof result.recoveryEvidence !== 'string') {
     throw new Error('TTUI_USER_STYLE_COLD_ADAPTER_INCOMPLETE');
   }
@@ -570,6 +570,20 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
       fixedEightCardBatch: isFixedEightCardBatch(usableState, copyState),
     },
   };
+  if (scenario === USER_STYLE_COLD_SCENARIO && typeof userStyleColdPreparation?.restore === 'function') {
+    const restored = await userStyleColdPreparation.restore();
+    if (!restored || restored.restored !== true || typeof restored.recoveryEvidence !== 'string') {
+      throw Object.assign(new Error('TTUI_USER_STYLE_COLD_RESTORE_FAILED'), { artifact });
+    }
+    userStyleColdPreparation = {
+      ...userStyleColdPreparation,
+      restored: true,
+      recoveryEvidence: restored.recoveryEvidence,
+    };
+    delete userStyleColdPreparation.restore;
+    artifact.userStyleColdPreparation = userStyleColdPreparation;
+    artifact.validation.scenarioDUserStyleCold = true;
+  }
   artifact.actionToRequestBreakdown = hardInvalidActionSegments(artifact);
   if (!artifact.validation.completeLedger || !artifact.validation.firstUsablePaint || !artifact.validation.noCloudBeforeUsablePaint || !artifact.validation.canonicalCopyReady || !artifact.validation.usableCard || !artifact.validation.fixedEightCardBatch || !artifact.validation.scenarioBRefreshRun || !artifact.validation.scenarioCColdRun || !artifact.validation.scenarioCCorrelatedRequest || !artifact.validation.scenarioCNoStaleBatchPaint || !artifact.validation.hardInvalidRejected || !artifact.validation.scenarioDUserStyleCold) {
     throw Object.assign(new Error('TTUI_SCENARIO_INVARIANT_FAILED'), { artifact });
