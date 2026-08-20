@@ -380,6 +380,7 @@ test('all-existing recommendation snapshots use one read and controlled parallel
   assert.equal(operations.maxConcurrentWrites, 8);
   assert.ok(counts.snapshot.inputPayloadBytes > counts.snapshot.payloadBytes * 10);
   assert.ok(counts.snapshot.payloadBytes < 10 * 1024);
+  assert.equal(Object.hasOwn(outfits[0], 'recommendationContentHash'), false);
   assert.deepEqual(
     Object.fromEntries(Object.keys(userState).map((key) => [key, outfits[0][key]])),
     userState,

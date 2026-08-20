@@ -34,6 +34,9 @@ test('cloud entrypoint uses the tested finalizer and preserves Contract metadata
   assert.match(source, /\.\.\.pickRecommendationCopyContractFields\(payload\)/);
   assert.match(source, /canonicalRecommendations = canonicalizeRecommendationBatch\(finalRecommendations, \{ scene \}\)/);
   assert.match(source, /upsertRecommendationOutfitsBatch\(\{\s*openid: OPENID,\s*bases: canonicalRecommendations,/);
+  assert.doesNotMatch(source, /serializedBytes\(canonicalRecommendations\)/);
+  assert.match(source, /diagnostics\.snapshotPayloadBytes = Math\.max\([\s\S]*snapshotOps\?\.snapshot\?\.inputPayloadBytes/);
+  assert.doesNotMatch(source, /recommendationContentHash/);
   assert.match(source, /hydratedOutfits\.length !== finalRecommendationCount/);
   assert.match(source, /item\.copyContract\.todayReason\.trim\(\)\.length > 0/);
   assert.match(source, /styleTags: readStringArray\(item\.styleTags\)\.length \? readStringArray\(item\.styleTags\) : \[\]/);
