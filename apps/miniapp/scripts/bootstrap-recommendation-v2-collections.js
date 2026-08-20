@@ -6,7 +6,7 @@ const COLLECTIONS = Object.freeze([
 ]);
 
 function normalizeCollectionNames(result) {
-  const rows = Array.isArray(result) ? result : result?.collections || result?.data || [];
+  const rows = Array.isArray(result) ? result : result?.Collections || result?.collections || result?.data || [];
   return rows.map((row) => typeof row === 'string' ? row : row?.collectionName || row?.name).filter(Boolean);
 }
 
@@ -49,9 +49,11 @@ async function loadManager() {
   try { loaded = require(moduleName); } catch (error) {
     throw new Error(`CLOUDBASE_MANAGER_MODULE_UNAVAILABLE:${moduleName}:${error.message}`);
   }
-  if (typeof loaded.createManager === 'function') return loaded.createManager({ envId: process.env.D1D_CLOUDBASE_ENV_ID });
-  if (typeof loaded.default?.createManager === 'function') return loaded.default.createManager({ envId: process.env.D1D_CLOUDBASE_ENV_ID });
-  throw new Error(`CLOUDBASE_MANAGER_FACTORY_UNSUPPORTED:${moduleName}`);
+  const CloudBase = loaded.default || loaded;
+  if (typeof CloudBase.init !== 'function') throw new Error(`CLOUDBASE_MANAGER_FACTORY_UNSUPPORTED:${moduleName}`);
+  // manager-node resolves credentials only from explicit config or its
+  // documented Tencent env vars; never print or persist those values.
+  return CloudBase.init({ envId: process.env.D1D_CLOUDBASE_ENV_ID }).database;
 }
 
 async function main() {
