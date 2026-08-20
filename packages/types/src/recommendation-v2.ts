@@ -1,8 +1,9 @@
-import type { ClothingCategory, SceneTag } from './clothes';
+import type { SceneTag } from './clothes';
 import type { TimeOfDay } from './outfit';
-import type { WeatherSnapshot } from './weather';
+import type { WeatherMode, WeatherSnapshot } from './weather';
 
-export const RECOMMENDATION_V2_VERSION = 'recommendation-v2' as const;
+export const RECOMMENDATION_V2_RUNTIME_VERSION = 'today-runtime-v2' as const;
+export const RECOMMENDATION_V2_SCHEMA_VERSION = 'today-v2' as const;
 export const RECOMMENDATION_V2_CARD_COUNT = 8 as const;
 
 export interface HomeLightItemV2 {
@@ -26,20 +27,25 @@ export interface HomeLightCardV2 {
 }
 
 export interface HomeLightPayloadV2 {
-  version: typeof RECOMMENDATION_V2_VERSION;
+  runtimeVersion: typeof RECOMMENDATION_V2_RUNTIME_VERSION;
+  schemaVersion: typeof RECOMMENDATION_V2_SCHEMA_VERSION;
   batchId: string;
   cards: HomeLightCardV2[];
 }
 
 export interface RecommendationBatchCoreV2 {
-  version: typeof RECOMMENDATION_V2_VERSION;
+  runtimeVersion: typeof RECOMMENDATION_V2_RUNTIME_VERSION;
+  schemaVersion: typeof RECOMMENDATION_V2_SCHEMA_VERSION;
   batchId: string;
   commitToken: string;
   contentHash: string;
+  sceneKey: string;
   scene: SceneTag | string;
-  date: string;
+  targetDate: string;
   timeOfDay: TimeOfDay;
-  weather: WeatherSnapshot;
+  weatherMode: WeatherMode | string;
+  weatherSnapshot: WeatherSnapshot;
+  weatherFingerprint: string;
   inputIdentityHash: string;
   generatedAt: string;
   countContract: { expected: 8; actual: 8 };
@@ -49,25 +55,25 @@ export interface RecommendationBatchCoreV2 {
 }
 
 export interface RecommendationOutfitRefV2 {
-  version: typeof RECOMMENDATION_V2_VERSION;
+  runtimeVersion: typeof RECOMMENDATION_V2_RUNTIME_VERSION;
+  schemaVersion: typeof RECOMMENDATION_V2_SCHEMA_VERSION;
   batchId: string;
   outfitKey: string;
   referenceId: string;
   position: number;
   clothingIds: string[];
-  category?: ClothingCategory | string;
 }
 
 export interface RecommendationHomeLightResponseV2 {
-  kind: 'home-light';
-  version: typeof RECOMMENDATION_V2_VERSION;
+  runtimeVersion: typeof RECOMMENDATION_V2_RUNTIME_VERSION;
+  schemaVersion: typeof RECOMMENDATION_V2_SCHEMA_VERSION;
   batch: RecommendationBatchCoreV2;
   light: HomeLightPayloadV2;
 }
 
 export interface RecommendationDetailResponseV2 {
-  kind: 'detail';
-  version: typeof RECOMMENDATION_V2_VERSION;
+  runtimeVersion: typeof RECOMMENDATION_V2_RUNTIME_VERSION;
+  schemaVersion: typeof RECOMMENDATION_V2_SCHEMA_VERSION;
   batchId: string;
   outfitKey: string;
   detailIdentityReady: true;

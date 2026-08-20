@@ -2,6 +2,8 @@
 
 const V2_VERSION = 'recommendation-v2';
 const V2_CARD_COUNT = 8;
+const RUNTIME_VERSION = 'today-runtime-v2';
+const SCHEMA_VERSION = 'today-v2';
 
 function stringValue(value) {
   return typeof value === 'string' ? value : '';
@@ -37,11 +39,22 @@ function projectHomeLightCardV2(outfit = {}, position = 0) {
   };
 }
 
+function projectWeatherSnapshot(weather = {}) {
+  return {
+    temp: Number(weather.temp) || 0,
+    humidity: Number(weather.humidity) || 0,
+    weather: stringValue(weather.weather),
+    wind: Number(weather.wind) || 0,
+    uv: Number(weather.uv) || 0,
+  };
+}
+
 function projectHomeLightV2(outfits = [], batchId = '') {
   if (!Array.isArray(outfits) || outfits.length !== V2_CARD_COUNT) throw new Error('V2_HOME_LIGHT_REQUIRES_EIGHT_CARDS');
   if (!stringValue(batchId)) throw new Error('V2_HOME_LIGHT_BATCH_ID_REQUIRED');
   return {
-    version: V2_VERSION,
+    runtimeVersion: RUNTIME_VERSION,
+    schemaVersion: SCHEMA_VERSION,
     batchId,
     cards: outfits.map((outfit, index) => projectHomeLightCardV2(outfit, index)),
   };
@@ -51,14 +64,18 @@ function projectBatchCoreV2(input = {}) {
   const order = Array.isArray(input.order) ? input.order.map(stringValue).filter(Boolean) : [];
   if (order.length !== V2_CARD_COUNT) throw new Error('V2_BATCH_CORE_REQUIRES_EIGHT_ORDER_KEYS');
   return {
-    version: V2_VERSION,
+    runtimeVersion: RUNTIME_VERSION,
+    schemaVersion: SCHEMA_VERSION,
     batchId: stringValue(input.batchId),
     commitToken: stringValue(input.commitToken),
     contentHash: stringValue(input.contentHash),
+    sceneKey: stringValue(input.sceneKey),
     scene: stringValue(input.scene),
-    date: stringValue(input.date),
+    targetDate: stringValue(input.targetDate || input.date),
     timeOfDay: stringValue(input.timeOfDay || 'all_day'),
-    weather: input.weather && typeof input.weather === 'object' ? { ...input.weather } : {},
+    weatherMode: stringValue(input.weatherMode),
+    weatherSnapshot: projectWeatherSnapshot(input.weatherSnapshot || input.weather),
+    weatherFingerprint: stringValue(input.weatherFingerprint),
     inputIdentityHash: stringValue(input.inputIdentityHash),
     generatedAt: stringValue(input.generatedAt),
     countContract: { expected: 8, actual: 8 },
@@ -68,4 +85,4 @@ function projectBatchCoreV2(input = {}) {
   };
 }
 
-module.exports = { V2_VERSION, V2_CARD_COUNT, projectHomeLightItemV2, projectHomeLightCardV2, projectHomeLightV2, projectBatchCoreV2 };
+module.exports = { V2_VERSION, RUNTIME_VERSION, SCHEMA_VERSION, V2_CARD_COUNT, projectHomeLightItemV2, projectHomeLightCardV2, projectHomeLightV2, projectWeatherSnapshot, projectBatchCoreV2 };
