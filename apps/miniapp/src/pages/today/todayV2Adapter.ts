@@ -1,5 +1,6 @@
 import type {
   HomeLightCardV2,
+  RecommendationBatchCoreV2,
   RecommendationHomeLightResponseV2,
 } from '@starter-template/types';
 
@@ -13,6 +14,7 @@ export interface TodayV2Snapshot {
   runtimeVersion: 'today-runtime-v2';
   schemaVersion: 'today-v2';
   batchId: string;
+  core: RecommendationBatchCoreV2;
   cards: HomeLightCardV2[];
   savedAt: string;
 }
@@ -22,6 +24,7 @@ export function toTodayV2Snapshot(response: RecommendationHomeLightResponseV2): 
     runtimeVersion: response.runtimeVersion,
     schemaVersion: response.schemaVersion,
     batchId: response.batch.batchId,
+    core: response.batch,
     cards: response.light.cards.map((card) => ({
       referenceId: card.referenceId,
       outfitKey: card.outfitKey,
@@ -45,8 +48,21 @@ export function readTodayV2Snapshot(read: (key: string) => unknown): TodayV2Snap
   if (snapshot.runtimeVersion !== 'today-runtime-v2'
     || snapshot.schemaVersion !== 'today-v2'
     || typeof snapshot.batchId !== 'string'
+    || !snapshot.core || snapshot.core.batchId !== snapshot.batchId
+    || snapshot.core.cardCount !== 8
+    || snapshot.core.countContract?.requestedCardCount !== 8
+    || snapshot.core.countContract?.returnedCardCount !== 8
+    || !Array.isArray(snapshot.core.order)
+    || snapshot.core.order.length !== 8
+    || snapshot.core.order.some((key, index) => key !== snapshot.cards?.[index]?.outfitKey)
     || !Array.isArray(snapshot.cards)
     || snapshot.cards.length !== 8) return null;
+  const forbidden = ['snapshotItems', 'itemsSnapshot', 'scores', 'eligibility', 'copyContract', 'debug', 'evidence'];
+  const scan = (entry: unknown): boolean => {
+    if (!entry || typeof entry !== 'object') return false;
+    return Object.entries(entry).some(([key, value]) => forbidden.includes(key) || scan(value));
+  };
+  if (scan(snapshot)) return null;
   return snapshot as TodayV2Snapshot;
 }
 

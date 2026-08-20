@@ -16,3 +16,9 @@ test('Today V2 status patch is batch and outfit scoped', () => {
   assert.match(source, /snapshot\.batchId !== patch\.batchId/);
   assert.match(source, /card\.outfitKey === patch\.outfitKey/);
 });
+
+test('Today V2 snapshot requires minimal core and rejects deep storage fields', () => {
+  assert.match(source, /core: response\.batch/);
+  assert.match(source, /snapshot\.core\.countContract\?\.requestedCardCount/);
+  assert.match(source, /forbidden = \['snapshotItems', 'itemsSnapshot'/);
+});

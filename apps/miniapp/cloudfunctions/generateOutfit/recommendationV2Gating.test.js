@@ -44,3 +44,8 @@ test('V2 action snapshot seed comes from immutable envelope context', () => {
   assert.match(source, /recommendationBatchId: core\.batchId/);
   assert.match(source, /JSON\.stringify\(ref\.clothingIds\) !== JSON\.stringify\(envelopeCard\.clothingIds\)/);
 });
+
+test('V2 generation accepts refresh exclusions without invoking Legacy response parsing', () => {
+  assert.match(source, /excludedOutfitKeys/);
+  assert.match(source, /shouldUseRecommendationV2\(event\)/);
+});

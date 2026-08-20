@@ -167,6 +167,7 @@ interface ClientImageTiming {
 interface TodayFullComputeAcceptanceRequest {
   acceptanceRunId: string;
   captureId: string;
+  performanceDiagnostics?: boolean;
   weatherModeOverride?: 'disabled';
   clientMilestones?: Record<string, number>;
 }
@@ -245,6 +246,13 @@ function isTodayDiagnosticsRuntime() {
   } catch {
     return false;
   }
+}
+
+function isStrictV2Acceptance(request?: TodayFullComputeAcceptanceRequest) {
+  const runId = request?.acceptanceRunId;
+  return Boolean(typeof runId === 'string'
+    && runId.startsWith('ttui-v2-')
+    && request?.captureId === `${runId}-capture`);
 }
 
 interface TodayRestoreSnapshot {
@@ -387,6 +395,7 @@ export default function TodayPage() {
   const { authStatus, runtimeKey, isAuthenticated } = useAuthRuntime();
   const todayV2Enabled = isTodayV2Enabled();
   const [v2Snapshot, setV2Snapshot] = useState<TodayV2Snapshot | null>(null);
+  const [v2MemoryOnly, setV2MemoryOnly] = useState(false);
   const [selectedSceneKey, setSelectedSceneKey] = useState<SceneKey>('home');
   const [outfits, setOutfits] = useState<Outfit[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -505,6 +514,7 @@ export default function TodayPage() {
     setBatchLimited(false);
     setBatchExhausted(false);
     setV2Snapshot(null);
+    setV2MemoryOnly(false);
   }, []);
 
   useUnload(() => {
@@ -756,12 +766,15 @@ export default function TodayPage() {
     }
 
     try {
-      if (todayV2Enabled) {
+      const strictV2Acceptance = isStrictV2Acceptance(acceptanceDiagnostics);
+      if (todayV2Enabled || strictV2Acceptance) {
         const response = await generateCloudOutfitV2({
           date: getToday(),
           scene,
           timeOfDay: TODAY_TIME_OF_DAY,
           weatherMode,
+          trigger,
+          ...(excludedOutfitKeys.length > 0 ? { excludedOutfitKeys } : {}),
           ...(weather ? { weather } : {}),
           ...(acceptanceDiagnostics ? {
             performanceDiagnostics: true,
@@ -772,7 +785,10 @@ export default function TodayPage() {
         if (!isRecommendationIntentCurrent(intent) || !isAuthContextCurrent(authContext)) return false;
         const nextSnapshot = toTodayV2Snapshot(response);
         setV2Snapshot(nextSnapshot);
-        setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, nextSnapshot, { authContext });
+        setV2MemoryOnly(strictV2Acceptance && !todayV2Enabled);
+        if (!strictV2Acceptance || todayV2Enabled) {
+          setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, nextSnapshot, { authContext });
+        }
         setLoading(false);
         setError('');
         setHasRecommendations(true);
@@ -945,8 +961,49 @@ export default function TodayPage() {
     }
   }
 
+  async function handleV2Refresh(acceptanceDiagnostics?: TodayFullComputeAcceptanceRequest): Promise<boolean> {
+    const previous = v2Snapshot;
+    const authContext = captureAuthContext();
+    if (!authContext) return false;
+    const exclusions = previous?.cards.map((card) => card.outfitKey) ?? [];
+    setLoading(true);
+    setError('');
+    try {
+      const response = await generateCloudOutfitV2({
+        date: getToday(),
+        scene: selectedSceneRef.current,
+        timeOfDay: TODAY_TIME_OF_DAY,
+        weather: currentWeatherRef.current,
+        weatherMode: currentWeatherModeRef.current,
+        trigger: 'refresh',
+        excludedOutfitKeys: exclusions,
+        ...(isStrictV2Acceptance(acceptanceDiagnostics) ? {
+          performanceDiagnostics: true,
+          acceptanceRunId: acceptanceDiagnostics?.acceptanceRunId,
+          captureId: acceptanceDiagnostics?.captureId,
+        } : {}),
+      });
+      const next = toTodayV2Snapshot(response);
+      setV2Snapshot(next);
+      const memoryOnly = isStrictV2Acceptance(acceptanceDiagnostics) && !todayV2Enabled;
+      setV2MemoryOnly(memoryOnly);
+      if (!memoryOnly) setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, next, { authContext });
+      setRecommendationBatchId(next.batchId);
+      setLoading(false);
+      return true;
+    } catch (error) {
+      console.error('V2 refresh error:', error);
+      setLoading(false);
+      setRecommendationNotice('换一套失败，先保留刚才这批');
+      return false;
+    }
+  }
+
   async function handleRefresh(acceptanceDiagnostics?: TodayFullComputeAcceptanceRequest): Promise<boolean> {
     if (loading || operation) return false;
+    if (todayV2Enabled || isStrictV2Acceptance(acceptanceDiagnostics)) {
+      return handleV2Refresh(acceptanceDiagnostics);
+    }
     if (isNoMoreRecommendationState({
       batchExhausted: batchExhaustedRef.current,
       countContract: countContractRef.current,
@@ -2534,23 +2591,28 @@ export default function TodayPage() {
       </View>
 
       <View className="outfit-section">
-        {todayV2Enabled && v2Snapshot && (
+        {(todayV2Enabled || v2MemoryOnly) && v2Snapshot && (
           <View className="recommendation-browser recommendation-browser-v2">
-            {v2Snapshot.cards.map((card) => (
-              <HomeLightCardV2
-                key={card.outfitKey}
-                card={card}
-                onFavorite={(value) => { void handleV2Favorite(value); }}
-                onWear={(value) => { void handleV2Wear(value); }}
-                onDetail={openV2Detail}
-              />
-            ))}
+            <Swiper className="outfit-swiper" current={currentIndex} circular={false} onChange={(event) => setCurrentIndex(event.detail.current)}>
+              {v2Snapshot.cards.map((card) => (
+                <SwiperItem key={card.outfitKey} className="outfit-slide">
+                  <HomeLightCardV2
+                    card={card}
+                    onFavorite={(value) => { void handleV2Favorite(value); }}
+                    onWear={(value) => { void handleV2Wear(value); }}
+                    onDetail={openV2Detail}
+                  />
+                </SwiperItem>
+              ))}
+            </Swiper>
+            <View className="swiper-footer"><Text>{currentIndex + 1} / {v2Snapshot.cards.length}</Text></View>
+            <View className={`refresh-btn ${v2Snapshot.core.countContract.exhausted ? 'disabled' : ''}`} onClick={() => { if (!v2Snapshot.core.countContract.exhausted) void handleRefresh(); }}><Text className="refresh-text">{v2Snapshot.core.countContract.exhausted ? '这一轮已看完' : '换一批灵感'}</Text></View>
           </View>
         )}
-        {todayV2Enabled && !v2Snapshot && loading && (
+        {(todayV2Enabled || v2MemoryOnly) && !v2Snapshot && loading && (
           <View className="loading-state"><View className="loading-spinner" /><Text className="loading-text">正在生成今日搭配…</Text></View>
         )}
-        {todayV2Enabled && !v2Snapshot && !loading && error && (
+        {(todayV2Enabled || v2MemoryOnly) && !v2Snapshot && !loading && error && (
           <View className="empty-state"><Text className="empty-text">{error}</Text></View>
         )}
         {!todayV2Enabled && (

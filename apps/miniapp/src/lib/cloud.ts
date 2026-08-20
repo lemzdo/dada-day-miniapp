@@ -762,6 +762,8 @@ export interface RecommendationV2Request {
   performanceDiagnostics?: boolean;
   acceptanceRunId?: string;
   captureId?: string;
+  trigger?: string;
+  excludedOutfitKeys?: string[];
 }
 
 function assertHomeLightV2(value: unknown): RecommendationHomeLightResponseV2 {
@@ -773,6 +775,10 @@ function assertHomeLightV2(value: unknown): RecommendationHomeLightResponseV2 {
     || response.batch.runtimeVersion !== RECOMMENDATION_V2_RUNTIME_VERSION
     || response.light.runtimeVersion !== RECOMMENDATION_V2_RUNTIME_VERSION
     || response.batch.cardCount !== 8
+    || !response.batch.contentHash
+    || !response.batch.commitToken
+    || response.batch.countContract?.requestedCardCount !== 8
+    || response.batch.countContract?.returnedCardCount !== 8
     || !Array.isArray(response.batch.order)
     || response.batch.order.length !== 8
     || !Array.isArray(response.light.cards)

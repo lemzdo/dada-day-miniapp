@@ -10,19 +10,19 @@ export interface HomeLightCardV2Props {
 
 export function HomeLightCardV2({ card, onFavorite, onWear, onDetail }: HomeLightCardV2Props) {
   return (
-    <View className="home-light-card-v2" onClick={() => onDetail?.(card)}>
-      <Text>{card.displayTitle}</Text>
-      <Text>{card.todayReason}</Text>
-      <View>
+    <View className="outfit-card home-light-card-v2" onClick={() => onDetail?.(card)}>
+      <View className="outfit-card-header"><Text className="outfit-title">{card.displayTitle}</Text></View>
+      <Text className="reason-text">{card.todayReason}</Text>
+      <View className="outfit-collage">
         {card.items.map((item) => (
-          <Image key={item.clothingId} src={item.thumbnailUrl || item.imageUrl || ''} mode="aspectFill" />
+          <Image className="item-image" key={item.clothingId} src={item.thumbnailUrl || item.imageUrl || ''} mode="aspectFill" />
         ))}
       </View>
-      <View>
-        <Text onClick={(event) => { event.stopPropagation(); onFavorite?.(card); }}>
+      <View className="outfit-actions">
+        <Text className="action-btn" onClick={(event) => { event.stopPropagation(); onFavorite?.(card); }}>
           {card.isFavorite ? '已收藏' : '收藏'}
         </Text>
-        <Text onClick={(event) => { event.stopPropagation(); onWear?.(card); }}>
+        <Text className="action-btn primary" onClick={(event) => { event.stopPropagation(); onWear?.(card); }}>
           {card.isWornToday ? '今日已穿' : '确认穿着'}
         </Text>
       </View>
