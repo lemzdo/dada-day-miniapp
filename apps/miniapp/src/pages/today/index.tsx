@@ -784,7 +784,15 @@ export default function TodayPage() {
             captureId: acceptanceDiagnostics.captureId,
           } : {}),
         });
-        if (!isRecommendationIntentCurrent(intent) || !isAuthContextCurrent(authContext)) return false;
+        markAcceptanceClientMilestone(acceptanceDiagnostics, 'v2ResponseReceivedAt');
+        const v2IntentCurrent = isRecommendationIntentCurrent(intent);
+        const v2AuthCurrent = isAuthContextCurrent(authContext);
+        if (v2IntentCurrent) markAcceptanceClientMilestone(acceptanceDiagnostics, 'v2IntentCurrentAt');
+        if (v2AuthCurrent) markAcceptanceClientMilestone(acceptanceDiagnostics, 'v2AuthContextCurrentAt');
+        if (!v2IntentCurrent || !v2AuthCurrent) {
+          markAcceptanceClientMilestone(acceptanceDiagnostics, 'v2ApplyRejectedAt');
+          return false;
+        }
         const nextSnapshot = toTodayV2Snapshot(response);
         setV2Snapshot(nextSnapshot);
         setV2MemoryOnly(strictV2Acceptance && !todayV2Enabled);
@@ -795,6 +803,7 @@ export default function TodayPage() {
         setError('');
         setHasRecommendations(true);
         setRecommendationBatchId(nextSnapshot.batchId);
+        markAcceptanceClientMilestone(acceptanceDiagnostics, 'v2ApplyCommittedAt');
         return true;
       }
       markTodayPerformanceStage('executionMode', requestKind === 'initial' ? 'COLD' : 'COLD');
