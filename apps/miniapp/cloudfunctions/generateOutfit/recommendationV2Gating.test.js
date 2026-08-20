@@ -29,3 +29,18 @@ test('V2 reasons use the deterministic safe renderer and do not start AI rendere
   assert.doesNotMatch(branch, /buildRecommendationVoiceRendererExecution|runRecommendationVoiceRenderer/);
   assert.doesNotMatch(branch, /recommendation\?\.reasoning/);
 });
+
+test('V2 status queries use projected fields and parallel execution', () => {
+  assert.match(source, /findV2FavoriteKeys\(openid, order\)/);
+  assert.match(source, /findV2WornKeys\(openid, order, targetDate\)/);
+  assert.match(source, /typeof query\.field === 'function'/);
+  assert.match(source, /query\.field\(\{ outfitKey: true/);
+});
+
+test('V2 action snapshot seed comes from immutable envelope context', () => {
+  assert.match(source, /const core = envelope\.core/);
+  assert.match(source, /todayReason: envelopeCard\.todayReason/);
+  assert.match(source, /weatherSnapshot: core\.weatherSnapshot/);
+  assert.match(source, /recommendationBatchId: core\.batchId/);
+  assert.match(source, /JSON\.stringify\(ref\.clothingIds\) !== JSON\.stringify\(envelopeCard\.clothingIds\)/);
+});

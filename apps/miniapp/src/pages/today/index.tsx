@@ -17,11 +17,14 @@ import {
 import {
   addOutfitHistory,
   generateCloudOutfit,
+  generateCloudOutfitV2,
   getCloudResponseTransportDiagnostics,
   isRecommendationDiagnosticEnvironment,
   materializeCloudRecommendationCopyV2,
   removeFavoriteOutfit,
   saveFavoriteOutfit,
+  updateCloudOutfitFavoriteV2,
+  updateCloudOutfitWearV2,
 } from '@/lib/cloud';
 import {
   buildRecommendationQaLogSummary,
@@ -109,6 +112,15 @@ import type { OutfitStatusPatch } from '@/stores/outfitStatusStore';
 import type { SceneContractValidation } from './sceneResponseValidation';
 import type { Outfit, RecommendResponse, RecommendationCountContract, RecommendationMissingFact, RecommendationMissingRole, SceneTag, WeatherMode, WeatherSnapshot } from '@starter-template/types';
 import './index.scss';
+import { HomeLightCardV2 } from './HomeLightCardV2';
+import {
+  isTodayV2Enabled,
+  patchTodayV2CardStatus,
+  readTodayV2Snapshot,
+  toTodayV2Snapshot,
+  TODAY_V2_SNAPSHOT_KEY,
+  type TodayV2Snapshot,
+} from './todayV2Adapter';
 
 interface ExtendedSceneSnapshot extends SceneSnapshot {
   sceneKey?: SceneKey
@@ -373,6 +385,8 @@ function getOutfitStatusUpdatedAt(updatedAt: string | undefined) {
 
 export default function TodayPage() {
   const { authStatus, runtimeKey, isAuthenticated } = useAuthRuntime();
+  const todayV2Enabled = isTodayV2Enabled();
+  const [v2Snapshot, setV2Snapshot] = useState<TodayV2Snapshot | null>(null);
   const [selectedSceneKey, setSelectedSceneKey] = useState<SceneKey>('home');
   const [outfits, setOutfits] = useState<Outfit[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -446,6 +460,14 @@ export default function TodayPage() {
 
   useEffect(() => subscribeTodayPerformanceLedger(setPerformanceSnapshot), []);
 
+  useEffect(() => {
+    if (!todayV2Enabled || !isAuthenticated) return;
+    const authContext = captureAuthContext();
+    if (!authContext) return;
+    const snapshot = readTodayV2Snapshot((key) => getUserStorageSync(key, { authContext }));
+    if (snapshot) setV2Snapshot(snapshot);
+  }, [isAuthenticated, todayV2Enabled]);
+
   const resetUserState = useCallback(() => {
     requestSeq.current += 1;
     activeRequestSeqRef.current = null;
@@ -482,6 +504,7 @@ export default function TodayPage() {
     setRecommendationBatchId(undefined);
     setBatchLimited(false);
     setBatchExhausted(false);
+    setV2Snapshot(null);
   }, []);
 
   useUnload(() => {
@@ -733,6 +756,29 @@ export default function TodayPage() {
     }
 
     try {
+      if (todayV2Enabled) {
+        const response = await generateCloudOutfitV2({
+          date: getToday(),
+          scene,
+          timeOfDay: TODAY_TIME_OF_DAY,
+          weatherMode,
+          ...(weather ? { weather } : {}),
+          ...(acceptanceDiagnostics ? {
+            performanceDiagnostics: true,
+            acceptanceRunId: acceptanceDiagnostics.acceptanceRunId,
+            captureId: acceptanceDiagnostics.captureId,
+          } : {}),
+        });
+        if (!isRecommendationIntentCurrent(intent) || !isAuthContextCurrent(authContext)) return false;
+        const nextSnapshot = toTodayV2Snapshot(response);
+        setV2Snapshot(nextSnapshot);
+        setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, nextSnapshot, { authContext });
+        setLoading(false);
+        setError('');
+        setHasRecommendations(true);
+        setRecommendationBatchId(nextSnapshot.batchId);
+        return true;
+      }
       markTodayPerformanceStage('executionMode', requestKind === 'initial' ? 'COLD' : 'COLD');
       markTodayPerformanceStage('generateOutfitRequestStart');
       const cloudRequestStartedAt = Date.now();
@@ -1237,6 +1283,47 @@ export default function TodayPage() {
         setOperation(null);
       }
     }
+  }
+
+  async function handleV2Favorite(card: import('@starter-template/types').HomeLightCardV2) {
+    if (!v2Snapshot || operation) return;
+    const authContext = captureAuthContext();
+    if (!authContext) return;
+    setOperation('favorite');
+    try {
+      const result = await updateCloudOutfitFavoriteV2({
+        batchId: v2Snapshot.batchId,
+        outfitKey: card.outfitKey,
+        isFavorite: !card.isFavorite,
+      });
+      const next = patchTodayV2CardStatus(v2Snapshot, result);
+      setV2Snapshot(next);
+      setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, next, { authContext });
+    } finally {
+      setOperation(null);
+    }
+  }
+
+  async function handleV2Wear(card: import('@starter-template/types').HomeLightCardV2) {
+    if (!v2Snapshot || operation || card.isWornToday) return;
+    const authContext = captureAuthContext();
+    if (!authContext) return;
+    setOperation('wear');
+    try {
+      const result = await updateCloudOutfitWearV2({ batchId: v2Snapshot.batchId, outfitKey: card.outfitKey, date: getToday() });
+      const next = patchTodayV2CardStatus(v2Snapshot, result);
+      setV2Snapshot(next);
+      setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, next, { authContext });
+    } finally {
+      setOperation(null);
+    }
+  }
+
+  function openV2Detail(card: import('@starter-template/types').HomeLightCardV2) {
+    if (!v2Snapshot) return;
+    void Taro.navigateTo({
+      url: `/pages/outfit-detail/index?runtimeVersion=today-runtime-v2&batchId=${encodeURIComponent(v2Snapshot.batchId)}&outfitKey=${encodeURIComponent(card.outfitKey)}&referenceId=${encodeURIComponent(card.referenceId)}`,
+    });
   }
 
   async function handleConfirmWear() {
@@ -2447,6 +2534,27 @@ export default function TodayPage() {
       </View>
 
       <View className="outfit-section">
+        {todayV2Enabled && v2Snapshot && (
+          <View className="recommendation-browser recommendation-browser-v2">
+            {v2Snapshot.cards.map((card) => (
+              <HomeLightCardV2
+                key={card.outfitKey}
+                card={card}
+                onFavorite={(value) => { void handleV2Favorite(value); }}
+                onWear={(value) => { void handleV2Wear(value); }}
+                onDetail={openV2Detail}
+              />
+            ))}
+          </View>
+        )}
+        {todayV2Enabled && !v2Snapshot && loading && (
+          <View className="loading-state"><View className="loading-spinner" /><Text className="loading-text">正在生成今日搭配…</Text></View>
+        )}
+        {todayV2Enabled && !v2Snapshot && !loading && error && (
+          <View className="empty-state"><Text className="empty-text">{error}</Text></View>
+        )}
+        {!todayV2Enabled && (
+          <>
         {loading && !currentOutfit && showDelayedRequestHint && (
           <View className="loading-state">
             <View className="loading-spinner" />
@@ -2604,6 +2712,8 @@ export default function TodayPage() {
               <Text className="refresh-text">{isRefreshing && showDelayedRequestHint ? '正在换一批…' : isNoMoreRecommendations ? '这一轮已看完' : '换一批灵感'}</Text>
             </View>
           </View>
+        )}
+          </>
         )}
       </View>
     </View>

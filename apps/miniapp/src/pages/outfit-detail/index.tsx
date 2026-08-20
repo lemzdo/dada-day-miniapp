@@ -15,6 +15,7 @@ import {
   CloudFunctionError,
   generateCloudOutfitComment,
   getCloudOutfit,
+  getCloudOutfitDetailV2,
   getCloudOutfitAiComment,
   getFavoriteOutfitDetail,
   getOutfitHistoryDetail,
@@ -54,7 +55,9 @@ import { buildAiReviewPresentation } from './aiReviewPresentation';
 import { getAiReviewPageState } from './aiReviewPageState';
 import { getAiCommentButtonBlockReason, getAiCommentButtonState, type AiCommentButtonState } from './aiCommentButtonState';
 import type { OutfitStatusPatch } from '@/stores/outfitStatusStore';
-import type { Outfit, OutfitAiReviewResponse, OutfitItemSummary, OutfitSnapshotItem } from '@starter-template/types';
+import type { HomeLightCardV2, Outfit, OutfitAiReviewResponse, OutfitItemSummary, OutfitSnapshotItem } from '@starter-template/types';
+import { isTodayV2Enabled, readTodayV2Snapshot } from '@/pages/today/todayV2Adapter';
+import { applyOutfitDetailV2Load, beginOutfitDetailV2Load, createOutfitDetailV2State, type OutfitDetailV2State } from './outfitDetailV2';
 import './index.scss';
 
 type DetailSource = 'recommendation' | 'favorite' | 'history';
@@ -370,10 +373,45 @@ function OutfitItemRow({
   );
 }
 
+function V2OutfitDetailView({ state }: { state: OutfitDetailV2State }) {
+  const detailItems = Array.isArray(state.detail?.items) ? state.detail.items : [];
+  return (
+    <View className="outfit-detail-page">
+      <View className="detail-scroll">
+        <View className="hero-card">
+          <Text className="hero-title">{state.shell.displayTitle}</Text>
+          <Text className="detail-v2-identity">{state.outfitKey}</Text>
+          <Text className="detail-v2-reason">{state.shell.todayReason}</Text>
+        </View>
+        <View className="visual-card">
+          <View className="visual-collage">
+            {state.shell.items.map((item) => (
+              <SafeImage key={item.clothingId} className="visual-image" src={item.imageUrl || item.thumbnailUrl} cacheIdentity={item.clothingId} mode="aspectFit" lazyLoad />
+            ))}
+          </View>
+        </View>
+        {state.loading && <Text>正在加载搭配详情…</Text>}
+        {!state.loading && detailItems.length > 0 && (
+          <View className="detail-card">
+            <Text>详情已按需加载</Text>
+            {detailItems.map((item, index) => (
+              <Text key={typeof item === 'object' && item && '_id' in item ? String(item._id) : index}>已加入衣橱</Text>
+            ))}
+          </View>
+        )}
+      </View>
+    </View>
+  );
+}
+
 export default function OutfitDetailPage() {
   const router = useRouter();
   const id = router.params.id;
   const sourceParam = router.params.source;
+  const v2Enabled = isTodayV2Enabled();
+  const v2BatchId = router.params.batchId;
+  const v2OutfitKey = router.params.outfitKey;
+  const v2ReferenceId = router.params.referenceId;
   const { authStatus, runtimeKey, isAuthenticated } = useAuthRuntime();
   const [outfit, setOutfit] = useState<Outfit | null>(null);
   const [detailSource, setDetailSource] = useState<DetailSource>('recommendation');
@@ -387,6 +425,7 @@ export default function OutfitDetailPage() {
   const [wearOperating, setWearOperating] = useState(false);
   const [aiReviewMeta, setAiReviewMeta] = useState<AiReviewMeta | null>(null);
   const [aiCommentButtonState, setAiCommentButtonState] = useState<AiCommentButtonState>('idle');
+  const [v2DetailState, setV2DetailState] = useState<OutfitDetailV2State | null>(null);
   const requestSeqRef = useRef(0);
   const aiCommentRequestSeqRef = useRef(0);
   const lastHandledRuntimeKeyRef = useRef<string | null>(null);
@@ -408,6 +447,7 @@ export default function OutfitDetailPage() {
     setWearOperating(false);
     setAiReviewMeta(null);
     setAiCommentButtonState('idle');
+    setV2DetailState(null);
   }, [sourceParam]);
 
   useLoad(() => {
@@ -438,6 +478,22 @@ export default function OutfitDetailPage() {
     lastHandledRuntimeKeyRef.current = runtimeKey;
     if (id) void fetchOutfit(id);
   }, [authStatus, id, isAuthenticated, resetUserState, runtimeKey]);
+
+  useEffect(() => {
+    if (!v2Enabled || !isAuthenticated || !runtimeKey || !v2BatchId || !v2OutfitKey) return;
+    const authContext = captureAuthContext();
+    if (!authContext) return;
+    const snapshot = readTodayV2Snapshot((key) => getUserStorageSync(key, { authContext }));
+    const card = snapshot?.cards.find((item) => item.outfitKey === v2OutfitKey
+      && item.referenceId === v2ReferenceId);
+    if (!card || snapshot?.batchId !== v2BatchId) return;
+    let state = createOutfitDetailV2State(card);
+    state = beginOutfitDetailV2Load(state, v2BatchId);
+    setV2DetailState(state);
+    void getCloudOutfitDetailV2({ batchId: v2BatchId, outfitKey: v2OutfitKey, referenceId: v2ReferenceId })
+      .then((detail) => setV2DetailState((current) => current ? applyOutfitDetailV2Load(current, detail) : current))
+      .catch(() => setV2DetailState((current) => current ? { ...current, loading: false } : current));
+  }, [isAuthenticated, runtimeKey, v2BatchId, v2Enabled, v2OutfitKey, v2ReferenceId]);
 
   async function fetchOutfit(outfitId: string) {
     const requestSeq = requestSeqRef.current + 1;
@@ -1000,6 +1056,10 @@ export default function OutfitDetailPage() {
         outfitKey: nextOutfit.outfitKey ?? '',
       },
     });
+  }
+
+  if (v2Enabled && v2DetailState) {
+    return <V2OutfitDetailView state={v2DetailState} />;
   }
 
   if (loading) {

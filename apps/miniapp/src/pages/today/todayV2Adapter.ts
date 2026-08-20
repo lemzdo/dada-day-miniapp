@@ -5,6 +5,10 @@ import type {
 
 export const TODAY_V2_SNAPSHOT_KEY = 'd1d:today:v2:home-light';
 
+export function isTodayV2Enabled() {
+  return process.env.TARO_APP_RECOMMENDATION_V2_ENABLED === 'true';
+}
+
 export interface TodayV2Snapshot {
   runtimeVersion: 'today-runtime-v2';
   schemaVersion: 'today-v2';

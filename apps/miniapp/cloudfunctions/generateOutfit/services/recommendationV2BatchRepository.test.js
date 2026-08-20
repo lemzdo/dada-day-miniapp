@@ -9,7 +9,29 @@ function fixture(mode) {
   const order = Array.from({ length: 8 }, (_, index) => `${mode}-key-${index}`);
   const batch = { runtimeVersion: 'today-runtime-v2', schemaVersion: 'today-v2', batchId, commitToken: `commit-${mode}`, contentHash: `hash-${mode}`, sceneKey: 'home', scene: '居家', targetDate: '2026-08-20', timeOfDay: 'all_day', weatherMode: 'live', weatherSnapshot: { temp: 28, humidity: 60, weather: '多云', wind: 2, uv: 3 }, weatherFingerprint: 'weather', inputIdentityHash: 'input', generatedAt: '2026-08-20T00:00:00.000Z', cardCount: 8, order, countContract: { requestedCardCount: 8, returnedCardCount: 8, limited: false, exhausted: false } };
   const refs = order.map((outfitKey, position) => ({ runtimeVersion: 'today-runtime-v2', schemaVersion: 'today-v2', outfitKey, referenceId: `unstable-${position}`, position, clothingIds: [`clothing-${position}`] }));
-  return { batch, refs };
+  const envelope = {
+    runtimeVersion: 'today-runtime-v2',
+    schemaVersion: 'today-v2',
+    core: batch,
+    light: {
+      runtimeVersion: 'today-runtime-v2',
+      schemaVersion: 'today-v2',
+      batchId,
+      cards: refs.map((ref, position) => ({
+        referenceId: stableReferenceId('user-1', ref.outfitKey),
+        outfitKey: ref.outfitKey,
+        position,
+        displayTitle: '今日搭配',
+        todayReason: '适合今天',
+        styleTags: [],
+        clothingIds: ref.clothingIds,
+        items: [],
+        isFavorite: false,
+        isWornToday: false,
+      })),
+    },
+  };
+  return { batch, refs, envelope };
 }
 
 function createDatabase(existingKeys = [], options = {}) {
@@ -60,8 +82,14 @@ test('V2 immutable batch membership survives a partially overlapping later batch
   const second = fixture('overlap-b');
   first.batch.order = Array.from({ length: 8 }, (_, index) => `overlap-${index}`);
   first.refs = first.batch.order.map((outfitKey, position) => ({ ...first.refs[position], outfitKey, referenceId: `unstable-${position}` }));
+  first.envelope = fixture('overlap-a-updated').envelope;
+  first.envelope.core = first.batch;
+  first.envelope.light.cards = first.refs.map((ref, position) => ({ ...first.envelope.light.cards[position], outfitKey: ref.outfitKey, referenceId: stableReferenceId('user-1', ref.outfitKey), position, clothingIds: ref.clothingIds }));
   second.batch.order = Array.from({ length: 8 }, (_, index) => `overlap-${index + 4}`);
   second.refs = second.batch.order.map((outfitKey, position) => ({ ...second.refs[position], outfitKey, referenceId: `unstable-${position}` }));
+  second.envelope = fixture('overlap-b-updated').envelope;
+  second.envelope.core = second.batch;
+  second.envelope.light.cards = second.refs.map((ref, position) => ({ ...second.envelope.light.cards[position], outfitKey: ref.outfitKey, referenceId: stableReferenceId('user-1', ref.outfitKey), position, clothingIds: ref.clothingIds }));
   const { database } = createDatabase();
   const firstResult = await persistRecommendationBatchV2({ database, openid: 'user-1', ...first });
   await persistRecommendationBatchV2({ database, openid: 'user-1', ...second });
@@ -83,7 +111,7 @@ test('V2 repository rolls back partial writes and fails closed', async () => {
 test('V2 repository rejects a partial batch before writing', async () => {
   const input = fixture('partial');
   const { database, records } = createDatabase();
-  records.recommendation_batches_v2.push({ ...input.batch, _openid: 'user-1' });
+  records.recommendation_batches_v2.push({ ...input.batch, envelope: input.envelope, _openid: 'user-1' });
   records.recommendation_outfit_refs_v2.push({ ...input.refs[0], _id: 'partial-ref', _openid: 'user-1', referenceId: stableReferenceId('user-1', input.refs[0].outfitKey) });
   await assert.rejects(() => persistRecommendationBatchV2({ database, openid: 'user-1', ...input }), /V2_BATCH_REFS_INCOMPLETE/);
 });
@@ -92,7 +120,7 @@ test('V2 repository rejects same batch id with a different hash', async () => {
   const input = fixture('conflict');
   const { database } = createDatabase();
   await persistRecommendationBatchV2({ database, openid: 'user-1', ...input });
-  await assert.rejects(() => persistRecommendationBatchV2({ database, openid: 'user-1', batch: { ...input.batch, contentHash: 'different' }, refs: input.refs }), /V2_BATCH_COMMIT_VALIDATION_FAILED/);
+  await assert.rejects(() => persistRecommendationBatchV2({ database, openid: 'user-1', batch: { ...input.batch, contentHash: 'different' }, refs: input.refs, envelope: { ...input.envelope, core: { ...input.batch, contentHash: 'different' } } }), /V2_BATCH_COMMIT_VALIDATION_FAILED/);
 });
 
 test('V2 envelope is atomic and rejects deep snapshot fields', async () => {

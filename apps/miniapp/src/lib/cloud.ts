@@ -756,7 +756,7 @@ export interface RecommendationV2Request {
   scene?: string;
   date?: string;
   timeOfDay?: string;
-  weather?: Record<string, unknown>;
+  weather?: unknown;
   weatherMode?: string;
   v2BatchId?: string;
   performanceDiagnostics?: boolean;

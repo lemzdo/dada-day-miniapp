@@ -84,8 +84,9 @@ function assertStoredBatchComplete(batch, refs, requested) {
 
 async function persistRecommendationBatchV2({ database, openid, batch, refs, envelope, now = new Date().toISOString() }) {
   if (!openid) throw new Error('V2_BATCH_OPENID_REQUIRED');
+  if (!envelope) throw new Error('V2_BATCH_ENVELOPE_REQUIRED');
   assertBatchInput(batch, refs);
-  if (envelope) assertV2Envelope(envelope, batch, refs.map((ref) => ({ ...ref, _openid: openid })));
+  assertV2Envelope(envelope, batch, refs.map((ref) => ({ ...ref, _openid: openid })));
   let result;
   await database.runTransaction(async (transaction) => {
     const existingBatch = await findBatch(transaction, openid, batch.batchId);

@@ -2653,18 +2653,31 @@ async function loadV2OutfitPayload(event) {
     || !Array.isArray(ref.clothingIds) || ref.clothingIds.length === 0) {
     throw createBusinessError('V2_OUTFIT_REFERENCE_NOT_FOUND', 'V2 outfit reference not found');
   }
+  if (JSON.stringify(ref.clothingIds) !== JSON.stringify(envelopeCard.clothingIds)) {
+    throw createBusinessError('V2_OUTFIT_REFERENCE_MISMATCH', 'V2 ref clothing identity mismatch');
+  }
   const clothes = await loadClothesByIds(OPENID, ref.clothingIds);
   const itemsSnapshot = clothes.map((item) => snapshotFromClothing(item, null, item._id));
+  const core = envelope.core;
   return {
     id: undefined,
-    title: '今日搭配',
-    displayTitle: '今日搭配',
+    title: envelopeCard.displayTitle,
+    displayTitle: envelopeCard.displayTitle,
+    reason: envelopeCard.todayReason,
+    todayReason: envelopeCard.todayReason,
+    styleTags: envelopeCard.styleTags,
     outfitKey,
     clothingIds: ref.clothingIds,
     itemsSnapshot,
     items: clothes,
     source: 'recommend',
-    targetDate: event.date || new Date().toISOString().slice(0, 10),
+    scene: core.scene,
+    targetDate: core.targetDate,
+    timeOfDay: core.timeOfDay,
+    weatherSnapshot: core.weatherSnapshot,
+    weatherMode: core.weatherMode,
+    recommendationBatchId: core.batchId,
+    batchId: core.batchId,
   };
 }
 
@@ -4463,8 +4476,10 @@ async function findV2FavoriteKeys(openid, outfitKeys) {
   const keys = uniqueStrings(outfitKeys);
   if (!keys.length) return new Map();
   const query = db.collection('favorite_outfits').where({ _openid: openid, outfitKey: db.command.in(keys) });
-  if (typeof query.field === 'function') query.field({ outfitKey: true, deletedAt: true, createdAt: true, favoritedAt: true });
-  const result = await query.limit(100).get();
+  const projected = typeof query.field === 'function'
+    ? query.field({ outfitKey: true, deletedAt: true, createdAt: true, favoritedAt: true })
+    : query;
+  const result = await projected.limit(100).get();
   return new Map((result.data || [])
     .filter((item) => item.outfitKey && !item.deletedAt)
     .map((item) => [item.outfitKey, item]));
@@ -4509,8 +4524,10 @@ async function findV2WornKeys(openid, outfitKeys, targetDate) {
   const keys = uniqueStrings(outfitKeys);
   if (!keys.length) return new Map();
   const query = db.collection('outfit_history').where({ _openid: openid, outfitKey: db.command.in(keys) });
-  if (typeof query.field === 'function') query.field({ outfitKey: true, wornAt: true, wornDate: true, wearDate: true, targetDate: true, createdAt: true });
-  const result = await query.limit(500).get();
+  const projected = typeof query.field === 'function'
+    ? query.field({ outfitKey: true, wornAt: true, wornDate: true, wearDate: true, targetDate: true, createdAt: true })
+    : query;
+  const result = await projected.limit(500).get();
   return new Map((result.data || [])
     .filter((item) => item.outfitKey && isHistoryOnDate(item, targetDate))
     .map((item) => [item.outfitKey, item]));
