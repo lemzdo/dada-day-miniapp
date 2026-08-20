@@ -1,6 +1,8 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
 const { invalidateRestoreSnapshot, isUsableSnapshot, markHardInvalid, prepareHardInvalidAndRelaunch, prepareUserStyleCold, readSnapshot, runScenario } = require('./today-ttui-runtime-v2');
 
@@ -70,6 +72,18 @@ test('user-style cold requires a reversible real-path adapter and recovery evide
   assert.equal(result.scenario, 'user-style-cold');
   assert.equal(result.restored, true);
   assert.equal(result.actionStartedAt, 123);
+});
+
+test('built-in user-style adapter is UI-only and cannot use synthetic markers or direct cloud mutation', () => {
+  const source = fs.readFileSync(path.resolve(__dirname, 'today-ttui-runtime-v2.js'), 'utf8');
+  const start = source.indexOf('function createUserStyleColdAutomatorAdapter');
+  const end = source.indexOf('async function waitForTodayIdle', start);
+  const adapterSource = source.slice(start, end);
+  assert.doesNotMatch(adapterSource, /callFunction|reLaunch|setStorageSync|removeStorageSync/);
+  assert.match(adapterSource, /\.switchTab\(['"]\/pages\/wardrobe\/index/);
+  assert.match(adapterSource, /\.tap\(\)/);
+  assert.match(adapterSource, /\.input\(/);
+  assert.match(adapterSource, /restore:/);
 });
 
 test('scenario A enters Today through the real tab path without triggering cloud', async () => {

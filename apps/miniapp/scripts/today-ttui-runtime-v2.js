@@ -14,6 +14,9 @@ const TRANSPORT_KEY = 'generateOutfit:acceptance-transport:v1';
 const PERFORMANCE_KEY = 'generateOutfit:performance-ledger:v1';
 const HARD_INVALID_ACCEPTANCE_KEY = 'today:ttui-hard-invalid-acceptance:v1';
 const USER_STYLE_COLD_SCENARIO = 'D';
+const USER_STYLE_WARDROBE_ROUTE = 'pages/wardrobe/index';
+const USER_STYLE_DETAIL_ROUTE = 'pages/clothing-detail/index';
+const USER_STYLE_FORM_ROUTE = 'pages/clothing-form/index';
 
 function nowId(prefix = 'ttui') {
   return `${prefix}-${new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)}-${crypto.randomBytes(4).toString('hex')}`;
@@ -320,6 +323,79 @@ async function prepareUserStyleCold(mini, adapter, payload) {
   return result;
 }
 
+async function waitForAutomatorRoute(mini, route, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const page = await mini.currentPage();
+    if (String(page?.path || '').replace(/^\//, '') === route) return page;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  throw new Error(`TTUI_USER_STYLE_ROUTE_TIMEOUT:${route}`);
+}
+
+async function waitForAutomatorElement(page, selector, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const element = await page.$(selector);
+    if (element) return element;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  const candidates = ['.detail-edit-link', '.clothing-detail-page', '.detail-header', '.item-input', '.save-button'];
+  const visible = await Promise.all(candidates.map(async (candidate) => ({ candidate, present: Boolean(await page.$(candidate)) })));
+  throw new Error(`TTUI_USER_STYLE_SELECTOR_TIMEOUT:${selector}:route=${page.path}:visible=${JSON.stringify(visible.filter((entry) => entry.present).map((entry) => entry.candidate))}`);
+}
+
+/** Built-in real UI adapter. It deliberately has no storage/cloud primitives. */
+function createUserStyleColdAutomatorAdapter({ mini, timeoutMs = 15000 } = {}) {
+  if (!mini || typeof mini.switchTab !== 'function' || typeof mini.currentPage !== 'function') {
+    throw new Error('TTUI_USER_STYLE_AUTOMATOR_REQUIRED');
+  }
+  let originalName;
+  let sampleNumber = 0;
+  const openNameEditor = async () => {
+    await mini.switchTab('/pages/wardrobe/index');
+    let page = await waitForAutomatorRoute(mini, USER_STYLE_WARDROBE_ROUTE, timeoutMs);
+    const cards = await page.$$('.grid-item');
+    if (!cards.length) throw new Error('TTUI_USER_STYLE_VISIBLE_CLOTHING_REQUIRED');
+    await cards[0].tap();
+    page = await waitForAutomatorRoute(mini, USER_STYLE_DETAIL_ROUTE, timeoutMs);
+    const editLink = await waitForAutomatorElement(page, '.detail-edit-link', timeoutMs);
+    await editLink.tap();
+    page = await waitForAutomatorRoute(mini, USER_STYLE_FORM_ROUTE, timeoutMs);
+    const inputs = await page.$$('.item-input');
+    if (!inputs.length) throw new Error('TTUI_USER_STYLE_NAME_INPUT_SELECTOR_MISSING');
+    return { page, input: inputs[0] };
+  };
+  const saveNameThroughUi = async (value) => {
+    const editor = await openNameEditor();
+    await editor.input.input(value);
+    const saveButton = await waitForAutomatorElement(editor.page, '.save-button', timeoutMs);
+    await saveButton.tap();
+    await waitForAutomatorRoute(mini, USER_STYLE_DETAIL_ROUTE, timeoutMs);
+  };
+  return async ({ runId }) => {
+    const editor = await openNameEditor();
+    if (originalName === undefined) originalName = String(await editor.input.value() || '');
+    sampleNumber += 1;
+    const changedName = `${originalName || '诊断衣物'}·${String(runId).slice(-8)}-${sampleNumber}`;
+    await editor.input.input(changedName);
+    const saveButton = await waitForAutomatorElement(editor.page, '.save-button', timeoutMs);
+    await saveButton.tap();
+    await waitForAutomatorRoute(mini, USER_STYLE_DETAIL_ROUTE, timeoutMs);
+    return {
+      changed: true,
+      restored: false,
+      method: 'automator:wardrobe-grid-item>detail-edit-link>item-input>save-button',
+      recoveryEvidence: `changed:${changedName}`,
+      actionStartedAt: Date.now(),
+      restore: async () => {
+        await saveNameThroughUi(originalName);
+        return { restored: true, recoveryEvidence: `restored:${originalName}` };
+      },
+    };
+  };
+}
+
 async function waitForTodayIdle(mini, timeoutMs = 30000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -586,6 +662,9 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
   }
   artifact.actionToRequestBreakdown = hardInvalidActionSegments(artifact);
   if (!artifact.validation.completeLedger || !artifact.validation.firstUsablePaint || !artifact.validation.noCloudBeforeUsablePaint || !artifact.validation.canonicalCopyReady || !artifact.validation.usableCard || !artifact.validation.fixedEightCardBatch || !artifact.validation.scenarioBRefreshRun || !artifact.validation.scenarioCColdRun || !artifact.validation.scenarioCCorrelatedRequest || !artifact.validation.scenarioCNoStaleBatchPaint || !artifact.validation.hardInvalidRejected || !artifact.validation.scenarioDUserStyleCold) {
+    if (scenario === USER_STYLE_COLD_SCENARIO && typeof userStyleColdPreparation?.restore === 'function') {
+      try { await userStyleColdPreparation.restore(); } catch { /* retain the failed artifact for manual recovery */ }
+    }
     throw Object.assign(new Error('TTUI_SCENARIO_INVARIANT_FAILED'), { artifact });
   }
   return artifact;
@@ -594,6 +673,9 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
 async function runCli({ scenario = 'A', samples = 1, skipBuild = false, expectedRuntimeV2 = false, userStyleColdAdapter } = {}) {
   if (!skipBuild) throw new Error('TTUI_RUNNER_REQUIRES_PREBUILT_MINIAPP_USE_SKIP_BUILD');
   const session = await ensureDevToolsDirectSession();
+  if (scenario === USER_STYLE_COLD_SCENARIO && !userStyleColdAdapter) {
+    userStyleColdAdapter = createUserStyleColdAutomatorAdapter({ mini: session.mini });
+  }
   const artifacts = [];
   try {
     for (let index = 0; index < Math.max(1, Number(samples) || 1); index += 1) {
@@ -629,7 +711,7 @@ async function runCli({ scenario = 'A', samples = 1, skipBuild = false, expected
   }
 }
 
-module.exports = { ARTIFACT_ROOT, readLedger, readSnapshot, segmentDurations, serverSegments, hardInvalidActionSegments, measureTransportCalibration, transportSegments, summarize, summarizeArtifacts, writeArtifact, waitForBridge, waitForTodayIdle, invalidateRestoreSnapshot, markHardInvalid, prepareHardInvalidAndRelaunch, prepareUserStyleCold, isUsableSnapshot, isFixedEightCardBatch, switchToTodayWithClientTiming, runScenario, runCli };
+module.exports = { ARTIFACT_ROOT, readLedger, readSnapshot, segmentDurations, serverSegments, hardInvalidActionSegments, measureTransportCalibration, transportSegments, summarize, summarizeArtifacts, writeArtifact, waitForBridge, waitForTodayIdle, invalidateRestoreSnapshot, markHardInvalid, prepareHardInvalidAndRelaunch, prepareUserStyleCold, createUserStyleColdAutomatorAdapter, isUsableSnapshot, isFixedEightCardBatch, switchToTodayWithClientTiming, runScenario, runCli };
 
 if (require.main === module) {
   const args = new Map(process.argv.slice(2).map((arg) => {
