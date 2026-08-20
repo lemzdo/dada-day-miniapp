@@ -49,3 +49,13 @@ test('V2 generation accepts refresh exclusions without invoking Legacy response 
   assert.match(source, /excludedOutfitKeys/);
   assert.match(source, /shouldUseRecommendationV2\(event\)/);
 });
+
+test('V2 performance ledger is acceptance-only and records safety gates', () => {
+  const start = source.indexOf('async function generateRecommendationV2');
+  const end = source.indexOf('function validateCandidatePoolAvailability', start);
+  const branch = source.slice(start, end);
+  assert.match(branch, /isRecommendationV2Acceptance\(event\)/);
+  assert.match(branch, /legacyPersistenceCalled: false/);
+  assert.match(branch, /aiStarted: false/);
+  assert.match(branch, /responseSerializationBytes/);
+});

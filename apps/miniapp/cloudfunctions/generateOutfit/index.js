@@ -310,6 +310,7 @@ async function generateRecommendationV2({
   weatherSnapshot,
   candidatePoolIdentity,
   now,
+  diagnostics,
 }) {
   if (!Array.isArray(recommendations) || recommendations.length !== 8) {
     throw createBusinessError('V2_RECOMMENDATION_COUNT_INVALID', 'V2 requires exactly eight selected recommendations');
@@ -331,10 +332,12 @@ async function generateRecommendationV2({
   }
   // Status is deliberately projected from the selected candidates in parallel. It does not
   // invoke the Legacy enrichment/state/snapshot path and therefore cannot block its head.
+  const statusStartedAt = Date.now();
   const [favoriteMap, wornMap] = await Promise.all([
     findV2FavoriteKeys(openid, order),
     findV2WornKeys(openid, order, targetDate),
   ]);
+  const statusJoinMs = Date.now() - statusStartedAt;
   const status = order.map((outfitKey, index) => ({
     isFavorite: Boolean(favoriteMap.get(outfitKey)) || recommendations[index].isFavorite === true,
     isWornToday: Boolean(wornMap.get(outfitKey)) || recommendations[index].isWornToday === true,
@@ -391,6 +394,7 @@ async function generateRecommendationV2({
     clothingIds: light.cards[position].clothingIds,
     position,
   }));
+  const commitStartedAt = Date.now();
   const persisted = await persistRecommendationBatchV2({
     database: db,
     openid,
@@ -404,12 +408,34 @@ async function generateRecommendationV2({
     },
     now,
   });
-  return {
+  const commitMs = Date.now() - commitStartedAt;
+  const response = {
     runtimeVersion: RECOMMENDATION_V2_RUNTIME_VERSION,
     schemaVersion: RECOMMENDATION_V2_SCHEMA_VERSION,
     batch: projectBatchCoreV2(persisted.batch),
     light,
   };
+  if (isRecommendationV2Acceptance(event)) {
+    response.diagnostics = {
+      version: 'recommendation-v2-acceptance-ledger-v1',
+      serverTotalMs: Date.now() - (diagnostics?.startedAt || Date.now()),
+      candidateMs: diagnostics?.timings?.candidateGenerationMs || diagnostics?.timings?.candidatePoolLoadMs || 0,
+      selectMs: diagnostics?.timings?.batchSelectionMs || 0,
+      safeReasonMs: 0,
+      statusFavoriteMs: 0,
+      statusWornMs: 0,
+      statusJoinMs,
+      atomicCommitMs: commitMs,
+      responseProjectionMs: 0,
+      responseSerializationBytes: serializedBytes(response),
+      responseBytes: serializedBytes(response),
+      aiStarted: false,
+      legacyPersistenceCalled: false,
+      cardCount: 8,
+      order: response.light.cards.map((card) => card.outfitKey),
+    };
+  }
+  return response;
 }
 
 function validateCandidatePoolAvailability(recommendations, requestedCount) {
@@ -647,6 +673,7 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
       weatherSnapshot,
       candidatePoolIdentity,
       now,
+      diagnostics,
     });
   }
   diagnostics.progressiveMaterialization = {
