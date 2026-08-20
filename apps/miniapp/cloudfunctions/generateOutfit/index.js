@@ -98,6 +98,7 @@ const {
   persistRecommendationBatchV2,
   stableReferenceId,
 } = require('./services/recommendationV2BatchRepository');
+const { bootstrapRecommendationV2Collections } = require('./services/recommendationV2CollectionBootstrap');
 const {
   applyWearabilityAndSceneEligibility,
   evaluateOptionalItemPolicy,
@@ -201,6 +202,14 @@ exports.main = async (event = {}) => {
       return ok(buildTransportPayloadProbeResult(handlerStartedAt, event.payloadBytes));
     }
     return ok(buildTransportProbeResult(handlerStartedAt));
+  }
+  if (action === 'bootstrapRecommendationV2Collections') {
+    if (!isRecommendationV2Acceptance(event)) return fail(createBusinessError('V2_COLLECTION_BOOTSTRAP_DIAGNOSTIC_ONLY', 'V2 collection bootstrap requires strict acceptance diagnostics'));
+    try {
+      return ok(await bootstrapRecommendationV2Collections({ database: db, acceptanceRunId: event.acceptanceRunId }));
+    } catch (error) {
+      return fail(error);
+    }
   }
   const recommendationDiagnostics = action === 'generate'
     ? createRecommendationDiagnostics(event, handlerStartedAt)
