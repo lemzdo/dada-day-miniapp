@@ -537,6 +537,7 @@ async function ensureDevToolsDirectSession({
   automatorPort = Number(process.env.D1D_DEVTOOLS_AUTOMATOR_PORT) || AUTOMATOR_PORT,
   waitMs = 30000,
   pollMs = 500,
+  preserveCurrentPage = false,
 } = {}) {
   const probe = deps.tcpProbe || tcpProbe;
   const inspect = (port) => portState(port, deps);
@@ -565,7 +566,9 @@ async function ensureDevToolsDirectSession({
   }
   const session = await attachAutomator({ endpoint: endpoint || `ws://127.0.0.1:${automatorPort}`, deps });
   try {
-    const acquired = await acquireTodayPage(session);
+    const acquired = preserveCurrentPage
+      ? { page: await session.mini.currentPage(), route: String((await session.mini.currentPage())?.path || '').replace(/^\//, '') }
+      : await acquireTodayPage(session);
     return { ...session, ...acquired, service, automator, started, state: 'DEVTOOLS_RUNNING_AUTOMATOR_SERVER_LISTENING_AUTOMATOR_ATTACHED' };
   } catch (error) {
     try { session.mini.disconnect(); } catch {}

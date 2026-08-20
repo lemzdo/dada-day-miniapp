@@ -576,10 +576,14 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
   }
   let userStyleColdPreparation = null;
   if (scenario === USER_STYLE_COLD_SCENARIO) {
-    await waitForBridge(mini, timeoutMs);
-    await waitForTodayIdle(mini, timeoutMs);
-    const previousState = await mini.evaluate(() => globalThis.__d1dTodayDiagnostics?.readCopyAcceptanceState?.() || null);
-    previousBatchId = previousState?.recommendationBatchId || null;
+    const currentPage = typeof mini.currentPage === 'function' ? await mini.currentPage() : null;
+    const onFormRoute = String(currentPage?.path || '').replace(/^\//, '') === USER_STYLE_FORM_ROUTE;
+    if (!onFormRoute) {
+      await waitForBridge(mini, timeoutMs);
+      await waitForTodayIdle(mini, timeoutMs);
+      const previousState = await mini.evaluate(() => globalThis.__d1dTodayDiagnostics?.readCopyAcceptanceState?.() || null);
+      previousBatchId = previousState?.recommendationBatchId || null;
+    }
     userStyleColdPreparation = await prepareUserStyleCold(mini, userStyleColdAdapter, {
       acceptanceRunId: runId,
       captureId: `${runId}-capture`,
@@ -707,11 +711,13 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
 
 async function runCli({ scenario = 'A', samples = 1, skipBuild = false, expectedRuntimeV2 = false, userStyleColdAdapter } = {}) {
   if (!skipBuild) throw new Error('TTUI_RUNNER_REQUIRES_PREBUILT_MINIAPP_USE_SKIP_BUILD');
-  const session = await ensureDevToolsDirectSession();
+  const session = await ensureDevToolsDirectSession({ preserveCurrentPage: scenario === USER_STYLE_COLD_SCENARIO });
   let userStyleColdSessionPreparation = null;
   if (scenario === USER_STYLE_COLD_SCENARIO && !userStyleColdAdapter) {
-    userStyleColdSessionPreparation = await prepareUserStyleColdSession(session.mini);
-    userStyleColdAdapter = createUserStyleColdAutomatorAdapter({ mini: session.mini });
+    const currentPage = await session.mini.currentPage();
+    const onFormRoute = String(currentPage?.path || '').replace(/^\//, '') === USER_STYLE_FORM_ROUTE;
+    if (!onFormRoute) userStyleColdSessionPreparation = await prepareUserStyleColdSession(session.mini);
+    userStyleColdAdapter = createUserStyleColdAutomatorAdapter({ mini: session.mini, startInCurrentForm: onFormRoute });
   }
   const artifacts = [];
   try {
