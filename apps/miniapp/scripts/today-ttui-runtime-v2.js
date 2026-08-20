@@ -391,7 +391,22 @@ function createUserStyleColdAutomatorAdapter({ mini, timeoutMs = 15000, startInC
     let page = await waitForAutomatorRoute(mini, USER_STYLE_WARDROBE_ROUTE, timeoutMs);
     const cards = await page.$$('.grid-item');
     if (!cards.length) throw new Error('TTUI_USER_STYLE_VISIBLE_CLOTHING_REQUIRED');
-    await cards[0].tap();
+    // Some DevTools builds do not dispatch a tap on a View with a nested
+    // lazy image consistently. Keep the attempts UI-only and bounded; each
+    // fallback is a real element from the wardrobe source tree.
+    const tapTargets = [cards[0], await page.$('.grid-item .item-image-wrapper'), await page.$('.grid-item .item-name')].filter(Boolean);
+    let detailRouteReached = false;
+    for (const target of tapTargets.slice(0, 3)) {
+      await target.tap();
+      try {
+        await waitForAutomatorRoute(mini, USER_STYLE_DETAIL_ROUTE, Math.min(timeoutMs, 5000));
+        detailRouteReached = true;
+        break;
+      } catch (error) {
+        if (!String(error?.message || error).includes('TTUI_USER_STYLE_ROUTE_TIMEOUT')) throw error;
+      }
+    }
+    if (!detailRouteReached) throw new Error('TTUI_USER_STYLE_DETAIL_TAP_FAILED:attempts=3');
     page = await waitForAutomatorRoute(mini, USER_STYLE_DETAIL_ROUTE, timeoutMs);
     const editLink = await waitForAutomatorElement(page, '.detail-edit-link', timeoutMs);
     await editLink.tap();

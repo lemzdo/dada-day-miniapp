@@ -162,3 +162,4 @@ test('B selects the new REFRESH run and validates canonical V2 copy from the dia
   assert.equal(artifact.client.firstImagePaintMs, 80);
   assert.ok(artifact.observedUsableAt >= artifact.actionStartedAt);
 });
+
