@@ -370,13 +370,23 @@ async function prepareUserStyleColdSession(mini, timeoutMs = 30000) {
 }
 
 /** Built-in real UI adapter. It deliberately has no storage/cloud primitives. */
-function createUserStyleColdAutomatorAdapter({ mini, timeoutMs = 15000 } = {}) {
+function createUserStyleColdAutomatorAdapter({ mini, timeoutMs = 15000, startInCurrentForm = false } = {}) {
   if (!mini || typeof mini.switchTab !== 'function' || typeof mini.currentPage !== 'function') {
     throw new Error('TTUI_USER_STYLE_AUTOMATOR_REQUIRED');
   }
   let originalName;
   let sampleNumber = 0;
+  let useCurrentForm = startInCurrentForm;
   const openNameEditor = async () => {
+    if (useCurrentForm) {
+      useCurrentForm = false;
+      const current = await mini.currentPage();
+      if (String(current?.path || '').replace(/^\//, '') === USER_STYLE_FORM_ROUTE) {
+        const inputs = await current.$$('.item-input');
+        if (!inputs.length) throw new Error('TTUI_USER_STYLE_NAME_INPUT_SELECTOR_MISSING');
+        return { page: current, input: inputs[0] };
+      }
+    }
     await mini.switchTab('/pages/wardrobe/index');
     let page = await waitForAutomatorRoute(mini, USER_STYLE_WARDROBE_ROUTE, timeoutMs);
     const cards = await page.$$('.grid-item');
@@ -402,6 +412,7 @@ function createUserStyleColdAutomatorAdapter({ mini, timeoutMs = 15000 } = {}) {
     if (originalName === undefined) originalName = String(await editor.input.value() || '');
     sampleNumber += 1;
     const changedName = `${originalName || '诊断衣物'}·${String(runId).slice(-8)}-${sampleNumber}`;
+    const actionStartedAt = Date.now();
     await editor.input.input(changedName);
     const saveButton = await waitForAutomatorElement(editor.page, '.save-button', timeoutMs);
     await saveButton.tap();
@@ -411,7 +422,7 @@ function createUserStyleColdAutomatorAdapter({ mini, timeoutMs = 15000 } = {}) {
       restored: false,
       method: 'automator:wardrobe-grid-item>detail-edit-link>item-input>save-button',
       recoveryEvidence: `changed:${changedName}`,
-      actionStartedAt: Date.now(),
+      actionStartedAt,
       restore: async () => {
         await saveNameThroughUi(originalName);
         return { restored: true, recoveryEvidence: `restored:${originalName}` };
