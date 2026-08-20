@@ -213,6 +213,7 @@ function consumeHardInvalidAcceptanceRequest(
 interface TodayDiagnosticsBridge {
   marker: 'd1d-today-production-handler-v1';
   copyAcceptanceBuild: 'today-copy-naturalness-v3';
+  bundleRevision: 'today-v2-client-4b51368';
   ready: boolean;
   sceneKey: SceneKey;
   triggerFullCompute: (request: TodayFullComputeAcceptanceRequest) => Promise<boolean>;
@@ -2495,6 +2496,7 @@ export default function TodayPage() {
     const bridge: TodayDiagnosticsBridge = {
       marker: 'd1d-today-production-handler-v1',
       copyAcceptanceBuild: 'today-copy-naturalness-v3',
+      bundleRevision: 'today-v2-client-4b51368',
       ready: Boolean(isAuthenticated && runtimeKey && !loading && !operation),
       sceneKey: selectedSceneKeyRef.current,
       readCopyAcceptanceState: () => ({

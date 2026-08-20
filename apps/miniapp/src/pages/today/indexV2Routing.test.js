@@ -27,3 +27,7 @@ test('strict acceptance bridge explicitly dispatches V2 refresh with Flag OFF', 
   assert.match(source, /if \(isStrictV2Acceptance\(acceptanceRequest\)\) \{\s*return handleV2Refresh\(acceptanceRequest\);/);
   assert.match(source, /return handleRefresh\(acceptanceRequest\);/);
 });
+
+test('diagnostics bridge exposes an immutable client bundle revision', () => {
+  assert.match(source, /bundleRevision: 'today-v2-client-4b51368'/);
+});
