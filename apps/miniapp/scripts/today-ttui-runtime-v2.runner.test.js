@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { invalidateRestoreSnapshot, isUsableSnapshot, markHardInvalid, prepareHardInvalidAndRelaunch, readSnapshot, runScenario } = require('./today-ttui-runtime-v2');
+const { invalidateRestoreSnapshot, isUsableSnapshot, markHardInvalid, prepareHardInvalidAndRelaunch, prepareUserStyleCold, readSnapshot, runScenario } = require('./today-ttui-runtime-v2');
 
 function miniMock() {
   const copyContract = { copyContractVersion: 'recommendation-copy-contract-v8', voiceBankVersion: 'xiaoda-fixed-claim-catalog-v2', gateResult: 'PASS', riskFlags: [], naturalnessGateVersion: 'copy-naturalness-gate-v3', naturalnessGateResult: 'PASS', naturalnessRiskFlags: [], structuralNaturalnessResult: 'PASS', structuralNaturalnessRiskFlags: [], xiaodaStyleInsight: { version: 'xiaoda-style-insight-v3' }, todayCopyProvenance: {}, todayReason: 'copy', coreEligibilityReason: 'reason', coreEligibilityReasonCode: 'code', coreEligibilityEvidence: ['e'] };
@@ -58,6 +58,18 @@ test('C preparation atomically marks hard invalid, correlates diagnostics, and r
   assert.equal(mini.store.has('d1d:userStorage:v1:user-a:today:outfitReturnSnapshot:recommendation-copy-contract-v8'), false);
   assert.deepEqual(mini.store.get('today:ttui-hard-invalid-acceptance:v1'), request);
   assert.deepEqual(mini.store.get(result.key).acceptanceDiagnostics, request);
+});
+
+test('user-style cold requires a reversible real-path adapter and recovery evidence', async () => {
+  const mini = miniMock();
+  await assert.rejects(() => prepareUserStyleCold(mini, null, {}), /TTUI_USER_STYLE_COLD_ADAPTER_REQUIRED/);
+  await assert.rejects(() => prepareUserStyleCold(mini, async () => ({ changed: true, restored: false }), {}), /TTUI_USER_STYLE_COLD_ADAPTER_INCOMPLETE/);
+  const result = await prepareUserStyleCold(mini, async ({ scenario, requireRecoveryEvidence }) => ({
+    scenario, requireRecoveryEvidence, changed: true, restored: true, method: 'adapter-test-real-ui-change', recoveryEvidence: 'adapter-test-restored', actionStartedAt: 123,
+  }), { acceptanceRunId: 'run-d' });
+  assert.equal(result.scenario, 'user-style-cold');
+  assert.equal(result.restored, true);
+  assert.equal(result.actionStartedAt, 123);
 });
 
 test('scenario A enters Today through the real tab path without triggering cloud', async () => {

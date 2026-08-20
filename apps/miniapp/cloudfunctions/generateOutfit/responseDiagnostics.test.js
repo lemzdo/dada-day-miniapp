@@ -378,10 +378,31 @@ test('canonical batch diagnostics conserve bytes and expose home-light increment
   assert.equal(planned.mode, 'pre_full_card_compilation_home_light_shadow');
   assert.equal(planned.homeLightCardBytes.length, 8);
   assert.equal(planned.safeCopyReady, true);
-  assert.equal(planned.statusFieldsReady, false);
-  assert.equal(planned.detailRouteReady, false);
+  assert.equal(planned.detailIdentityReady, true);
+  assert.equal(planned.persistedDetailDocumentReady, false);
   assert.ok(planned.tCard2Ms >= planned.tCard1Ms);
   assert.ok(planned.tTailMs >= planned.tCard2Ms);
+});
+
+test('favorite and worn diagnostics report independent full-document reads without leaking to normal payload', () => {
+  const internals = loadInternals();
+  const diagnostics = { diagnosticsRequested: true };
+  internals.recordStatusQueryDiagnostic(diagnostics, 'favorite', {
+    data: [{ _id: 'fav-1', outfitKey: 'key-1', _openid: 'user-1', createdAt: '2026-08-20' }],
+  }, Date.now() - 4);
+  internals.recordStatusQueryDiagnostic(diagnostics, 'worn', {
+    data: [{ _id: 'wear-1', outfitKey: 'key-1', _openid: 'user-1', wornAt: '2026-08-20' }],
+  }, Date.now() - 6);
+  assert.equal(diagnostics.statusQueries.favorite.recordCount, 1);
+  assert.equal(diagnostics.statusQueries.worn.recordCount, 1);
+  assert.equal(diagnostics.statusQueries.favorite.projected, false);
+  assert.equal(diagnostics.statusQueries.worn.projected, false);
+  assert.ok(diagnostics.statusQueries.favorite.readPayloadBytes > 0);
+  assert.ok(diagnostics.statusQueries.worn.readPayloadBytes > 0);
+  const normal = { debug: { diagnostics } };
+  internals.stripResponseDiagnosticsForBusinessResponse(normal);
+  assert.equal(normal.debug.timings, undefined);
+  assert.deepEqual(normal.debug.diagnostics, diagnostics);
 });
 
 test('eight-card normal response keeps raw fact carriers out of the business payload', () => {

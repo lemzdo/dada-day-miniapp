@@ -1546,8 +1546,10 @@ function measurePlannedHomeLightMaterialization({
     homeLightPayloadBytes: serializedBytes(cards),
     homeLightCardBytes: cards.map((card) => serializedBytes(card)),
     safeCopyReady: true,
-    statusFieldsReady: false,
-    detailRouteReady: false,
+    // Detail is considered ready once a reliable identity can be handed to
+    // the route. Persisted deep detail data is intentionally measured apart.
+    detailIdentityReady: cards.length > 0 && cards.every((card) => typeof card?.outfitKey === 'string' && card.outfitKey.length > 0),
+    persistedDetailDocumentReady: false,
   };
 }
 
@@ -1569,7 +1571,8 @@ function measureHomeLightMaterialization(outfits, handlerStartedAt = Date.now())
     card3ToTailIncrementalMs: Math.max(0, tTailMs - (tCard2Ms || tCard1Ms)),
     homeLightPayloadBytes: serializedBytes(cards),
     homeLightCardBytes: cards.map((card) => serializedBytes(card)),
-    statusFieldsReady: false,
+    detailIdentityReady: cards.length > 0 && cards.every((card) => typeof card?.outfitKey === 'string' && card.outfitKey.length > 0),
+    persistedDetailDocumentReady: false,
   };
 }
 
@@ -6815,5 +6818,6 @@ if (process.env.NODE_ENV === 'test') {
     measureCanonicalBatchInput,
     measureHomeLightMaterialization,
     measurePlannedHomeLightMaterialization,
+    recordStatusQueryDiagnostic,
   };
 }

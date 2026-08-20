@@ -13,6 +13,7 @@ const ARTIFACT_ROOT = path.resolve(__dirname, '../../../artifacts/today-ttui-run
 const TRANSPORT_KEY = 'generateOutfit:acceptance-transport:v1';
 const PERFORMANCE_KEY = 'generateOutfit:performance-ledger:v1';
 const HARD_INVALID_ACCEPTANCE_KEY = 'today:ttui-hard-invalid-acceptance:v1';
+const USER_STYLE_COLD_SCENARIO = 'D';
 
 function nowId(prefix = 'ttui') {
   return `${prefix}-${new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)}-${crypto.randomBytes(4).toString('hex')}`;
@@ -304,6 +305,21 @@ async function prepareHardInvalidAndRelaunch(mini, acceptanceRequest) {
   }, acceptanceRequest);
 }
 
+/**
+ * Adapter boundary for a real wardrobe-change cold path. The runner never
+ * writes a hard-invalid marker for this scenario; the adapter must drive the
+ * existing reversible UI/cache invalidation chain and return recovery proof.
+ */
+async function prepareUserStyleCold(mini, adapter, payload) {
+  if (typeof adapter !== 'function') throw new Error('TTUI_USER_STYLE_COLD_ADAPTER_REQUIRED');
+  const result = await adapter({ mini, ...payload, scenario: 'user-style-cold', requireRecoveryEvidence: true });
+  if (!result || result.changed !== true || result.restored !== true
+    || typeof result.method !== 'string' || typeof result.recoveryEvidence !== 'string') {
+    throw new Error('TTUI_USER_STYLE_COLD_ADAPTER_INCOMPLETE');
+  }
+  return result;
+}
+
 async function waitForTodayIdle(mini, timeoutMs = 30000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -419,7 +435,7 @@ async function switchToTodayWithClientTiming(mini, timeoutMs) {
   }, { timeout: timeoutMs });
 }
 
-async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 30000, expectedRuntimeV2 = false } = {}) {
+async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 30000, expectedRuntimeV2 = false, userStyleColdAdapter } = {}) {
   if (!mini) throw new Error('TTUI_MINI_REQUIRED');
   const runId = nowId(`ttui-${scenario}`);
   const startedAt = Date.now();
@@ -447,6 +463,20 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
     });
     request = { ...request, hardInvalidPreparation };
   }
+  let userStyleColdPreparation = null;
+  if (scenario === USER_STYLE_COLD_SCENARIO) {
+    await waitForBridge(mini, timeoutMs);
+    await waitForTodayIdle(mini, timeoutMs);
+    const previousState = await mini.evaluate(() => globalThis.__d1dTodayDiagnostics?.readCopyAcceptanceState?.() || null);
+    previousBatchId = previousState?.recommendationBatchId || null;
+    userStyleColdPreparation = await prepareUserStyleCold(mini, userStyleColdAdapter, {
+      acceptanceRunId: runId,
+      captureId: `${runId}-capture`,
+    });
+    actionStartedAt = Number(userStyleColdPreparation.actionStartedAt) || Date.now();
+    if (typeof mini.switchTab !== 'function') throw new Error('TTUI_USER_STYLE_COLD_SWITCH_TAB_REQUIRED');
+    await mini.switchTab('/pages/today/index');
+  }
   if (scenario === 'A' && typeof mini.switchTab === 'function') {
     await mini.switchTab('/pages/wardrobe/index');
     const clientTiming = await switchToTodayWithClientTiming(mini, timeoutMs);
@@ -454,7 +484,7 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
     observedUsableAt = Number(clientTiming?.observedUsableAt) || 0;
     initialUsableState = clientTiming?.usableState || null;
   }
-  else if (scenario !== 'C' && typeof mini.reLaunch === 'function') {
+  else if (scenario !== 'C' && scenario !== USER_STYLE_COLD_SCENARIO && typeof mini.reLaunch === 'function') {
     await mini.reLaunch('/pages/today/index');
   }
   const bridge = await waitForBridge(mini, timeoutMs);
@@ -519,7 +549,7 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
     clientSegments.clientStateMs = clientSegments.postResponseUsableMs;
   }
   const artifact = {
-    runId, scenario, startedAt, actionStartedAt, observedUsableAt, endedAt: Date.now(), triggerResult, hardInvalidPreparation: request.hardInvalidPreparation || null,
+    runId, scenario, startedAt, actionStartedAt, observedUsableAt, endedAt: Date.now(), triggerResult, hardInvalidPreparation: request.hardInvalidPreparation || null, userStyleColdPreparation,
     bridge: { marker: bridge.marker, ready: bridge.ready, sceneKey: bridge.sceneKey },
     previousBatchId, ledger: active, transport, performance, copyState, usableState, server: serverSegments(performance || {}), client: clientSegments,
     validation: {
@@ -532,6 +562,7 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
       scenarioCCorrelatedRequest: scenario !== 'C' || (transport?.acceptanceRunId === runId && Number(performance?.serverTotalMs) > 0),
       scenarioCNoStaleBatchPaint: scenario !== 'C' || (observedUsableAt >= Number(transport?.callFunctionPromiseResolved) && (!previousBatchId || copyState?.recommendationBatchId !== previousBatchId)),
       hardInvalidRejected: scenario !== 'C' || (transport?.acceptanceRunId === runId && (!previousBatchId || copyState?.recommendationBatchId !== previousBatchId)),
+      scenarioDUserStyleCold: scenario !== USER_STYLE_COLD_SCENARIO || (userStyleColdPreparation?.changed === true && userStyleColdPreparation?.restored === true && userStyleColdPreparation?.method && userStyleColdPreparation?.recoveryEvidence),
       noCloudBeforeUsablePaint: scenario !== 'A' || !Number.isFinite(Number(transport?.callFunctionPromiseResolved)) || observedUsableAt <= Number(transport.callFunctionPromiseResolved),
       scenarioAZeroCloudRequests: scenario === 'A' ? (Number(active?.generateOutfitRequestCount) || 0) === 0 : true,
       canonicalCopyReady: !expectedRuntimeV2 || (Array.isArray(copyState?.outfits) && copyState.outfits.length > 0 && copyState.outfits.every((outfit, index, all) => outfit?.canonicalRecommendationCopyV2?.text && ['safe', 'ai_cache'].includes(outfit.canonicalRecommendationCopyV2.source) && outfit.canonicalRecommendationCopyV2.batchIndex === index && outfit.canonicalRecommendationCopyV2.batchTotal === all.length)),
@@ -540,21 +571,21 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
     },
   };
   artifact.actionToRequestBreakdown = hardInvalidActionSegments(artifact);
-  if (!artifact.validation.completeLedger || !artifact.validation.firstUsablePaint || !artifact.validation.noCloudBeforeUsablePaint || !artifact.validation.canonicalCopyReady || !artifact.validation.usableCard || !artifact.validation.fixedEightCardBatch || !artifact.validation.scenarioBRefreshRun || !artifact.validation.scenarioCColdRun || !artifact.validation.scenarioCCorrelatedRequest || !artifact.validation.scenarioCNoStaleBatchPaint || !artifact.validation.hardInvalidRejected) {
+  if (!artifact.validation.completeLedger || !artifact.validation.firstUsablePaint || !artifact.validation.noCloudBeforeUsablePaint || !artifact.validation.canonicalCopyReady || !artifact.validation.usableCard || !artifact.validation.fixedEightCardBatch || !artifact.validation.scenarioBRefreshRun || !artifact.validation.scenarioCColdRun || !artifact.validation.scenarioCCorrelatedRequest || !artifact.validation.scenarioCNoStaleBatchPaint || !artifact.validation.hardInvalidRejected || !artifact.validation.scenarioDUserStyleCold) {
     throw Object.assign(new Error('TTUI_SCENARIO_INVARIANT_FAILED'), { artifact });
   }
   return artifact;
 }
 
-async function runCli({ scenario = 'A', samples = 1, skipBuild = false, expectedRuntimeV2 = false } = {}) {
+async function runCli({ scenario = 'A', samples = 1, skipBuild = false, expectedRuntimeV2 = false, userStyleColdAdapter } = {}) {
   if (!skipBuild) throw new Error('TTUI_RUNNER_REQUIRES_PREBUILT_MINIAPP_USE_SKIP_BUILD');
   const session = await ensureDevToolsDirectSession();
   const artifacts = [];
   try {
     for (let index = 0; index < Math.max(1, Number(samples) || 1); index += 1) {
       try {
-        const artifact = await runScenario({ scenario, mini: session.mini, expectedRuntimeV2 });
-        if (scenario === 'B' || scenario === 'C') {
+        const artifact = await runScenario({ scenario, mini: session.mini, expectedRuntimeV2, userStyleColdAdapter });
+        if (scenario === 'B' || scenario === 'C' || scenario === USER_STYLE_COLD_SCENARIO) {
           artifact.transportCalibration = await measureTransportCalibration(session.mini);
           artifact.transportBreakdown = transportSegments(artifact);
         }
@@ -584,7 +615,7 @@ async function runCli({ scenario = 'A', samples = 1, skipBuild = false, expected
   }
 }
 
-module.exports = { ARTIFACT_ROOT, readLedger, readSnapshot, segmentDurations, serverSegments, hardInvalidActionSegments, measureTransportCalibration, transportSegments, summarize, summarizeArtifacts, writeArtifact, waitForBridge, waitForTodayIdle, invalidateRestoreSnapshot, markHardInvalid, prepareHardInvalidAndRelaunch, isUsableSnapshot, isFixedEightCardBatch, switchToTodayWithClientTiming, runScenario, runCli };
+module.exports = { ARTIFACT_ROOT, readLedger, readSnapshot, segmentDurations, serverSegments, hardInvalidActionSegments, measureTransportCalibration, transportSegments, summarize, summarizeArtifacts, writeArtifact, waitForBridge, waitForTodayIdle, invalidateRestoreSnapshot, markHardInvalid, prepareHardInvalidAndRelaunch, prepareUserStyleCold, isUsableSnapshot, isFixedEightCardBatch, switchToTodayWithClientTiming, runScenario, runCli };
 
 if (require.main === module) {
   const args = new Map(process.argv.slice(2).map((arg) => {
