@@ -331,9 +331,20 @@ async function prepareValidSnapshot(mini, timeoutMs = 30000) {
   if (existing) await invalidateRestoreSnapshot(mini);
   const bridge = await waitForBridge(mini, timeoutMs);
   const runId = nowId('ttui-prepare');
-  const triggerResult = await mini.evaluate(async (payload) => globalThis.__d1dTodayDiagnostics.triggerFullCompute(payload), {
+  let triggerResult = await mini.evaluate(async (payload) => globalThis.__d1dTodayDiagnostics.triggerFullCompute(payload), {
     acceptanceRunId: runId, captureId: `${runId}-capture`,
   });
+  // A freshly attached DevTools page can expose the diagnostics bridge before
+  // the recommendation intent registry has mounted. Retry only the sampling
+  // trigger after a real page lifecycle, without changing Today behavior.
+  if (triggerResult === false) {
+    if (typeof mini.reLaunch === 'function') await mini.reLaunch('/pages/today/index');
+    await waitForBridge(mini, timeoutMs);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    triggerResult = await mini.evaluate(async (payload) => globalThis.__d1dTodayDiagnostics.triggerFullCompute(payload), {
+      acceptanceRunId: runId, captureId: `${runId}-capture-retry`,
+    });
+  }
   if (triggerResult === false) {
     const bridgeState = await mini.evaluate(() => globalThis.__d1dTodayDiagnostics?.readCopyAcceptanceState?.() || null);
     throw Object.assign(new Error('TTUI_VALID_SNAPSHOT_PREPARATION_REJECTED'), { bridgeState, triggerResult });
