@@ -25,6 +25,13 @@ const config = defineConfig({
     '@': path.resolve(__dirname, '..', 'src'),
   },
   mini: {
+    webpackChain(chain) {
+      // The workspace types package exports source TypeScript. Taro's script
+      // rule otherwise limits Babel processing to the miniapp source root.
+      const scriptRule = chain.module.rule('script');
+      scriptRule.exclude.clear();
+      scriptRule.include.add(path.resolve(__dirname, '..', '..', '..', 'packages', 'types', 'src'));
+    },
     postcss: {
       pxtransform: {
         enable: true,
