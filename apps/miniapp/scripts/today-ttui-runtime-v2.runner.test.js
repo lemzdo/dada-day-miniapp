@@ -121,8 +121,8 @@ test('B selects the new REFRESH run and validates canonical V2 copy from the dia
   mini.evaluate = async (fn, arg) => {
     const source = String(fn);
     if (source.includes('triggerRefresh')) { refreshTriggered = true; acceptanceRunId = arg.acceptanceRunId; return true; }
-    if (source.includes('readCopyAcceptanceState')) return { outfits: [{ canonicalRecommendationCopyV2: { text: 'safe copy', source: 'safe', batchIndex: 0, batchTotal: 1 } }] };
-    if (source.includes('readUsableCardState')) return { batchIndex: 1, batchTotal: 1, hasOutfit: true, copyTextPresent: true, copySource: 'safe', canSwipe: false, canFavorite: true, canOpenDetail: true };
+    if (source.includes('readCopyAcceptanceState')) return { outfits: Array.from({ length: 8 }, (_, index) => ({ canonicalRecommendationCopyV2: { text: `safe copy ${index}`, source: 'safe', batchIndex: index, batchTotal: 8 } })) };
+    if (source.includes('readUsableCardState')) return { batchIndex: 1, batchTotal: 8, hasOutfit: true, copyTextPresent: true, copySource: 'safe', canSwipe: true, canFavorite: true, canOpenDetail: true };
     if (source.includes('__d1dTodayDiagnostics')) return { marker: 'd1d-today-production-handler-v1', ready: true, sceneKey: 'home' };
     if (arg === 'today:performance-ledger:v1') return refreshTriggered ? { active: refresh, history: [baseline] } : { active: baseline, history: [] };
     if (arg === 'generateOutfit:performance-ledger:v1') return refreshTriggered ? { serverTotalMs: 10 } : null;

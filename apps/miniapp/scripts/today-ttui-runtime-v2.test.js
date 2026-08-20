@@ -2,7 +2,14 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { segmentDurations, serverSegments, summarizeArtifacts, transportSegments } = require('./today-ttui-runtime-v2');
+const { isFixedEightCardBatch, segmentDurations, serverSegments, summarizeArtifacts, transportSegments } = require('./today-ttui-runtime-v2');
+
+test('TTUI acceptance requires the fixed eight-card batch', () => {
+  const outfits = Array.from({ length: 8 }, (_, index) => ({ id: `outfit-${index}` }));
+  assert.equal(isFixedEightCardBatch({ batchTotal: 8 }, { outfits }), true);
+  assert.equal(isFixedEightCardBatch({ batchTotal: 8 }, null), true);
+  assert.equal(isFixedEightCardBatch({ batchTotal: 7 }, { outfits: outfits.slice(0, 7) }), false);
+});
 
 test('TTUI segments derive client state and usable paint from Today ledger stages', () => {
   const result = segmentDurations({ stages: { todayOnShow: 100, firstCardMounted: 160, firstImageLoaded: 220, responseAdaptStart: 120, responseAdaptEnd: 150, setOutfitsCalled: 170 }, durations: {} });
