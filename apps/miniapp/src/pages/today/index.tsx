@@ -250,7 +250,8 @@ function isTodayDiagnosticsRuntime() {
 
 function isStrictV2Acceptance(request?: TodayFullComputeAcceptanceRequest) {
   const runId = request?.acceptanceRunId;
-  return Boolean(typeof runId === 'string'
+  return Boolean(request?.performanceDiagnostics === true
+    && typeof runId === 'string'
     && runId.startsWith('ttui-v2-')
     && request?.captureId === `${runId}-capture`);
 }
@@ -396,6 +397,7 @@ export default function TodayPage() {
   const todayV2Enabled = isTodayV2Enabled();
   const [v2Snapshot, setV2Snapshot] = useState<TodayV2Snapshot | null>(null);
   const [v2MemoryOnly, setV2MemoryOnly] = useState(false);
+  const v2RuntimeActive = todayV2Enabled || v2MemoryOnly;
   const [selectedSceneKey, setSelectedSceneKey] = useState<SceneKey>('home');
   const [outfits, setOutfits] = useState<Outfit[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -967,6 +969,10 @@ export default function TodayPage() {
     if (!authContext) return false;
     const exclusions = previous?.cards.map((card) => card.outfitKey) ?? [];
     setLoading(true);
+    const refreshSeq = requestSeq.current + 1;
+    requestSeq.current = refreshSeq;
+    activeRequestSeqRef.current = refreshSeq;
+    setOperationForRequest(refreshSeq, 'refresh');
     setError('');
     try {
       const response = await generateCloudOutfitV2({
@@ -983,6 +989,7 @@ export default function TodayPage() {
           captureId: acceptanceDiagnostics?.captureId,
         } : {}),
       });
+      if (!isAuthContextCurrent(authContext) || activeRequestSeqRef.current !== refreshSeq) return false;
       const next = toTodayV2Snapshot(response);
       setV2Snapshot(next);
       const memoryOnly = isStrictV2Acceptance(acceptanceDiagnostics) && !todayV2Enabled;
@@ -993,9 +1000,13 @@ export default function TodayPage() {
       return true;
     } catch (error) {
       console.error('V2 refresh error:', error);
+      clearOperationForRequest(refreshSeq);
       setLoading(false);
       setRecommendationNotice('换一套失败，先保留刚才这批');
       return false;
+    }
+    finally {
+      clearOperationForRequest(refreshSeq);
     }
   }
 
@@ -1343,7 +1354,7 @@ export default function TodayPage() {
   }
 
   async function handleV2Favorite(card: import('@starter-template/types').HomeLightCardV2) {
-    if (!v2Snapshot || operation) return;
+    if (!v2Snapshot || operation || v2MemoryOnly) return;
     const authContext = captureAuthContext();
     if (!authContext) return;
     setOperation('favorite');
@@ -1362,7 +1373,7 @@ export default function TodayPage() {
   }
 
   async function handleV2Wear(card: import('@starter-template/types').HomeLightCardV2) {
-    if (!v2Snapshot || operation || card.isWornToday) return;
+    if (!v2Snapshot || operation || v2MemoryOnly || card.isWornToday) return;
     const authContext = captureAuthContext();
     if (!authContext) return;
     setOperation('wear');
@@ -1377,7 +1388,7 @@ export default function TodayPage() {
   }
 
   function openV2Detail(card: import('@starter-template/types').HomeLightCardV2) {
-    if (!v2Snapshot) return;
+    if (!v2Snapshot || v2MemoryOnly) return;
     void Taro.navigateTo({
       url: `/pages/outfit-detail/index?runtimeVersion=today-runtime-v2&batchId=${encodeURIComponent(v2Snapshot.batchId)}&outfitKey=${encodeURIComponent(card.outfitKey)}&referenceId=${encodeURIComponent(card.referenceId)}`,
     });
@@ -2525,7 +2536,7 @@ export default function TodayPage() {
           weather: request.weatherModeOverride === 'disabled' ? undefined : currentWeatherRef.current,
           weatherMode: request.weatherModeOverride ?? currentWeatherModeRef.current,
           trigger: 'retry',
-          acceptanceDiagnostics: request,
+          acceptanceDiagnostics: { ...request, performanceDiagnostics: true },
         });
       },
       triggerRefresh: async (request) => {
@@ -2534,7 +2545,7 @@ export default function TodayPage() {
         }
         if (loading || operation) throw new Error('Today recommendation handler is busy');
         copyAcceptanceCaptureLockRef.current = true;
-        return handleRefresh(request);
+        return handleRefresh({ ...request, performanceDiagnostics: true });
       },
     };
     diagnosticsGlobal.__d1dTodayDiagnostics = bridge;
@@ -2591,7 +2602,7 @@ export default function TodayPage() {
       </View>
 
       <View className="outfit-section">
-        {(todayV2Enabled || v2MemoryOnly) && v2Snapshot && (
+        {v2RuntimeActive && v2Snapshot && (
           <View className="recommendation-browser recommendation-browser-v2">
             <Swiper className="outfit-swiper" current={currentIndex} circular={false} onChange={(event) => setCurrentIndex(event.detail.current)}>
               {v2Snapshot.cards.map((card) => (
@@ -2606,16 +2617,16 @@ export default function TodayPage() {
               ))}
             </Swiper>
             <View className="swiper-footer"><Text>{currentIndex + 1} / {v2Snapshot.cards.length}</Text></View>
-            <View className={`refresh-btn ${v2Snapshot.core.countContract.exhausted ? 'disabled' : ''}`} onClick={() => { if (!v2Snapshot.core.countContract.exhausted) void handleRefresh(); }}><Text className="refresh-text">{v2Snapshot.core.countContract.exhausted ? '这一轮已看完' : '换一批灵感'}</Text></View>
+            <View className={`refresh-btn ${v2Snapshot.core.countContract.exhausted || v2MemoryOnly ? 'disabled' : ''}`} onClick={() => { if (!v2Snapshot.core.countContract.exhausted && !v2MemoryOnly) void handleRefresh(); }}><Text className="refresh-text">{v2Snapshot.core.countContract.exhausted ? '这一轮已看完' : '换一批灵感'}</Text></View>
           </View>
         )}
-        {(todayV2Enabled || v2MemoryOnly) && !v2Snapshot && loading && (
+        {v2RuntimeActive && !v2Snapshot && loading && (
           <View className="loading-state"><View className="loading-spinner" /><Text className="loading-text">正在生成今日搭配…</Text></View>
         )}
-        {(todayV2Enabled || v2MemoryOnly) && !v2Snapshot && !loading && error && (
+        {v2RuntimeActive && !v2Snapshot && !loading && error && (
           <View className="empty-state"><Text className="empty-text">{error}</Text></View>
         )}
-        {!todayV2Enabled && (
+        {!v2RuntimeActive && (
           <>
         {loading && !currentOutfit && showDelayedRequestHint && (
           <View className="loading-state">
