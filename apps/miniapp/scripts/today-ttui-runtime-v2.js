@@ -345,6 +345,60 @@ async function waitForAutomatorElement(page, selector, timeoutMs = 15000) {
   throw new Error(`TTUI_USER_STYLE_SELECTOR_TIMEOUT:${selector}:route=${page.path}:visible=${JSON.stringify(visible.filter((entry) => entry.present).map((entry) => entry.candidate))}`);
 }
 
+async function installSaveObservation(mini) {
+  await mini.evaluate(() => {
+    const root = globalThis;
+    const events = [];
+    const record = (event) => events.push({ at: Date.now(), ...event });
+    const wxObject = globalThis.wx;
+    const originalToast = wxObject?.showToast;
+    const originalCallFunction = wxObject?.cloud?.callFunction;
+    const originalNavigateBack = wxObject?.navigateBack;
+    if (typeof originalToast === 'function') wxObject.showToast = (options) => {
+      record({ type: 'toast', title: String(options?.title || ''), icon: String(options?.icon || '') });
+      return originalToast.call(wxObject, options);
+    };
+    if (typeof originalCallFunction === 'function') wxObject.cloud.callFunction = (options) => {
+      const name = String(options?.name || '');
+      if (name !== 'updateClothes') return originalCallFunction.call(wxObject.cloud, options);
+      record({ type: 'updateClothes:start' });
+      const result = originalCallFunction.call(wxObject.cloud, options);
+      return Promise.resolve(result).then((value) => {
+        record({ type: 'updateClothes:resolve', resultKeys: Object.keys(value?.result || value || {}) });
+        return value;
+      }, (error) => {
+        record({ type: 'updateClothes:reject', error: String(error?.errMsg || error?.message || error) });
+        throw error;
+      });
+    };
+    if (typeof originalNavigateBack === 'function') wxObject.navigateBack = (options) => {
+      record({ type: 'navigateBack:start', delta: Number(options?.delta) || 1 });
+      const result = originalNavigateBack.call(wxObject, options);
+      record({ type: 'navigateBack:called' });
+      return result;
+    };
+    root.__d1dSaveObservation = { events, restore: () => {
+      if (originalToast) wxObject.showToast = originalToast;
+      if (originalCallFunction) wxObject.cloud.callFunction = originalCallFunction;
+      if (originalNavigateBack) wxObject.navigateBack = originalNavigateBack;
+    } };
+  });
+  return {
+    read: () => mini.evaluate(() => ({ events: globalThis.__d1dSaveObservation?.events || [] })),
+    restore: () => mini.evaluate(() => { globalThis.__d1dSaveObservation?.restore?.(); delete globalThis.__d1dSaveObservation; return true; }),
+  };
+}
+
+async function readSaveUiState(page) {
+  const input = await page.$('.item-input');
+  const buttonText = await page.$('.save-button-text');
+  return {
+    note: input && typeof input.value === 'function' ? String(await input.value() || '') : null,
+    saveButtonText: buttonText && typeof buttonText.text === 'function' ? String(await buttonText.text() || '') : null,
+    route: String(page?.path || '').replace(/^\//, ''),
+  };
+}
+
 async function waitForUserStylePostSaveRoute(mini, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs;
   const allowed = new Set([USER_STYLE_DETAIL_ROUTE, USER_STYLE_WARDROBE_ROUTE]);
@@ -437,25 +491,38 @@ function createUserStyleColdAutomatorAdapter({ mini, timeoutMs = 15000, startInC
   return async ({ runId }) => {
     const editor = await openNameEditor();
     if (originalName === undefined) originalName = String(await editor.input.value() || '');
+    const before = await readSaveUiState(editor.page);
+    const observation = await installSaveObservation(mini);
     sampleNumber += 1;
     const changedName = `${originalName || '诊断衣物'}·${String(runId).slice(-8)}-${sampleNumber}`;
     const actionStartedAt = Date.now();
     await editor.input.input(changedName);
+    const afterInput = await readSaveUiState(editor.page);
     const saveButton = await waitForAutomatorElement(editor.page, '.save-button', timeoutMs);
-    await saveButton.tap();
-    const postSavePage = await waitForUserStylePostSaveRoute(mini, timeoutMs);
-    return {
-      changed: true,
-      restored: false,
-      method: 'automator:wardrobe-grid-item>detail-edit-link>item-input>save-button',
-      recoveryEvidence: `changed:${changedName}`,
-      postSaveRoute: String(postSavePage?.path || '').replace(/^\//, ''),
-      actionStartedAt,
-      restore: async () => {
-        await saveNameThroughUi(originalName);
-        return { restored: true, recoveryEvidence: `restored:${originalName}` };
-      },
-    };
+    try {
+      await saveButton.tap();
+      const postSavePage = await waitForUserStylePostSaveRoute(mini, timeoutMs);
+      const afterSave = await readSaveUiState(postSavePage).catch(() => ({ route: postSavePage?.path || null }));
+      const saveObservation = { before, afterInput, afterSave, ...(await observation.read()) };
+      await observation.restore();
+      return {
+        changed: true,
+        restored: false,
+        method: 'automator:wardrobe-grid-item>detail-edit-link>item-input>save-button',
+        recoveryEvidence: `changed:${changedName}`,
+        postSaveRoute: String(postSavePage?.path || '').replace(/^\//, ''),
+        actionStartedAt,
+        saveObservation,
+        restore: async () => {
+          await saveNameThroughUi(originalName);
+          return { restored: true, recoveryEvidence: `restored:${originalName}` };
+        },
+      };
+    } catch (error) {
+      const saveObservation = { before, afterInput, ...(await observation.read()) };
+      await observation.restore();
+      throw Object.assign(error, { saveObservation });
+    }
   };
 }
 
@@ -764,7 +831,7 @@ async function runCli({ scenario = 'A', samples = 1, skipBuild = false, expected
         artifact.directory = writeArtifact(scenario, artifact);
         artifacts.push(artifact);
       } catch (error) {
-        const diagnostic = { runId: nowId(`ttui-${scenario}-failed`), scenario, valid: false, error: String(error?.stack || error), artifact: error?.artifact || null };
+        const diagnostic = { runId: nowId(`ttui-${scenario}-failed`), scenario, valid: false, error: String(error?.stack || error), artifact: error?.artifact || null, saveObservation: error?.saveObservation || null };
         diagnostic.directory = writeArtifact(scenario, diagnostic);
         throw Object.assign(error, { diagnosticArtifact: diagnostic.directory });
       }
