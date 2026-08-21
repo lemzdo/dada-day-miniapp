@@ -10,14 +10,12 @@ function stringValue(value) {
 }
 
 function projectHomeLightItemV2(item = {}) {
-  const projected = {
-    clothingId: stringValue(item.clothingId || item.id),
-    thumbnailUrl: stringValue(item.thumbnailUrl || item.displayImageUrl || item.imageUrl),
-    isDeleted: item.isDeleted === true,
-  };
-  const imageUrl = stringValue(item.imageUrl);
-  if (imageUrl) projected.imageUrl = imageUrl;
-  return projected;
+  if (item.isDeleted === true) throw new Error('V2_HOME_LIGHT_DELETED_ITEM');
+  const clothingId = stringValue(item.clothingId || item.id);
+  const displayImageUrl = stringValue(item.displayImageUrl);
+  if (!clothingId) throw new Error('V2_HOME_LIGHT_CLOTHING_ID_REQUIRED');
+  if (!displayImageUrl) throw new Error('V2_HOME_LIGHT_IMAGE_REQUIRED');
+  return { clothingId, displayImageUrl, isDeleted: false };
 }
 
 function projectHomeLightCardV2(outfit = {}, position = 0) {

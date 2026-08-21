@@ -482,7 +482,9 @@ export default function TodayPage() {
 
   useEffect(() => {
     const correlationId = todayV2ColdCorrelationRef.current;
-    if (!correlationId || !v2Snapshot || v2Snapshot.cards.length !== 8) return;
+    if (!correlationId || !v2Snapshot || v2Snapshot.cards.length !== 8
+      || v2Snapshot.cards.some((card) => card.items.length === 0
+        || card.items.some((item) => item.isDeleted || !item.displayImageUrl.trim()))) return;
     markTodayV2ColdUsable(correlationId, Date.now());
     todayV2ColdCorrelationRef.current = null;
   }, [v2Snapshot]);

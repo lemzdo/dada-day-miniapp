@@ -8,8 +8,7 @@ export const RECOMMENDATION_V2_CARD_COUNT = 8 as const;
 
 export interface HomeLightItemV2 {
   clothingId: string;
-  thumbnailUrl: string;
-  imageUrl?: string;
+  displayImageUrl: string;
   isDeleted: boolean;
 }
 

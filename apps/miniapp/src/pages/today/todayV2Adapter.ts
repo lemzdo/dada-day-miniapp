@@ -20,6 +20,11 @@ export interface TodayV2Snapshot {
 }
 
 export function toTodayV2Snapshot(response: RecommendationHomeLightResponseV2): TodayV2Snapshot {
+  response.light.cards.forEach((card) => {
+    if (card.items.length === 0 || card.items.some((item) => item.isDeleted || !item.displayImageUrl.trim())) {
+      throw new Error('V2 home light image contract invalid');
+    }
+  });
   return {
     runtimeVersion: response.runtimeVersion,
     schemaVersion: response.schemaVersion,
@@ -33,7 +38,11 @@ export function toTodayV2Snapshot(response: RecommendationHomeLightResponseV2): 
       todayReason: card.todayReason,
       styleTags: [...card.styleTags],
       clothingIds: [...card.clothingIds],
-      items: card.items.map((item) => ({ ...item })),
+      items: card.items.map((item) => ({
+        clothingId: item.clothingId,
+        displayImageUrl: item.displayImageUrl,
+        isDeleted: item.isDeleted,
+      })),
       isFavorite: card.isFavorite,
       isWornToday: card.isWornToday,
     })),
@@ -56,8 +65,10 @@ export function readTodayV2Snapshot(read: (key: string) => unknown): TodayV2Snap
     || snapshot.core.order.length !== 8
     || snapshot.core.order.some((key, index) => key !== snapshot.cards?.[index]?.outfitKey)
     || !Array.isArray(snapshot.cards)
-    || snapshot.cards.length !== 8) return null;
-  const forbidden = ['snapshotItems', 'itemsSnapshot', 'scores', 'eligibility', 'copyContract', 'debug', 'evidence'];
+    || snapshot.cards.length !== 8
+    || snapshot.cards.some((card) => !Array.isArray(card.items) || card.items.length === 0
+      || card.items.some((item) => item.isDeleted || typeof item.displayImageUrl !== 'string' || !item.displayImageUrl.trim()))) return null;
+  const forbidden = ['snapshotItems', 'itemsSnapshot', 'scores', 'eligibility', 'copyContract', 'debug', 'evidence', 'thumbnailUrl', 'imageUrl'];
   const scan = (entry: unknown): boolean => {
     if (!entry || typeof entry !== 'object') return false;
     return Object.entries(entry).some(([key, value]) => forbidden.includes(key) || scan(value));

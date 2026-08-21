@@ -52,3 +52,13 @@ test('existing V2 batch plus hard-invalid explicitly re-arms and passes the Cold
   assert.match(gate[0], /trigger === 'hard-invalid' \|\| todayV2EntryColdEligibleRef\.current/);
   assert.match(gate[0], /trigger === 'hard-invalid' \|\| \(outfitsRef\.current\.length === 0 && !v2Snapshot\)/);
 });
+
+test('V2 Cold usable mark waits for committed eight-card image-ready light', () => {
+  const usable = source.match(/useEffect\(\(\) => \{[\s\S]*?markTodayV2ColdUsable\(correlationId, Date\.now\(\)\);[\s\S]*?\}, \[v2Snapshot\]\);/);
+  assert.ok(usable);
+  assert.match(usable[0], /v2Snapshot\.cards\.length !== 8/);
+  assert.match(usable[0], /card\.items\.length === 0/);
+  assert.match(usable[0], /item\.isDeleted/);
+  assert.match(usable[0], /item\.displayImageUrl\.trim\(\)/);
+  assert.match(usable[0], /todayV2ColdCorrelationRef\.current = null/);
+});

@@ -15,7 +15,7 @@ export function HomeLightCardV2({ card, onFavorite, onWear, onDetail }: HomeLigh
       <Text className="reason-text">{card.todayReason}</Text>
       <View className="outfit-collage">
         {card.items.map((item) => (
-          <Image className="item-image" key={item.clothingId} src={item.thumbnailUrl || item.imageUrl || ''} mode="aspectFill" />
+          <Image className="item-image" key={item.clothingId} src={item.displayImageUrl} mode="aspectFill" />
         ))}
       </View>
       <View className="outfit-actions">

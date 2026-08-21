@@ -28,4 +28,13 @@ test('Today V2 snapshot requires minimal core and rejects deep storage fields', 
   assert.match(source, /core: response\.batch/);
   assert.match(source, /snapshot\.core\.countContract\?\.requestedCardCount/);
   assert.match(source, /forbidden = \['snapshotItems', 'itemsSnapshot'/);
+  assert.match(source, /displayImageUrl/);
+  assert.match(source, /thumbnailUrl', 'imageUrl'/);
+});
+
+test('Today V2 usable persistence is image-ready and excludes aliases', () => {
+  assert.match(source, /card\.items\.length === 0/);
+  assert.match(source, /item\.isDeleted/);
+  assert.match(source, /!item\.displayImageUrl\.trim\(\)/);
+  assert.match(source, /clothingId: item\.clothingId,[\s\S]*displayImageUrl: item\.displayImageUrl/);
 });

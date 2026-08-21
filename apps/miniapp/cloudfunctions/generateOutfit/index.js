@@ -349,12 +349,16 @@ async function generateRecommendationV2({
     todayReason: buildRecommendationV2TodayReason(recommendation, safeReasons[index].reason),
     styleTags: recommendation.styleTags,
     clothingIds: (recommendation.items || []).map((item) => item?._id).filter(Boolean),
-    items: (recommendation.items || []).map((item) => ({
-      clothingId: item?._id,
-      thumbnailUrl: getThumbnailImage(item),
-      imageUrl: getDisplayImage(item),
-      isDeleted: item?.isDeleted === true,
-    })),
+    items: (recommendation.items || []).map((item) => {
+      if (item?.isDeleted === true) {
+        throw createBusinessError('V2_HOME_LIGHT_DELETED_ITEM', 'V2 home light cannot include deleted clothing');
+      }
+      const displayImageUrl = resolveHomeLightDisplayImage(item);
+      if (!displayImageUrl) {
+        throw createBusinessError('V2_HOME_LIGHT_IMAGE_REQUIRED', 'V2 home light requires a display image');
+      }
+      return { clothingId: item?._id, displayImageUrl, isDeleted: false };
+    }),
     ...status[index],
   })), batchId);
   const coreInput = {
@@ -7061,6 +7065,11 @@ function getThumbnailImage(item) {
   return item.thumbnailUrl || item.thumbImageUrl || getDisplayImage(item);
 }
 
+function resolveHomeLightDisplayImage(item) {
+  if (!item) return '';
+  return item.thumbnailUrl || item.thumbImageUrl || getDisplayImage(item);
+}
+
 function ok(data) {
   return { code: 0, data, message: 'ok' };
 }
@@ -7139,6 +7148,7 @@ if (process.env.NODE_ENV === 'test') {
     shouldUseRecommendationV2,
     buildRecommendationV2TodayReason,
     generateRecommendationV2,
+    resolveHomeLightDisplayImage,
     measureCanonicalBatchInput,
     measureHomeLightMaterialization,
     measurePlannedHomeLightMaterialization,

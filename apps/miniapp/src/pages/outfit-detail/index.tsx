@@ -386,7 +386,7 @@ function V2OutfitDetailView({ state }: { state: OutfitDetailV2State }) {
         <View className="visual-card">
           <View className="visual-collage">
             {state.shell.items.map((item) => (
-              <SafeImage key={item.clothingId} className="visual-image" src={item.imageUrl || item.thumbnailUrl} cacheIdentity={item.clothingId} mode="aspectFit" lazyLoad />
+              <SafeImage key={item.clothingId} className="visual-image" src={item.displayImageUrl} cacheIdentity={item.clothingId} mode="aspectFit" lazyLoad />
             ))}
           </View>
         </View>

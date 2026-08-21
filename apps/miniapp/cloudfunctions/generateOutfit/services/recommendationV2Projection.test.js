@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { projectBatchCoreV2, projectHomeLightV2 } = require('./recommendationV2Projection');
+const { projectBatchCoreV2, projectHomeLightItemV2, projectHomeLightV2 } = require('./recommendationV2Projection');
 
 const baseCards = (mode) => Array.from({ length: 8 }, (_, index) => ({
   _id: `legacy-${mode}-${index}`,
@@ -11,7 +11,7 @@ const baseCards = (mode) => Array.from({ length: 8 }, (_, index) => ({
   reason: `理由-${index}`,
   styleTags: ['a', 'b', 'c', 'forbidden-fourth'],
   clothingIds: [`clothing-${index}`],
-  items: [{ clothingId: `clothing-${index}`, imageUrl: `cloud://image-${index}`, hidden: 'must-not-leak' }],
+  items: [{ clothingId: `clothing-${index}`, displayImageUrl: `cloud://image-${index}`, hidden: 'must-not-leak' }],
   scores: { total: 99 },
 }));
 
@@ -34,4 +34,12 @@ test('V2 batch core only contains the batch contract fields', () => {
   assert.equal(result.runtimeVersion, 'today-runtime-v2');
   assert.equal(result.schemaVersion, 'today-v2');
   assert.deepEqual(Object.keys(result.weatherSnapshot).sort(), ['humidity', 'temp', 'uv', 'weather', 'wind']);
+});
+
+test('V2 projection emits only the display image field and fails closed', () => {
+  assert.deepEqual(projectHomeLightItemV2({ clothingId: 'c-1', displayImageUrl: 'cloud://image' }), {
+    clothingId: 'c-1', displayImageUrl: 'cloud://image', isDeleted: false,
+  });
+  assert.throws(() => projectHomeLightItemV2({ clothingId: 'c-1', displayImageUrl: '' }), /V2_HOME_LIGHT_IMAGE_REQUIRED/);
+  assert.throws(() => projectHomeLightItemV2({ clothingId: 'c-1', displayImageUrl: 'cloud://image', isDeleted: true }), /V2_HOME_LIGHT_DELETED_ITEM/);
 });

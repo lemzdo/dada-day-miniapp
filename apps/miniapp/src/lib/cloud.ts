@@ -823,8 +823,14 @@ function assertHomeLightV2(value: unknown): RecommendationHomeLightResponseV2 {
   const order = response.batch.order;
   response.light.cards.forEach((card, index) => {
     if (card.position !== index || card.outfitKey !== order[index]) throw new Error('V2 response order invalid');
-    const forbidden = ['scores', 'eligibility', 'snapshotItems', 'itemsSnapshot', 'copyContract', 'evidence', 'debug'];
+    const forbidden = ['scores', 'eligibility', 'snapshotItems', 'itemsSnapshot', 'copyContract', 'evidence', 'debug', 'thumbnailUrl', 'imageUrl'];
     if (forbidden.some((key) => Object.prototype.hasOwnProperty.call(card as object, key))) throw new Error('V2 response contains forbidden field');
+    if (!Array.isArray(card.items) || card.items.length === 0
+      || card.items.some((item) => item.isDeleted === true || typeof item.displayImageUrl !== 'string' || !item.displayImageUrl.trim()
+        || Object.prototype.hasOwnProperty.call(item as object, 'thumbnailUrl')
+        || Object.prototype.hasOwnProperty.call(item as object, 'imageUrl'))) {
+      throw new Error('V2 response image contract invalid');
+    }
   });
   return response as RecommendationHomeLightResponseV2;
 }
