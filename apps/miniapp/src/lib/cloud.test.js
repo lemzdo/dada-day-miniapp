@@ -178,5 +178,17 @@ test('V2 acceptance persists only transport/performance ledgers for the runner',
   assert.match(section[0], /GENERATE_OUTFIT_ACCEPTANCE_TRANSPORT_KEY/);
   assert.match(section[0], /GENERATE_OUTFIT_PERFORMANCE_ARTIFACT_KEY/);
   assert.match(section[0], /params\.acceptanceRunId/);
-  assert.match(section[0], /params\.performanceDiagnostics/);
+  assert.match(section[0], /isStrictV2AcceptanceRequest\(params\)/);
+});
+
+test('V2 ledger predicate requires the exact strict acceptance tuple', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'cloud.ts'), 'utf8');
+  const section = source.match(/export function isStrictV2AcceptanceRequest[\s\S]*?\n\}/);
+  assert.ok(section, 'should find strict V2 predicate');
+  const body = section[0].replace(/^export function isStrictV2AcceptanceRequest\(params: RecommendationV2Request\) \{/, 'function isStrictV2AcceptanceRequest(params) {');
+  const predicate = new Function(`${body}; return isStrictV2AcceptanceRequest;`)();
+  assert.equal(predicate({ performanceDiagnostics: true, acceptanceRunId: 'ttui-v2-run', captureId: 'ttui-v2-run-capture' }), true);
+  assert.equal(predicate({ performanceDiagnostics: true, acceptanceRunId: 'ttui-B-run', captureId: 'ttui-B-run-capture' }), false);
+  assert.equal(predicate({ performanceDiagnostics: true, acceptanceRunId: 'ttui-v2-run', captureId: 'wrong' }), false);
+  assert.equal(predicate({ performanceDiagnostics: false, acceptanceRunId: 'ttui-v2-run', captureId: 'ttui-v2-run-capture' }), false);
 });

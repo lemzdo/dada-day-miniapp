@@ -767,6 +767,14 @@ export interface RecommendationV2Request {
   clientMilestones?: Record<string, number>;
 }
 
+export function isStrictV2AcceptanceRequest(params: RecommendationV2Request) {
+  const runId = params.acceptanceRunId;
+  return params.performanceDiagnostics === true
+    && typeof runId === 'string'
+    && runId.startsWith('ttui-v2-')
+    && params.captureId === `${runId}-capture`;
+}
+
 function assertHomeLightV2(value: unknown): RecommendationHomeLightResponseV2 {
   if (!value || typeof value !== 'object') throw new Error('V2 response is not an object');
   const response = value as Partial<RecommendationHomeLightResponseV2>;
@@ -815,7 +823,7 @@ export async function generateCloudOutfitV2(params: RecommendationV2Request = {}
       } : {}),
     });
   }
-  if (typeof params.acceptanceRunId === 'string' && typeof params.captureId === 'string') {
+  if (isStrictV2AcceptanceRequest(params)) {
     const acceptanceTransport = getCloudResponseTransportDiagnostics(result);
     Taro.setStorageSync(GENERATE_OUTFIT_ACCEPTANCE_TRANSPORT_KEY, {
       acceptanceRunId: params.acceptanceRunId,
@@ -827,8 +835,10 @@ export async function generateCloudOutfitV2(params: RecommendationV2Request = {}
         : undefined,
     });
   }
-  if (params.performanceDiagnostics === true) {
-    const performance = result?.diagnostics?.performance;
+  if (isStrictV2AcceptanceRequest(params)) {
+    const performance = (result as RecommendationV2Response & {
+      diagnostics?: { performance?: unknown };
+    })?.diagnostics?.performance;
     if (performance && typeof performance === 'object') {
       Taro.setStorageSync(GENERATE_OUTFIT_PERFORMANCE_ARTIFACT_KEY, performance);
     }
