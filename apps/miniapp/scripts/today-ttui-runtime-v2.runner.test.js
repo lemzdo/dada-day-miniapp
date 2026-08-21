@@ -35,6 +35,11 @@ test('runner reads and invalidates only scoped v4 restore snapshots', async () =
   assert.equal(mini.store.has('today:outfitReturnSnapshot:recommendation-copy-contract-v8'), true);
 });
 
+test('V2 acceptance runner uses the server-gated ttui-v2 run id namespace', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'today-ttui-runtime-v2.js'), 'utf8');
+  assert.match(source, /expectedRuntimeV2 \? 'ttui-v2' : 'ttui'/);
+});
+
 test('hard invalid marker derives the scoped user key from the restore snapshot', async () => {
   const mini = miniMock();
   const result = await markHardInvalid(mini);
@@ -162,4 +167,3 @@ test('B selects the new REFRESH run and validates canonical V2 copy from the dia
   assert.equal(artifact.client.firstImagePaintMs, 80);
   assert.ok(artifact.observedUsableAt >= artifact.actionStartedAt);
 });
-

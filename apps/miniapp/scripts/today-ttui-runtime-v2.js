@@ -643,7 +643,10 @@ async function switchToTodayWithClientTiming(mini, timeoutMs) {
 
 async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 30000, expectedRuntimeV2 = false, userStyleColdAdapter } = {}) {
   if (!mini) throw new Error('TTUI_MINI_REQUIRED');
-  const runId = nowId(`ttui-${scenario}`);
+  // The server's strict V2 acceptance gate intentionally requires the
+  // `ttui-v2-` namespace. Legacy cohorts retain their historical `ttui-B/C`
+  // ids so they continue exercising the Legacy path.
+  const runId = nowId(`${expectedRuntimeV2 ? 'ttui-v2' : 'ttui'}-${scenario}`);
   const startedAt = Date.now();
   let actionStartedAt = startedAt;
   let previousBatchId = null;
