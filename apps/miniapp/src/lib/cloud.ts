@@ -103,6 +103,7 @@ export interface CloudResponseTransportDiagnostics {
   generateOutfitWrapperStart?: number;
   generateOutfitWrapperEnd?: number;
   clientMilestones?: Record<string, number>;
+  performance?: unknown;
 }
 
 export function isSupersededCloudResult(value: unknown): value is SupersededCloudResult {
@@ -842,6 +843,10 @@ export async function generateCloudOutfitV2(params: RecommendationV2Request = {}
       || (result as RecommendationV2Response & { diagnostics?: unknown })?.diagnostics;
     if (performance && typeof performance === 'object') {
       Taro.setStorageSync(GENERATE_OUTFIT_PERFORMANCE_ARTIFACT_KEY, performance);
+      const acceptanceTransport = getCloudResponseTransportDiagnostics(result);
+      if (acceptanceTransport) {
+        setCloudResponseTransportDiagnostics(result, { ...acceptanceTransport, performance });
+      }
     }
   }
   return assertHomeLightV2(result);

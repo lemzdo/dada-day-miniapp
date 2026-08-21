@@ -739,6 +739,7 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
     copyState = await mini.evaluate(() => globalThis.__d1dTodayDiagnostics?.readCopyAcceptanceState?.() || null);
     usableState = await mini.evaluate(() => globalThis.__d1dTodayDiagnostics?.readUsableCardState?.() || null);
     const usable = isUsableCardState(usableState);
+    performance = performance || transport?.performance || null;
     correlatedRequest = transport?.acceptanceRunId === runId && Number(performance?.serverTotalMs) > 0;
     const batchTransitioned = !previousBatchId || (copyState?.recommendationBatchId && copyState.recommendationBatchId !== previousBatchId);
     const ready = scenario === 'A'
