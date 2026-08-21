@@ -91,6 +91,7 @@ import {
 } from '@/lib/performance/todayPerformanceLedger';
 import {
   buildRecommendationInputSignature,
+  createRecommendationInputCoordinator,
   createRecommendationIntentRegistry,
   type RecommendationIntent,
   type RecommendationIntentRegistry,
@@ -283,6 +284,7 @@ export default function TodayPage() {
   const [batchExhausted, setBatchExhausted] = useState(false);
   const [showDelayedRequestHint, setShowDelayedRequestHint] = useState(false);
   const requestSeq = useRef(0);
+  const restoreGenerationRef = useRef(0);
   const activeRequestSeqRef = useRef<number | null>(null);
   const intentCounterRef = useRef(0);
   const entryIntentIdRef = useRef('today-entry:pending');
@@ -303,7 +305,7 @@ export default function TodayPage() {
   const batchExhaustedRef = useRef(false);
   const dirtyRefreshInFlightRef = useRef(false);
   const hardRefreshInFlightRef = useRef(false);
-  const pendingInitialRecommendationRef = useRef(false);
+  const recommendationInputCoordinatorRef = useRef(createRecommendationInputCoordinator());
   const countContractRef = useRef<RecommendationCountContract | undefined>(undefined);
   const recommendationNoticeRef = useRef('');
   const clientImageTimingRef = useRef<ClientImageTiming | null>(null);
@@ -357,11 +359,16 @@ export default function TodayPage() {
     const authContext = captureAuthContext();
     if (!authContext) return;
     const snapshot = readTodayV2Snapshot((key) => getUserStorageSync(key, { authContext }));
-    if (snapshot) setV2Snapshot(snapshot);
+    if (!snapshot) return;
+    const restoreGeneration = ++restoreGenerationRef.current;
+    void resolveRecommendationMedia({ light: { cards: snapshot.cards } }).then((resolved) => {
+      if (restoreGeneration !== restoreGenerationRef.current || !isAuthContextCurrent(authContext)) return;
+      setV2Snapshot({ ...snapshot, cards: resolved.light.cards });
+    });
   }, [isAuthenticated]);
 
   const resetUserState = useCallback(() => {
-    pendingInitialRecommendationRef.current = false;
+    recommendationInputCoordinatorRef.current.reset();
     requestSeq.current += 1;
     activeRequestSeqRef.current = null;
     recommendationIntentRegistryRef.current?.reset();
@@ -433,7 +440,10 @@ export default function TodayPage() {
     markTodayPerformanceStage('localIdentityReady');
     if (hasTodayRecommendationHardInvalid({ authContext })) {
       if (!currentWeatherRef.current && currentWeatherModeRef.current === 'disabled') {
-        pendingInitialRecommendationRef.current = true;
+        recommendationInputCoordinatorRef.current.report({
+          inputIdentity: `${runtimeKey || 'anonymous'}|${selectedSceneKeyRef.current}|initial`,
+          readiness: 'deferred',
+        });
       } else {
         void refreshHardInvalidRecommendation(authContext, consumeHardInvalidAcceptanceRequest(authContext));
       }
@@ -468,7 +478,10 @@ export default function TodayPage() {
       const acceptanceDiagnostics = consumeHardInvalidAcceptanceRequest(authContext);
       markAcceptanceClientMilestone(acceptanceDiagnostics, 'hardInvalidDetectedAt');
       if (!currentWeatherRef.current && currentWeatherModeRef.current === 'disabled') {
-        pendingInitialRecommendationRef.current = true;
+        recommendationInputCoordinatorRef.current.report({
+          inputIdentity: `${runtimeKey || 'anonymous'}|${selectedSceneKeyRef.current}|initial`,
+          readiness: 'deferred',
+        });
       } else {
         void refreshHardInvalidRecommendation(authContext, acceptanceDiagnostics);
       }
@@ -692,6 +705,8 @@ export default function TodayPage() {
           markAcceptanceClientMilestone(acceptanceDiagnostics, 'v2ApplyRejectedAt');
           return false;
         }
+        const canonicalSnapshot = toTodayV2Snapshot(rawResponse);
+        setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, canonicalSnapshot, { authContext });
         // Resolve media only while this request still owns the input. A
         // superseded response must not trigger client-side media work.
         const response = await resolveRecommendationMedia(rawResponse);
@@ -701,7 +716,6 @@ export default function TodayPage() {
         }
         const nextSnapshot = toTodayV2Snapshot(response);
         setV2Snapshot(nextSnapshot);
-        setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, nextSnapshot, { authContext });
         setLoading(false);
         setError('');
         setHasRecommendations(true);
@@ -855,8 +869,11 @@ export default function TodayPage() {
     }
 
     const sceneKey = selectedSceneKeyRef.current;
-    if (pendingInitialRecommendationRef.current) {
-      pendingInitialRecommendationRef.current = false;
+    const inputRelease = recommendationInputCoordinatorRef.current.report({
+      inputIdentity: `${runtimeKey || 'anonymous'}|${sceneKey}|${weatherFingerprint}`,
+      readiness: weather ? 'ready' : (options.weatherMode === 'disabled' || options.weatherMode === 'unavailable' ? 'unavailable' : 'deferred'),
+    });
+    if (inputRelease.dispatch) {
       const authContext = captureAuthContext();
       if (authContext && hasTodayRecommendationHardInvalid({ authContext })) {
         void refreshHardInvalidRecommendation(authContext);

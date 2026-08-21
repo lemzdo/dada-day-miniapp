@@ -120,7 +120,32 @@ function uniqueStrings(values) {
     .map((value) => value.trim()))];
 }
 
+function createRecommendationInputCoordinator() {
+  let identity = null;
+  let releasedIdentity = null;
+
+  function report({ inputIdentity, readiness = 'deferred' }) {
+    if (!inputIdentity) throw new Error('recommendation input identity is required');
+    if (identity !== inputIdentity) {
+      identity = String(inputIdentity);
+      releasedIdentity = null;
+    }
+    if (readiness === 'deferred') return { dispatch: false, inputIdentity: identity };
+    if (releasedIdentity === identity) return { dispatch: false, inputIdentity: identity };
+    releasedIdentity = identity;
+    return { dispatch: true, inputIdentity: identity };
+  }
+
+  function reset() {
+    identity = null;
+    releasedIdentity = null;
+  }
+
+  return { report, reset };
+}
+
 module.exports = {
   buildRecommendationInputSignature,
   createRecommendationIntentRegistry,
+  createRecommendationInputCoordinator,
 };

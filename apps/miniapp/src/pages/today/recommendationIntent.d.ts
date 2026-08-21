@@ -35,5 +35,12 @@ export interface RecommendationIntentRegistry {
   }): RecommendationIntentRun<T>;
 }
 
+export type RecommendationInputReadiness = 'deferred' | 'ready' | 'unavailable';
+export interface RecommendationInputCoordinator {
+  report(input: { inputIdentity: string; readiness?: RecommendationInputReadiness }): { dispatch: boolean; inputIdentity: string };
+  reset(): void;
+}
+
 export function buildRecommendationInputSignature(input?: RecommendationIntentSignatureInput): string;
 export function createRecommendationIntentRegistry(): RecommendationIntentRegistry;
+export function createRecommendationInputCoordinator(): RecommendationInputCoordinator;

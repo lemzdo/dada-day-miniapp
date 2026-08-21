@@ -9,9 +9,9 @@ const cardSource = fs.readFileSync(path.join(__dirname, 'HomeLightCardV2.tsx'), 
 const weatherSource = fs.readFileSync(path.join(__dirname, '../../components/WeatherCard/index.tsx'), 'utf8');
 
 test('initial recommendation waits for weather readiness instead of disabled full compute', () => {
-  assert.match(todaySource, /pendingInitialRecommendationRef/);
-  assert.match(todaySource, /currentWeatherModeRef\.current === 'disabled'/);
-  assert.match(todaySource, /pendingInitialRecommendationRef\.current = false/);
+  assert.match(todaySource, /createRecommendationInputCoordinator/);
+  assert.match(todaySource, /readiness: 'deferred'/);
+  assert.match(todaySource, /readiness: weather \? 'ready'/);
   assert.match(todaySource, /refreshHardInvalidRecommendation\(authContext\)/);
 });
 
@@ -41,4 +41,11 @@ test('renderer consumes only the resolved canonical displayImageUrl', () => {
   assert.match(cardSource, /src=\{item\.displayImageUrl\}/);
   assert.doesNotMatch(cardSource, /resolveRecommendationMedia|getTempFileURL|cloud\.downloadFile/);
   assert.doesNotMatch(cardSource, /thumbnailUrl|imageUrl/);
+});
+
+test('restored canonical snapshot resolves before entering renderer state', () => {
+  assert.match(todaySource, /readTodayV2Snapshot/);
+  assert.match(todaySource, /resolveRecommendationMedia\(\{ light: \{ cards: snapshot\.cards \} \}\)/);
+  assert.match(todaySource, /isAuthContextCurrent\(authContext\)/);
+  assert.match(todaySource, /setV2Snapshot\(\{ \.\.\.snapshot, cards: resolved\.light\.cards \}\)/);
 });
