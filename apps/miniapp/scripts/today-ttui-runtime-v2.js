@@ -726,6 +726,8 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
   let performance = null;
   let copyState = null;
   let usableState = initialUsableState;
+  const v2Acceptance = expectedRuntimeV2 === true;
+  let correlatedRequest = false;
   while (Date.now() < deadline) {
     ledger = await readLedger(mini);
     const candidates = [ledger?.active, ...(ledger?.history || [])].filter(Boolean);
@@ -737,12 +739,12 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
     copyState = await mini.evaluate(() => globalThis.__d1dTodayDiagnostics?.readCopyAcceptanceState?.() || null);
     usableState = await mini.evaluate(() => globalThis.__d1dTodayDiagnostics?.readUsableCardState?.() || null);
     const usable = isUsableCardState(usableState);
-    const correlatedRequest = transport?.acceptanceRunId === runId && Number(performance?.serverTotalMs) > 0;
+    correlatedRequest = transport?.acceptanceRunId === runId && Number(performance?.serverTotalMs) > 0;
     const batchTransitioned = !previousBatchId || (copyState?.recommendationBatchId && copyState.recommendationBatchId !== previousBatchId);
     const ready = scenario === 'A'
       ? usable
       : scenario === 'B'
-        ? Boolean(active?.complete && correlatedRequest && usable)
+        ? Boolean((v2Acceptance ? correlatedRequest : active?.complete) && correlatedRequest && usable)
         : Boolean(correlatedRequest && batchTransitioned && usable && Number(transport?.callFunctionPromiseResolved) > 0);
     if (ready) {
       if (observedUsableAt === 0) observedUsableAt = Date.now();
@@ -770,11 +772,11 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
     bridge: { marker: bridge.marker, ready: bridge.ready, sceneKey: bridge.sceneKey },
     previousBatchId, ledger: active, transport, performance, copyState, usableState, server: serverSegments(performance || {}), client: clientSegments,
     validation: {
-      completeLedger: scenario === 'A' || scenario === 'C' ? observedUsableAt > 0 : active?.complete === true,
+      completeLedger: v2Acceptance ? correlatedRequest : (scenario === 'A' || scenario === 'C' ? observedUsableAt > 0 : active?.complete === true),
       firstUsablePaint: observedUsableAt > 0,
-      requestCount: Number(active?.generateOutfitRequestCount) || 0,
-      executionMode: active?.executionMode || active?.stages?.executionMode || '',
-      scenarioBRefreshRun: scenario !== 'B' || (active?.executionMode === 'REFRESH' && (Number(active?.generateOutfitRequestCount) || 0) === 1),
+      requestCount: v2Acceptance ? (correlatedRequest ? 1 : 0) : (Number(active?.generateOutfitRequestCount) || 0),
+      executionMode: v2Acceptance ? 'V2_REFRESH' : (active?.executionMode || active?.stages?.executionMode || ''),
+      scenarioBRefreshRun: scenario !== 'B' || (v2Acceptance ? correlatedRequest : (active?.executionMode === 'REFRESH' && (Number(active?.generateOutfitRequestCount) || 0) === 1)),
       scenarioCColdRun: scenario !== 'C' || (transport?.acceptanceRunId === runId && Number(performance?.serverTotalMs) > 0),
       scenarioCCorrelatedRequest: scenario !== 'C' || (transport?.acceptanceRunId === runId && Number(performance?.serverTotalMs) > 0),
       scenarioCNoStaleBatchPaint: scenario !== 'C' || (observedUsableAt >= Number(transport?.callFunctionPromiseResolved) && (!previousBatchId || copyState?.recommendationBatchId !== previousBatchId)),
