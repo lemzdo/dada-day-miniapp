@@ -170,3 +170,13 @@ test('cloud.ts refresh with exclusions still uses ttl=0', () => {
   assert.match(funcBody, /hasExclusions/, 'must compute hasExclusions');
   assert.match(funcBody, /hasExclusions\s*\?\s*0\s*:\s*CACHE_TTL\.outfit/, 'ttl must be 0 when hasExclusions is true');
 });
+
+test('V2 acceptance persists only transport/performance ledgers for the runner', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'cloud.ts'), 'utf8');
+  const section = source.match(/export async function generateCloudOutfitV2[\s\S]*?\n\}/);
+  assert.ok(section, 'should find generateCloudOutfitV2');
+  assert.match(section[0], /GENERATE_OUTFIT_ACCEPTANCE_TRANSPORT_KEY/);
+  assert.match(section[0], /GENERATE_OUTFIT_PERFORMANCE_ARTIFACT_KEY/);
+  assert.match(section[0], /params\.acceptanceRunId/);
+  assert.match(section[0], /params\.performanceDiagnostics/);
+});

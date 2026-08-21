@@ -783,6 +783,7 @@ export default function TodayPage() {
             performanceDiagnostics: true,
             acceptanceRunId: acceptanceDiagnostics.acceptanceRunId,
             captureId: acceptanceDiagnostics.captureId,
+            clientMilestones: acceptanceDiagnostics.clientMilestones,
           } : {}),
         });
         markAcceptanceClientMilestone(acceptanceDiagnostics, 'v2ResponseReceivedAt');
@@ -997,6 +998,7 @@ export default function TodayPage() {
           performanceDiagnostics: true,
           acceptanceRunId: acceptanceDiagnostics?.acceptanceRunId,
           captureId: acceptanceDiagnostics?.captureId,
+          clientMilestones: acceptanceDiagnostics?.clientMilestones,
         } : {}),
       });
       if (!isAuthContextCurrent(authContext) || activeRequestSeqRef.current !== refreshSeq) return false;

@@ -764,6 +764,7 @@ export interface RecommendationV2Request {
   captureId?: string;
   trigger?: string;
   excludedOutfitKeys?: string[];
+  clientMilestones?: Record<string, number>;
 }
 
 function assertHomeLightV2(value: unknown): RecommendationHomeLightResponseV2 {
@@ -795,10 +796,43 @@ function assertHomeLightV2(value: unknown): RecommendationHomeLightResponseV2 {
 }
 
 export async function generateCloudOutfitV2(params: RecommendationV2Request = {}) {
+  const wrapperStart = Date.now();
   const result = await callCloudFunction<RecommendationV2Response>('generateOutfit', {
     ...params,
     runtimeVersion: RECOMMENDATION_V2_RUNTIME_VERSION,
   });
+  const transport = getCloudResponseTransportDiagnostics(result);
+  if (transport) {
+    setCloudResponseTransportDiagnostics(result, {
+      ...transport,
+      generateOutfitWrapperStart: wrapperStart,
+      generateOutfitWrapperEnd: Date.now(),
+      ...(params.clientMilestones ? {
+        clientMilestones: {
+          ...params.clientMilestones,
+          generateOutfitWrapperStart: wrapperStart,
+        },
+      } : {}),
+    });
+  }
+  if (typeof params.acceptanceRunId === 'string' && typeof params.captureId === 'string') {
+    const acceptanceTransport = getCloudResponseTransportDiagnostics(result);
+    Taro.setStorageSync(GENERATE_OUTFIT_ACCEPTANCE_TRANSPORT_KEY, {
+      acceptanceRunId: params.acceptanceRunId,
+      captureId: params.captureId,
+      ...(acceptanceTransport ?? {}),
+      clientTotalMs: acceptanceTransport?.immediatelyBeforeCallFunction !== undefined
+        && acceptanceTransport.callFunctionPromiseResolved !== undefined
+        ? acceptanceTransport.callFunctionPromiseResolved - acceptanceTransport.immediatelyBeforeCallFunction
+        : undefined,
+    });
+  }
+  if (params.performanceDiagnostics === true) {
+    const performance = result?.diagnostics?.performance;
+    if (performance && typeof performance === 'object') {
+      Taro.setStorageSync(GENERATE_OUTFIT_PERFORMANCE_ARTIFACT_KEY, performance);
+    }
+  }
   return assertHomeLightV2(result);
 }
 
