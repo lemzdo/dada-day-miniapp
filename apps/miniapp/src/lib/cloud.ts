@@ -838,7 +838,8 @@ export async function generateCloudOutfitV2(params: RecommendationV2Request = {}
   if (isStrictV2AcceptanceRequest(params)) {
     const performance = (result as RecommendationV2Response & {
       diagnostics?: { performance?: unknown };
-    })?.diagnostics?.performance;
+    })?.diagnostics?.performance
+      || (result as RecommendationV2Response & { diagnostics?: unknown })?.diagnostics;
     if (performance && typeof performance === 'object') {
       Taro.setStorageSync(GENERATE_OUTFIT_PERFORMANCE_ARTIFACT_KEY, performance);
     }
