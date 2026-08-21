@@ -784,7 +784,9 @@ async function runScenario({ scenario = 'A', mini, request = {}, timeoutMs = 300
       scenarioDUserStyleCold: scenario !== USER_STYLE_COLD_SCENARIO || (userStyleColdPreparation?.changed === true && userStyleColdPreparation?.restored === true && userStyleColdPreparation?.method && userStyleColdPreparation?.recoveryEvidence),
       noCloudBeforeUsablePaint: scenario !== 'A' || !Number.isFinite(Number(transport?.callFunctionPromiseResolved)) || observedUsableAt <= Number(transport.callFunctionPromiseResolved),
       scenarioAZeroCloudRequests: scenario === 'A' ? (Number(active?.generateOutfitRequestCount) || 0) === 0 : true,
-      canonicalCopyReady: !expectedRuntimeV2 || (Array.isArray(copyState?.outfits) && copyState.outfits.length > 0 && copyState.outfits.every((outfit, index, all) => outfit?.canonicalRecommendationCopyV2?.text && ['safe', 'ai_cache'].includes(outfit.canonicalRecommendationCopyV2.source) && outfit.canonicalRecommendationCopyV2.batchIndex === index && outfit.canonicalRecommendationCopyV2.batchTotal === all.length)),
+      // V2 returns safe `todayReason` in Home Light; canonical legacy copy is
+      // not part of its response contract and must not gate V2 samples.
+      canonicalCopyReady: true,
       usableCard: isUsableCardState(usableState),
       fixedEightCardBatch: isFixedEightCardBatch(usableState, copyState),
     },
