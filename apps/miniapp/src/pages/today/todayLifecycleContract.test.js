@@ -49,3 +49,12 @@ test('restored canonical snapshot resolves before entering renderer state', () =
   assert.match(todaySource, /isAuthContextCurrent\(authContext\)/);
   assert.match(todaySource, /setV2Snapshot\(\{ \.\.\.snapshot, cards: resolved\.light\.cards \}\)/);
 });
+
+test('reset and unload invalidate an in-flight restore owner', () => {
+  const resetStart = todaySource.indexOf('const resetUserState = useCallback(() => {');
+  const resetEnd = todaySource.indexOf('  }, []);', resetStart);
+  const unloadStart = todaySource.indexOf('useUnload(() => {');
+  const unloadEnd = todaySource.indexOf('  });', unloadStart);
+  assert.match(todaySource.slice(resetStart, resetEnd), /restoreGenerationRef\.current \+= 1/);
+  assert.match(todaySource.slice(unloadStart, unloadEnd), /restoreGenerationRef\.current \+= 1/);
+});

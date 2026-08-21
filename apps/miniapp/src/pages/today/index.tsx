@@ -368,6 +368,7 @@ export default function TodayPage() {
   }, [isAuthenticated]);
 
   const resetUserState = useCallback(() => {
+    restoreGenerationRef.current += 1;
     recommendationInputCoordinatorRef.current.reset();
     requestSeq.current += 1;
     activeRequestSeqRef.current = null;
@@ -405,6 +406,7 @@ export default function TodayPage() {
   }, []);
 
   useUnload(() => {
+    restoreGenerationRef.current += 1;
     if (clientImageTimingRef.current?.timeoutId) clearTimeout(clientImageTimingRef.current.timeoutId);
     clientImageTimingRef.current = null;
     requestSeq.current += 1;
