@@ -27,6 +27,36 @@ test('cache prevents resolution work from repeating across renders', async () =>
   assert.equal(calls, 1);
 });
 
+test('overlapping batches share an in-flight cloud lookup per file', async () => {
+  let calls = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const resolver = async (ids) => {
+    calls += 1;
+    await gate;
+    return Object.fromEntries(ids.map((id) => [id, `https://cdn.example/${id.split('/').pop()}`]));
+  };
+  const first = resolveRecommendationMedia(response(), resolver);
+  const second = resolveRecommendationMedia(response(), resolver);
+  assert.equal(calls, 1);
+  release();
+  await Promise.all([first, second]);
+  assert.equal(calls, 1);
+});
+
+test('failed resolution is retryable rather than permanently cached', async () => {
+  let calls = 0;
+  const resolver = async (ids) => {
+    calls += 1;
+    return calls === 1 ? {} : { [ids[0]]: 'https://cdn.example/retry.png' };
+  };
+  const first = await resolveRecommendationMedia(response(), resolver);
+  const second = await resolveRecommendationMedia(response(), resolver);
+  assert.equal(first.light.cards[0].items[0].displayImageUrl, '');
+  assert.equal(second.light.cards[0].items[0].displayImageUrl, 'https://cdn.example/retry.png');
+  assert.equal(calls, 2);
+});
+
 test('failed or missing cloud resolution is fail-closed', async () => {
   const result = await resolveRecommendationMedia(response(), async () => ({}));
   assert.equal(result.light.cards[0].items[0].displayImageUrl, '');

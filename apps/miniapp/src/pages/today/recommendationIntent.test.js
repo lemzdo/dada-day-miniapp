@@ -100,3 +100,41 @@ test('user, mutation versions, refresh batch, and exclusions participate in sign
     signature({ excludedOutfitKeys: ['a', 'b'] }),
   );
 });
+
+test('out-of-order responses can only apply while their generation owns the input', async () => {
+  const registry = createRecommendationIntentRegistry();
+  const applied = [];
+  let releaseOld;
+  const oldPending = new Promise((resolve) => { releaseOld = resolve; });
+  const old = registry.run({
+    intentId: 'entry',
+    inputSignature: signature({ weatherFingerprint: 'cached|20|cloudy' }),
+    execute: async (intent) => { await oldPending; if (registry.isCurrent(intent)) applied.push('old'); },
+  });
+  const latest = registry.run({
+    intentId: 'entry',
+    inputSignature: signature({ weatherFingerprint: 'resolved|22|sunny' }),
+    execute: async (intent) => { if (registry.isCurrent(intent)) applied.push('latest'); },
+  });
+  await latest.promise;
+  releaseOld();
+  await old.promise;
+  assert.deepEqual(applied, ['latest']);
+});
+
+test('same identity joins while scene or wardrobe identity changes create generations', async () => {
+  const registry = createRecommendationIntentRegistry();
+  let calls = 0;
+  const run = (inputSignature) => registry.run({
+    intentId: 'entry', inputSignature, execute: async () => { calls += 1; },
+  });
+  const first = run(signature());
+  const joined = run(signature());
+  const scene = run(signature({ sceneKey: 'date' }));
+  const wardrobe = run(signature({ wardrobeVersion: 'wardrobe-2' }));
+  await Promise.all([first.promise, joined.promise, scene.promise, wardrobe.promise]);
+  assert.equal(joined.joined, true);
+  assert.equal(calls, 3);
+  assert.notEqual(first.intent.generation, scene.intent.generation);
+  assert.notEqual(scene.intent.generation, wardrobe.intent.generation);
+});

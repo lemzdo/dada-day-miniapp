@@ -33,25 +33,25 @@ function resolveRecommendationMedia(response, resolveCloudFileIds = resolveCloud
 }
 
 function resolveMediaBatch(fileIds, resolveCloudFileIds) {
-  const unresolved = fileIds.filter((fileId) => !resolvedMediaCache.has(fileId));
-  if (unresolved.length === 0) return Promise.resolve(new Map(fileIds.map((id) => [id, resolvedMediaCache.get(id) || ''])));
-  const pendingKey = unresolved.slice().sort().join('|');
-  let pending = pendingMediaCache.get(pendingKey);
-  if (!pending) {
-    pending = Promise.resolve(resolveCloudFileIds(unresolved))
+  const missing = fileIds.filter((fileId) => !resolvedMediaCache.has(fileId) && !pendingMediaCache.has(fileId));
+  if (missing.length > 0) {
+    const pending = Promise.resolve(resolveCloudFileIds(missing))
       .then((result) => {
         const values = result instanceof Map ? result : new Map(Object.entries(result || {}));
-        unresolved.forEach((id) => resolvedMediaCache.set(id, typeof values.get(id) === 'string' ? values.get(id) : ''));
-        return values;
+        return new Map(missing.map((id) => {
+          const value = values.get(id);
+          if (typeof value === 'string' && value.trim()) resolvedMediaCache.set(id, value);
+          return [id, typeof value === 'string' && value.trim() ? value : ''];
+        }));
       })
-      .catch(() => {
-        unresolved.forEach((id) => resolvedMediaCache.set(id, ''));
-        return new Map();
-      })
-      .finally(() => pendingMediaCache.delete(pendingKey));
-    pendingMediaCache.set(pendingKey, pending);
+      .catch(() => new Map(missing.map((id) => [id, ''])))
+      .finally(() => missing.forEach((id) => pendingMediaCache.delete(id)));
+    missing.forEach((id) => pendingMediaCache.set(id, pending.then((values) => values.get(id) || '')));
   }
-  return pending.then(() => new Map(fileIds.map((id) => [id, resolvedMediaCache.get(id) || ''])));
+  const promises = fileIds.map((fileId) => resolvedMediaCache.has(fileId)
+    ? Promise.resolve(resolvedMediaCache.get(fileId))
+    : (pendingMediaCache.get(fileId) || Promise.resolve('')));
+  return Promise.all(promises).then((values) => new Map(fileIds.map((id, index) => [id, values[index] || ''])));
 }
 
 function resolveCloudFileIdsWithWx(fileIds) {

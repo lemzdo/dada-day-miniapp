@@ -653,7 +653,7 @@ export default function TodayPage() {
             ) || null))
           : null;
         if (passiveColdTelemetry) todayV2EntryColdEligibleRef.current = false;
-        const response = await resolveRecommendationMedia(await generateCloudOutfitV2({
+        const rawResponse = await generateCloudOutfitV2({
           date: getToday(),
           scene,
           timeOfDay: TODAY_TIME_OF_DAY,
@@ -670,9 +670,9 @@ export default function TodayPage() {
             captureId: acceptanceDiagnostics.captureId,
             clientMilestones: acceptanceDiagnostics.clientMilestones,
           } : {}),
-        }));
+        });
         if (telemetryCorrelationId) {
-          const transport = getCloudResponseTransportDiagnostics(response);
+          const transport = getCloudResponseTransportDiagnostics(rawResponse);
           const performance = (transport?.performance && typeof transport.performance === 'object')
             ? transport.performance as { serverTotalMs?: number; serverResponseReadyAt?: number }
             : undefined;
@@ -690,6 +690,13 @@ export default function TodayPage() {
         if (v2AuthCurrent) markAcceptanceClientMilestone(acceptanceDiagnostics, 'v2AuthContextCurrentAt');
         if (!v2IntentCurrent || !v2AuthCurrent) {
           markAcceptanceClientMilestone(acceptanceDiagnostics, 'v2ApplyRejectedAt');
+          return false;
+        }
+        // Resolve media only while this request still owns the input. A
+        // superseded response must not trigger client-side media work.
+        const response = await resolveRecommendationMedia(rawResponse);
+        if (!isRecommendationIntentCurrent(intent) || !isAuthContextCurrent(authContext)) {
+          markAcceptanceClientMilestone(acceptanceDiagnostics, 'v2MediaResolutionRejectedAt');
           return false;
         }
         const nextSnapshot = toTodayV2Snapshot(response);
