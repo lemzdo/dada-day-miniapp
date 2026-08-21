@@ -69,6 +69,7 @@ import {
   mergeSeenOutfitKeys,
 } from './refreshExclusions';
 import { getProductStateCopy } from '@/utils/xiaodaProductStateCopy';
+import { resolveRecommendationMedia } from '@/utils/mediaResolution';
 import { buildOutfitCardViewModel } from './cardViewModel';
 import {
   beginTodayV2ColdTelemetry,
@@ -302,6 +303,7 @@ export default function TodayPage() {
   const batchExhaustedRef = useRef(false);
   const dirtyRefreshInFlightRef = useRef(false);
   const hardRefreshInFlightRef = useRef(false);
+  const pendingInitialRecommendationRef = useRef(false);
   const countContractRef = useRef<RecommendationCountContract | undefined>(undefined);
   const recommendationNoticeRef = useRef('');
   const clientImageTimingRef = useRef<ClientImageTiming | null>(null);
@@ -359,6 +361,7 @@ export default function TodayPage() {
   }, [isAuthenticated]);
 
   const resetUserState = useCallback(() => {
+    pendingInitialRecommendationRef.current = false;
     requestSeq.current += 1;
     activeRequestSeqRef.current = null;
     recommendationIntentRegistryRef.current?.reset();
@@ -429,7 +432,11 @@ export default function TodayPage() {
     if (!authContext) return;
     markTodayPerformanceStage('localIdentityReady');
     if (hasTodayRecommendationHardInvalid({ authContext })) {
-      void refreshHardInvalidRecommendation(authContext, consumeHardInvalidAcceptanceRequest(authContext));
+      if (!currentWeatherRef.current && currentWeatherModeRef.current === 'disabled') {
+        pendingInitialRecommendationRef.current = true;
+      } else {
+        void refreshHardInvalidRecommendation(authContext, consumeHardInvalidAcceptanceRequest(authContext));
+      }
       return;
     }
     // A resumed Today tab is a normal restore entry, not only a return from
@@ -460,7 +467,11 @@ export default function TodayPage() {
     if (authContext && hasTodayRecommendationHardInvalid({ authContext })) {
       const acceptanceDiagnostics = consumeHardInvalidAcceptanceRequest(authContext);
       markAcceptanceClientMilestone(acceptanceDiagnostics, 'hardInvalidDetectedAt');
-      void refreshHardInvalidRecommendation(authContext, acceptanceDiagnostics);
+      if (!currentWeatherRef.current && currentWeatherModeRef.current === 'disabled') {
+        pendingInitialRecommendationRef.current = true;
+      } else {
+        void refreshHardInvalidRecommendation(authContext, acceptanceDiagnostics);
+      }
       return;
     }
     if (currentWeatherRef.current) {
@@ -642,7 +653,7 @@ export default function TodayPage() {
             ) || null))
           : null;
         if (passiveColdTelemetry) todayV2EntryColdEligibleRef.current = false;
-        const response = await generateCloudOutfitV2({
+        const response = await resolveRecommendationMedia(await generateCloudOutfitV2({
           date: getToday(),
           scene,
           timeOfDay: TODAY_TIME_OF_DAY,
@@ -659,7 +670,7 @@ export default function TodayPage() {
             captureId: acceptanceDiagnostics.captureId,
             clientMilestones: acceptanceDiagnostics.clientMilestones,
           } : {}),
-        });
+        }));
         if (telemetryCorrelationId) {
           const transport = getCloudResponseTransportDiagnostics(response);
           const performance = (transport?.performance && typeof transport.performance === 'object')
@@ -837,6 +848,15 @@ export default function TodayPage() {
     }
 
     const sceneKey = selectedSceneKeyRef.current;
+    if (pendingInitialRecommendationRef.current) {
+      pendingInitialRecommendationRef.current = false;
+      const authContext = captureAuthContext();
+      if (authContext && hasTodayRecommendationHardInvalid({ authContext })) {
+        void refreshHardInvalidRecommendation(authContext);
+        markTodayPerformanceStage('weatherEnd');
+        return 'refreshed';
+      }
+    }
     if (v2SnapshotRef.current?.cards.length === 8 && sameRecommendationWeather) {
       markTodayPerformanceStage('weatherEnd');
       return 'unchanged';
