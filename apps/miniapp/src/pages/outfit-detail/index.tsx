@@ -56,7 +56,7 @@ import { getAiReviewPageState } from './aiReviewPageState';
 import { getAiCommentButtonBlockReason, getAiCommentButtonState, type AiCommentButtonState } from './aiCommentButtonState';
 import type { OutfitStatusPatch } from '@/stores/outfitStatusStore';
 import type { HomeLightCardV2, Outfit, OutfitAiReviewResponse, OutfitItemSummary, OutfitSnapshotItem } from '@starter-template/types';
-import { isTodayV2Enabled, readTodayV2Snapshot } from '@/pages/today/todayV2Adapter';
+import { readTodayV2Snapshot } from '@/pages/today/todayV2Adapter';
 import { applyOutfitDetailV2Load, beginOutfitDetailV2Load, createOutfitDetailV2State, type OutfitDetailV2State } from './outfitDetailV2';
 import './index.scss';
 
@@ -408,7 +408,6 @@ export default function OutfitDetailPage() {
   const router = useRouter();
   const id = router.params.id;
   const sourceParam = router.params.source;
-  const v2Enabled = isTodayV2Enabled();
   const v2BatchId = router.params.batchId;
   const v2OutfitKey = router.params.outfitKey;
   const v2ReferenceId = router.params.referenceId;
@@ -480,7 +479,7 @@ export default function OutfitDetailPage() {
   }, [authStatus, id, isAuthenticated, resetUserState, runtimeKey]);
 
   useEffect(() => {
-    if (!v2Enabled || !isAuthenticated || !runtimeKey || !v2BatchId || !v2OutfitKey) return;
+    if (!isAuthenticated || !runtimeKey || !v2BatchId || !v2OutfitKey) return;
     const authContext = captureAuthContext();
     if (!authContext) return;
     const snapshot = readTodayV2Snapshot((key) => getUserStorageSync(key, { authContext }));
@@ -493,7 +492,7 @@ export default function OutfitDetailPage() {
     void getCloudOutfitDetailV2({ batchId: v2BatchId, outfitKey: v2OutfitKey, referenceId: v2ReferenceId })
       .then((detail) => setV2DetailState((current) => current ? applyOutfitDetailV2Load(current, detail) : current))
       .catch(() => setV2DetailState((current) => current ? { ...current, loading: false } : current));
-  }, [isAuthenticated, runtimeKey, v2BatchId, v2Enabled, v2OutfitKey, v2ReferenceId]);
+  }, [isAuthenticated, runtimeKey, v2BatchId, v2OutfitKey, v2ReferenceId]);
 
   async function fetchOutfit(outfitId: string) {
     const requestSeq = requestSeqRef.current + 1;
@@ -1058,7 +1057,7 @@ export default function OutfitDetailPage() {
     });
   }
 
-  if (v2Enabled && v2DetailState) {
+  if (v2DetailState) {
     return <V2OutfitDetailView state={v2DetailState} />;
   }
 

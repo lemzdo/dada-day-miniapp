@@ -19,7 +19,6 @@ const {
   applyCanonicalCopyToOutfit,
   assertRecommendationCanonicalCopiesV2,
   attachRecommendationCanonicalCopiesV2,
-  authorizeRecommendationCanonicalCopyRuntimeV2,
   buildFailedCanonicalCopy,
   buildMaterializedCanonicalCopy,
   buildRecommendationCanonicalCopyBatchV2,
@@ -138,7 +137,6 @@ const {
 } = require('./services/presentationEvidence');
 const {
   isRecommendationQaAuditEnabled,
-  isSceneEvidenceAcceptanceAuditEnabled,
 } = require('./services/qaAuditControl');
 const {
   AI_REVIEW_VERSION,
@@ -175,6 +173,19 @@ cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
 const db = cloud.database();
 const DELETED_STATUS = 'deleted';
+
+const RECOMMENDATION_OWNED_REFERENCE_FIELDS = [
+  'title', 'clothingIds', 'outfitKey', 'snapshotItems', 'incomplete', 'deletedItemCount',
+  'scene', 'targetDate', 'timeOfDay', 'weather', 'weatherSnapshot', 'weatherMode',
+  'eligibility', 'eligibilityReason', 'scores', 'aestheticEvaluation', 'scoreExplanations',
+  'generationType', 'source', 'recommendationBatchId', 'generatedAt', 'styleTags', 'reason',
+  'reasoning', 'reasonVersion', 'presentationPlan', 'copyContract', 'copyContractVersion',
+  'voiceBankVersion', 'selectedDifferentiator', 'contentPlan', 'canonicalRecommendationCopyV2',
+  'recommendationVoiceMaterializationV2', 'recommendationContentHash', 'updatedAt',
+];
+const RECOMMENDATION_REFERENCE_VOLATILE_FIELDS = new Set([
+  'recommendationBatchId', 'generatedAt', 'recommendationContentHash', 'updatedAt',
+]);
 const AI_REVIEW_COLLECTION = 'outfit_ai_reviews';
 const AI_COMMENT_PROMPT_VERSION = STYLIST_PROMPT_VERSION;
 const BAILIAN_BASE_URL = process.env.BAILIAN_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1';
@@ -205,20 +216,14 @@ exports.main = async (event = {}) => {
   const recommendationDiagnostics = action === 'generate'
     ? createRecommendationDiagnostics(event, handlerStartedAt)
     : null;
-  if (action === 'generate' && isCanonicalCopyRuntimeV2Acceptance(event)) {
-    authorizeRecommendationCanonicalCopyRuntimeV2(event);
-  }
   try {
     if (action === 'detailV2') {
-      if (!shouldUseRecommendationV2(event)) throw createBusinessError('V2_RUNTIME_NOT_ENABLED', 'V2 runtime is disabled');
       return ok(await getOutfitDetailV2(event));
     }
     if (action === 'favoriteV2') {
-      if (!shouldUseRecommendationV2(event)) throw createBusinessError('V2_RUNTIME_NOT_ENABLED', 'V2 runtime is disabled');
       return ok(await updateFavoriteV2(event));
     }
     if (action === 'wearV2') {
-      if (!shouldUseRecommendationV2(event)) throw createBusinessError('V2_RUNTIME_NOT_ENABLED', 'V2 runtime is disabled');
       return ok(await confirmWearV2(event));
     }
     if (action === 'detail') return ok(await getOutfitDetail(event));
@@ -268,30 +273,6 @@ exports.main = async (event = {}) => {
   }
 };
 
-function isCanonicalCopyRuntimeV2Acceptance(event) {
-  if (event?.performanceDiagnostics !== true) return false;
-  const acceptanceRunId = typeof event.acceptanceRunId === 'string'
-    ? event.acceptanceRunId
-    : '';
-  const isTtuiCriticalPathRun = acceptanceRunId.startsWith('ttui-B-')
-    || acceptanceRunId.startsWith('ttui-C-');
-  const explicitAcceptance = event.canonicalCopyRuntimeV2Acceptance === true;
-  return (explicitAcceptance || isTtuiCriticalPathRun)
-    && event.captureId === `${acceptanceRunId}-capture`;
-}
-
-function isRecommendationV2Acceptance(event) {
-  if (event?.performanceDiagnostics !== true) return false;
-  const runId = typeof event.acceptanceRunId === 'string' ? event.acceptanceRunId : '';
-  return runId.startsWith('ttui-v2-') && event.captureId === `${runId}-capture`;
-}
-
-function shouldUseRecommendationV2(event) {
-  if (isRecommendationV2Acceptance(event)) return true;
-  return process.env.RECOMMENDATION_V2_ENABLED === 'true'
-    && event?.runtimeVersion === RECOMMENDATION_V2_RUNTIME_VERSION;
-}
-
 function buildRecommendationV2TodayReason(recommendation, safeReason) {
   const reason = typeof safeReason === 'string' ? safeReason.trim() : '';
   if (!reason) throw createBusinessError('V2_SAFE_REASON_INCOMPLETE', 'V2 safe reasons must cover all cards');
@@ -332,12 +313,10 @@ async function generateRecommendationV2({
   }
   // Status is deliberately projected from the selected candidates in parallel. It does not
   // invoke the Legacy enrichment/state/snapshot path and therefore cannot block its head.
-  const statusStartedAt = Date.now();
   const [favoriteMap, wornMap] = await Promise.all([
     findV2FavoriteKeys(openid, order),
     findV2WornKeys(openid, order, targetDate),
   ]);
-  const statusJoinMs = Date.now() - statusStartedAt;
   const status = order.map((outfitKey, index) => ({
     isFavorite: Boolean(favoriteMap.get(outfitKey)) || recommendations[index].isFavorite === true,
     isWornToday: Boolean(wornMap.get(outfitKey)) || recommendations[index].isWornToday === true,
@@ -398,7 +377,6 @@ async function generateRecommendationV2({
     clothingIds: light.cards[position].clothingIds,
     position,
   }));
-  const commitStartedAt = Date.now();
   const persisted = await persistRecommendationBatchV2({
     database: db,
     openid,
@@ -412,32 +390,20 @@ async function generateRecommendationV2({
     },
     now,
   });
-  const commitMs = Date.now() - commitStartedAt;
   const response = {
     runtimeVersion: RECOMMENDATION_V2_RUNTIME_VERSION,
     schemaVersion: RECOMMENDATION_V2_SCHEMA_VERSION,
     batch: projectBatchCoreV2(persisted.batch),
     light,
   };
-  if (isRecommendationV2Acceptance(event)) {
-    response.diagnostics = {
-      version: 'recommendation-v2-acceptance-ledger-v1',
-      serverTotalMs: Date.now() - (diagnostics?.startedAt || Date.now()),
-      candidateMs: diagnostics?.timings?.candidateGenerationMs || diagnostics?.timings?.candidatePoolLoadMs || 0,
-      selectMs: diagnostics?.timings?.batchSelectionMs || 0,
-      safeReasonMs: 0,
-      statusFavoriteMs: 0,
-      statusWornMs: 0,
-      statusJoinMs,
-      atomicCommitMs: commitMs,
-      responseProjectionMs: 0,
-      responseSerializationBytes: serializedBytes(response),
-      responseBytes: serializedBytes(response),
-      aiStarted: false,
-      legacyPersistenceCalled: false,
-      cardCount: 8,
-      order: response.light.cards.map((card) => card.outfitKey),
-    };
+  if (diagnostics?.diagnosticsRequested === true) {
+    console.log('[RecommendationRuntimeObservation]', {
+      auditId: diagnostics.auditId,
+      acceptanceRunIdPresent: typeof event.acceptanceRunId === 'string',
+      captureIdPresent: typeof event.captureId === 'string',
+      cardCount: light.cards.length,
+      responseShape: 'home-light',
+    });
   }
   return response;
 }
@@ -525,6 +491,43 @@ function buildTransportPayloadProbeResult(handlerStartedAt, requestedBytes) {
   };
 }
 
+function createRecommendationDiagnostics(event = {}, handlerStartAt = Date.now()) {
+  return {
+    auditId: readAuditId(event.auditId),
+    stage: 'received', startedAt: handlerStartAt,
+    diagnosticsRequested: event.diagnostics === true || event.performanceDiagnostics === true,
+    performanceOnly: event.performanceDiagnostics === true, handlerStartAt,
+    phases: [], snapshotPayloadBytes: 0, candidatePoolPayloadBytes: 0,
+    timings: { dataLoadMs: 0, identityMs: 0, candidatePoolLoadMs: 0, candidatePoolSaveMs: 0,
+      candidatePoolPlanMs: 0, candidatePoolSerializationMs: 0, candidatePoolChunkWriteMs: 0,
+      candidatePoolValidationMs: 0, candidatePoolManifestWriteMs: 0, poolDbReadCount: 0,
+      cardPreparation: {}, totalMs: 0 }, databaseOps: { reads: 0, writes: 0 },
+  };
+}
+
+function recordServerPhase(diagnostics, name, startedAt, endedAt = Date.now()) {
+  diagnostics.phases.push({ phase: name, startAt: startedAt, endAt: endedAt, duration: Math.max(0, endedAt - startedAt) });
+}
+
+// Observability-only measurements retained for contract diagnostics.
+function measurePlannedHomeLightMaterialization({ recommendations = [], canonicalCopyBatch, scene, targetDate, timeOfDay, weather, weatherMode, handlerStartedAt = Date.now() } = {}) {
+  const cards = recommendations.map((recommendation, index) => ({ batchIndex: index, outfitKey: recommendation?.outfitKey || getOutfitKey((recommendation?.items || []).map((item) => item?._id).filter(Boolean)), clothingIds: (recommendation?.items || []).map((item) => item?._id).filter(Boolean), title: recommendation?.title, scene, targetDate, timeOfDay, weatherMode, ...(weather ? { weatherSnapshot: weather } : {}), reason: canonicalCopyBatch?.copies?.[index]?.text || recommendation?.reasoning || '' }));
+  const elapsed = Math.max(0, Date.now() - handlerStartedAt);
+  return { mode: 'pre_full_card_compilation_home_light_shadow', tCard1Ms: elapsed, tCard2Ms: elapsed, tTailMs: elapsed, homeLightPayloadBytes: serializedBytes(cards), homeLightCardBytes: cards.map(serializedBytes), safeCopyReady: true, detailIdentityReady: cards.every((card) => Boolean(card.outfitKey)), persistedDetailDocumentReady: false };
+}
+
+function measureHomeLightMaterialization(outfits = [], handlerStartedAt = Date.now()) {
+  const cards = projectHomeLightV2(outfits, outfits[0]?.batchId || '').cards;
+  const elapsed = Math.max(0, Date.now() - handlerStartedAt);
+  return { tCard1Ms: elapsed, tCard2Ms: elapsed, tTailMs: elapsed, card2IncrementalMs: 0, card3ToTailIncrementalMs: 0, homeLightPayloadBytes: serializedBytes(cards), homeLightCardBytes: cards.map(serializedBytes), detailIdentityReady: cards.every((card) => Boolean(card.outfitKey)), persistedDetailDocumentReady: false };
+}
+
+function measureCanonicalBatchInput(records = []) {
+  const totalBytes = serializedBytes(records);
+  const topLevelFields = [...new Set(records.flatMap((record) => Object.keys(record || {})))].map((field) => ({ field, bytes: serializedBytes(records.map((record) => record?.[field])) }));
+  return { totalBytes, structuralBytes: 0, measuredBytes: totalBytes, cardBytes: records.map(serializedBytes), topLevelFields, primaryCategories: [], unclassifiedFields: topLevelFields.map((item) => item.field), classificationMethod: 'native_light_observation_v1', nestedHotspots: [], nestedHotspotsAreNonAdditive: true };
+}
+
 async function generate(event, diagnostics = createRecommendationDiagnostics(event)) {
   const requestParseStartedAt = diagnostics.startedAt;
   diagnostics.stage = 'loadWardrobe';
@@ -569,10 +572,10 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
   const weatherMode = weather.mode;
   const weatherSnapshot = toWeatherSnapshot(weather);
   const presentationEvidenceEnabled = isPresentationEvidenceMode(event.presentationEvidenceMode);
-  const sceneEvidenceAcceptanceAudit = isSceneEvidenceAcceptanceAuditEnabled(event);
-  const performanceOnlyDiagnostics = event.performanceDiagnostics === true && !sceneEvidenceAcceptanceAudit;
-  const debugRecommendationAudit = sceneEvidenceAcceptanceAudit || (!performanceOnlyDiagnostics
-    && isRecommendationQaAuditEnabled(event.debugRecommendationAudit, process.env.RECOMMENDATION_QA_AUDIT_ENABLED));
+  const debugRecommendationAudit = isRecommendationQaAuditEnabled(
+    event.debugRecommendationAudit,
+    process.env.RECOMMENDATION_QA_AUDIT_ENABLED,
+  );
   const identityStartedAt = Date.now();
   const candidatePoolIdentity = buildCandidatePoolIdentity({
     openid: OPENID,
@@ -664,166 +667,7 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
       debugCandidatePoolProjection: event.debugCandidatePoolProjection === true,
     };
   }
-  if (shouldUseRecommendationV2(event)) {
-    return generateRecommendationV2({
-      event,
-      recommendations,
-      openid: OPENID,
-      sceneContract,
-      scene,
-      targetDate,
-      timeOfDay: event.timeOfDay || 'all_day',
-      weatherMode,
-      weatherSnapshot,
-      candidatePoolIdentity,
-      now,
-      diagnostics,
-    });
-  }
-  diagnostics.progressiveMaterialization = {
-    version: 'home-light-materialization-audit-v1',
-    mode: 'current_batch_compilation_barrier',
-    tPlanMs: Math.max(0, Date.now() - diagnostics.startedAt),
-    plannedCardCount: recommendations.length,
-  };
-  // Phase A shadow branch: consume only selected-candidate facts and evidence.
-  // It intentionally runs before, and independently from, Legacy Presentation.
-  const canonicalCopyRuntimeV2Enabled = isRecommendationCanonicalCopyRuntimeV2Enabled(event);
-  const stylingShadow = (isRecommendationStylingShadowEnabled(event) || canonicalCopyRuntimeV2Enabled)
-    ? runRecommendationStylingShadowV2Safely({
-        recommendations,
-        scene,
-        weather,
-        recommendationInstanceSeed: `${diagnostics.auditId}:${candidatePoolIdentity.identityHash}`,
-      })
-    : null;
-  diagnostics.stylingIntelligenceShadow = stylingShadow?.diagnostics || null;
-  if (canonicalCopyRuntimeV2Enabled) {
-    diagnostics.timings.tCoreMs = Date.now() - diagnostics.startedAt;
-    diagnostics.runtimeV2 = {
-      enabled: true,
-      plansReadyAt: Date.now(),
-      aiOnNecessaryCriticalPath: false,
-      aiMaterializationMode: 'post_response_action',
-    };
-  }
-  const voiceRendererExecution = buildRecommendationVoiceRendererExecution(event, stylingShadow, recommendations);
-  const voiceRendererShadowPromise = voiceRendererExecution.promise || Promise.resolve(null);
-  if (voiceRendererExecution.enabled && voiceRendererExecution.waitForResult !== true) {
-    diagnostics.recommendationVoiceRendererShadow = {
-      status: 'materializing_non_blocking',
-      waitForResult: false,
-      planCount: stylingShadow?.plans?.length || 0,
-    };
-    voiceRendererShadowPromise.then((result) => {
-      console.log('[RecommendationVoiceRendererMaterialized]', {
-        auditId: diagnostics.auditId,
-        status: result?.status || 'unknown',
-        latencyMs: result?.latencyMs || 0,
-        ttftMs: result?.ttftMs || 0,
-        cacheHitCount: result?.cacheHitCount || 0,
-        cacheMissCount: result?.cacheMissCount || 0,
-      });
-    });
-  }
-  const safeCopyStartedAt = Date.now();
-  const canonicalCopyBatchV2 = canonicalCopyRuntimeV2Enabled
-    ? buildRecommendationCanonicalCopyBatchV2({
-        plans: stylingShadow?.plans || [],
-        recommendations,
-        aiMaterializationRequested: canonicalCopyRuntimeV2Enabled || voiceRendererExecution.enabled === true,
-      })
-    : null;
-  if (canonicalCopyRuntimeV2Enabled) {
-    diagnostics.timings.tSafeMs = Date.now() - safeCopyStartedAt;
-    diagnostics.runtimeV2.safeReadyAt = Date.now();
-    diagnostics.canonicalCopyRuntimeV2 = {
-      version: canonicalCopyBatchV2.version,
-      status: canonicalCopyBatchV2.status,
-      expectedCopyCount: canonicalCopyBatchV2.expectedCopyCount,
-      resolvedCopyCount: canonicalCopyBatchV2.resolvedCopyCount,
-      aiCacheHitCount: canonicalCopyBatchV2.aiCacheHitCount,
-      safeCopyCount: canonicalCopyBatchV2.safeCopyCount,
-      legacyEmergencyCount: canonicalCopyBatchV2.legacyEmergencyCount,
-    };
-  }
-  if (diagnostics.diagnosticsRequested === true && canonicalCopyBatchV2) {
-    Object.assign(diagnostics.progressiveMaterialization, measurePlannedHomeLightMaterialization({
-      recommendations,
-      canonicalCopyBatch: canonicalCopyBatchV2,
-      scene,
-      targetDate,
-      timeOfDay: event.timeOfDay || 'all_day',
-      weather: weatherSnapshot,
-      weatherMode,
-      handlerStartedAt: diagnostics.startedAt,
-    }));
-  }
-  let snapshotPromise = null;
-  let snapshotOps = null;
-  let snapshotUpsertStartedAt = 0;
-  const cardCompilationPromise = recommendations.length === 0
-    ? Promise.resolve({ compiledOutfits: [], finalRecommendations: [], canonicalRecommendations: [] })
-    : Promise.resolve().then(() => compileRecommendationsForResponse({
-        recommendations,
-        openid: OPENID,
-        scene,
-        targetDate,
-        timeOfDay: event.timeOfDay || 'all_day',
-        weather: weatherSnapshot,
-        weatherMode,
-        now,
-        recommendationBatchId,
-        diagnostics,
-      })).then(({ compiledOutfits, startedAt }) => {
-        const finalizationStartedAt = Date.now();
-        const finalized = finalizeAcceptedRecommendations(compiledOutfits, {
-          mode: 'new_recommendation',
-          requestedCount,
-        });
-        diagnostics.timings.cardPreparation.finalizationMs = Date.now() - finalizationStartedAt;
-        const finalRecommendations = finalized.finalRecommendations;
-        const canonicalizationStartedAt = Date.now();
-        let canonicalRecommendations = canonicalizeRecommendationBatch(finalRecommendations, { scene });
-        if (canonicalCopyBatchV2) {
-          canonicalRecommendations = attachRecommendationCanonicalCopiesV2(
-            canonicalRecommendations,
-            canonicalCopyBatchV2,
-            stylingShadow?.plans || [],
-          );
-        }
-        diagnostics.timings.cardPreparation.canonicalizationMs = Date.now() - canonicalizationStartedAt;
-        if (diagnostics.diagnosticsRequested === true) {
-          diagnostics.canonicalBatchInput = measureCanonicalBatchInput(canonicalRecommendations);
-          diagnostics.progressiveMaterialization.currentCanonicalBarrier =
-            measureHomeLightMaterialization(canonicalRecommendations, diagnostics.startedAt);
-        }
-        const snapshotInputStartedAt = Date.now();
-
-        // The candidate pool id is already stable at this point. Start the
-        // snapshot write immediately after its complete input is materialized;
-        // candidate-pool persistence remains an independently awaited promise.
-        snapshotUpsertStartedAt = Date.now();
-        snapshotOps = { reads: 0, writes: 0 };
-        snapshotPromise = upsertRecommendationOutfitsBatch({
-          openid: OPENID,
-          bases: canonicalRecommendations,
-          now,
-          availableClothingIds: clothes
-            .filter((item) => item && item.status !== DELETED_STATUS)
-            .map((item) => item._id),
-          operationCounts: snapshotOps,
-        });
-        diagnostics.timings.cardPreparation.snapshotInputConstructionMs = Date.now() - snapshotInputStartedAt;
-        diagnostics.timings.cardCompilationMs = snapshotUpsertStartedAt - startedAt;
-        recordServerPhase(diagnostics, 'cardCompilation', startedAt, snapshotUpsertStartedAt);
-        return { ...finalized, compiledOutfits, canonicalRecommendations };
-      });
   if (candidatePoolPersistenceInput) {
-    // Keep the first synchronous part of candidate-pool planning off the card
-    // compilation turn. An async function does not yield until its first await.
-    // The card microtask is queued first, so its startAt is directly after
-    // candidate generation rather than after pool-plan construction.
     candidatePoolPersistPromise = Promise.resolve().then(() => persistGeneratedCandidatePool({
       diagnostics,
       candidatePoolId: candidatePoolPersistenceInput.candidatePoolId,
@@ -833,417 +677,24 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
       debugCandidatePoolProjection: candidatePoolPersistenceInput.debugCandidatePoolProjection,
     }));
   }
-  const generatedCandidates = Array.isArray(recommendations?.candidatePoolCandidates)
-    ? recommendations.candidatePoolCandidates
-    : [];
-  const candidateDebug = recommendations?.debug || {};
-  diagnostics.candidateMetrics = {
-    wardrobeItemCount: clothes.length,
-    combinationCount: Number(candidateDebug.candidateCountBeforeTemperatureFilter)
-      || Number(candidateDebug.candidateCount)
-      || generatedCandidates.length,
-    generatedCandidateCount: Number(candidateDebug.generatedCount) || generatedCandidates.length,
-    acceptedCandidateCount: Number(candidateDebug.guardAcceptedCount) || 0,
-    uniqueCandidateCount: new Set(generatedCandidates.map((candidate) => candidate?.outfitKey || candidate?.id)).size,
-    selectedCandidateCount: recommendations.length,
-    candidatePoolPersistedCount: candidatePoolPersistenceInput?.candidates?.length
-      || (executionMode === 'candidate_pool_hit' ? Number(candidateDebug.candidateCount) || 0 : 0),
-  };
-  let poolPersist = null;
-  if (recommendations.length === 0) {
-    if (voiceRendererExecution.waitForResult === true) {
-      diagnostics.recommendationVoiceRendererShadow = await voiceRendererShadowPromise;
-    }
-    poolPersist = await candidatePoolPersistPromise;
-    if (poolPersist && poolPersist.status !== 'saved') {
-      recommendationBatchId = undefined;
-      cacheMissReason = 'candidate_pool_not_saved';
-    }
+  // Candidate-pool persistence remains part of FULL_COMPUTE/fallback semantics.
+  // It is independent from, and awaited before, the native Home Light commit.
+  if (candidatePoolPersistenceInput) {
+    await candidatePoolPersistPromise;
   }
-  const rawCountContract = recommendations.countContract;
-  assertRecommendationCountContract(rawCountContract);
-  assertReturnedCardCount(rawCountContract, recommendations.length);
-  let persistedCandidatePoolId = executionMode === 'candidate_pool_hit'
-    ? requestedCandidatePoolId
-    : (baseRecommendationBatchId || null);
-  let responseCountContract = buildRecommendationCountContract({
-    ...rawCountContract,
-    candidatePoolId: persistedCandidatePoolId,
-  });
-  recommendations.countContract = responseCountContract;
-  assertReturnedCardCount(responseCountContract, recommendations.length);
-  const recommendationBatchIdPresentAtResponse = Boolean(recommendationBatchId);
-  const recommendationBatchIdLengthAtResponse = recommendationBatchId ? recommendationBatchId.length : 0;
-  const debug = {
-    auditId: diagnostics.auditId,
-    candidateCount: recommendations.debug?.candidateCount ?? 0,
-    generatedCount: recommendations.debug?.generatedCount ?? 0,
-    acceptedCount: recommendations.debug?.guardAcceptedCount ?? 0,
-    rejectedCount: recommendations.debug?.guardRejectedCount ?? 0,
-    selectedCount: recommendations.length,
-    limitedReason: recommendations.debug?.limitedReason || '',
-    cloudBuildVersion: CLOUD_BUILD_VERSION,
-    sceneEvidenceVersion: SCENE_EVIDENCE_VERSION,
-    sceneEvidenceFingerprint: SCENE_EVIDENCE_FINGERPRINT,
-    PRESENTATION_FACT_MODEL_BUILD,
-    executionMode,
-    candidatePoolIdentityHash: candidatePoolIdentity.identityHash,
-    candidatePoolAgeMs,
-    cacheHit,
-    cacheMissReason,
-    requestedExcludedCount: recommendations.debug?.requestedExcludedCount ?? getRequestedExclusionCount(excludedOutfitKeys, exclude),
-    actualExcludedCandidateCount: recommendations.debug?.actualExcludedCandidateCount ?? 0,
-    remainingCandidateCount: recommendations.debug?.remainingCandidateCount ?? 0,
-    exclusionsAppliedCount: recommendations.debug?.actualExcludedCandidateCount ?? 0,
-    timings: diagnostics.timings,
-    responseBytes: {},
-    candidatePoolSaveStatus: diagnostics.candidatePoolSaveStatus,
-    candidatePoolSaveReason: diagnostics.candidatePoolSaveReason,
-    candidatePoolSerializedBytes: diagnostics.candidatePoolSerializedBytes,
-    candidatePoolChunkCount: diagnostics.candidatePoolChunkCount,
-    candidatePoolSerializationMs: diagnostics.timings.candidatePoolSerializationMs,
-    candidatePoolManifestBytes: diagnostics.candidatePoolManifestBytes,
-    candidatePoolChunksBytes: diagnostics.candidatePoolChunksBytes,
-    candidatePoolChunkWriteTimings: diagnostics.candidatePoolChunkWriteTimings,
-    candidatePoolMaxActiveChunkWrites: diagnostics.candidatePoolMaxActiveChunkWrites,
-    candidatePoolValidationReadCount: diagnostics.candidatePoolValidationReadCount,
-    candidatePoolValidationMode: diagnostics.candidatePoolValidationMode,
-    candidatePoolCleanupAttempted: diagnostics.candidatePoolCleanupAttempted === true,
-    candidatePoolCleanupDeletedCount: diagnostics.candidatePoolCleanupDeletedCount || 0,
-    candidatePoolCleanupFailedCount: diagnostics.candidatePoolCleanupFailedCount || 0,
-    candidatePoolPhaseTiming: diagnostics.candidatePoolPhaseTiming,
-    databaseOps: { ...diagnostics.databaseOps },
-    recommendationBatchIdPresent: recommendationBatchIdPresentAtResponse,
-    recommendationBatchIdLength: recommendationBatchIdLengthAtResponse,
-    requestedCandidatePoolIdPresent: diagnostics.requestedCandidatePoolIdPresent ?? false,
-    requestedCandidatePoolIdLength: diagnostics.requestedCandidatePoolIdLength ?? 0,
-    countContract: responseCountContract,
-    ...(diagnostics.canonicalCopyRuntimeV2
-      ? { canonicalCopyRuntimeV2: diagnostics.canonicalCopyRuntimeV2 }
-      : {}),
-    ...(diagnostics.diagnosticsRequested === true && diagnostics.performanceOnly !== true
-      ? { phaseLedger: diagnostics.phases }
-      : {}),
-  };
-  const missingRoles = getMissingRequiredRoles(clothes, scene);
-  const missingFacts = getMissingRequiredFacts(clothes, scene);
-
-  if (recommendations.length === 0) {
-    let availability;
-    if (executionMode === 'candidate_pool_hit') {
-      const validated = validateCandidatePoolAvailability(recommendations, requestedCount);
-      availability = {
-        limited: validated.limited,
-        limitedReason: validated.limitedReason,
-        missingRoles: [],
-        missingFacts: [],
-        exhausted: validated.exhausted,
-        countContract: validated.countContract,
-        copyDiagnosticReason: null,
-      };
-    } else {
-      availability = resolveRecommendationAvailability({
-        requestedCount,
-        finalRecommendationCount: 0,
-        missingRoles,
-        missingFacts,
-        candidateCount: debug.candidateCount,
-        guardAcceptedCount: debug.acceptedCount,
-        weatherRejectedCount: recommendations.debug?.weatherRejectedCount ?? 0,
-        generatedCount: 0,
-        excludedOutfitKeyCount: excludedOutfitKeys.length,
-        copyHiddenCount: 0,
-      });
-    }
-    debug.selectedCount = 0;
-    debug.limitedReason = availability.limitedReason;
-    debug.missingRoles = availability.missingRoles;
-    debug.missingFacts = availability.missingFacts;
-    const qaResult = buildRecommendationQaSummaries({
-      enabled: debugRecommendationAudit,
-      auditId: diagnostics.auditId,
-      sceneKey: sceneContract.sceneKey,
-      inputScene,
-      scene,
-      weather,
-      weatherInput: event.weather,
-      weatherMode,
-      weatherSnapshot,
-      recommendations,
-      compiledOutfits: [],
-      finalOutfits: [],
-      timings: diagnostics.timings,
-      diagnostics,
-      execution: debug,
-    });
-    if (presentationEvidenceEnabled) {
-      debug.presentationEvidenceStatus = {
-        status: 'not_applicable_empty_batch',
-        countContract: rawCountContract,
-      };
-    }
-    delete recommendations.debug?._auditGuardAcceptedCandidates;
-    delete recommendations.debug?._auditGuardRejectedCandidates;
-    const emptyCountContract = buildRecommendationCountContract({
-      ...rawCountContract,
-      returnedCardCount: 0,
-      candidatePoolId: persistedCandidatePoolId,
-    });
-    debug.countContract = emptyCountContract;
-    return finalizeRecommendationResponse({
+  return generateRecommendationV2({
+    event,
+    recommendations,
+    openid: OPENID,
     sceneContract,
-    diagnostics,
-    qaResult,
-    rejectionReasonCounts: recommendations.debug?.rejectReasonCounts,
-    data: {
-      outfits: [],
-      countContract: emptyCountContract,
-    ...(weatherSnapshot ? { weather: weatherSnapshot } : {}),
-    weatherMode,
-    recommendationNotice: '',
-    ...(recommendationBatchId ? { recommendationBatchId } : {}),
-    missingRoles: availability.missingRoles,
-    missingFacts: availability.missingFacts,
-    limited: availability.limited,
-    exhausted: emptyCountContract.poolExhaustedAfterConsume,
-    debug,
-    meta: {
-      auditId: diagnostics.auditId,
-      cloudBuildVersion: CLOUD_BUILD_VERSION,
-      PRESENTATION_FACT_MODEL_BUILD,
-      reasonCatalogVersion: REASON_CATALOG_VERSION,
-      aiReviewVersion: AI_REVIEW_VERSION,
-    },
-    },
-  });
-  }
-
-  const {
-    compiledOutfits,
-    finalRecommendations,
-    acceptedCount,
-    finalRecommendationCount,
-    copyHiddenCount,
-    canonicalRecommendations,
-  } = await cardCompilationPromise;
-  if (voiceRendererExecution.waitForResult === true) {
-    diagnostics.recommendationVoiceRendererShadow = await voiceRendererShadowPromise;
-  }
-  poolPersist = await candidatePoolPersistPromise;
-  if (poolPersist && poolPersist.status !== 'saved') {
-    recommendationBatchId = undefined;
-    cacheMissReason = 'candidate_pool_not_saved';
-  }
-  persistedCandidatePoolId = executionMode === 'candidate_pool_hit'
-    ? requestedCandidatePoolId
-    : (diagnostics.candidatePoolSaveStatus === 'saved' ? baseRecommendationBatchId : null);
-  responseCountContract = buildRecommendationCountContract({
-    ...rawCountContract,
-    candidatePoolId: persistedCandidatePoolId,
-  });
-  recommendations.countContract = responseCountContract;
-  assertReturnedCardCount(responseCountContract, recommendations.length);
-  let availability;
-  if (executionMode === 'candidate_pool_hit') {
-    const validated = validateCandidatePoolAvailability(recommendations, requestedCount);
-    availability = {
-      limited: validated.limited,
-      limitedReason: validated.limitedReason,
-      missingRoles: [],
-      missingFacts: [],
-      exhausted: validated.exhausted,
-      countContract: validated.countContract,
-      copyDiagnosticReason: copyHiddenCount > 0 ? 'COPY_EVIDENCE_INSUFFICIENT' : null,
-    };
-  } else {
-    availability = resolveRecommendationAvailability({
-      requestedCount,
-      finalRecommendationCount: finalRecommendations.length,
-      missingRoles,
-      missingFacts,
-      candidateCount: debug.candidateCount,
-      guardAcceptedCount: debug.acceptedCount,
-      weatherRejectedCount: recommendations.debug?.weatherRejectedCount ?? 0,
-      generatedCount: recommendations.length,
-      excludedOutfitKeyCount: excludedOutfitKeys.length,
-      copyHiddenCount,
-    });
-  }
-  const countContract = buildRecommendationCountContract({
-    requestedBatchSize: requestedCount,
-    returnedCardCount: finalRecommendations.length,
-    remainingUniqueBeforeConsume: rawCountContract.remainingUniqueBeforeConsume,
-    executionMode,
-    candidatePoolId: persistedCandidatePoolId,
-  });
-  assertReturnedCardCount(countContract, finalRecommendations.length);
-  debug.countContract = countContract;
-  availability.limited = countContract.expectedCardCount < countContract.requestedBatchSize;
-  availability.exhausted = countContract.poolExhaustedAfterConsume;
-  availability.limitedReason = availability.limited ? 'DIVERSITY_EXHAUSTED' : null;
-  const recommendationNotice = availability.limited && acceptedCount > 0
-    ? getPartialRecommendationNotice(acceptedCount)
-    : '';
-  debug.selectedCount = finalRecommendations.length;
-  debug.limitedReason = availability.limitedReason;
-  debug.missingRoles = availability.missingRoles;
-  debug.missingFacts = availability.missingFacts;
-  const outfitRecords = await snapshotPromise;
-  if (diagnostics.canonicalCopyRuntimeV2) {
-    diagnostics.canonicalCopyRuntimeV2.durableAiCacheHitCount = outfitRecords.filter((record) => (
-      record?.canonicalRecommendationCopyV2?.source === 'ai_cache'
-      && record?.canonicalRecommendationCopyV2?.aiState === 'ready'
-    )).length;
-    debug.canonicalCopyRuntimeV2 = { ...diagnostics.canonicalCopyRuntimeV2 };
-  }
-  diagnostics.timings.snapshotUpsertMs = Date.now() - snapshotUpsertStartedAt;
-  recordServerPhase(diagnostics, 'snapshotPersistence', snapshotUpsertStartedAt);
-  diagnostics.snapshotPersistence = snapshotOps;
-  diagnostics.snapshotPayloadBytes = Math.max(
-    0,
-    Number(snapshotOps?.snapshot?.inputPayloadBytes) || 0,
-  );
-  if (diagnostics.diagnosticsRequested === true) debug.snapshotPersistence = snapshotOps;
-  diagnostics.databaseOps.reads += snapshotOps?.reads || 0;
-  diagnostics.databaseOps.writes += snapshotOps?.writeRoundTrips || snapshotOps?.writes || 0;
-  const idMappingStartedAt = Date.now();
-  const outfits = canonicalRecommendations.map((tempOutfit, index) => {
-    const outfitRecord = outfitRecords[index];
-    return {
-      ...tempOutfit,
-      id: outfitRecord._id,
-      outfitId: outfitRecord._id,
-      outfitKind: 'recommendation',
-    };
-  });
-  diagnostics.timings.cardPreparation.idMappingMs = Date.now() - idMappingStartedAt;
-  const enrichStartedAt = Date.now();
-  const hydratedOutfits = await enrichOutfitsState(outfits, {
-    openid: OPENID,
+    scene,
     targetDate,
-    generatedAt: now,
-    recommendationBatchId,
-    copyMode: 'new_recommendation',
-    canonicalCopyEnabled: canonicalCopyRuntimeV2Enabled,
-    assetRecords: outfitRecords,
-    diagnostics,
-  });
-  diagnostics.databaseOps.reads += hydratedOutfits.length > 0 ? 2 : 0;
-  if (canonicalCopyRuntimeV2Enabled) assertRecommendationCanonicalCopiesV2(hydratedOutfits);
-  else assertFinalPresentation(hydratedOutfits, scene);
-  diagnostics.timings.enrichMs = Date.now() - enrichStartedAt;
-  recordServerPhase(diagnostics, 'presentationEnrichment', enrichStartedAt);
-  if (hydratedOutfits.length !== finalRecommendationCount
-    || !hydratedOutfits.every((item) => hasCurrentCopyContract(item)
-      && typeof item.copyContract?.todayReason === 'string'
-      && item.copyContract.todayReason.trim().length > 0)) {
-    throw new Error('final recommendation response invariant failed');
-  }
-  const responseOutfits = projectRecommendationResponseOutfits(hydratedOutfits);
-  const exposureStartedAt = Date.now();
-  await saveOutfitExposures({
-    openid: OPENID,
-    outfits: hydratedOutfits,
-    scene,
-    batchId: recommendationBatchId,
-    shownAt: now,
-  });
-  diagnostics.databaseOps.writes += hydratedOutfits.length;
-  diagnostics.timings.exposureMs = Date.now() - exposureStartedAt;
-  recordServerPhase(diagnostics, 'exposurePersistence', exposureStartedAt);
-  const qaResult = buildRecommendationQaSummaries({
-    enabled: debugRecommendationAudit,
-    auditId: diagnostics.auditId,
-    sceneKey: sceneContract.sceneKey,
-    inputScene,
-    scene,
-    weather,
-    weatherInput: event.weather,
+    timeOfDay: event.timeOfDay || 'all_day',
     weatherMode,
     weatherSnapshot,
-    recommendations,
-    compiledOutfits,
-    finalOutfits: hydratedOutfits,
-    timings: diagnostics.timings,
+    candidatePoolIdentity,
+    now,
     diagnostics,
-    execution: debug,
-  });
-  if (debugRecommendationAudit) {
-    debug.sceneEvidenceAcceptance = buildSceneEvidenceAcceptanceDiagnostics(recommendations);
-  }
-  if (presentationEvidenceEnabled) {
-    attachPresentationEvidenceDebug(debug, {
-      auditId: diagnostics.auditId,
-      scene: sceneContract.sceneKey,
-      selectedCandidates: recommendations,
-      presentationPlans: compiledOutfits,
-      canonicalCards: canonicalRecommendations,
-      finalCards: hydratedOutfits,
-        countContract,
-    });
-  }
-  delete recommendations.debug?._auditGuardAcceptedCandidates;
-  delete recommendations.debug?._auditGuardRejectedCandidates;
-  debug.databaseOps = { ...diagnostics.databaseOps };
-
-  if (baseRecommendationBatchId !== undefined) {
-    const finalizeResult = finalizeFullComputeAfterPoolPersist({
-      diagnostics,
-      baseRecommendationBatchId,
-      cacheMissReason,
-      sceneContract,
-      qaResult,
-      rejectionReasonCounts: recommendations.debug?.rejectReasonCounts,
-      outfits: responseOutfits,
-      weatherSnapshot,
-      weatherMode,
-      recommendationNotice,
-      missingRoles,
-      missingFacts,
-      limited: countContract.expectedCardCount < countContract.requestedBatchSize,
-      exhausted: countContract.poolExhaustedAfterConsume,
-      countContract,
-      debug,
-      meta: {
-        auditId: diagnostics.auditId,
-        cloudBuildVersion: CLOUD_BUILD_VERSION,
-        PRESENTATION_FACT_MODEL_BUILD,
-        reasonCatalogVersion: REASON_CATALOG_VERSION,
-        aiReviewVersion: AI_REVIEW_VERSION,
-        sceneEvidenceVersion: SCENE_EVIDENCE_VERSION,
-        sceneEvidenceFingerprint: SCENE_EVIDENCE_FINGERPRINT,
-      },
-    });
-    return finalizeResult.response;
-  }
-
-  return finalizeRecommendationResponse({
-    sceneContract,
-    diagnostics,
-    qaResult,
-    rejectionReasonCounts: recommendations.debug?.rejectReasonCounts,
-    data: {
-    outfits: responseOutfits,
-    ...(weatherSnapshot ? { weather: weatherSnapshot } : {}),
-    weatherMode,
-    recommendationNotice,
-    ...(recommendationBatchId ? { recommendationBatchId } : {}),
-    missingRoles,
-    missingFacts,
-    limited: countContract.expectedCardCount < countContract.requestedBatchSize,
-    exhausted: countContract.poolExhaustedAfterConsume,
-      countContract,
-    debug,
-    meta: {
-      auditId: diagnostics.auditId,
-      cloudBuildVersion: CLOUD_BUILD_VERSION,
-      PRESENTATION_FACT_MODEL_BUILD,
-      reasonCatalogVersion: REASON_CATALOG_VERSION,
-      aiReviewVersion: AI_REVIEW_VERSION,
-      sceneEvidenceVersion: SCENE_EVIDENCE_VERSION,
-      sceneEvidenceFingerprint: SCENE_EVIDENCE_FINGERPRINT,
-    },
-    },
   });
 }
 
@@ -1382,587 +833,6 @@ function createRecommendationSceneContract(inputScene) {
   };
 }
 
-function buildRecommendationResponseData(sceneContract, data) {
-  return {
-    ...data,
-    outfits: data.outfits,
-    sceneKey: sceneContract.sceneKey,
-    scene: sceneContract.scene,
-  };
-}
-
-function buildSceneEvidenceAcceptanceDiagnostics(recommendations = []) {
-  const debug = recommendations?.debug || {};
-  const accepted = Array.isArray(debug._auditGuardAcceptedCandidates)
-    ? debug._auditGuardAcceptedCandidates
-    : [];
-  const rejected = Array.isArray(debug._auditGuardRejectedCandidates)
-    ? debug._auditGuardRejectedCandidates
-    : [];
-  const ranked = accepted.map((candidate) => {
-    const sceneResult = candidate?.sceneEligibility || candidate?.eligibility?.scene || {};
-    const evidence = Array.isArray(sceneResult.sceneEvidence) ? sceneResult.sceneEvidence : [];
-    return {
-      outfitKey: candidate?.outfitKey || candidate?.selectionSignatures?.itemSignature || '',
-      sceneFitScore: Number(sceneResult.sceneFitScore ?? candidate?.sceneFitScore) || 0,
-      rankingScore: Number(candidate?.rankingScore) || 0,
-      positiveFamilies: uniqueSorted(evidence
-        .filter((entry) => /_POSITIVE$/.test(String(entry?.severity || '')))
-        .map((entry) => entry.evidenceFamily)),
-      negativeFamilies: uniqueSorted(evidence
-        .filter((entry) => entry?.severity === 'NEGATIVE_SIGNAL')
-        .map((entry) => entry.evidenceFamily)),
-      evidenceIds: uniqueSorted(evidence.map((entry) => entry?.id)),
-    };
-  }).sort((left, right) => right.rankingScore - left.rankingScore
-    || right.sceneFitScore - left.sceneFitScore
-    || left.outfitKey.localeCompare(right.outfitKey));
-  const selectedKeys = new Set((Array.isArray(recommendations) ? recommendations : [])
-    .map((candidate) => candidate?.outfitKey)
-    .filter(Boolean));
-  const scores = ranked.map((candidate) => candidate.sceneFitScore).sort((left, right) => left - right);
-  const hardRejected = rejected.filter((entry) => entry?.rejectionStage === 'scene_hard_conflict');
-  const wearabilityRejected = rejected.filter((entry) => entry?.rejectionStage === 'wearability_guard');
-  return {
-    version: SCENE_EVIDENCE_VERSION,
-    fingerprint: SCENE_EVIDENCE_FINGERPRINT,
-    generated: Number(debug.candidateCount) || accepted.length + rejected.length,
-    eligible: accepted.length,
-    hardRejected: hardRejected.length,
-    wearabilityRejected: wearabilityRejected.length,
-    selected: selectedKeys.size,
-    sceneFitDistribution: {
-      min: scores[0] ?? null,
-      median: scores.length > 0 ? scores[Math.floor((scores.length - 1) / 2)] : null,
-      max: scores[scores.length - 1] ?? null,
-      buckets: {
-        low: scores.filter((score) => score < 4).length,
-        neutral: scores.filter((score) => score >= 4 && score < 6).length,
-        positive: scores.filter((score) => score >= 6 && score < 8).length,
-        strong: scores.filter((score) => score >= 8).length,
-      },
-    },
-    topEvidenceFamilies: countRankedValues(ranked.flatMap((candidate) => candidate.positiveFamilies)),
-    negativeFamilies: countRankedValues(ranked.flatMap((candidate) => candidate.negativeFamilies)),
-    candidates: ranked.map((candidate, index) => ({
-      ...candidate,
-      rank: index + 1,
-      selected: selectedKeys.has(candidate.outfitKey),
-    })),
-  };
-}
-
-function countRankedValues(values) {
-  const counts = new Map();
-  for (const value of values.filter(Boolean)) counts.set(value, (counts.get(value) || 0) + 1);
-  return [...counts.entries()]
-    .map(([family, count]) => ({ family, count }))
-    .sort((left, right) => right.count - left.count || left.family.localeCompare(right.family));
-}
-
-function uniqueSorted(values) {
-  return [...new Set(values.filter((value) => typeof value === 'string' && value))].sort();
-}
-
-// Persistence keeps the full fact-bearing snapshot. The recommendation response
-// already carries the fact-bearing `items` array, so sending the same evidence a
-// second time in `snapshotItems` needlessly multiplies the 8-card payload.
-function projectRecommendationResponseOutfits(outfits) {
-  return (Array.isArray(outfits) ? outfits : []).map((outfit) => {
-    const snapshotItems = Array.isArray(outfit?.snapshotItems)
-      ? outfit.snapshotItems.map((item) => ({
-          itemId: item.itemId,
-          name: item.name,
-          category: item.category,
-          color: item.color,
-          imageUrl: item.imageUrl,
-          displayImageUrl: item.displayImageUrl,
-          thumbnailUrl: item.thumbnailUrl,
-          isDeleted: Boolean(item.isDeleted),
-        }))
-      : [];
-    const projected = pickPublicOutfitFields(outfit);
-    projected.snapshotItems = snapshotItems;
-    if (projected.contentPlan && typeof projected.contentPlan === 'object') {
-      projected.contentPlan = projectPublicContentPlan(projected.contentPlan);
-    }
-    if (projected.xiaodaStyleInsight && typeof projected.xiaodaStyleInsight === 'object') {
-      projected.xiaodaStyleInsight = projectPublicXiaodaStyleInsight(projected.xiaodaStyleInsight);
-    }
-    if (projected.aestheticEvaluation && typeof projected.aestheticEvaluation === 'object') {
-      projected.aestheticEvaluation = { ...projected.aestheticEvaluation };
-      if (!Array.isArray(projected.aestheticEvaluation.evidenceCodes)
-        && Array.isArray(projected.aestheticEvaluation.evidence)) {
-        projected.aestheticEvaluation.evidenceCodes = projected.aestheticEvaluation.evidence
-          .map((item) => item?.code)
-          .filter((code) => typeof code === 'string' && code.length > 0)
-          .slice(0, 32);
-      }
-      delete projected.aestheticEvaluation.evidence;
-    }
-    if (Array.isArray(projected.items)) {
-      projected.items = projected.items.map(projectRecommendationResponseItem);
-    }
-    return projected;
-  });
-}
-
-const PUBLIC_OUTFIT_RESPONSE_FIELDS = [
-  'id', 'outfitId', 'title', 'userTitle', 'displayTitle', 'clothingIds', 'outfitKey',
-  'outfitKind', 'incomplete', 'deletedItemCount', 'scene', 'targetDate', 'timeOfDay',
-  'weatherSnapshot', 'weatherMode', 'scores', 'generationType', 'source', 'sourceFavoriteOutfitId',
-  'favoritedAt', 'favoriteOutfitId', 'wornAt', 'wornDate', 'isFavorite', 'isWornToday',
-  'todayHistoryId', 'historyId', 'lastWornAt', 'recommendationBatchId', 'generatedAt',
-  'styleTags', 'createdAt', 'updatedAt', 'reason', 'reasoning', 'reasonVersion', 'copyContract',
-  'copyContractVersion', 'voiceBankVersion', 'riskFlags', 'copyGateResult', 'copyRiskFlags',
-  'copyDisplay', 'defaultCopyHidden', 'copyFinalizationMode', 'aestheticEvaluation',
-  'contentPlan', 'xiaodaStyleInsight', 'canonicalRecommendationCopyV2',
-  'items', 'snapshotItems', 'outfitKind', 'outfitReferenceStage',
-];
-
-function pickPublicOutfitFields(outfit) {
-  const projected = {};
-  for (const field of PUBLIC_OUTFIT_RESPONSE_FIELDS) {
-    if (Object.prototype.hasOwnProperty.call(outfit || {}, field)) projected[field] = outfit[field];
-  }
-  if (projected.copyContract && typeof projected.copyContract === 'object') {
-    projected.copyContract = projectPublicCopyContract(projected.copyContract);
-  }
-  if (Array.isArray(projected.items)) projected.items = projected.items.map(projectRecommendationResponseItem);
-  return projected;
-}
-
-function projectPublicCopyContract(contract) {
-  const projected = {};
-  for (const field of [
-    'copyContractVersion', 'voiceBankVersion', 'gateResult', 'copyDisplay', 'todayReason',
-    'todayReasonSource', 'coreEligibilityReason', 'coreEligibilityReasonCode',
-    'coreEligibilitySubjectItemIds', 'coreEligibilitySupportingFactIds',
-    'coreEligibilityRelationFactIds', 'coreEligibilitySourceRule',
-    'coreEligibilitySourceRuleReasons', 'enhancedReason', 'enhancementRejectReasons',
-    'todayClaim', 'todayClaimId', 'todayAction', 'todayDimension', 'todaySentenceClusterId',
-    'todaySubjectItemId', 'todaySubjectItemIds', 'todaySlotBindings', 'detailExplanation',
-    'detailClaim', 'detailClaimId', 'detailAction', 'detailDimension',
-    'detailSentenceClusterId', 'detailSubjectItemId', 'detailSubjectItemIds',
-    'detailSlotBindings', 'riskFlags', 'qualification', 'primaryRelationCode',
-    'todayCopyProvenance', 'detailCopyProvenance', 'naturalnessGateVersion',
-    'naturalnessGateResult', 'naturalnessRiskFlags',
-    'structuralNaturalnessVersion', 'structuralNaturalnessResult',
-    'structuralNaturalnessRiskFlags', 'messageIntent', 'messageCandidateId',
-    'structuralNaturalnessWarningFlags', 'messageDimension', 'valueAssessment',
-    'unsupportedClaimCount', 'xiaodaStyleInsight',
-  ]) {
-    if (Object.prototype.hasOwnProperty.call(contract, field)) projected[field] = contract[field];
-  }
-  projected.coreEligibilityEvidence = (Array.isArray(contract.coreEligibilityEvidence)
-    ? contract.coreEligibilityEvidence
-    : []).map(projectPublicEligibilityEvidence);
-  if (projected.todayCopyProvenance && typeof projected.todayCopyProvenance === 'object') {
-    projected.todayCopyProvenance = projectPublicCopyProvenance(projected.todayCopyProvenance);
-  }
-  if (projected.detailCopyProvenance && typeof projected.detailCopyProvenance === 'object') {
-    projected.detailCopyProvenance = projectPublicCopyProvenance(projected.detailCopyProvenance);
-  }
-  if (projected.xiaodaStyleInsight && typeof projected.xiaodaStyleInsight === 'object') {
-    projected.xiaodaStyleInsight = projectPublicXiaodaStyleInsight(projected.xiaodaStyleInsight);
-  }
-  return projected;
-}
-
-function projectPublicCopyProvenance(provenance) {
-  const projected = {};
-  for (const field of [
-    'version', 'surface', 'scene', 'relationCode', 'messageIntent', 'messageDimension',
-    'openingFamily', 'endingFamily', 'compositionPattern', 'text', 'fallbackStrategy',
-  ]) {
-    if (Object.prototype.hasOwnProperty.call(provenance, field)) projected[field] = provenance[field];
-  }
-  return projected;
-}
-
-function projectPublicXiaodaStyleInsight(insight) {
-  const projected = {};
-  for (const field of ['version', 'personaVersion']) {
-    if (Object.prototype.hasOwnProperty.call(insight, field)) projected[field] = insight[field];
-  }
-  return projected;
-}
-
-function projectPublicEligibilityEvidence(evidence) {
-  if (!evidence || typeof evidence !== 'object') return evidence;
-  const projected = {};
-  for (const field of [
-    'factId', 'relationFactId', 'itemId', 'fact', 'value', 'subjectItemIds',
-    'supportingFactIds', 'source', 'confidence', 'authorized',
-  ]) {
-    if (Object.prototype.hasOwnProperty.call(evidence, field)) projected[field] = evidence[field];
-  }
-  return projected;
-}
-
-function projectPublicContentPlan(contentPlan) {
-  const projected = {};
-  for (const field of [
-    'version', 'sceneIntent', 'items', 'observations', 'primaryBenefit',
-    'secondaryBenefit', 'suggestion', 'personaVersion', 'xiaodaStyleInsight',
-  ]) {
-    if (Object.prototype.hasOwnProperty.call(contentPlan, field)) projected[field] = contentPlan[field];
-  }
-  if (projected.xiaodaStyleInsight && typeof projected.xiaodaStyleInsight === 'object') {
-    projected.xiaodaStyleInsight = projectPublicXiaodaStyleInsight(projected.xiaodaStyleInsight);
-  }
-  return projected;
-}
-
-// Raw fact records are required by candidate generation and QA, but are not a
-// client response contract. The copy contract and scalar item facts remain;
-// removing the repeated evidence carrier prevents the same wardrobe facts
-// being serialized once per card and again in every nested diagnostic model.
-function projectRecommendationResponseItem(item) {
-  if (!item || typeof item !== 'object') return item;
-  const projected = {};
-  for (const field of [
-    'clothingId', 'category', 'subcategory', 'imageUrl', 'displayImageUrl', 'thumbnailUrl',
-    'colorPalette', 'isDeleted', 'confidence', 'recognitionConfidence', 'aiConfidence',
-    'factConfidence', 'fit', 'silhouette', 'shoulderFit', 'shoulderLine', 'sleeveLength',
-    'sleeve', 'pantsLength', 'patternType', 'styleComplexity', 'thickness', 'material',
-    'neckline', 'collar', 'closure', 'shoeClosure', 'shoeType', 'materialGuess', 'userEdited',
-    'fieldSource', 'styleTags', 'sceneTags',
-  ]) {
-    if (Object.prototype.hasOwnProperty.call(item, field)) projected[field] = item[field];
-  }
-  return projected;
-}
-
-function projectSnapshotItemsForCardPreparation(items) {
-  return (Array.isArray(items) ? items : []).map((item) => ({
-    itemId: item.itemId,
-    name: item.name,
-    category: item.category,
-    color: item.color,
-    imageUrl: item.imageUrl,
-    displayImageUrl: item.displayImageUrl,
-    thumbnailUrl: item.thumbnailUrl,
-    isDeleted: Boolean(item.isDeleted),
-  }));
-}
-
-function projectHomeLightOutfitForDiagnostics(outfit) {
-  const canonicalCopy = outfit?.canonicalRecommendationCopyV2;
-  return {
-    outfitKey: outfit?.outfitKey,
-    clothingIds: outfit?.clothingIds,
-    title: outfit?.title,
-    displayTitle: outfit?.displayTitle,
-    scene: outfit?.scene,
-    targetDate: outfit?.targetDate,
-    timeOfDay: outfit?.timeOfDay,
-    weatherSnapshot: outfit?.weatherSnapshot,
-    weatherMode: outfit?.weatherMode,
-    reason: canonicalCopy?.text || outfit?.copyContract?.todayReason || outfit?.reason || '',
-    copy: canonicalCopy
-      ? {
-          version: canonicalCopy.version,
-          source: canonicalCopy.source,
-          text: canonicalCopy.text,
-          aiState: canonicalCopy.aiState,
-        }
-      : undefined,
-    items: (Array.isArray(outfit?.items) ? outfit.items : []).map((item) => ({
-      clothingId: item.clothingId,
-      category: item.category,
-      subcategory: item.subcategory,
-      imageUrl: item.imageUrl,
-      displayImageUrl: item.displayImageUrl,
-      thumbnailUrl: item.thumbnailUrl,
-      isDeleted: Boolean(item.isDeleted),
-    })),
-  };
-}
-
-function measurePlannedHomeLightMaterialization({
-  recommendations = [],
-  canonicalCopyBatch,
-  scene,
-  targetDate,
-  timeOfDay,
-  weather,
-  weatherMode,
-  handlerStartedAt = Date.now(),
-} = {}) {
-  const cards = [];
-  const copies = Array.isArray(canonicalCopyBatch?.copies) ? canonicalCopyBatch.copies : [];
-  const projectionStartedAt = process.hrtime.bigint();
-  let card1ProjectionMs = 0;
-  let card2ProjectionMs = 0;
-  for (let index = 0; index < recommendations.length; index += 1) {
-    const recommendation = recommendations[index] || {};
-    const copy = copies[index] || {};
-    const clothingIds = (Array.isArray(recommendation.items) ? recommendation.items : [])
-      .map((item) => item?._id)
-      .filter(Boolean);
-    cards.push({
-      batchIndex: index,
-      batchTotal: recommendations.length,
-      outfitKey: recommendation.outfitKey || getOutfitKey(clothingIds),
-      clothingIds,
-      title: recommendation.title,
-      displayTitle: recommendation.title,
-      scene,
-      targetDate,
-      timeOfDay,
-      ...(weather ? { weatherSnapshot: weather } : {}),
-      weatherMode,
-      reason: copy.text || recommendation.reasoning || '',
-      copy: copy.text ? {
-        version: canonicalCopyBatch.version,
-        source: copy.source,
-        text: copy.text,
-        aiState: copy.aiState,
-      } : undefined,
-      items: (Array.isArray(recommendation.items) ? recommendation.items : []).map((item) => ({
-        clothingId: item?._id,
-        category: item?.category,
-        subcategory: item?.subcategory,
-        imageUrl: item?.imageUrl,
-        displayImageUrl: item?.displayImageUrl,
-        thumbnailUrl: item?.thumbnailUrl,
-        isDeleted: item?.status === DELETED_STATUS,
-      })),
-    });
-    const elapsedMs = Number(process.hrtime.bigint() - projectionStartedAt) / 1_000_000;
-    if (index === 0) card1ProjectionMs = elapsedMs;
-    if (index === 1) card2ProjectionMs = elapsedMs;
-  }
-  const tailProjectionMs = Number(process.hrtime.bigint() - projectionStartedAt) / 1_000_000;
-  const projectionStartFromHandlerMs = Math.max(0, Date.now() - handlerStartedAt);
-  return {
-    mode: 'pre_full_card_compilation_home_light_shadow',
-    tCard1Ms: projectionStartFromHandlerMs + card1ProjectionMs,
-    tCard2Ms: projectionStartFromHandlerMs + (card2ProjectionMs || card1ProjectionMs),
-    tTailMs: projectionStartFromHandlerMs + tailProjectionMs,
-    card1ProjectionMs,
-    card2IncrementalMs: Math.max(0, (card2ProjectionMs || card1ProjectionMs) - card1ProjectionMs),
-    card3ToTailIncrementalMs: Math.max(0, tailProjectionMs - (card2ProjectionMs || card1ProjectionMs)),
-    homeLightPayloadBytes: serializedBytes(cards),
-    homeLightCardBytes: cards.map((card) => serializedBytes(card)),
-    safeCopyReady: true,
-    // Detail is considered ready once a reliable identity can be handed to
-    // the route. Persisted deep detail data is intentionally measured apart.
-    detailIdentityReady: cards.length > 0 && cards.every((card) => typeof card?.outfitKey === 'string' && card.outfitKey.length > 0),
-    persistedDetailDocumentReady: false,
-  };
-}
-
-function measureHomeLightMaterialization(outfits, handlerStartedAt = Date.now()) {
-  const cards = [];
-  let tCard1Ms = 0;
-  let tCard2Ms = 0;
-  for (let index = 0; index < outfits.length; index += 1) {
-    cards.push(projectHomeLightOutfitForDiagnostics(outfits[index]));
-    if (index === 0) tCard1Ms = Math.max(0, Date.now() - handlerStartedAt);
-    if (index === 1) tCard2Ms = Math.max(0, Date.now() - handlerStartedAt);
-  }
-  const tTailMs = Math.max(tCard2Ms || tCard1Ms, Date.now() - handlerStartedAt);
-  return {
-    tCard1Ms,
-    tCard2Ms: tCard2Ms || tCard1Ms,
-    tTailMs,
-    card2IncrementalMs: Math.max(0, (tCard2Ms || tCard1Ms) - tCard1Ms),
-    card3ToTailIncrementalMs: Math.max(0, tTailMs - (tCard2Ms || tCard1Ms)),
-    homeLightPayloadBytes: serializedBytes(cards),
-    homeLightCardBytes: cards.map((card) => serializedBytes(card)),
-    detailIdentityReady: cards.length > 0 && cards.every((card) => typeof card?.outfitKey === 'string' && card.outfitKey.length > 0),
-    persistedDetailDocumentReady: false,
-  };
-}
-
-function measureCanonicalBatchInput(records) {
-  const fields = new Map();
-  let structuralBytes = 2 + Math.max(0, records.length - 1) + (records.length * 2);
-  for (const record of records) {
-    let serializedFieldCount = 0;
-    for (const [field, value] of Object.entries(record || {})) {
-      const json = JSON.stringify(value);
-      if (json === undefined) continue;
-      const bytes = serializedBytes(field) + 1 + Buffer.byteLength(json, 'utf8')
-        + (serializedFieldCount > 0 ? 1 : 0);
-      fields.set(field, (fields.get(field) || 0) + bytes);
-      serializedFieldCount += 1;
-    }
-  }
-  const totalBytes = serializedBytes(records);
-  const topLevelFields = [...fields.entries()]
-    .map(([field, bytes]) => ({
-      field,
-      bytes,
-      primaryCategory: classifyCanonicalFieldPrimaryConsumer(field),
-      consumerCategories: classifyCanonicalFieldConsumers(field),
-    }))
-    .sort((left, right) => right.bytes - left.bytes || left.field.localeCompare(right.field));
-  const categoryBytes = new Map([['I', structuralBytes]]);
-  for (const item of topLevelFields) {
-    const category = item.primaryCategory || 'UNCLASSIFIED';
-    categoryBytes.set(category, (categoryBytes.get(category) || 0) + item.bytes);
-  }
-  const primaryCategories = [...categoryBytes.entries()]
-    .map(([category, bytes]) => ({
-      category,
-      bytes,
-      ratio: totalBytes > 0 ? bytes / totalBytes : 0,
-    }))
-    .sort((left, right) => right.bytes - left.bytes || left.category.localeCompare(right.category));
-  return {
-    totalBytes,
-    structuralBytes,
-    measuredBytes: structuralBytes + topLevelFields.reduce((sum, item) => sum + item.bytes, 0),
-    cardBytes: records.map((record) => serializedBytes(record)),
-    topLevelFields,
-    primaryCategories,
-    unclassifiedFields: topLevelFields
-      .filter((item) => item.primaryCategory === 'UNCLASSIFIED')
-      .map((item) => item.field),
-    classificationMethod: 'audited_top_level_primary_lifecycle_v1',
-    nestedHotspots: measureRecommendationResponseBreakdown(records, 80),
-    nestedHotspotsAreNonAdditive: true,
-  };
-}
-
-const CANONICAL_FIELD_PRIMARY_CATEGORY = new Map([
-  ['clothingIds', 'A'], ['outfitKey', 'A'], ['recommendationBatchId', 'A'],
-  ['generatedAt', 'A'], ['generationType', 'A'], ['source', 'A'], ['scene', 'A'],
-  ['targetDate', 'A'], ['timeOfDay', 'A'], ['weatherMode', 'A'],
-  ['id', 'B'], ['outfitId', 'B'], ['title', 'B'], ['displayTitle', 'B'],
-  ['items', 'B'], ['reason', 'B'], ['canonicalRecommendationCopyV2', 'B'],
-  ['snapshotItems', 'C'], ['weather', 'C'], ['weatherSnapshot', 'C'], ['styleTags', 'C'],
-  ['scores', 'C'], ['aestheticEvaluation', 'C'], ['contentPlan', 'C'],
-  ['incomplete', 'C'], ['deletedItemCount', 'C'], ['userTitle', 'C'],
-  ['isFavorite', 'D'], ['favoritedAt', 'D'], ['favoriteOutfitId', 'D'],
-  ['isWornToday', 'E'], ['wornAt', 'E'], ['wornDate', 'E'], ['historyId', 'E'],
-  ['todayHistoryId', 'E'], ['lastWornAt', 'E'],
-  ['recommendationVoiceMaterializationV2', 'F'],
-  ['eligibility', 'G'], ['eligibilityReason', 'G'], ['scoreExplanations', 'G'],
-  ['presentationPlan', 'G'], ['selectedDifferentiator', 'G'], ['copyContract', 'G'],
-  ['copyContractVersion', 'G'], ['reasonVersion', 'G'], ['voiceBankVersion', 'G'],
-  ['debug', 'H'], ['diagnostics', 'H'], ['auditId', 'H'], ['traceId', 'H'],
-  ['reasoning', 'I'], ['itemsSnapshot', 'I'], ['recommendationContentHash', 'I'],
-  ['updatedAt', 'I'],
-]);
-
-const CANONICAL_FIELD_CONSUMER_CATEGORIES = new Map([
-  ['clothingIds', ['A', 'B', 'C', 'D', 'E']],
-  ['outfitKey', ['A', 'B', 'C', 'D', 'E']],
-  ['recommendationBatchId', ['A', 'B', 'C']],
-  ['scene', ['A', 'B', 'C', 'F']],
-  ['weatherMode', ['A', 'B', 'C']],
-  ['items', ['B', 'C']],
-  ['reason', ['B', 'C']],
-  ['canonicalRecommendationCopyV2', ['B', 'C']],
-  ['snapshotItems', ['C', 'D', 'E']],
-  ['weather', ['C', 'D', 'E']],
-  ['weatherSnapshot', ['C', 'D', 'E']],
-  ['scores', ['C', 'G']],
-  ['aestheticEvaluation', ['C', 'G']],
-  ['contentPlan', ['C', 'F', 'G']],
-  ['presentationPlan', ['C', 'F', 'G']],
-  ['selectedDifferentiator', ['C', 'F', 'G']],
-  ['copyContract', ['B', 'C', 'F', 'G']],
-]);
-
-function classifyCanonicalFieldPrimaryConsumer(field) {
-  return CANONICAL_FIELD_PRIMARY_CATEGORY.get(field) || 'UNCLASSIFIED';
-}
-
-function classifyCanonicalFieldConsumers(field) {
-  return CANONICAL_FIELD_CONSUMER_CATEGORIES.get(field)
-    || [classifyCanonicalFieldPrimaryConsumer(field)];
-}
-
-function createRecommendationDiagnostics(event = {}, handlerStartAt = Date.now()) {
-  return {
-    auditId: readAuditId(event.auditId),
-    stage: 'received',
-    startedAt: handlerStartAt,
-    diagnosticsRequested: event.diagnostics === true || event.performanceDiagnostics === true,
-    performanceOnly: event.performanceDiagnostics === true,
-    handlerStartAt,
-    snapshotPayloadBytes: 0,
-    candidatePoolPayloadBytes: 0,
-    phases: [],
-    timings: {
-      dataLoadMs: 0,
-      identityMs: 0,
-      candidatePoolLoadMs: 0,
-      candidatePoolSaveMs: 0,
-      candidatePoolPlanMs: 0,
-      candidatePoolSerializationMs: 0,
-      candidatePoolChunkWriteMs: 0,
-      candidatePoolValidationMs: 0,
-      candidatePoolManifestWriteMs: 0,
-      exclusionMs: 0,
-      compositionMs: 0,
-      candidateFactPreparationMs: 0,
-      candidateConstructionMs: 0,
-      canonicalizeMs: 0,
-      eligibilityMs: 0,
-      wearabilitySceneEligibilityMs: 0,
-      scoringMs: 0,
-      scoringPreparationMs: 0,
-      filteringMs: 0,
-      dedupeMs: 0,
-      batchSelectionMs: 0,
-      cardCompilationMs: 0,
-      qaAuditMs: 0,
-      poolManifestLoadMs: 0,
-      poolChunksLoadMs: 0,
-      poolHydrateMs: 0,
-      poolDbReadCount: 0,
-      materializationMs: 0,
-      snapshotUpsertMs: 0,
-      enrichMs: 0,
-      exposureMs: 0,
-      presentationEvidenceMs: 0,
-      cardPreparation: {
-        canonicalRecommendationConstructionMs: 0,
-        factPresentationPreparationMs: 0,
-        finalizationMs: 0,
-        canonicalizationMs: 0,
-        snapshotInputConstructionMs: 0,
-        cloneSerializeMs: 0,
-        idMappingMs: 0,
-      },
-      serializationMs: 0,
-      totalMs: 0,
-    },
-    candidatePoolManifestBytes: 0,
-    candidatePoolChunksBytes: 0,
-    candidatePoolChunkWriteTimings: [],
-    candidatePoolMaxActiveChunkWrites: 0,
-    candidatePoolValidationReadCount: 0,
-    candidatePoolValidationMode: 'local_checksum_after_awaited_set',
-    candidatePoolCleanupAttempted: false,
-    candidatePoolCleanupDeletedCount: 0,
-    candidatePoolCleanupFailedCount: 0,
-    candidatePoolPhaseTiming: null,
-    databaseOps: {
-      reads: 0,
-      writes: 0,
-    },
-  };
-}
-
-function recordServerPhase(diagnostics, phase, startAt, endAt = Date.now()) {
-  if (!diagnostics || !phase) return;
-  const start = Number(startAt) || endAt;
-  const end = Number(endAt) || Date.now();
-  diagnostics.phases.push({
-    phase,
-    startAt: start,
-    endAt: end,
-    duration: Math.max(0, end - start),
-  });
-}
-
 async function persistGeneratedCandidatePool({
   diagnostics,
   candidatePoolId,
@@ -2022,47 +892,6 @@ async function persistGeneratedCandidatePool({
   return poolPersist;
 }
 
-function compileRecommendationsForResponse({
-  recommendations,
-  openid,
-  scene,
-  targetDate,
-  timeOfDay,
-  weather,
-  weatherMode,
-  now,
-  recommendationBatchId,
-  diagnostics,
-}) {
-  diagnostics.stage = 'cardCompilation';
-  const startedAt = Date.now();
-  const constructionStartedAt = Date.now();
-  const tempOutfits = recommendations.map((recommendation) =>
-    toTempOutfit(recommendation, {
-      openid,
-      scene,
-      targetDate,
-      timeOfDay,
-      weather,
-      weatherMode,
-      now,
-      recommendationBatchId,
-    }),
-  );
-  diagnostics.timings.cardPreparation.canonicalRecommendationConstructionMs = Date.now() - constructionStartedAt;
-  const factPreparationStartedAt = Date.now();
-  const compiledOutfits = compileRecommendationLanguageV3({
-    outfits: tempOutfits,
-    scene,
-    weather,
-  });
-  diagnostics.timings.cardPreparation.factPresentationPreparationMs = Date.now() - factPreparationStartedAt;
-  assertEligibilityReasons(compiledOutfits, { node: 'beforeFinalization', scene, weather });
-  diagnostics.timings.cardPreparation.finalizationMs = 0;
-  diagnostics.timings.cardCompilationMs = Date.now() - startedAt;
-  return { compiledOutfits, startedAt };
-}
-
 function readAuditId(value) {
   if (typeof value === 'string' && value.trim()) return value.trim().slice(0, 80);
   return `rec_srv_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`;
@@ -2075,473 +904,6 @@ function getRecommendationErrorCode(error) {
 
 function getSafeRecommendationErrorMessage(error) {
   return typeof error?.message === 'string' ? error.message.slice(0, 240) : 'unknown error';
-}
-
-function attachPresentationEvidenceDebug(debug, input) {
-  const startedAt = Date.now();
-  const evidence = buildPresentationEvidence({
-    ...input,
-    qaVersion: QA_BATCH_AUDIT_VERSION,
-  });
-  const actualBytes = serializedPresentationEvidenceBytes(evidence);
-  if (actualBytes >= PRESENTATION_EVIDENCE_MAX_BYTES) {
-    delete debug.presentationEvidence;
-    debug.presentationEvidenceStatus = {
-      status: 'omitted_over_budget',
-      version: PRESENTATION_EVIDENCE_VERSION,
-      actualBytes,
-      limitBytes: PRESENTATION_EVIDENCE_MAX_BYTES,
-    };
-    if (debug.timings) debug.timings.presentationEvidenceMs = Date.now() - startedAt;
-    return null;
-  }
-  delete debug.presentationEvidenceStatus;
-  debug.presentationEvidence = evidence;
-  if (debug.timings) debug.timings.presentationEvidenceMs = Date.now() - startedAt;
-  return evidence;
-}
-
-function buildRecommendationQaSummaries({
-  enabled,
-  auditId,
-  sceneKey,
-  inputScene,
-  scene,
-  weather,
-  weatherInput,
-  weatherMode,
-  weatherSnapshot,
-  recommendations,
-  compiledOutfits,
-  finalOutfits,
-  timings,
-  diagnostics,
-  execution,
-}) {
-  if (!enabled) return null;
-  if (diagnostics) diagnostics.stage = 'qaAudit';
-  const startedAt = Date.now();
-  const result = buildQaAuditSummaries({
-    auditId,
-    sceneKey,
-    eligibilityRejectionAuditEnabled: enabled,
-    requestScene: inputScene,
-    responseScene: scene || '',
-    weatherMode,
-    weather: weatherInput || weather,
-    hasUsableWeather: Boolean(recommendations.debug?.hasUsableWeather),
-    weatherSnapshotPresent: Boolean(weatherSnapshot),
-    temperatureBandApplied: Boolean(recommendations.debug?.temperatureBandApplied),
-    cloudBuild: CLOUD_BUILD_VERSION,
-    PRESENTATION_FACT_MODEL_BUILD,
-    guardAcceptedCandidates: recommendations.debug?._auditGuardAcceptedCandidates || [],
-    guardRejectedCandidates: recommendations.debug?._auditGuardRejectedCandidates || [],
-    acceptedCandidates: recommendations.debug?._auditAcceptedCandidates || [],
-    counts: {
-      candidate: recommendations.debug?.candidateCount ?? 0,
-      generated: recommendations.debug?.generatedCount ?? 0,
-      accepted: recommendations.debug?.guardAcceptedCount ?? 0,
-      rejected: recommendations.debug?.guardRejectedCount ?? 0,
-      selected: recommendations.length,
-    },
-    rejectionReasonCounts: recommendations.debug?.rejectReasonCounts || {},
-    selectedOutfits: recommendations,
-    compiledOutfits,
-    finalOutfits,
-    timings,
-    execution: {
-      ...execution,
-      guardCandidateCount: recommendations.debug?.guardCandidateCount ?? execution?.guardCandidateCount,
-      guardAcceptedCount: recommendations.debug?.guardAcceptedCount ?? execution?.guardAcceptedCount,
-      guardRejectedCount: recommendations.debug?.guardRejectedCount ?? execution?.guardRejectedCount,
-    },
-  });
-  timings.qaAuditMs = Date.now() - startedAt;
-  recordServerPhase(diagnostics, 'qaAcceptance', startedAt);
-  return result;
-}
-
-function finalizeFullComputeAfterPoolPersist({
-  diagnostics,
-  baseRecommendationBatchId,
-  cacheMissReason,
-  sceneContract,
-  qaResult,
-  rejectionReasonCounts,
-  outfits,
-  weatherSnapshot,
-  weatherMode,
-  recommendationNotice,
-  missingRoles,
-  missingFacts,
-  limited,
-  exhausted,
-  countContract,
-  debug,
-  meta,
-}) {
-  const poolSaveStatus = diagnostics.candidatePoolSaveStatus;
-  let recommendationBatchId;
-  let finalCacheMissReason = cacheMissReason;
-
-  if (poolSaveStatus === 'saved') {
-    recommendationBatchId = baseRecommendationBatchId;
-  } else {
-    recommendationBatchId = undefined;
-    finalCacheMissReason = 'candidate_pool_not_saved';
-  }
-
-  const recommendationBatchIdPresent = Boolean(recommendationBatchId);
-  const recommendationBatchIdLength = recommendationBatchId ? recommendationBatchId.length : 0;
-  const finalDebug = {
-    ...debug,
-    candidatePoolSaveStatus: diagnostics.candidatePoolSaveStatus,
-    candidatePoolSaveReason: diagnostics.candidatePoolSaveReason,
-    candidatePoolSerializedBytes: diagnostics.candidatePoolSerializedBytes,
-    candidatePoolChunkCount: diagnostics.candidatePoolChunkCount,
-    candidatePoolSerializationMs: diagnostics.timings.candidatePoolSerializationMs,
-    candidatePoolManifestBytes: diagnostics.candidatePoolManifestBytes,
-    candidatePoolChunksBytes: diagnostics.candidatePoolChunksBytes,
-    candidatePoolChunkWriteTimings: diagnostics.candidatePoolChunkWriteTimings,
-    candidatePoolMaxActiveChunkWrites: diagnostics.candidatePoolMaxActiveChunkWrites,
-    candidatePoolValidationReadCount: diagnostics.candidatePoolValidationReadCount,
-    candidatePoolValidationMode: diagnostics.candidatePoolValidationMode,
-    candidatePoolCleanupAttempted: diagnostics.candidatePoolCleanupAttempted === true,
-    candidatePoolCleanupDeletedCount: diagnostics.candidatePoolCleanupDeletedCount || 0,
-    candidatePoolCleanupFailedCount: diagnostics.candidatePoolCleanupFailedCount || 0,
-    candidatePoolPhaseTiming: diagnostics.candidatePoolPhaseTiming,
-    recommendationBatchIdPresent,
-    recommendationBatchIdLength,
-    requestedCandidatePoolIdPresent: diagnostics.requestedCandidatePoolIdPresent ?? false,
-    requestedCandidatePoolIdLength: diagnostics.requestedCandidatePoolIdLength ?? 0,
-    cacheMissReason: finalCacheMissReason || debug.cacheMissReason,
-  };
-
-  const response = finalizeRecommendationResponse({
-    sceneContract,
-    diagnostics,
-    qaResult,
-    rejectionReasonCounts,
-    data: {
-      outfits,
-      ...(weatherSnapshot ? { weather: weatherSnapshot } : {}),
-      weatherMode,
-      recommendationNotice,
-      ...(recommendationBatchId ? { recommendationBatchId } : {}),
-      missingRoles,
-      missingFacts,
-      limited,
-      exhausted,
-      countContract,
-      debug: finalDebug,
-      meta,
-    },
-  });
-
-  return {
-    response,
-    recommendationBatchId,
-    cacheMissReason: finalCacheMissReason,
-  };
-}
-
-function finalizeRecommendationResponse({
-  sceneContract,
-  diagnostics,
-  qaResult,
-  rejectionReasonCounts,
-  data,
-}) {
-  diagnostics.stage = 'serialization';
-  const serializationStartedAt = Date.now();
-  let responseSerializationMs = 0;
-  const measureResponse = () => {
-    const startedAt = Date.now();
-    const measured = measureRecommendationResponse(responseData);
-    responseSerializationMs += Date.now() - startedAt;
-    return measured;
-  };
-  const responseBuildStartedAt = Date.now();
-  const responseData = buildRecommendationResponseData(sceneContract, {
-    ...data,
-    ...(qaResult?.clientAudit ? { qaBatchAudit: qaResult.clientAudit } : {}),
-  });
-  diagnostics.timings.responseBuildMs = Date.now() - responseBuildStartedAt;
-  let budget = measureResponse();
-  syncRecommendationResponseDiagnostics(responseData, diagnostics.timings, budget, qaResult?.clientAudit);
-  if (qaResult?.clientAudit) fitQaBatchAuditToBudget(qaResult.clientAudit);
-  budget = measureResponse();
-  if (qaResult?.clientAudit && budget.totalDataBytes >= 768 * 1024) {
-    truncateQaForResponseBudget(qaResult.clientAudit);
-    budget = measureResponse();
-  }
-  diagnostics.timings.serializationMs = Date.now() - serializationStartedAt;
-  recordServerPhase(diagnostics, 'responseSerialization', serializationStartedAt);
-  diagnostics.timings.totalMs = Date.now() - diagnostics.startedAt;
-  recordServerPhase(diagnostics, 'handlerEnd', diagnostics.startedAt);
-  if (diagnostics.diagnosticsRequested === true && diagnostics.performanceOnly !== true) {
-    responseData.debug.phaseLedger = diagnostics.phases;
-  }
-  syncRecommendationResponseDiagnostics(responseData, diagnostics.timings, budget, qaResult?.clientAudit);
-  if (diagnostics.diagnosticsRequested === true) {
-    responseData.diagnostics = {
-      performance: buildRecommendationPerformanceLedger(diagnostics, budget, responseData),
-      ...(diagnostics.recommendationVoiceRendererShadow?.benchmark === true
-        ? { voiceRendererShadowBenchmark: diagnostics.recommendationVoiceRendererShadow }
-        : {}),
-    };
-  }
-  budget = measureResponse();
-  if (responseData.diagnostics?.performance) {
-    responseData.diagnostics.performance.responsePayloadBytes = budget.totalDataBytes;
-    budget = measureResponse();
-  }
-  syncRecommendationResponseDiagnostics(responseData, diagnostics.timings, budget, qaResult?.clientAudit);
-  if (diagnostics.performanceOnly === true || diagnostics.diagnosticsRequested !== true) {
-    stripResponseDiagnosticsForBusinessResponse(responseData, { performanceOnly: diagnostics.performanceOnly === true });
-    budget = measureResponse();
-    if (responseData.diagnostics?.performance) {
-      responseData.diagnostics.performance.responsePayloadBytes = budget.totalDataBytes;
-    }
-  }
-  diagnostics.timings.responseSerializationMs = responseSerializationMs;
-  diagnostics.timings.responseFinalizationMs = Date.now() - serializationStartedAt;
-  diagnostics.serverResponseReadyAt = Date.now();
-  if (responseData.diagnostics?.performance) {
-    responseData.diagnostics.performance.responseFinalization = compactPerformanceNumbers({
-      buildMs: diagnostics.timings.responseBuildMs,
-      serializationMs: responseSerializationMs,
-      totalMs: diagnostics.timings.responseFinalizationMs,
-    });
-    responseData.diagnostics.performance.serverResponseReadyAt = diagnostics.serverResponseReadyAt;
-    responseData.diagnostics.performance.serverTotalThroughResponseReadyMs = Math.max(
-      0,
-      diagnostics.serverResponseReadyAt - (Number(diagnostics.handlerStartAt) || Number(diagnostics.startedAt) || 0),
-    );
-  }
-  emitRecommendationServerDone({
-    auditId: diagnostics.auditId,
-    scene: responseData.scene,
-    debug: responseData.debug,
-    stylingIntelligenceShadow: diagnostics.stylingIntelligenceShadow,
-    recommendationVoiceRendererShadow: diagnostics.recommendationVoiceRendererShadow,
-    budget,
-    rejectionReasonCounts,
-  });
-  if (qaResult?.serverSummary) {
-    qaResult.serverSummary.timings = { ...diagnostics.timings };
-    qaResult.serverSummary.responseBytes = { ...budget };
-    console.info('[RecommendationQA_SERVER]', qaResult.serverSummary);
-  }
-  return responseData;
-}
-
-function buildRecommendationPerformanceLedger(diagnostics, budget, responseData) {
-  const phases = Array.isArray(diagnostics.phases)
-    ? diagnostics.phases.map((phase) => ({
-        phase: String(phase.phase || ''),
-        startAt: Number(phase.startAt) || 0,
-        endAt: Number(phase.endAt) || 0,
-        duration: Math.max(0, Number(phase.duration) || 0),
-      }))
-    : [];
-  const phaseByName = new Map(phases.map((phase) => [phase.phase, phase]));
-  const orderedPath = [
-    'candidateGeneration',
-    'cardCompilation',
-    'snapshotPersistence',
-    'candidatePoolPersistence',
-    'presentationEnrichment',
-    'exposurePersistence',
-    'responseSerialization',
-    'handlerEnd',
-  ];
-  const criticalPath = orderedPath.filter((phase) => phaseByName.has(phase));
-  const handlerEnd = phaseByName.get('handlerEnd');
-  const candidateGeneration = phaseByName.get('candidateGeneration');
-  const cardCompilation = phaseByName.get('cardCompilation');
-  const handlerStart = Number(diagnostics.handlerStartAt) || Number(diagnostics.startedAt) || 0;
-  const handlerEndAt = handlerEnd?.endAt || Date.now();
-  return {
-    ledgerVersion: SERVER_LEDGER_VERSION,
-    moduleInstanceId: MODULE_INSTANCE_ID,
-    moduleLoadedAt: MODULE_LOADED_AT,
-    handlerStart,
-    handlerEnd: handlerEndAt,
-    serverTotalMs: Math.max(0, handlerEndAt - handlerStart),
-    phases,
-    criticalPath,
-    dbRoundTrips: Math.max(0, Number(diagnostics.databaseOps?.reads) || 0)
-      + Math.max(0, Number(diagnostics.databaseOps?.writes) || 0),
-    snapshotPayloadBytes: Math.max(0, Number(diagnostics.snapshotPayloadBytes) || 0),
-    candidatePoolPayloadBytes: Math.max(0, Number(diagnostics.candidatePoolPayloadBytes) || 0),
-    responsePayloadBytes: Math.max(0, Number(budget?.totalDataBytes) || 0),
-    candidateMetrics: diagnostics.candidateMetrics || {},
-    progressiveMaterialization: diagnostics.progressiveMaterialization || {},
-    canonicalBatchInput: diagnostics.canonicalBatchInput || {},
-    statusQueries: diagnostics.statusQueries || {},
-    runtimeV2: diagnostics.runtimeV2?.enabled === true
-      ? {
-          enabled: true,
-          tReadServerProxyMs: Number(phaseByName.get('userAndWardrobeRead')?.duration) || 0,
-          tCoreInclusiveMs: Number(diagnostics.timings?.tCoreMs) || 0,
-          tCorePhaseProxyMs: (Number(phaseByName.get('candidateGeneration')?.duration) || 0)
-            + (Number(phaseByName.get('cardCompilation')?.duration) || 0),
-          tSafeMs: Number(diagnostics.timings?.tSafeMs) || 0,
-          tAiNecessaryCriticalPathMs: 0,
-          aiOnNecessaryCriticalPath: diagnostics.runtimeV2.aiOnNecessaryCriticalPath === true,
-          aiMaterializationMode: diagnostics.runtimeV2.aiMaterializationMode,
-          plansReadyAt: Number(diagnostics.runtimeV2.plansReadyAt) || 0,
-          safeReadyAt: Number(diagnostics.runtimeV2.safeReadyAt) || 0,
-          canonicalCopy: diagnostics.canonicalCopyRuntimeV2 || {},
-        }
-      : { enabled: false },
-    cardPreparation: {
-      ...compactPerformanceNumbers(diagnostics.timings?.cardPreparation),
-      toTempOutfitMs: Number(diagnostics.timings?.cardPreparation?.canonicalRecommendationConstructionMs) || 0,
-      compileRecommendationLanguageV3Ms: Number(diagnostics.timings?.cardPreparation?.factPresentationPreparationMs) || 0,
-      finalizeAcceptedRecommendationsMs: Number(diagnostics.timings?.cardPreparation?.finalizationMs) || 0,
-      canonicalizeRecommendationBatchMs: Number(diagnostics.timings?.cardPreparation?.canonicalizationMs) || 0,
-      snapshotSerializeInputMs: Number(diagnostics.timings?.cardPreparation?.snapshotInputConstructionMs) || 0,
-      idMappingMs: Number(diagnostics.timings?.cardPreparation?.idMappingMs) || 0,
-    },
-    businessPayloadByteBreakdown: measureRecommendationResponseBreakdown(responseData, 20),
-    cardCompilationStartDelayMs: candidateGeneration && cardCompilation
-      ? Math.max(0, cardCompilation.startAt - candidateGeneration.endAt)
-      : 0,
-    snapshotPersistence: compactPerformanceNumbers({
-      ...diagnostics.snapshotPersistence,
-      ...diagnostics.snapshotPersistence?.snapshot,
-      durationMs: phaseByName.get('snapshotPersistence')?.duration,
-    }),
-    candidatePoolPersistence: compactPerformanceNumbers({
-      saveMs: diagnostics.timings?.candidatePoolSaveMs,
-      planMs: diagnostics.timings?.candidatePoolPlanMs,
-      serializationMs: diagnostics.timings?.candidatePoolSerializationMs,
-      chunkWriteMs: diagnostics.timings?.candidatePoolChunkWriteMs,
-      validationMs: diagnostics.timings?.candidatePoolValidationMs,
-      manifestWriteMs: diagnostics.timings?.candidatePoolManifestWriteMs,
-      dbReadCount: diagnostics.candidatePoolValidationReadCount,
-      chunkCount: diagnostics.candidatePoolChunkCount,
-    }),
-  };
-}
-
-function compactPerformanceNumbers(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  return Object.fromEntries(Object.entries(value)
-    .filter(([, entry]) => Number.isFinite(Number(entry)))
-    .map(([key, entry]) => [key, Math.max(0, Number(entry))]));
-}
-
-function syncRecommendationResponseDiagnostics(data, timings, budget, qaBatchAudit) {
-  data.debug.timings = { ...timings };
-  data.debug.responseBytes = { ...budget };
-    data.debug.qaTruncated = Boolean(qaBatchAudit?.qaTruncated);
-  if (!qaBatchAudit) return;
-  qaBatchAudit.timings = { ...timings };
-  qaBatchAudit.responseBytes = { ...budget };
-}
-
-function stripResponseDiagnosticsForBusinessResponse(data, { performanceOnly = false } = {}) {
-  if (!data?.debug || typeof data.debug !== 'object') return;
-  for (const field of [
-    'timings', 'responseBytes', 'phaseLedger', 'snapshotPersistence', 'databaseOps',
-  ]) delete data.debug[field];
-  if (performanceOnly) delete data.debug.candidatePoolSaveReason;
-}
-
-function measureRecommendationResponse(data) {
-  const eligibilityRejectionAuditBytes = data.qaBatchAudit?.eligibilityRejectionAudit?.serializedBytes;
-  return {
-    outfitsBytes: serializedBytes(data.outfits || []),
-    debugBytes: serializedBytes(data.debug || {}),
-    qaBytes: serializedBytes(data.qaBatchAudit || {}),
-    totalDataBytes: serializedBytes(data),
-    ...(Number.isFinite(eligibilityRejectionAuditBytes)
-      ? { eligibilityRejectionAuditBytes }
-      : {}),
-  };
-}
-
-function measureRecommendationResponseFields(data) {
-  const source = data && typeof data === 'object' ? data : {};
-  return Object.fromEntries(Object.entries(source).map(([key, value]) => [key, serializedBytes(value)]));
-}
-
-function measureRecommendationResponseBreakdown(value, limit = 20) {
-  const rows = [];
-  const visit = (current, path) => {
-    if (!current || typeof current !== 'object') return;
-    for (const [key, child] of Object.entries(current)) {
-      const childPath = `${path}.${key}`;
-      rows.push({ path: childPath, bytes: serializedBytes(child === undefined ? null : child) });
-      if (child && typeof child === 'object' && !Array.isArray(child)) visit(child, childPath);
-      if (Array.isArray(child)) {
-        child.forEach((item, index) => {
-          const itemPath = `${childPath}[${index + 1}]`;
-          rows.push({ path: itemPath, bytes: serializedBytes(item === undefined ? null : item) });
-          if (item && typeof item === 'object' && !Array.isArray(item)) visit(item, itemPath);
-        });
-      }
-    }
-  };
-  visit(value, 'response');
-  return rows.sort((left, right) => right.bytes - left.bytes || left.path.localeCompare(right.path)).slice(0, limit);
-}
-
-function truncateQaForResponseBudget(audit) {
-  audit.qaTruncated = true;
-  if (audit.qaGateSummary) audit.qaGateSummary.qaTruncated = true;
-  if (audit.eligibilityRejectionAudit) {
-    fitEligibilityRejectionAuditToBudget(audit.eligibilityRejectionAudit);
-  }
-  delete audit.alternativeCandidates;
-  delete audit.rejectionSamples;
-  audit.rejectionReasonHistogram = (audit.rejectionReasonHistogram || []).slice(0, 4);
-  audit.archetypeHistogram = (audit.archetypeHistogram || []).slice(0, 3);
-}
-
-function emitRecommendationServerDone({
-  auditId,
-  scene,
-  debug,
-  stylingIntelligenceShadow,
-  recommendationVoiceRendererShadow,
-  budget,
-  rejectionReasonCounts,
-}) {
-  const payload = {
-    auditId,
-    scene,
-    candidate: debug.candidateCount,
-    accepted: debug.acceptedCount,
-    rejected: debug.rejectedCount,
-    selected: debug.selectedCount,
-    topRejectionReasons: topRejectionReasons(rejectionReasonCounts),
-    totalMs: debug.timings?.totalMs ?? null,
-    responseBytes: budget.totalDataBytes,
-    qaBytes: budget.qaBytes,
-    buildVersion: CLOUD_BUILD_VERSION,
-    ...(stylingIntelligenceShadow
-      ? { stylingIntelligenceShadow }
-      : {}),
-    ...(recommendationVoiceRendererShadow
-      ? { recommendationVoiceRendererShadow }
-      : {}),
-  };
-  // Cloud logging formats nested objects with limited depth, which turns the
-  // Shadow distribution and sampled cases into "[Object]". Emit the already
-  // privacy-bounded payload as one JSON value so offline review can recover it.
-  console.log('[RecommendationServerDone]', JSON.stringify(payload));
-}
-
-function topRejectionReasons(counts) {
-  return Object.entries(counts || {})
-    .filter(([, count]) => Number.isFinite(Number(count)) && Number(count) > 0)
-    .map(([reason, count]) => ({ reason: String(reason).slice(0, 80), count: Number(count) }))
-    .sort((left, right) => right.count - left.count || left.reason.localeCompare(right.reason))
-    .slice(0, 8);
 }
 
 async function getOutfitDetail(event) {
@@ -4574,35 +2936,6 @@ function isHistoryOnDate(item, targetDate) {
   return candidates.some((value) => String(value).slice(0, 10) === targetDate);
 }
 
-async function saveOutfitExposures({ openid, outfits, scene, batchId, shownAt }) {
-  const uniqueOutfits = [];
-  const seen = new Set();
-  for (const outfit of outfits || []) {
-    const outfitKey = outfit.outfitKey || getOutfitKey(outfit.clothingIds || []);
-    if (!outfitKey || seen.has(outfitKey)) continue;
-    seen.add(outfitKey);
-    uniqueOutfits.push(outfitKey);
-  }
-
-  await Promise.all(uniqueOutfits.map(async (outfitKey) => {
-    try {
-      await db.collection('outfit_exposures').add({
-        data: {
-          _openid: openid,
-          userId: openid,
-          outfitKey,
-          scene: scene || '',
-          batchId,
-          shownAt,
-          createdAt: shownAt,
-        },
-      });
-    } catch {
-      // Exposure is best-effort telemetry and must not block recommendations.
-    }
-  }));
-}
-
 function recordStatusQueryDiagnostic(diagnostics, kind, response, queryStartedAt) {
   if (!diagnostics || diagnostics.diagnosticsRequested !== true) return;
   const rows = Array.isArray(response?.data) ? response.data : [];
@@ -4998,326 +3331,6 @@ function buildOutfitReferenceUpdatePayload(data) {
   return payload;
 }
 
-async function upsertRecommendationOutfitsBatch({
-  openid,
-  bases,
-  now,
-  availableClothingIds,
-  operationCounts,
-}) {
-  const inputStartedAt = Date.now();
-  const records = Array.isArray(bases) ? bases : [];
-  if (operationCounts) {
-    Object.defineProperty(operationCounts, 'snapshot', {
-      configurable: true,
-      enumerable: false,
-      writable: true,
-      value: {
-      inputPreparationMs: 0,
-      serializationMs: 0,
-      snapshotBuildMs: 0,
-      queryReadMs: 0,
-      readPayloadBytes: 0,
-      readQueries: [],
-      writeMs: 0,
-      writeWallMs: 0,
-      transactionMs: 0,
-      transactionCallbackMs: 0,
-      commitMs: 0,
-      responseWaitMs: 0,
-      dbRoundTrips: 0,
-      writeRoundTrips: 0,
-      logicalWrites: 0,
-      inputPayloadBytes: 0,
-      payloadBytes: 0,
-      existingRecordCount: 0,
-      newRecordCount: 0,
-      maxConcurrency: 0,
-      },
-    });
-  }
-  if (records.length === 0) return [];
-  const clothingIds = uniqueStrings(records.flatMap((base) => readBaseClothingIds(base)));
-  const outfitKeys = records.map((base) => getOutfitKey(readBaseClothingIds(base)));
-  const snapshot = operationCounts?.snapshot;
-  if (snapshot) {
-    snapshot.inputPreparationMs = Date.now() - inputStartedAt;
-    const serializationStartedAt = Date.now();
-    snapshot.inputPayloadBytes = serializedBytes(records);
-    snapshot.serializationMs = Date.now() - serializationStartedAt;
-  }
-
-  // Existing recommendation references do not need a transaction: the update
-  // payload below is recommendation-owned only and never writes user state.
-  // Read once, then use a small concurrency window to avoid the serial
-  // transaction write latency on the hot retry path. New/mixed batches keep
-  // the transactional path because their add/update decision is not atomic
-  // outside a transaction.
-  if (Array.isArray(availableClothingIds)) {
-    const existingReadStartedAt = Date.now();
-    if (operationCounts) operationCounts.reads += 1;
-    let existingResponse;
-    try {
-      existingResponse = await db.collection('outfits')
-        .where({ _openid: openid, outfitKey: db.command.in(uniqueStrings(outfitKeys)) })
-        .limit(100)
-        .get();
-    } catch (error) {
-      throw annotateOutfitReferenceCause(error, {
-        stage: 'outfit_existing_read',
-        operation: 'read',
-        collection: 'outfits',
-      });
-    }
-    const existingByKey = buildOutfitRecordMap(existingResponse.data);
-    if (snapshot) {
-      const durationMs = Date.now() - existingReadStartedAt;
-      const payloadBytes = serializedBytes(existingResponse.data || []);
-      snapshot.queryReadMs += durationMs;
-      snapshot.readPayloadBytes += payloadBytes;
-      snapshot.readQueries.push({
-        collection: 'outfits',
-        purpose: 'all_existing_probe',
-        projected: false,
-        recordCount: Array.isArray(existingResponse.data) ? existingResponse.data.length : 0,
-        payloadBytes,
-        durationMs,
-      });
-      snapshot.dbRoundTrips += 1;
-    }
-    if (existingByKey.size === records.length) {
-      if (snapshot) {
-        snapshot.existingRecordCount = records.length;
-        snapshot.maxConcurrency = Math.min(RECOMMENDATION_REFERENCE_UPDATE_CONCURRENCY, records.length);
-      }
-      let saved;
-      try {
-        saved = await updateExistingRecommendationReferences({
-          records,
-          outfitKeys,
-          existingByKey,
-          now,
-          operationCounts,
-        });
-      } catch (error) {
-        if (error?.businessCode) throw error;
-        const wrapped = createBusinessError('OUTFIT_REFERENCE_WRITE_FAILED', '鎿嶄綔鏆傛椂澶辫触锛岃绋嶅悗鍐嶈瘯');
-        wrapped.cause = serializeOutfitReferenceCause(error, {
-          stage: error?.outfitReferenceStage || 'outfit_recommendation_update',
-        });
-        throw wrapped;
-      }
-      if (snapshot) {
-        snapshot.transactionMs = Date.now() - existingReadStartedAt;
-        snapshot.responseWaitMs = Math.max(0, snapshot.transactionMs - snapshot.queryReadMs - snapshot.writeMs);
-      }
-      return saved;
-    }
-  }
-
-  const transactionStartedAt = Date.now();
-  const result = await runOutfitReferenceTransaction(async (transaction) => {
-    if (Array.isArray(availableClothingIds)) {
-      assertAvailableClothingIds(clothingIds, availableClothingIds);
-    } else {
-      const queryReadStartedAt = Date.now();
-      if (operationCounts) operationCounts.reads += 1;
-      let validatedClothes;
-      try {
-        validatedClothes = await assertOutfitClothesAvailable(openid, clothingIds, transaction);
-      } catch (error) {
-        throw annotateOutfitReferenceCause(error, {
-          stage: 'clothes_validation_read',
-          operation: 'read',
-          collection: 'clothes',
-        });
-      }
-      if (snapshot) {
-        const durationMs = Date.now() - queryReadStartedAt;
-        const payloadBytes = serializedBytes(validatedClothes || []);
-        snapshot.queryReadMs += durationMs;
-        snapshot.readPayloadBytes += payloadBytes;
-        snapshot.readQueries.push({
-          collection: 'clothes',
-          purpose: 'availability_validation',
-          projected: false,
-          recordCount: Array.isArray(validatedClothes) ? validatedClothes.length : 0,
-          payloadBytes,
-          durationMs,
-        });
-        snapshot.dbRoundTrips += 1;
-      }
-    }
-
-    const existingReadStartedAt = Date.now();
-    if (operationCounts) operationCounts.reads += 1;
-    let existingResponse;
-    try {
-      existingResponse = await transaction.collection('outfits')
-        .where({ _openid: openid, outfitKey: db.command.in(uniqueStrings(outfitKeys)) })
-        .limit(100)
-        .get();
-    } catch (error) {
-      throw annotateOutfitReferenceCause(error, {
-        stage: 'outfit_existing_read',
-        operation: 'read',
-        collection: 'outfits',
-      });
-    }
-    if (snapshot) {
-      const durationMs = Date.now() - existingReadStartedAt;
-      const payloadBytes = serializedBytes(existingResponse.data || []);
-      snapshot.queryReadMs += durationMs;
-      snapshot.readPayloadBytes += payloadBytes;
-      snapshot.readQueries.push({
-        collection: 'outfits',
-        purpose: 'transaction_upsert_lookup',
-        projected: false,
-        recordCount: Array.isArray(existingResponse.data) ? existingResponse.data.length : 0,
-        payloadBytes,
-        durationMs,
-      });
-      snapshot.dbRoundTrips += 1;
-    }
-    const existingByKey = buildOutfitRecordMap(existingResponse.data);
-    if (snapshot) {
-      snapshot.existingRecordCount = existingByKey.size;
-      snapshot.newRecordCount = Math.max(0, records.length - existingByKey.size);
-      snapshot.maxConcurrency = 1;
-    }
-
-    const saved = [];
-    const pendingUpdates = [];
-    const pendingAdds = [];
-    const snapshotBuildStartedAt = Date.now();
-    for (let index = 0; index < records.length; index += 1) {
-      const base = records[index];
-      const outfitKey = outfitKeys[index];
-      const current = existingByKey.get(outfitKey);
-      const data = buildOutfitSaveData(base, {
-        outfitKey,
-        now,
-        patch: {},
-        current,
-      });
-      if (operationCounts) operationCounts.writes += 1;
-      if (snapshot) snapshot.logicalWrites += 1;
-      if (current) {
-        pendingUpdates.push({ current, data, outfitKey });
-      } else {
-        pendingAdds.push({
-          outfitKey,
-          data: {
-            _id: buildRecommendationOutfitDocumentId(openid, outfitKey),
-            _openid: openid,
-            ...data,
-            createdAt: now,
-          },
-        });
-      }
-    }
-    if (snapshot) snapshot.snapshotBuildMs += Date.now() - snapshotBuildStartedAt;
-
-    for (const pending of pendingUpdates) {
-      const writeStartedAt = Date.now();
-      try {
-        await transaction.collection('outfits').doc(pending.current._id).update({
-          data: buildOutfitReferenceUpdatePayload(pending.data),
-        });
-      } catch (error) {
-        throw annotateOutfitReferenceCause(error, {
-          stage: 'outfit_update',
-          operation: 'update',
-          collection: 'outfits',
-          documentId: pending.current._id,
-          outfitKey: pending.outfitKey,
-        });
-      }
-      const updated = { ...pending.current, ...pending.data };
-      existingByKey.set(pending.outfitKey, updated);
-      if (snapshot) {
-        const writeDurationMs = Date.now() - writeStartedAt;
-        snapshot.writeMs += writeDurationMs;
-        snapshot.writeWallMs += writeDurationMs;
-        snapshot.payloadBytes += serializedBytes(pending.data);
-        snapshot.writeRoundTrips += 1;
-        snapshot.dbRoundTrips += 1;
-      }
-    }
-
-    if (pendingAdds.length > 0) {
-      const writeStartedAt = Date.now();
-      const addData = pendingAdds.map((pending) => pending.data);
-      let addRes;
-      try {
-        addRes = await transaction.collection('outfits').add({ data: addData });
-      } catch (error) {
-        throw annotateOutfitReferenceCause(error, {
-          stage: 'outfit_batch_add',
-          operation: 'batch_add',
-          collection: 'outfits',
-          outfitKey: pendingAdds[0]?.outfitKey,
-        });
-      }
-      const returnedIds = Array.isArray(addRes?._ids)
-        ? addRes._ids
-        : (addRes?._id ? [addRes._id] : []);
-      if (returnedIds.length !== pendingAdds.length) {
-        throw annotateOutfitReferenceCause(new Error('batch add did not return one id per outfit'), {
-          stage: 'outfit_batch_add_result',
-          operation: 'batch_add',
-          collection: 'outfits',
-          expected: pendingAdds.length,
-          actual: returnedIds.length,
-        });
-      }
-      pendingAdds.forEach((pending, index) => {
-        const added = { ...pending.data, _id: returnedIds[index] };
-        existingByKey.set(pending.outfitKey, added);
-        saved.push(added);
-        if (snapshot) {
-          snapshot.payloadBytes += serializedBytes(addData[index]);
-        }
-      });
-      if (snapshot) {
-        const writeDurationMs = Date.now() - writeStartedAt;
-        snapshot.writeMs += writeDurationMs;
-        snapshot.writeWallMs += writeDurationMs;
-        snapshot.writeRoundTrips += 1;
-        snapshot.dbRoundTrips += 1;
-      }
-    }
-
-    pendingUpdates.forEach((pending) => {
-      saved.push(existingByKey.get(pending.outfitKey));
-    });
-    saved.sort((left, right) => outfitKeys.indexOf(left.outfitKey) - outfitKeys.indexOf(right.outfitKey));
-    if (snapshot) {
-      snapshot.logicalWrites = records.length;
-    }
-    return saved;
-  }, snapshot);
-  if (snapshot) {
-    snapshot.transactionMs = Math.max(snapshot.transactionMs, Date.now() - transactionStartedAt);
-    snapshot.responseWaitMs = Math.max(0, snapshot.transactionMs - snapshot.queryReadMs - snapshot.writeMs);
-  }
-  return result;
-}
-
-const RECOMMENDATION_OWNED_REFERENCE_FIELDS = [
-  'title', 'clothingIds', 'outfitKey', 'snapshotItems', 'incomplete', 'deletedItemCount',
-  'scene', 'targetDate', 'timeOfDay', 'weather', 'weatherSnapshot', 'weatherMode',
-  'eligibility', 'eligibilityReason', 'scores', 'aestheticEvaluation', 'scoreExplanations',
-  'generationType', 'source', 'recommendationBatchId', 'generatedAt', 'styleTags', 'reason',
-  'reasoning', 'reasonVersion', 'presentationPlan', 'copyContract', 'copyContractVersion',
-  'voiceBankVersion', 'selectedDifferentiator', 'contentPlan', 'canonicalRecommendationCopyV2',
-  'recommendationVoiceMaterializationV2', 'recommendationContentHash', 'updatedAt',
-];
-const RECOMMENDATION_REFERENCE_UPDATE_CONCURRENCY = 8;
-const RECOMMENDATION_REFERENCE_VOLATILE_FIELDS = new Set([
-  'recommendationBatchId', 'generatedAt', 'recommendationContentHash', 'updatedAt',
-]);
-
 function buildRecommendationContentHash(data) {
   const stable = {};
   for (const field of RECOMMENDATION_OWNED_REFERENCE_FIELDS) {
@@ -5341,78 +3354,6 @@ function buildRecommendationOwnedReferenceUpdatePayload(data, current) {
   return buildOutfitReferenceUpdatePayload(payload);
 }
 
-async function updateExistingRecommendationReferences({
-  records,
-  outfitKeys,
-  existingByKey,
-  now,
-  operationCounts,
-}) {
-  const snapshotBuildStartedAt = Date.now();
-  const pending = records.map((base, index) => {
-    const outfitKey = outfitKeys[index];
-    const current = existingByKey.get(outfitKey);
-    const data = buildOutfitSaveData(base, { outfitKey, now, patch: {}, current });
-    return { current, data, outfitKey };
-  });
-  if (operationCounts?.snapshot) {
-    operationCounts.snapshot.snapshotBuildMs += Date.now() - snapshotBuildStartedAt;
-  }
-  const saved = new Array(pending.length);
-  let nextIndex = 0;
-  const writeWallStartedAt = Date.now();
-  const worker = async () => {
-    while (nextIndex < pending.length) {
-      const index = nextIndex;
-      nextIndex += 1;
-      const item = pending[index];
-      if (operationCounts) operationCounts.writes += 1;
-      const writeStartedAt = Date.now();
-      const updatePayload = buildRecommendationOwnedReferenceUpdatePayload(item.data, item.current);
-      try {
-        // Keep each update independent; the production SDK supplies the I/O
-        // yield that lets the worker window overlap network round trips.
-        await db.collection('outfits').doc(item.current._id).update({
-          data: updatePayload,
-        });
-      } catch (error) {
-        throw annotateOutfitReferenceCause(error, {
-          stage: 'outfit_recommendation_update',
-          operation: 'update',
-          collection: 'outfits',
-          documentId: item.current._id,
-          outfitKey: item.outfitKey,
-        });
-      }
-      if (operationCounts?.snapshot) {
-        operationCounts.snapshot.writeMs += Date.now() - writeStartedAt;
-        operationCounts.snapshot.writeRoundTrips += 1;
-        operationCounts.snapshot.dbRoundTrips += 1;
-        operationCounts.snapshot.logicalWrites += 1;
-        operationCounts.snapshot.payloadBytes += serializedBytes(updatePayload);
-      }
-      saved[index] = { ...item.current, ...item.data };
-    }
-  };
-  await Promise.all(Array.from({
-    length: Math.min(RECOMMENDATION_REFERENCE_UPDATE_CONCURRENCY, pending.length),
-  }, () => worker()));
-  if (operationCounts?.snapshot) {
-    operationCounts.snapshot.writeWallMs += Date.now() - writeWallStartedAt;
-  }
-  return saved;
-}
-
-function assertAvailableClothingIds(expectedIds, availableIds) {
-  const available = new Set(uniqueStrings(availableIds));
-  if (expectedIds.some((id) => !available.has(id))) {
-    throw createBusinessError(
-      'OUTFIT_CONTAINS_DELETED_CLOTHES',
-      '杩欏鎼厤鏈夎。鐗╁凡绉诲嚭琛ｆ┍锛屾殏鏃朵笉鑳界户缁娇鐢?',
-    );
-  }
-}
-
 async function findOutfitByKey(openid, outfitKey, database = db) {
   const res = await database.collection('outfits').where({ _openid: openid, outfitKey }).limit(1).get();
   return res.data[0] || null;
@@ -5420,10 +3361,6 @@ async function findOutfitByKey(openid, outfitKey, database = db) {
 
 function readBaseClothingIds(base) {
   return base && Array.isArray(base.clothingIds) ? base.clothingIds : [];
-}
-
-function buildRecommendationOutfitDocumentId(openid, outfitKey) {
-  return `recommendation-${sha256(`${openid}|${outfitKey}`).slice(0, 24)}`;
 }
 
 function buildSnapshotItems(clothingIds, base, current) {
@@ -7098,9 +5035,6 @@ function createBusinessError(code, message) {
 if (process.env.NODE_ENV === 'test') {
   exports.__test = {
     PRESENTATION_FACT_MODEL_BUILD,
-    buildRecommendationResponseData,
-    buildSceneEvidenceAcceptanceDiagnostics,
-    projectRecommendationResponseOutfits,
     buildOutfitSaveData,
     buildOutfitReferenceUpdatePayload,
     buildSnapshotRecordData,
@@ -7112,16 +5046,11 @@ if (process.env.NODE_ENV === 'test') {
     createRecommendationSceneContract,
     createRecommendationDiagnostics,
     recordServerPhase,
-    finalizeRecommendationResponse,
-    measureRecommendationResponseBreakdown,
-    stripResponseDiagnosticsForBusinessResponse,
-    finalizeFullComputeAfterPoolPersist,
-    attachPresentationEvidenceDebug,
+    measureCanonicalBatchInput,
+    measureHomeLightMaterialization,
+    measurePlannedHomeLightMaterialization,
     buildPresentationEvidence,
     generateCandidatePoolRecommendations,
-    upsertRecommendationOutfitsBatch,
-    measureRecommendationResponse,
-    measureRecommendationResponseFields,
     materializeRecommendationCanonicalCopyV2,
     normalizeOutfitPayload,
     persistCanonicalCopyMaterialization,
@@ -7143,15 +5072,13 @@ if (process.env.NODE_ENV === 'test') {
     resolveInitialCacheMissReason,
     mapCandidatePoolLoadReason,
     resolveEnrichedTitleState,
-    isCanonicalCopyRuntimeV2Acceptance,
-    isRecommendationV2Acceptance,
-    shouldUseRecommendationV2,
     buildRecommendationV2TodayReason,
     generateRecommendationV2,
     resolveHomeLightDisplayImage,
-    measureCanonicalBatchInput,
-    measureHomeLightMaterialization,
-    measurePlannedHomeLightMaterialization,
     recordStatusQueryDiagnostic,
   };
+}
+
+function projectSnapshotItemsForCardPreparation(items) {
+  return (Array.isArray(items) ? items : []).map((item) => ({ itemId: item.itemId, name: item.name, category: item.category, color: item.color, imageUrl: item.imageUrl, displayImageUrl: item.displayImageUrl, thumbnailUrl: item.thumbnailUrl, isDeleted: Boolean(item.isDeleted) }));
 }

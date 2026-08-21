@@ -15,15 +15,11 @@ import {
   invalidateAfterOutfitWornMutation,
 } from '@/lib/cacheInvalidation';
 import {
-  addOutfitHistory,
-  generateCloudOutfit,
   generateCloudOutfitV2,
   getCloudResponseTransportDiagnostics,
   isDevelopV2ColdTelemetryEnvironment,
   isRecommendationDiagnosticEnvironment,
   materializeCloudRecommendationCopyV2,
-  removeFavoriteOutfit,
-  saveFavoriteOutfit,
   updateCloudOutfitFavoriteV2,
   updateCloudOutfitWearV2,
 } from '@/lib/cloud';
@@ -48,7 +44,6 @@ import {
   setUserStorageSync,
 } from '@/lib/userStorage';
 import { applyOutfitStatuses, setOutfitStatus, setOutfitStatuses } from '@/stores/outfitStatusStore';
-import { consumeOutfitStateSync, normalizeOutfitSnapshot, storeOutfitDetailDraft } from '@/utils/outfitSnapshot';
 import {
   COPY_CONTRACT_VERSION,
   hasCurrentNewRecommendationCopy,
@@ -99,38 +94,18 @@ import {
   type RecommendationIntent,
   type RecommendationIntentRegistry,
 } from './recommendationIntent';
-import {
-  TODAY_SCENE_COPY_VERSION,
-  buildExhaustedSnapshotState,
-  buildSceneSnapshotKey,
-  chooseSceneTransitionState,
-  isNoMoreRecommendationState,
-  isValidSceneSnapshotCountState,
-  shouldUseSceneSnapshot,
-  type SceneSnapshot,
-} from './sceneSnapshot';
-import {
-  validateRecommendationCountContract,
-  validateSceneContract as validateSceneContractPure,
-} from './sceneResponseValidation';
-import type { OutfitStatusPatch } from '@/stores/outfitStatusStore';
-import type { SceneContractValidation } from './sceneResponseValidation';
-import type { Outfit, RecommendResponse, RecommendationCountContract, RecommendationMissingFact, RecommendationMissingRole, SceneTag, WeatherMode, WeatherSnapshot } from '@starter-template/types';
+import { validateRecommendationCountContract } from './sceneResponseValidation';
+import type { RecommendationCountContract, RecommendationMissingFact, RecommendationMissingRole, SceneTag, WeatherMode, WeatherSnapshot } from '@starter-template/types';
 import './index.scss';
 import { HomeLightCardV2 } from './HomeLightCardV2';
+const TODAY_TIME_OF_DAY: TimeOfDay = 'all_day';
 import {
-  isTodayV2Enabled,
   patchTodayV2CardStatus,
   readTodayV2Snapshot,
   toTodayV2Snapshot,
   TODAY_V2_SNAPSHOT_KEY,
   type TodayV2Snapshot,
 } from './todayV2Adapter';
-
-interface ExtendedSceneSnapshot extends SceneSnapshot {
-  sceneKey?: SceneKey
-  weatherMode?: WeatherMode
-}
 
 interface TapEvent {
   stopPropagation: () => void;
@@ -227,7 +202,7 @@ interface TodayDiagnosticsBridge {
   readCopyAcceptanceState: () => {
     sceneKey: SceneKey;
     recommendationBatchId?: string;
-    outfits: Outfit[];
+    cards: Array<{ outfitKey: string; displayTitle: string; todayReason: string; isFavorite: boolean; isWornToday: boolean }>;
   };
   readUsableCardState: () => {
     batchIndex: number;
@@ -254,63 +229,6 @@ function isTodayDiagnosticsRuntime() {
   }
 }
 
-function isStrictV2Acceptance(request?: TodayFullComputeAcceptanceRequest) {
-  const runId = request?.acceptanceRunId;
-  return Boolean(request?.performanceDiagnostics === true
-    && typeof runId === 'string'
-    && runId.startsWith('ttui-v2-')
-    && request?.captureId === `${runId}-capture`);
-}
-
-interface TodayRestoreSnapshot {
-  version: 4;
-  copyContractVersion: typeof COPY_CONTRACT_VERSION;
-  outfits: Outfit[];
-  currentIndex: number;
-  selectedSceneKey: SceneKey;
-  scene: SceneTag;
-  weatherSnapshot?: WeatherSnapshot;
-  weatherMode: WeatherMode;
-  weatherFingerprint?: RecommendationWeatherFingerprint;
-  weatherKey: string;
-  targetDate: string;
-  timeOfDay: TimeOfDay;
-  sceneSnapshotKey: string;
-  recommendationBatchId: string | undefined;
-  generatedAt: number;
-  seenOutfitKeys: string[];
-  hasRecommendations: boolean;
-  batchLimited: boolean;
-  batchExhausted: boolean;
-  noMoreRecommendations: boolean;
-  countContract?: RecommendationCountContract;
-  lastVisibleBatch?: SceneSnapshot['lastVisibleBatch'];
-  recommendationNotice: string;
-}
-
-interface TodayRestoreSnapshotInput {
-  outfits?: Outfit[];
-  currentIndex?: number;
-  selectedSceneKey?: SceneKey;
-  weatherSnapshot?: WeatherSnapshot;
-  weatherMode?: WeatherMode;
-  weatherFingerprint?: RecommendationWeatherFingerprint;
-  recommendationBatchId?: string;
-  seenOutfitKeys?: string[];
-  hasRecommendations?: boolean;
-  batchLimited?: boolean;
-  batchExhausted?: boolean;
-  noMoreRecommendations?: boolean;
-  countContract?: RecommendationCountContract;
-  lastVisibleBatch?: SceneSnapshot['lastVisibleBatch'];
-  recommendationNotice?: string;
-}
-
-const TODAY_RESTORE_SNAPSHOT_KEY = 'today:outfitReturnSnapshot:recommendation-copy-contract-v8';
-const TODAY_SCENE_SNAPSHOT_STORAGE_PREFIX = 'today:sceneSnapshot:recommendation-copy-contract-v8';
-const TODAY_RESTORE_SNAPSHOT_TTL_MS = 10 * 60 * 1000;
-const TODAY_TIME_OF_DAY: TimeOfDay = 'all_day';
-
 const SCENES = [
   { key: 'home', label: '居家' },
   { key: 'work', label: '通勤' },
@@ -325,87 +243,32 @@ const SCENE_TAGS: Record<SceneKey, SceneTag> = {
   sport: '运动' as SceneTag,
 };
 
-function scheduleCanonicalCopyMaterialization(data: RecommendResponse) {
-  const recommendationBatchId = data.recommendationBatchId ?? data.outfits[0]?.recommendationBatchId;
-  const needsMaterialization = data.outfits.some((outfit) => {
-    const state = outfit.canonicalRecommendationCopyV2?.aiState;
-    return state === 'materializing' || state === 'failed';
+function getRecommendationInputSignature(input: {
+  sceneKey: SceneKey;
+  weather?: WeatherSnapshot;
+  recommendationBatchId?: string;
+  excludedOutfitKeys?: string[];
+  requestKind?: 'initial' | 'refresh';
+}) {
+  return buildRecommendationInputSignature({
+    userRuntimeKey: '',
+    sceneKey: input.sceneKey,
+    date: getToday(),
+    timeOfDay: TODAY_TIME_OF_DAY,
+    weatherFingerprint: getRecommendationWeatherFingerprint(input.weather),
+    wardrobeVersion: 'wardrobe-0',
+    profileVersion: 'profile-0',
+    recommendationBatchId: input.recommendationBatchId,
+    excludedOutfitKeys: input.excludedOutfitKeys || [],
+    requestKind: input.requestKind || 'initial',
   });
-  if (!recommendationBatchId || !needsMaterialization) return;
-  setTimeout(() => {
-    void materializeCloudRecommendationCopyV2(recommendationBatchId).catch((error) => {
-      logRecommendationEvent('[RecommendError]', {
-        auditId: 'canonical-copy-materialization',
-        stage: 'canonical-copy-materialization',
-        recommendationBatchIdPresent: true,
-        errorCode: error instanceof Error ? error.message.slice(0, 80) : 'UNKNOWN',
-      });
-    });
-  }, 0);
-}
-
-function getOutfitStatusPatches(outfits: Outfit[]) {
-  return outfits.map((outfit) => getOutfitStatusPatch(outfit)).filter((patch) => Boolean(patch.outfitKey));
-}
-
-function getOutfitStatusPatch(outfit: Outfit, fallbackOutfitKey = ''): OutfitStatusPatch {
-  const patch: OutfitStatusPatch = {
-    outfitKey: outfit.outfitKey ?? fallbackOutfitKey,
-  };
-  const updatedAt = getOutfitStatusUpdatedAt(outfit.updatedAt);
-
-  if (updatedAt !== undefined) patch.updatedAt = updatedAt;
-  if (outfit.isFavorite !== undefined) patch.isFavorite = outfit.isFavorite;
-  if (outfit.favoriteOutfitId !== undefined) {
-    patch.favoriteOutfitId = outfit.favoriteOutfitId;
-  } else if (outfit.isFavorite === false) {
-    patch.favoriteOutfitId = '';
-  }
-  if (outfit.isWornToday !== undefined) patch.isWornToday = outfit.isWornToday;
-  if (outfit.todayHistoryId !== undefined) {
-    patch.todayHistoryId = outfit.todayHistoryId;
-  } else if (outfit.isWornToday === false) {
-    patch.todayHistoryId = '';
-  }
-  if (outfit.wornAt !== undefined) patch.wornAt = outfit.wornAt;
-  if (outfit.wornDate !== undefined) patch.wornDate = outfit.wornDate;
-  if (outfit.userTitle !== undefined) patch.userTitle = outfit.userTitle;
-  if (outfit.displayTitle !== undefined) patch.displayTitle = outfit.displayTitle;
-  if (outfit.title !== undefined) patch.title = outfit.title;
-
-  return patch;
-}
-
-function applyTodayOutfitStatuses(outfits: Outfit[], authContext?: ActiveAuthContext | null) {
-  markTodayPerformanceStage('statusApplyStart');
-  const next = applyOutfitStatuses(outfits, authContext).map((outfit) => normalizeOutfitSnapshot(outfit));
-  markTodayPerformanceStage('statusApplyEnd');
-  return next;
-}
-
-function withDefinedOutfitFields(patch: Partial<Outfit>, source: Outfit): Partial<Outfit> {
-  const next = { ...patch };
-  if (source.userTitle !== undefined) next.userTitle = source.userTitle;
-  if (source.displayTitle !== undefined) next.displayTitle = source.displayTitle;
-  if (source.title !== undefined) next.title = source.title;
-  if (source.updatedAt !== undefined) next.updatedAt = source.updatedAt;
-  return next;
-}
-
-function getOutfitStatusUpdatedAt(updatedAt: string | undefined) {
-  if (!updatedAt) return undefined;
-  const timestamp = Date.parse(updatedAt);
-  return Number.isFinite(timestamp) ? timestamp : undefined;
 }
 
 export default function TodayPage() {
   const { authStatus, runtimeKey, isAuthenticated } = useAuthRuntime();
-  const todayV2Enabled = isTodayV2Enabled();
   const [v2Snapshot, setV2Snapshot] = useState<TodayV2Snapshot | null>(null);
-  const [v2MemoryOnly, setV2MemoryOnly] = useState(false);
-  const v2RuntimeActive = todayV2Enabled || v2MemoryOnly;
+  const v2SnapshotRef = useRef<TodayV2Snapshot | null>(null);
   const [selectedSceneKey, setSelectedSceneKey] = useState<SceneKey>('home');
-  const [outfits, setOutfits] = useState<Outfit[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [loading, setLoading] = useState(false);
   const [operation, setOperation] = useState<OutfitOperation>(null);
@@ -431,7 +294,6 @@ export default function TodayPage() {
   const seenOutfitKeysBySceneIdentityRef = useRef<Record<string, string[]>>({});
   const seenIdentityHashBySceneRef = useRef<Record<string, string>>({});
   const activeSeenSceneIdentityKeyRef = useRef(buildSceneIdentityKey('home', ''));
-  const outfitsRef = useRef<Outfit[]>([]);
   const currentIndexRef = useRef(0);
   const selectedSceneKeyRef = useRef<SceneKey>('home');
   const recommendationBatchIdRef = useRef<string | undefined>(undefined);
@@ -459,12 +321,11 @@ export default function TodayPage() {
   const todayV2EntryAtRef = useRef<number | null>(null);
   const todayV2EntryColdEligibleRef = useRef(false);
   const todayV2ColdCorrelationRef = useRef<string | null>(null);
-  const sceneSnapshotsRef = useRef<Record<string, ExtendedSceneSnapshot>>({});
   const [currentWeather, setCurrentWeather] = useState<WeatherSnapshot | undefined>(undefined);
   const [performanceSnapshot, setPerformanceSnapshot] = useState<TodayPerformanceLedgerSnapshot>({ active: null, history: [] });
   const selectedScene = SCENE_TAGS[selectedSceneKey];
+  v2SnapshotRef.current = v2Snapshot;
   const selectedSceneRef = useRef<SceneTag>(selectedScene);
-  outfitsRef.current = outfits;
   currentIndexRef.current = currentIndex;
   selectedSceneKeyRef.current = selectedSceneKey;
   recommendationBatchIdRef.current = recommendationBatchId;
@@ -490,12 +351,12 @@ export default function TodayPage() {
   }, [v2Snapshot]);
 
   useEffect(() => {
-    if (!todayV2Enabled || !isAuthenticated) return;
+    if (!isAuthenticated) return;
     const authContext = captureAuthContext();
     if (!authContext) return;
     const snapshot = readTodayV2Snapshot((key) => getUserStorageSync(key, { authContext }));
     if (snapshot) setV2Snapshot(snapshot);
-  }, [isAuthenticated, todayV2Enabled]);
+  }, [isAuthenticated]);
 
   const resetUserState = useCallback(() => {
     requestSeq.current += 1;
@@ -506,7 +367,6 @@ export default function TodayPage() {
     seenOutfitKeysBySceneIdentityRef.current = {};
     seenIdentityHashBySceneRef.current = {};
     activeSeenSceneIdentityKeyRef.current = buildSceneIdentityKey('home', '');
-    outfitsRef.current = [];
     currentIndexRef.current = 0;
     recommendationBatchIdRef.current = undefined;
     hasRecommendationsRef.current = true;
@@ -515,13 +375,11 @@ export default function TodayPage() {
     recommendationNoticeRef.current = '';
     shouldRestoreFromDetailRef.current = false;
     operationTargetRef.current = null;
-    sceneSnapshotsRef.current = {};
     recommendationWeatherSnapshotRef.current = undefined;
     recommendationWeatherFingerprintRef.current = getRecommendationWeatherFingerprint(undefined);
     loadingOwnerSeqRef.current = null;
     operationOwnerSeqRef.current = null;
     behaviorTrackerRef.current = createOutfitBehaviorExposureTracker();
-    setOutfits([]);
     setCurrentIndex(0);
     setLoading(false);
     setOperation(null);
@@ -534,7 +392,6 @@ export default function TodayPage() {
     setBatchLimited(false);
     setBatchExhausted(false);
     setV2Snapshot(null);
-    setV2MemoryOnly(false);
   }, []);
 
   useUnload(() => {
@@ -547,18 +404,6 @@ export default function TodayPage() {
     operationOwnerSeqRef.current = null;
     imagePreloadGenerationRef.current += 1;
   });
-
-  useEffect(() => {
-    if (outfits.length === 0) return;
-    const generation = imagePreloadGenerationRef.current + 1;
-    imagePreloadGenerationRef.current = generation;
-    const timer = setTimeout(() => {
-      void preloadRecommendationCards(outfits, currentIndex, () => imagePreloadGenerationRef.current === generation);
-    }, currentIndex === 0 ? 300 : 0);
-    return () => {
-      clearTimeout(timer);
-    };
-  }, [currentIndex, outfits]);
 
   usePullDownRefresh(() => {
     requestRecommendations({
@@ -574,7 +419,7 @@ export default function TodayPage() {
 
   useDidShow(() => {
     todayV2EntryAtRef.current = Date.now();
-    todayV2EntryColdEligibleRef.current = !(v2Snapshot?.cards.length === 8 || outfitsRef.current.length > 0);
+    todayV2EntryColdEligibleRef.current = !(v2SnapshotRef.current?.cards.length === 8);
     todayV2ColdCorrelationRef.current = null;
     startTodayPerformanceRun();
     markTodayPerformanceStage('appOrPageEntry');
@@ -590,13 +435,6 @@ export default function TodayPage() {
     // A resumed Today tab is a normal restore entry, not only a return from
     // outfit detail. Keep the detail-intent gate for detail-specific callers,
     // but never let it suppress the user-scoped hot snapshot on a fresh run.
-    recordTodayRestoreDispatchAttempt();
-    const restored = restoreTodaySnapshotFromDetail(authContext, { requireReturnIntent: false });
-    if (restored) void refreshDirtyRecommendation(authContext);
-    const syncedOutfit = consumeOutfitStateSync({ authContext });
-    if (syncedOutfit) {
-      updateOutfitsByKey(syncedOutfit, syncedOutfit, authContext);
-    }
   });
 
   useEffect(() => {
@@ -618,7 +456,6 @@ export default function TodayPage() {
     // A valid user-scoped snapshot is synchronous and must be allowed to paint
     // before WeatherCard finishes location/auth/cloud work. Weather changes
     // continue through handleWeatherChange as a background refresh afterwards.
-    recordTodayRestoreDispatchAttempt();
     const authContext = captureAuthContext();
     if (authContext && hasTodayRecommendationHardInvalid({ authContext })) {
       const acceptanceDiagnostics = consumeHardInvalidAcceptanceRequest(authContext);
@@ -626,8 +463,6 @@ export default function TodayPage() {
       void refreshHardInvalidRecommendation(authContext, acceptanceDiagnostics);
       return;
     }
-    const restored = restoreTodaySnapshotFromDetail(authContext, { requireReturnIntent: false });
-    if (restored && authContext) void refreshDirtyRecommendation(authContext);
     if (currentWeatherRef.current) {
       void handleWeatherChange(currentWeatherRef.current, {
         weatherMode: currentWeatherModeRef.current,
@@ -700,7 +535,7 @@ export default function TodayPage() {
   }
 
   async function refreshDirtyRecommendation(authContext: ActiveAuthContext) {
-    if (dirtyRefreshInFlightRef.current || outfitsRef.current.length === 0) return;
+    if (dirtyRefreshInFlightRef.current || !(v2SnapshotRef.current?.cards.length === 8)) return;
     const dirty = getTodayRecommendationDirty({ authContext });
     if (!dirty) return;
     dirtyRefreshInFlightRef.current = true;
@@ -790,17 +625,16 @@ export default function TodayPage() {
     }
 
     try {
-      const strictV2Acceptance = isStrictV2Acceptance(acceptanceDiagnostics);
-      if (todayV2Enabled || strictV2Acceptance) {
+      {
         const passiveColdTelemetry = isRecommendationDiagnosticEnvironment()
           && isDevelopV2ColdTelemetryEnvironment()
-          && (todayV2Enabled || acceptanceDiagnostics?.performanceDiagnostics === true)
+          && acceptanceDiagnostics?.performanceDiagnostics === true
           && requestKind !== 'refresh'
           && (trigger === 'hard-invalid' || todayV2EntryColdEligibleRef.current)
           && !silent
           && trigger !== 'pull-down'
           && trigger !== 'scene'
-          && (trigger === 'hard-invalid' || (outfitsRef.current.length === 0 && !v2Snapshot));
+          && (trigger === 'hard-invalid' || !(v2SnapshotRef.current?.cards.length === 8));
         const telemetryCorrelationId = passiveColdTelemetry
           ? (todayV2ColdCorrelationRef.current
             || (todayV2ColdCorrelationRef.current = beginTodayV2ColdTelemetry(
@@ -849,10 +683,7 @@ export default function TodayPage() {
         }
         const nextSnapshot = toTodayV2Snapshot(response);
         setV2Snapshot(nextSnapshot);
-        setV2MemoryOnly(strictV2Acceptance && !todayV2Enabled);
-        if (!strictV2Acceptance || todayV2Enabled) {
-          setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, nextSnapshot, { authContext });
-        }
+        setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, nextSnapshot, { authContext });
         setLoading(false);
         setError('');
         setHasRecommendations(true);
@@ -860,159 +691,12 @@ export default function TodayPage() {
         markAcceptanceClientMilestone(acceptanceDiagnostics, 'v2ApplyCommittedAt');
         return true;
       }
-      markTodayPerformanceStage('executionMode', requestKind === 'initial' ? 'COLD' : 'COLD');
-      markTodayPerformanceStage('generateOutfitRequestStart');
-      const cloudRequestStartedAt = Date.now();
-      markAcceptanceClientMilestone(acceptanceDiagnostics, 'cloudRequestConstructionStartedAt');
-      const data = await generateCloudOutfit({
-        date: getToday(),
-        scene,
-        timeOfDay: TODAY_TIME_OF_DAY,
-        maxResults: 8,
-        auditId,
-        weatherMode,
-        trigger,
-        ...(acceptanceDiagnostics ? {
-          performanceDiagnostics: true,
-          diagnostics: true,
-          debugRecommendationAudit: true,
-          canonicalCopyRuntimeV2Acceptance: true,
-          acceptanceRunId: acceptanceDiagnostics.acceptanceRunId,
-          captureId: acceptanceDiagnostics.captureId,
-          clientMilestones: acceptanceDiagnostics.clientMilestones,
-        } : {}),
-        ...(weather ? { weather } : {}),
-        ...(excludedOutfitKeys.length > 0 ? { excludedOutfitKeys } : {}),
-      });
-      const cloudRoundTripMs = Date.now() - cloudRequestStartedAt;
-      const responseReceivedAt = Date.now();
-      const transport = getCloudResponseTransportDiagnostics(data);
-      markTodayPerformanceStage('responseAdaptStart');
-      markTodayPerformanceStage('generateOutfitResponseEnd');
-      markTodayPerformanceStage('auditId', getRecommendationAuditId(data, auditId));
-      markTodayPerformanceStage('executionMode', data.debug?.executionMode ?? 'COLD');
-      if (typeof (data as { code?: unknown }).code === 'number' || typeof (data as { code?: unknown }).code === 'string') {
-        markTodayPerformanceStage('responseCode', String((data as unknown as { code: number | string }).code));
-      }
-
-      if (!isRecommendationIntentCurrent(intent) || !isAuthContextCurrent(authContext)) {
-        logRecommendationIntentReject(requestContext, data, 'SUPERSEDED_INTENT');
-        return false;
-      }
-      const currentInputSignature = getRecommendationInputSignature({
-        sceneKey: requestContext.sceneKey,
-        weather,
-        recommendationBatchId: requestKind === 'refresh' ? recommendationBatchIdRef.current : undefined,
-        excludedOutfitKeys,
-        requestKind,
-      });
-      if (currentInputSignature !== requestContext.inputSignature) {
-        logRecommendationIntentReject(requestContext, data, 'INPUT_SIGNATURE_CHANGED');
-        return false;
-      }
-      const validation = validateSceneContract(requestContext, data);
-      if (!validation.ok) {
-        logSceneContractReject(auditId, data, validation);
-        return false;
-      }
-      const countValidation = validateRecommendationCountContract(data);
-      if (!countValidation.ok) {
-        logRecommendationEvent('[RecommendReject]', {
-          auditId: getRecommendationAuditId(data, auditId),
-          reason: countValidation.reason,
-          responseCardCount: countValidation.returnedCardCount,
-          topLevelKeys: Object.keys(data).slice(0, 20),
-          cloudBuild: data.debug?.cloudBuildVersion ?? data.meta?.cloudBuildVersion ?? '',
-          transport: getCloudResponseTransportDiagnostics(data),
-        });
-        return false;
-      }
-      countContractRef.current = data.countContract;
-      const eligibleApiOutfits = data.outfits.filter(hasCurrentNewRecommendationCopy);
-      markTodayPerformanceStage('responseAdaptEnd');
-
-      const requestWeatherFingerprint = getRecommendationWeatherFingerprint(weather);
-      markTodayPerformanceStage('clientNormalizeStart');
-      const normalizedOutfits = eligibleApiOutfits.map((outfit) => normalizeOutfitSnapshot(outfit));
-      mergeSuccessfulSeenBatch(requestContext.sceneKey, getResponseIdentityHash(data), normalizedOutfits);
-      setOutfitStatuses(getOutfitStatusPatches(normalizedOutfits), authContext);
-      const nextOutfits = applyTodayOutfitStatuses(normalizedOutfits, authContext);
-      markTodayPerformanceStage('clientNormalizeEnd');
-      const responseMissingRoles = data.debug?.limitedReason === 'MISSING_REQUIRED_CATEGORY'
-        ? (data.missingRoles ?? data.debug.missingRoles ?? [])
-        : [];
-      const responseMissingFacts = data.outfits.length === 0
-        ? (data.missingFacts ?? data.debug?.missingFacts ?? [])
-        : [];
-      const nextNotice = nextOutfits.length > 0
-        ? getBatchNotice(data.recommendationNotice, Boolean(data.limited), Boolean(data.exhausted))
-        : getRecommendationEmptyStateCopy(responseMissingRoles, responseMissingFacts);
-      logRecommendationResponse(requestContext, data, trigger, nextOutfits.length);
-      logRecommendationQa(data, auditId);
-      recommendationWeatherSnapshotRef.current = weather;
-      currentWeatherModeRef.current = weatherMode;
-      recommendationWeatherFingerprintRef.current = requestWeatherFingerprint;
-      outfitsRef.current = nextOutfits;
-      currentIndexRef.current = 0;
-      recommendationBatchIdRef.current = data.recommendationBatchId ?? nextOutfits[0]?.recommendationBatchId;
-      markTodayPerformanceStage('stateCommitStart');
-      setOutfits(nextOutfits);
-      markTodayPerformanceStage('setOutfitsCalled');
-      setCurrentIndex(0);
-      setHasRecommendations(nextOutfits.length > 0);
-      setError('');
-      setMissingRoles(responseMissingRoles);
-      setMissingFacts(responseMissingFacts);
-      setRecommendationBatchId(data.recommendationBatchId ?? nextOutfits[0]?.recommendationBatchId);
-      setBatchLimited(Boolean(data.limited));
-      setBatchExhausted(Boolean(data.exhausted));
-      setRecommendationNotice(nextNotice);
-      markTodayPerformanceStage('stateCommitEnd');
-      storeSceneSnapshot({
-        sceneKey: requestContext.sceneKey,
-        scene,
-        weather,
-        weatherMode,
-        weatherFingerprint: requestWeatherFingerprint,
-        outfits: nextOutfits,
-        currentIndex: 0,
-        recommendationBatchId: data.recommendationBatchId ?? nextOutfits[0]?.recommendationBatchId,
-        hasRecommendations: nextOutfits.length > 0,
-        batchLimited: Boolean(data.limited),
-        batchExhausted: Boolean(data.exhausted),
-        recommendationNotice: nextNotice,
-      });
-      markOutfitShown(nextOutfits[0]);
-      trackCurrentOutfitExposure(nextOutfits[0], 0, data.recommendationBatchId ?? nextOutfits[0]?.recommendationBatchId);
-      storeTodayRestoreSnapshot({
-        outfits: nextOutfits,
-        currentIndex: 0,
-        selectedSceneKey: requestContext.sceneKey,
-        weatherSnapshot: weather,
-        weatherMode,
-        weatherFingerprint: requestWeatherFingerprint,
-        recommendationBatchId: data.recommendationBatchId ?? nextOutfits[0]?.recommendationBatchId,
-        hasRecommendations: nextOutfits.length > 0,
-        batchLimited: Boolean(data.limited),
-        batchExhausted: Boolean(data.exhausted),
-        recommendationNotice: nextNotice,
-      }, authContext);
-      beginClientImageTiming({
-        auditId: getRecommendationAuditId(data, auditId),
-        cloudRoundTripMs,
-        clientApplyMs: Date.now() - responseReceivedAt,
-        transport,
-        firstOutfit: nextOutfits[0],
-      });
-      scheduleCanonicalCopyMaterialization(data);
-      return true;
     } catch (err) {
       if (!isRecommendationIntentCurrent(intent) || !isLatestRequest(seq)) return false;
       logRecommendationError(auditId, seq, 'fetchRecommendations', err);
       if (!silent) {
         setError('获取推荐失败，请稍后再试');
-        if (outfitsRef.current.length === 0) {
-          setOutfits([]);
+        if (!(v2SnapshotRef.current?.cards.length === 8)) {
           setHasRecommendations(false);
         } else {
           setRecommendationNotice('新场景暂时没取到，先保留刚才这批');
@@ -1046,7 +730,7 @@ export default function TodayPage() {
         weatherMode: currentWeatherModeRef.current,
         trigger: 'refresh',
         excludedOutfitKeys: exclusions,
-        ...(isStrictV2Acceptance(acceptanceDiagnostics) ? {
+        ...(acceptanceDiagnostics ? {
           performanceDiagnostics: true,
           acceptanceRunId: acceptanceDiagnostics?.acceptanceRunId,
           captureId: acceptanceDiagnostics?.captureId,
@@ -1056,9 +740,7 @@ export default function TodayPage() {
       if (!isAuthContextCurrent(authContext) || activeRequestSeqRef.current !== refreshSeq) return false;
       const next = toTodayV2Snapshot(response);
       setV2Snapshot(next);
-      const memoryOnly = isStrictV2Acceptance(acceptanceDiagnostics) && !todayV2Enabled;
-      setV2MemoryOnly(memoryOnly);
-      if (!memoryOnly) setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, next, { authContext });
+      setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, next, { authContext });
       setRecommendationBatchId(next.batchId);
       setLoading(false);
       return true;
@@ -1076,349 +758,28 @@ export default function TodayPage() {
 
   async function handleRefresh(acceptanceDiagnostics?: TodayFullComputeAcceptanceRequest): Promise<boolean> {
     if (loading || operation) return false;
-    if (todayV2Enabled || isStrictV2Acceptance(acceptanceDiagnostics)) {
-      return handleV2Refresh(acceptanceDiagnostics);
-    }
-    if (isNoMoreRecommendationState({
-      batchExhausted: batchExhaustedRef.current,
-      countContract: countContractRef.current,
-    })) {
-      setRecommendationNotice(NO_MORE_NEW_OUTFITS_NOTICE);
-      Taro.showToast({ title: NO_MORE_NEW_OUTFITS_NOTICE, icon: 'none' });
-      return false;
-    }
-    startTodayPerformanceRun();
-    markTodayPerformanceStage('userActionStart');
-    markTodayPerformanceStage('executionMode', 'REFRESH');
-    shouldRestoreFromDetailRef.current = false;
-    const weatherForRefresh = acceptanceDiagnostics?.weatherModeOverride === 'disabled'
-      ? undefined
-      : currentWeather ?? currentWeatherRef.current;
-    const weatherModeForRefresh = acceptanceDiagnostics?.weatherModeOverride ?? currentWeatherModeRef.current;
-    const excludedOutfitKeys = getSeenOutfitKeysForScene(selectedSceneKeyRef.current);
-    const intent = recommendationIntentRegistryRef.current?.activate({
-      intentId: nextRecommendationIntentId('refresh'),
-      inputSignature: getRecommendationInputSignature({
-        sceneKey: selectedSceneKeyRef.current,
-        weather: weatherForRefresh,
-        recommendationBatchId: recommendationBatchIdRef.current,
-        excludedOutfitKeys,
-        requestKind: 'refresh',
-      }),
-    });
-    if (!intent) return false;
-    const requestContext = createRecommendationRequestContext(
-      selectedSceneKeyRef.current,
-      weatherModeForRefresh,
-      intent,
-    );
-    activeRequestSeqRef.current = requestContext.requestSeq;
-    const seq = requestContext.requestSeq;
-    const auditId = requestContext.auditId;
-    const authContext = captureAuthContext();
-    if (!authContext) return false;
-    const previousOutfits = outfitsRef.current;
-    const previousRecommendationBatchId = recommendationBatchIdRef.current;
-    setOperationForRequest(seq, 'refresh');
-    setError('');
-    setRecommendationNotice('');
-
-    try {
-      const weatherFingerprintForRefresh = getRecommendationWeatherFingerprint(weatherForRefresh);
-      logRecommendationStart(requestContext, 'refresh', Boolean(weatherForRefresh));
-      markTodayPerformanceStage('generateOutfitRequestStart');
-      const cloudRequestStartedAt = Date.now();
-      markAcceptanceClientMilestone(acceptanceDiagnostics, 'cloudRequestConstructionStartedAt');
-      const data = await generateCloudOutfit({
-        date: getToday(),
-        scene: requestContext.sceneLabel,
-        timeOfDay: TODAY_TIME_OF_DAY,
-        maxResults: 8,
-        auditId,
-        weatherMode: weatherModeForRefresh,
-        trigger: 'refresh',
-        ...(acceptanceDiagnostics ? {
-          performanceDiagnostics: true,
-          diagnostics: true,
-          debugRecommendationAudit: true,
-          canonicalCopyRuntimeV2Acceptance: true,
-          acceptanceRunId: acceptanceDiagnostics.acceptanceRunId,
-          captureId: acceptanceDiagnostics.captureId,
-          clientMilestones: acceptanceDiagnostics.clientMilestones,
-        } : {}),
-        ...(weatherForRefresh ? { weather: weatherForRefresh } : {}),
-        ...(typeof previousRecommendationBatchId === 'string' && previousRecommendationBatchId.length > 0 ? { recommendationBatchId: previousRecommendationBatchId } : {}),
-        excludedOutfitKeys,
-      });
-      const cloudRoundTripMs = Date.now() - cloudRequestStartedAt;
-      const responseReceivedAt = Date.now();
-      const transport = getCloudResponseTransportDiagnostics(data);
-      markTodayPerformanceStage('responseAdaptStart');
-      markTodayPerformanceStage('generateOutfitResponseEnd');
-      markTodayPerformanceStage('auditId', getRecommendationAuditId(data, auditId));
-      markTodayPerformanceStage('executionMode', 'REFRESH');
-      if (typeof (data as { code?: unknown }).code === 'number' || typeof (data as { code?: unknown }).code === 'string') {
-        markTodayPerformanceStage('responseCode', String((data as unknown as { code: number | string }).code));
-      }
-
-      if (!isRecommendationIntentCurrent(intent) || !isAuthContextCurrent(authContext)) return false;
-      const currentInputSignature = getRecommendationInputSignature({
-        sceneKey: requestContext.sceneKey,
-        weather: weatherForRefresh,
-        recommendationBatchId: previousRecommendationBatchId,
-        excludedOutfitKeys,
-        requestKind: 'refresh',
-      });
-      if (currentInputSignature !== requestContext.inputSignature) {
-        logRecommendationIntentReject(requestContext, data, 'INPUT_SIGNATURE_CHANGED');
-        return false;
-      }
-      const validation = validateSceneContract(requestContext, data);
-      if (!validation.ok) {
-        logSceneContractReject(auditId, data, validation);
-        return false;
-      }
-      const countValidation = validateRecommendationCountContract(data);
-      if (!countValidation.ok) {
-        logRecommendationEvent('[RecommendReject]', {
-          auditId: getRecommendationAuditId(data, auditId),
-          reason: countValidation.reason,
-          responseCardCount: countValidation.returnedCardCount,
-        });
-        return false;
-      }
-      const eligibleApiOutfits = data.outfits.filter(hasCurrentNewRecommendationCopy);
-      markTodayPerformanceStage('responseAdaptEnd');
-      logRecommendationResponse(requestContext, data, 'refresh', eligibleApiOutfits.length);
-      logRecommendationQa(data, auditId);
-      if (eligibleApiOutfits.length > 0) {
-        countContractRef.current = data.countContract;
-        markTodayPerformanceStage('clientNormalizeStart');
-        const normalizedOutfits = eligibleApiOutfits.map((outfit) => normalizeOutfitSnapshot(outfit));
-        mergeSuccessfulSeenBatch(requestContext.sceneKey, getResponseIdentityHash(data), normalizedOutfits);
-        setOutfitStatuses(getOutfitStatusPatches(normalizedOutfits), authContext);
-        const nextOutfits = applyTodayOutfitStatuses(normalizedOutfits, authContext);
-        markTodayPerformanceStage('clientNormalizeEnd');
-        recommendationWeatherSnapshotRef.current = weatherForRefresh;
-        recommendationWeatherFingerprintRef.current = weatherFingerprintForRefresh;
-        outfitsRef.current = nextOutfits;
-        currentIndexRef.current = 0;
-        recommendationBatchIdRef.current = data.recommendationBatchId ?? nextOutfits[0]?.recommendationBatchId;
-        markTodayPerformanceStage('stateCommitStart');
-        setOutfits(nextOutfits);
-        markTodayPerformanceStage('setOutfitsCalled');
-        setCurrentIndex(0);
-        setHasRecommendations(true);
-        setMissingRoles([]);
-        setMissingFacts([]);
-        setRecommendationBatchId(data.recommendationBatchId ?? nextOutfits[0]?.recommendationBatchId);
-        setBatchLimited(Boolean(data.limited));
-        setBatchExhausted(Boolean(data.exhausted));
-        setRecommendationNotice(getBatchNotice(data.recommendationNotice, Boolean(data.limited), Boolean(data.exhausted)));
-        markTodayPerformanceStage('stateCommitEnd');
-        storeSceneSnapshot({
-          sceneKey: requestContext.sceneKey,
-          scene: requestContext.sceneLabel,
-          weather: weatherForRefresh,
-          weatherMode: weatherModeForRefresh,
-          weatherFingerprint: weatherFingerprintForRefresh,
-          outfits: nextOutfits,
-          currentIndex: 0,
-          recommendationBatchId: data.recommendationBatchId ?? nextOutfits[0]?.recommendationBatchId,
-          hasRecommendations: true,
-          batchLimited: Boolean(data.limited),
-          batchExhausted: Boolean(data.exhausted),
-          countContract: data.countContract,
-          recommendationNotice: getBatchNotice(data.recommendationNotice, Boolean(data.limited), Boolean(data.exhausted)),
-        });
-        markOutfitShown(nextOutfits[0]);
-        trackCurrentOutfitExposure(nextOutfits[0], 0, data.recommendationBatchId ?? nextOutfits[0]?.recommendationBatchId);
-        storeTodayRestoreSnapshot({
-          outfits: nextOutfits,
-          currentIndex: 0,
-          selectedSceneKey,
-          weatherSnapshot: weatherForRefresh,
-          weatherMode: weatherModeForRefresh,
-          weatherFingerprint: weatherFingerprintForRefresh,
-          recommendationBatchId: data.recommendationBatchId ?? nextOutfits[0]?.recommendationBatchId,
-          hasRecommendations: true,
-          batchLimited: Boolean(data.limited),
-          batchExhausted: Boolean(data.exhausted),
-          countContract: data.countContract,
-          recommendationNotice: getBatchNotice(data.recommendationNotice, Boolean(data.limited), Boolean(data.exhausted)),
-        }, authContext);
-        beginClientImageTiming({
-          auditId: getRecommendationAuditId(data, auditId),
-          cloudRoundTripMs,
-          clientApplyMs: Date.now() - responseReceivedAt,
-          transport,
-          firstOutfit: nextOutfits[0],
-        });
-        scheduleCanonicalCopyMaterialization(data);
-        trackOutfitBehaviorEvent(behaviorTrackerRef.current.buildBatchRefreshEvent({
-          previousRecommendationBatchId,
-          previousOutfits,
-          scene: selectedSceneKey,
-          trigger: 'manual',
-        }));
-      } else {
-        const notice = NO_MORE_NEW_OUTFITS_NOTICE;
-        const exhaustedState = buildExhaustedSnapshotState({
-          outfits: previousOutfits,
-          currentIndex: currentIndexRef.current,
-          recommendationBatchId: previousRecommendationBatchId || '',
-          countContract: data.countContract,
-          recommendationNotice: notice,
-        });
-        if (!exhaustedState) {
-          logRecommendationEvent('[RecommendReject]', {
-            auditId: getRecommendationAuditId(data, auditId),
-            reason: 'INVALID_EXHAUSTED_STATE',
-            responseCardCount: data.outfits.length,
-          });
-          return false;
-        }
-        countContractRef.current = data.countContract;
-        hasRecommendationsRef.current = exhaustedState.hasRecommendations;
-        batchLimitedRef.current = exhaustedState.batchLimited;
-        batchExhaustedRef.current = exhaustedState.batchExhausted;
-        recommendationNoticeRef.current = notice;
-        setHasRecommendations(exhaustedState.hasRecommendations);
-        setBatchLimited(exhaustedState.batchLimited);
-        setBatchExhausted(exhaustedState.batchExhausted);
-        setRecommendationNotice(notice);
-        storeSceneSnapshot({
-          sceneKey: requestContext.sceneKey,
-          scene: requestContext.sceneLabel,
-          weather: weatherForRefresh,
-          weatherMode: weatherModeForRefresh,
-          weatherFingerprint: weatherFingerprintForRefresh,
-          outfits: previousOutfits,
-          currentIndex: exhaustedState.currentIndex,
-          recommendationBatchId: previousRecommendationBatchId,
-          hasRecommendations: exhaustedState.hasRecommendations,
-          batchLimited: exhaustedState.batchLimited,
-          batchExhausted: exhaustedState.batchExhausted,
-          noMoreRecommendations: true,
-          countContract: data.countContract,
-          lastVisibleBatch: exhaustedState.lastVisibleBatch,
-          recommendationNotice: notice,
-        });
-        storeTodayRestoreSnapshot({
-          outfits: previousOutfits,
-          currentIndex: exhaustedState.currentIndex,
-          selectedSceneKey: requestContext.sceneKey,
-          weatherSnapshot: weatherForRefresh,
-          weatherMode: weatherModeForRefresh,
-          weatherFingerprint: weatherFingerprintForRefresh,
-          recommendationBatchId: previousRecommendationBatchId,
-          hasRecommendations: exhaustedState.hasRecommendations,
-          batchLimited: exhaustedState.batchLimited,
-          batchExhausted: exhaustedState.batchExhausted,
-          noMoreRecommendations: true,
-          countContract: data.countContract,
-          lastVisibleBatch: exhaustedState.lastVisibleBatch,
-          recommendationNotice: notice,
-        }, authContext);
-        Taro.showToast({ title: notice, icon: 'none' });
-        beginClientImageTiming({
-          auditId: getRecommendationAuditId(data, auditId),
-          cloudRoundTripMs,
-          clientApplyMs: Date.now() - responseReceivedAt,
-          transport,
-          firstOutfit: undefined,
-        });
-      }
-      return true;
-    } catch (err) {
-      if (!isRecommendationIntentCurrent(intent) || !isLatestRequest(seq)) return false;
-      logRecommendationError(auditId, seq, 'handleRefresh', err);
-      setError('换一套失败，请稍后再试');
-      Taro.showToast({ title: '刷新失败', icon: 'none' });
-      return false;
-    } finally {
-      clearOperationForRequest(seq);
-    }
+    return handleV2Refresh(acceptanceDiagnostics);
   }
 
-  async function handleToggleFavorite() {
-    const current = outfits[currentIndex];
-    if (!current || operation) return;
-
-    const authContext = captureAuthContext();
-    if (!authContext) return;
-    const operationOutfitKey = getMutationTargetKey(current);
-    const nextFavorite = !current.isFavorite;
-    operationTargetRef.current = { operation: 'favorite', outfitKey: operationOutfitKey };
-    setOperation('favorite');
-
-    try {
-      if (nextFavorite) {
-        const saved = await saveFavoriteOutfit(normalizeOutfitSnapshot(current), current.aiComment);
-        if (!isCurrentMutation(authContext, 'favorite', operationOutfitKey)) return;
-        const nextFavoriteOutfitId = saved.favoriteOutfitId || saved.id;
-        updateOutfitStatusByKey(
-          current,
-          {
-            ...getOutfitStatusPatch(saved, current.outfitKey),
-            outfitKey: saved.outfitKey ?? current.outfitKey ?? '',
-            isFavorite: true,
-            favoriteOutfitId: nextFavoriteOutfitId,
-          },
-          withDefinedOutfitFields(
-            {
-              isFavorite: true,
-              favoriteOutfitId: nextFavoriteOutfitId,
-              favoritedAt: saved.favoritedAt || saved.createdAt,
-            },
-            saved,
-          ),
-          authContext,
-        );
-        trackExplicitOutfitBehavior('outfit_favorite', current, 'today');
-      } else {
-        const removed = await removeFavoriteOutfit(current.favoriteOutfitId || current.id, current.outfitKey);
-        if (!isCurrentMutation(authContext, 'favorite', operationOutfitKey)) return;
-        updateOutfitStatusByKey(
-          current,
-          {
-            outfitKey: removed.outfitKey ?? current.outfitKey ?? '',
-            isFavorite: false,
-            favoriteOutfitId: '',
-          },
-          {
-            isFavorite: false,
-            favoriteOutfitId: undefined,
-            favoritedAt: undefined,
-          },
-          authContext,
-        );
-        trackExplicitOutfitBehavior('outfit_unfavorite', current, 'today');
-      }
-      if (!isCurrentMutation(authContext, 'favorite', operationOutfitKey)) return;
-      await invalidateAfterOutfitFavoriteMutation({ authContext });
-      if (!isCurrentMutation(authContext, 'favorite', operationOutfitKey)) return;
-      Taro.showToast({ title: nextFavorite ? '已收藏' : '已取消收藏', icon: 'success' });
-    } catch (err) {
-      console.error('Toggle favorite error:', err);
-      if (isCurrentMutation(authContext, 'favorite', operationOutfitKey)) {
-        const errorData = (err as { data?: { errorCode?: string } })?.data;
-        if (errorData?.errorCode === 'OUTFIT_CONTAINS_DELETED_CLOTHES') {
-          Taro.showToast({ title: '这套搭配有衣物已移出衣橱，暂时不能继续使用', icon: 'none' });
-        } else {
-          Taro.showToast({ title: '操作失败', icon: 'none' });
-        }
-      }
-    } finally {
-      if (isCurrentMutation(authContext, 'favorite', operationOutfitKey)) {
-        operationTargetRef.current = null;
-        setOperation(null);
-      }
-    }
+  function handleSceneSelect(sceneKey: SceneKey) {
+    if (sceneKey === selectedSceneKey && !error) return;
+    setSelectedSceneKey(sceneKey);
+    selectedSceneKeyRef.current = sceneKey;
+    setCurrentIndex(0);
+    currentIndexRef.current = 0;
+    setV2Snapshot(null);
+    setError('');
+    void requestRecommendations({
+      intentId: nextRecommendationIntentId('scene'),
+      sceneKey,
+      weather: currentWeatherRef.current,
+      weatherMode: currentWeatherModeRef.current,
+      trigger: 'scene-change',
+    });
   }
 
   async function handleV2Favorite(card: import('@starter-template/types').HomeLightCardV2) {
-    if (!v2Snapshot || operation || v2MemoryOnly) return;
+    if (!v2Snapshot || operation) return;
     const authContext = captureAuthContext();
     if (!authContext) return;
     setOperation('favorite');
@@ -1437,7 +798,7 @@ export default function TodayPage() {
   }
 
   async function handleV2Wear(card: import('@starter-template/types').HomeLightCardV2) {
-    if (!v2Snapshot || operation || v2MemoryOnly || card.isWornToday) return;
+    if (!v2Snapshot || operation || card.isWornToday) return;
     const authContext = captureAuthContext();
     if (!authContext) return;
     setOperation('wear');
@@ -1452,151 +813,9 @@ export default function TodayPage() {
   }
 
   function openV2Detail(card: import('@starter-template/types').HomeLightCardV2) {
-    if (!v2Snapshot || v2MemoryOnly) return;
+    if (!v2Snapshot) return;
     void Taro.navigateTo({
       url: `/pages/outfit-detail/index?runtimeVersion=today-runtime-v2&batchId=${encodeURIComponent(v2Snapshot.batchId)}&outfitKey=${encodeURIComponent(card.outfitKey)}&referenceId=${encodeURIComponent(card.referenceId)}`,
-    });
-  }
-
-  async function handleConfirmWear() {
-    const current = outfits[currentIndex];
-    if (!current || operation) return;
-
-    if (current.isWornToday) {
-      Taro.showToast({ title: '今天已经穿过这套啦～', icon: 'none' });
-      return;
-    }
-
-    const authContext = captureAuthContext();
-    if (!authContext) return;
-    const operationOutfitKey = getMutationTargetKey(current);
-    operationTargetRef.current = { operation: 'wear', outfitKey: operationOutfitKey };
-    setOperation('wear');
-    try {
-      const saved = await addOutfitHistory(normalizeOutfitSnapshot(current), {
-        source: current.outfitKind === 'favorite' || current.isFavorite ? 'favorite' : 'recommendation',
-        sourceFavoriteOutfitId:
-          current.outfitKind === 'favorite' || current.isFavorite ? current.favoriteOutfitId || current.id : undefined,
-        aiComment: current.aiComment,
-      });
-      if (!isCurrentMutation(authContext, 'wear', operationOutfitKey)) return;
-      const nextTodayHistoryId = saved.todayHistoryId || saved.historyId || saved.id;
-      updateOutfitStatusByKey(
-        current,
-        {
-          ...getOutfitStatusPatch(saved, current.outfitKey),
-          outfitKey: saved.outfitKey ?? current.outfitKey ?? '',
-          isWornToday: true,
-          todayHistoryId: nextTodayHistoryId,
-          wornAt: saved.wornAt,
-          wornDate: saved.wornDate || getToday(),
-        },
-        {
-          isWornToday: true,
-          todayHistoryId: nextTodayHistoryId,
-          historyId: saved.historyId || saved.id,
-          lastWornAt: saved.lastWornAt || saved.wornAt || new Date().toISOString(),
-          wornAt: saved.wornAt,
-          wornDate: saved.wornDate || getToday(),
-        },
-        authContext,
-      );
-      trackExplicitOutfitBehavior('outfit_wear', current, 'today');
-      if (!isCurrentMutation(authContext, 'wear', operationOutfitKey)) return;
-      await invalidateAfterOutfitWornMutation({ authContext });
-      if (!isCurrentMutation(authContext, 'wear', operationOutfitKey)) return;
-      Taro.showToast({ title: '已记录到穿搭历史', icon: 'success' });
-    } catch (err) {
-      console.error('Confirm wear error:', err);
-      if (isCurrentMutation(authContext, 'wear', operationOutfitKey)) {
-        const errorData = (err as { data?: { errorCode?: string } })?.data;
-        if (errorData?.errorCode === 'OUTFIT_CONTAINS_DELETED_CLOTHES') {
-          Taro.showToast({ title: '这套搭配有衣物已移出衣橱，暂时不能继续使用', icon: 'none' });
-        } else {
-          Taro.showToast({ title: '操作失败', icon: 'none' });
-        }
-      }
-    } finally {
-      if (isCurrentMutation(authContext, 'wear', operationOutfitKey)) {
-        operationTargetRef.current = null;
-        setOperation(null);
-      }
-    }
-  }
-
-  function handleSceneSelect(key: SceneKey) {
-    if (key === selectedSceneKeyRef.current) return;
-    const scene = SCENE_TAGS[key];
-    const authContext = captureAuthContext();
-    const weatherForScene = currentWeather ?? currentWeatherRef.current;
-    const weatherModeForScene = currentWeatherModeRef.current;
-    const weatherFingerprint = getRecommendationWeatherFingerprint(weatherForScene);
-    const snapshotKey = getSceneSnapshotKey(scene, weatherFingerprint);
-    const snapshot = readSceneSnapshot(snapshotKey);
-    const transition = chooseSceneTransitionState({
-      currentOutfits: outfitsRef.current,
-      snapshot,
-      nextSceneKey: key,
-    });
-    setSelectedSceneKey(key);
-    selectedSceneKeyRef.current = key;
-    selectedSceneRef.current = scene;
-    activateSceneSeenState(key);
-    setCurrentIndex(transition.currentIndex);
-    setOutfits(transition.outfits);
-    setHasRecommendations(transition.hasRecommendations || transition.keepPreviousWhileLoading);
-    setRecommendationBatchId(transition.recommendationBatchId);
-    setBatchLimited(transition.batchLimited);
-    setBatchExhausted(transition.batchExhausted);
-    setRecommendationNotice(transition.recommendationNotice);
-    setMissingRoles([]);
-    setMissingFacts([]);
-    setError('');
-    if (snapshot) {
-      activateCachedRecommendationIntent({
-        intentId: nextRecommendationIntentId('scene-snapshot'),
-        sceneKey: key,
-        weather: weatherForScene,
-      });
-      activateSceneSeenState(key);
-      const nextOutfits = applyTodayOutfitStatuses(snapshot.outfits, authContext);
-      outfitsRef.current = nextOutfits;
-      currentIndexRef.current = transition.currentIndex;
-      recommendationBatchIdRef.current = snapshot.recommendationBatchId;
-      countContractRef.current = snapshot.countContract;
-      hasRecommendationsRef.current = snapshot.hasRecommendations !== false;
-      batchLimitedRef.current = Boolean(snapshot.batchLimited);
-      batchExhaustedRef.current = Boolean(snapshot.batchExhausted);
-      recommendationNoticeRef.current = snapshot.recommendationNotice || '';
-      setOutfits(nextOutfits);
-      markOutfitShown(nextOutfits[transition.currentIndex]);
-      trackCurrentOutfitExposure(nextOutfits[transition.currentIndex], transition.currentIndex, snapshot.recommendationBatchId);
-      storeTodayRestoreSnapshot({
-        outfits: nextOutfits,
-        currentIndex: transition.currentIndex,
-        selectedSceneKey: key,
-        weatherSnapshot: weatherForScene,
-        weatherMode: weatherModeForScene,
-        weatherFingerprint,
-        recommendationBatchId: snapshot.recommendationBatchId,
-        hasRecommendations: snapshot.hasRecommendations !== false,
-        batchLimited: Boolean(snapshot.batchLimited),
-        batchExhausted: Boolean(snapshot.batchExhausted),
-        noMoreRecommendations: snapshot.noMoreRecommendations === true,
-        countContract: snapshot.countContract,
-        lastVisibleBatch: snapshot.lastVisibleBatch,
-        recommendationNotice: snapshot.recommendationNotice || '',
-      }, authContext);
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    void requestRecommendations({
-      intentId: nextRecommendationIntentId(`scene-${key}`),
-      sceneKey: key,
-      weather: weatherForScene,
-      weatherMode: weatherModeForScene,
-      trigger: 'scene',
     });
   }
 
@@ -1618,39 +837,25 @@ export default function TodayPage() {
     }
 
     const sceneKey = selectedSceneKeyRef.current;
-    if (!options.forceRefresh) {
-      const snapshot = readSceneSnapshot(getSceneSnapshotKey(SCENE_TAGS[sceneKey], weatherFingerprint));
-      if (snapshot) {
-        activateCachedRecommendationIntent({
-          intentId: entryIntentIdRef.current,
-          sceneKey,
-          weather,
-        });
-        restoreSceneSnapshotToPage(snapshot, sceneKey, weather, options.weatherMode);
-        markTodayPerformanceStage('weatherEnd');
-        return 'unchanged';
-      }
-    }
-
-    if (outfitsRef.current.length > 0 && sameRecommendationWeather) {
+    if (v2SnapshotRef.current?.cards.length === 8 && sameRecommendationWeather) {
       markTodayPerformanceStage('weatherEnd');
       return 'unchanged';
     }
 
     try {
-      const hasVisibleBatch = outfitsRef.current.length > 0;
+      const hasVisibleBatch = v2SnapshotRef.current?.cards.length === 8;
       if (hasVisibleBatch) {
         markTodayPerformanceStage('backgroundRefreshStart');
         setRecommendationNotice('天气变了，正在更新搭配…');
       }
       const refreshed = await requestRecommendations({
-        intentId: outfitsRef.current.length === 0
+        intentId: !(v2SnapshotRef.current?.cards.length === 8)
           ? entryIntentIdRef.current
           : nextRecommendationIntentId(options.forceRefresh ? 'weather-force' : 'weather'),
         sceneKey,
         weather,
         weatherMode: options.weatherMode,
-        silent: outfitsRef.current.length > 0,
+        silent: v2SnapshotRef.current?.cards.length === 8,
         trigger: options.forceRefresh ? 'weather-force' : 'weather',
       });
       if (hasVisibleBatch) {
@@ -1667,564 +872,6 @@ export default function TodayPage() {
 
   function goToWardrobe() {
     Taro.switchTab({ url: '/pages/wardrobe/index' });
-  }
-
-  function goToOutfitDetail(outfitId: string) {
-    const current = outfits.find((outfit) => outfit.id === outfitId);
-    if (!current) return;
-    const authContext = captureAuthContext();
-    shouldRestoreFromDetailRef.current = true;
-    storeTodayRestoreSnapshot({ currentIndex }, authContext);
-    storeOutfitDetailDraft(current, { authContext });
-    Taro.navigateTo({ url: `/pages/outfit-detail/index?id=${encodeURIComponent(outfitId)}&source=recommendation` });
-  }
-
-  function handleSwiperChange(event: SwiperChangeEvent) {
-    const next = event.detail.current;
-    currentIndexRef.current = next;
-    setCurrentIndex(next);
-    markOutfitShown(outfits[next]);
-    trackCurrentOutfitExposure(outfits[next], next);
-    storeTodayRestoreSnapshot({ currentIndex: next });
-    if (isRecommendationDiagnosticEnvironment()) {
-      logRecommendationEvent('[RecommendationImagePerf]', {
-        auditId: clientImageTimingRef.current?.auditId || 'image-session',
-        scene: selectedSceneKeyRef.current,
-        activeIndex: next,
-        imageSession: getImageSessionDiagnostics(),
-      });
-    }
-  }
-
-  function updateOutfitsByKey(
-    reference: Outfit,
-    patch: Partial<Outfit>,
-    authContext?: ActiveAuthContext | null,
-  ) {
-    const outfitKey = reference.outfitKey;
-    setOutfits((prev) => {
-      const next = prev.map((outfit) =>
-        outfit.outfitKey === outfitKey || outfit.id === reference.id ? normalizeOutfitSnapshot({ ...outfit, ...patch }) : outfit,
-      );
-      storeTodayRestoreSnapshot({ outfits: next }, authContext);
-      return next;
-    });
-  }
-
-  function updateOutfitStatusByKey(
-    reference: Outfit,
-    statusPatch: OutfitStatusPatch,
-    listPatch: Partial<Outfit>,
-    authContext?: ActiveAuthContext | null,
-  ) {
-    if (!statusPatch.outfitKey) {
-      updateOutfitsByKey(reference, listPatch, authContext);
-      return;
-    }
-
-    setOutfitStatus(statusPatch, authContext);
-    setOutfits((prev) => {
-      const next = prev.map((outfit) =>
-        outfit.outfitKey === statusPatch.outfitKey || outfit.outfitKey === reference.outfitKey || outfit.id === reference.id
-          ? normalizeOutfitSnapshot({ ...outfit, ...listPatch })
-          : outfit,
-      );
-      const nextWithStatus = applyTodayOutfitStatuses(next, authContext);
-      storeTodayRestoreSnapshot({ outfits: nextWithStatus }, authContext);
-      return nextWithStatus;
-    });
-  }
-
-  function markOutfitShown(outfit: Outfit | undefined) {
-    if (outfit?.outfitKey) {
-      seenOutfitKeysRef.current.add(outfit.outfitKey);
-      seenOutfitKeysBySceneIdentityRef.current[activeSeenSceneIdentityKeyRef.current] = [...seenOutfitKeysRef.current].sort();
-    }
-  }
-
-  function getSeenOutfitKeys() {
-    return [...seenOutfitKeysRef.current];
-  }
-
-  function getSeenOutfitKeysForScene(sceneKey: SceneKey) {
-    const identityHash = seenIdentityHashBySceneRef.current[sceneKey] || '';
-    const key = buildSceneIdentityKey(sceneKey, identityHash);
-    return (seenOutfitKeysBySceneIdentityRef.current[key] || []).slice();
-  }
-
-  function activateSceneSeenState(sceneKey: SceneKey) {
-    const identityHash = seenIdentityHashBySceneRef.current[sceneKey] || '';
-    const key = buildSceneIdentityKey(sceneKey, identityHash);
-    activeSeenSceneIdentityKeyRef.current = key;
-    seenOutfitKeysRef.current = new Set(seenOutfitKeysBySceneIdentityRef.current[key] || []);
-  }
-
-  function mergeSuccessfulSeenBatch(sceneKey: SceneKey, identityHash: string, nextOutfits: Outfit[]) {
-    const previousIdentityHash = seenIdentityHashBySceneRef.current[sceneKey] || '';
-    const normalizedIdentityHash = identityHash || previousIdentityHash;
-    if (previousIdentityHash && normalizedIdentityHash && previousIdentityHash !== normalizedIdentityHash) {
-      // Wardrobe/weather/profile identity changed: old candidates are not valid exclusions.
-      const oldKey = buildSceneIdentityKey(sceneKey, previousIdentityHash);
-      delete seenOutfitKeysBySceneIdentityRef.current[oldKey];
-    }
-    seenIdentityHashBySceneRef.current[sceneKey] = normalizedIdentityHash;
-    const key = buildSceneIdentityKey(sceneKey, normalizedIdentityHash);
-    const merged = mergeSeenOutfitKeys(seenOutfitKeysBySceneIdentityRef.current[key], nextOutfits);
-    seenOutfitKeysBySceneIdentityRef.current[key] = merged;
-    activeSeenSceneIdentityKeyRef.current = key;
-    seenOutfitKeysRef.current = new Set(merged);
-  }
-
-  function getResponseIdentityHash(data: RecommendResponse) {
-    return readDebugString(data.debug?.candidatePoolIdentityHash ?? data.qaBatchAudit?.candidatePoolIdentityHash);
-  }
-
-  function trackCurrentOutfitExposure(
-    outfit: Outfit | undefined,
-    position: number,
-    batchId = recommendationBatchIdRef.current,
-  ) {
-    if (!outfit) return;
-    const event = behaviorTrackerRef.current.buildExposureEvent({
-      outfit,
-      recommendationBatchId: batchId || outfit.recommendationBatchId,
-      position,
-      candidateCount: outfitsRef.current.length || outfits.length || 1,
-      context: { scene: selectedSceneKeyRef.current },
-    });
-    trackOutfitBehaviorEvent(event);
-  }
-
-  function trackExplicitOutfitBehavior(
-    eventType: 'outfit_favorite' | 'outfit_unfavorite' | 'outfit_wear',
-    outfit: Outfit,
-    source: 'today',
-  ) {
-    trackOutfitBehaviorEvent({
-      schemaVersion: 1,
-      eventId: createOutfitBehaviorEventId({
-        pageSessionId: behaviorTrackerRef.current.pageSessionId,
-        eventType,
-      }),
-      eventType,
-      clientOccurredAt: new Date().toISOString(),
-      ...buildOutfitBehaviorSnapshot(outfit),
-      context: { source },
-    });
-  }
-
-  function storeTodayRestoreSnapshot(
-    input: TodayRestoreSnapshotInput = {},
-    authContext?: ActiveAuthContext | null,
-  ) {
-    markTodayPerformanceStage('snapshotPersistStart');
-    const snapshotOutfits = applyTodayOutfitStatuses(
-      (input.outfits ?? outfitsRef.current).map((outfit) => normalizeOutfitSnapshot(outfit)),
-      authContext,
-    );
-
-    const snapshotSceneKey = input.selectedSceneKey ?? selectedSceneKeyRef.current;
-    const snapshotWeather = input.weatherSnapshot ?? recommendationWeatherSnapshotRef.current;
-    const snapshotWeatherFingerprint = input.weatherFingerprint ?? recommendationWeatherFingerprintRef.current;
-    const snapshotIndex = clampIndex(input.currentIndex ?? currentIndexRef.current, snapshotOutfits.length);
-    const snapshotCountContract = input.countContract ?? countContractRef.current;
-    const noMoreRecommendations = input.noMoreRecommendations
-      ?? Boolean(snapshotCountContract?.returnedCardCount === 0 && snapshotCountContract.poolExhaustedAfterConsume);
-    const exhaustedIdentity = noMoreRecommendations ? buildExhaustedSnapshotState({
-      outfits: snapshotOutfits,
-      currentIndex: snapshotIndex,
-      recommendationBatchId: input.recommendationBatchId ?? recommendationBatchIdRef.current ?? '',
-      countContract: snapshotCountContract,
-      recommendationNotice: input.recommendationNotice ?? recommendationNoticeRef.current,
-    }) : null;
-    const snapshot: TodayRestoreSnapshot = {
-      version: 4,
-      copyContractVersion: COPY_CONTRACT_VERSION,
-      outfits: snapshotOutfits,
-      currentIndex: snapshotIndex,
-      selectedSceneKey: snapshotSceneKey,
-      scene: SCENE_TAGS[snapshotSceneKey],
-      weatherSnapshot: snapshotWeather,
-      weatherMode: input.weatherMode ?? currentWeatherModeRef.current,
-      weatherFingerprint: snapshotWeatherFingerprint,
-      weatherKey: snapshotWeather ? getWeatherKey(snapshotWeather) : '',
-      targetDate: getToday(),
-      timeOfDay: TODAY_TIME_OF_DAY,
-      sceneSnapshotKey: getSceneSnapshotKey(SCENE_TAGS[snapshotSceneKey], snapshotWeatherFingerprint),
-      recommendationBatchId: input.recommendationBatchId ?? recommendationBatchIdRef.current,
-      generatedAt: Date.now(),
-      seenOutfitKeys: input.seenOutfitKeys ?? getSeenOutfitKeys(),
-      hasRecommendations: input.hasRecommendations ?? hasRecommendationsRef.current,
-      batchLimited: input.batchLimited ?? batchLimitedRef.current,
-      batchExhausted: input.batchExhausted ?? batchExhaustedRef.current,
-      noMoreRecommendations,
-      countContract: snapshotCountContract,
-      lastVisibleBatch: input.lastVisibleBatch ?? exhaustedIdentity?.lastVisibleBatch,
-      recommendationNotice: input.recommendationNotice ?? recommendationNoticeRef.current,
-    };
-    if (!isValidSceneSnapshotCountState(snapshot)) return;
-
-    setUserStorageSync(TODAY_RESTORE_SNAPSHOT_KEY, snapshot, { authContext });
-    storeSceneSnapshot({
-      sceneKey: snapshot.selectedSceneKey,
-      scene: snapshot.scene,
-      weather: snapshotWeather,
-      weatherMode: snapshot.weatherMode,
-      weatherFingerprint: snapshotWeatherFingerprint,
-      outfits: snapshotOutfits,
-      currentIndex: snapshotIndex,
-      recommendationBatchId: snapshot.recommendationBatchId,
-      hasRecommendations: snapshot.hasRecommendations,
-      batchLimited: snapshot.batchLimited,
-      batchExhausted: snapshot.batchExhausted,
-      noMoreRecommendations: snapshot.noMoreRecommendations,
-      countContract: snapshot.countContract,
-      lastVisibleBatch: snapshot.lastVisibleBatch,
-      recommendationNotice: snapshot.recommendationNotice,
-    });
-    markTodayPerformanceStage('snapshotPersistEnd');
-  }
-
-  function restoreTodaySnapshotFromDetail(
-    authContext?: ActiveAuthContext | null,
-    options: { requireReturnIntent?: boolean } = {},
-  ) {
-    recordTodayRestoreFunctionEntered();
-    try {
-      if (!authContext) {
-        recordTodayAuthContextCurrentChecked(false);
-        recordTodayRestoreReturn('NO_LOCAL_AUTH');
-        return false;
-      }
-      const authContextCurrent = isAuthContextCurrent(authContext);
-      recordTodayAuthContextCurrentChecked(authContextCurrent);
-      if (!authContextCurrent) {
-        recordTodayRestoreReturn('AUTH_CONTEXT_STALE');
-        return false;
-      }
-      if (options.requireReturnIntent !== false && !shouldRestoreFromDetailRef.current) {
-        recordTodayRestoreReturn('RETURN_INTENT_REQUIRED');
-        return false;
-      }
-      shouldRestoreFromDetailRef.current = false;
-
-      markTodayPerformanceStage('snapshotReadStart');
-      const snapshot = readTodayRestoreSnapshot(authContext);
-      markTodayPerformanceStage('snapshotReadEnd');
-      if (!snapshot) {
-        recordTodayRestoreReturn('SNAPSHOT_EMPTY');
-        return false;
-      }
-      markTodayPerformanceStage('snapshotValidationStart');
-      if (!canRestoreTodaySnapshot(snapshot)) {
-        markTodayPerformanceStage('snapshotValid', 'false');
-        markTodayPerformanceStage('snapshotValidationEnd');
-        recordTodayRestoreReturn('SNAPSHOT_INVALID');
-        return false;
-      }
-      markTodayPerformanceStage('snapshotFound');
-      markTodayPerformanceStage('snapshotValid', 'true');
-      markTodayPerformanceStage('executionMode', 'HOT');
-      markTodayPerformanceStage('snapshotValidationEnd');
-
-    const restoredOutfits = applyTodayOutfitStatuses(
-      snapshot.outfits.map((outfit) => normalizeOutfitSnapshot(outfit)),
-      authContext,
-    );
-    markTodayPerformanceStage('snapshotParseEnd');
-    markTodayPerformanceStage('snapshotCardCount', restoredOutfits.length);
-    const restoredIndex = clampIndex(snapshot.currentIndex, restoredOutfits.length);
-    const restoredRecommendationWeatherFingerprint = getSnapshotWeatherFingerprint(snapshot);
-    const restoredCurrentWeather = currentWeatherRef.current ?? snapshot.weatherSnapshot;
-    nextRequestSeq();
-    outfitsRef.current = restoredOutfits;
-    currentIndexRef.current = restoredIndex;
-    selectedSceneKeyRef.current = snapshot.selectedSceneKey;
-    selectedSceneRef.current = SCENE_TAGS[snapshot.selectedSceneKey];
-    recommendationBatchIdRef.current = snapshot.recommendationBatchId;
-    countContractRef.current = snapshot.countContract;
-    hasRecommendationsRef.current = snapshot.hasRecommendations;
-    batchLimitedRef.current = snapshot.batchLimited;
-    batchExhaustedRef.current = snapshot.batchExhausted;
-    recommendationNoticeRef.current = snapshot.recommendationNotice;
-    seenOutfitKeysRef.current = new Set(snapshot.seenOutfitKeys);
-    const restoreSceneIdentityHash = seenIdentityHashBySceneRef.current[snapshot.selectedSceneKey] || '';
-    const restoreSceneIdentityKey = buildSceneIdentityKey(snapshot.selectedSceneKey, restoreSceneIdentityHash);
-    activeSeenSceneIdentityKeyRef.current = restoreSceneIdentityKey;
-    seenOutfitKeysBySceneIdentityRef.current[restoreSceneIdentityKey] = snapshot.seenOutfitKeys.slice();
-    if (restoredOutfits.length > 0) {
-      markOutfitShown(restoredOutfits[restoredIndex]);
-      trackCurrentOutfitExposure(restoredOutfits[restoredIndex], restoredIndex, snapshot.recommendationBatchId);
-    }
-    recommendationWeatherSnapshotRef.current = snapshot.weatherSnapshot;
-    recommendationWeatherFingerprintRef.current = restoredRecommendationWeatherFingerprint;
-    currentWeatherRef.current = restoredCurrentWeather;
-    currentWeatherModeRef.current = snapshot.weatherMode || (restoredCurrentWeather ? 'cached' : 'disabled');
-    currentWeatherFingerprintRef.current = getRecommendationWeatherFingerprint(restoredCurrentWeather);
-    setSelectedSceneKey(snapshot.selectedSceneKey);
-    setOutfits(restoredOutfits);
-    markTodayPerformanceStage('setOutfitsCalled');
-    setCurrentIndex(restoredIndex);
-    setCurrentWeather(restoredCurrentWeather);
-    setHasRecommendations(snapshot.hasRecommendations);
-    setRecommendationBatchId(snapshot.recommendationBatchId);
-    setBatchLimited(snapshot.batchLimited);
-    setBatchExhausted(snapshot.batchExhausted);
-    setRecommendationNotice(snapshot.recommendationNotice);
-    setMissingRoles([]);
-    setMissingFacts([]);
-    setError('');
-    loadingOwnerSeqRef.current = null;
-    setLoading(false);
-    if (
-      restoredCurrentWeather
-      && currentWeatherFingerprintRef.current !== restoredRecommendationWeatherFingerprint
-    ) {
-      void handleWeatherChange(restoredCurrentWeather, {
-        weatherMode: currentWeatherModeRef.current,
-      });
-    }
-      recordTodayRestoreReturn('RESTORE_COMPLETED');
-      return true;
-    } catch (error) {
-      recordTodayRestoreException(error);
-      throw error;
-    }
-  }
-
-  function readTodayRestoreSnapshot(authContext?: ActiveAuthContext | null) {
-    try {
-      const value = getUserStorageSync<TodayRestoreSnapshot>(TODAY_RESTORE_SNAPSHOT_KEY, { authContext });
-      if (!value || typeof value !== 'object') {
-        markTodayPerformanceStage('snapshotRejectReason', 'EMPTY');
-        return null;
-      }
-      if (
-        value.version !== 4
-        || value.copyContractVersion !== COPY_CONTRACT_VERSION
-        || !Array.isArray(value.outfits)
-      ) {
-        markTodayPerformanceStage('snapshotRejectReason', 'SCHEMA');
-        return null;
-      }
-      return value;
-    } catch {
-      markTodayPerformanceStage('snapshotRejectReason', 'READ_ERROR');
-      return null;
-    }
-  }
-
-  function canRestoreTodaySnapshot(snapshot: TodayRestoreSnapshot) {
-    if (Date.now() - snapshot.generatedAt > TODAY_RESTORE_SNAPSHOT_TTL_MS) { markTodayPerformanceStage('snapshotRejectReason', 'TTL'); return false; }
-    if (snapshot.targetDate !== getToday()) { markTodayPerformanceStage('snapshotRejectReason', 'DATE'); return false; }
-    if (snapshot.timeOfDay !== TODAY_TIME_OF_DAY) { markTodayPerformanceStage('snapshotRejectReason', 'TIME'); return false; }
-    if (snapshot.selectedSceneKey !== selectedSceneKeyRef.current) { markTodayPerformanceStage('snapshotRejectReason', 'SCENE'); return false; }
-    if (snapshot.scene !== selectedSceneRef.current) { markTodayPerformanceStage('snapshotRejectReason', 'SCENE_TAG'); return false; }
-    if (snapshot.sceneSnapshotKey !== getSceneSnapshotKey(snapshot.scene, getSnapshotWeatherFingerprint(snapshot))) { markTodayPerformanceStage('snapshotRejectReason', 'FINGERPRINT'); return false; }
-    if (!snapshot.outfits.every(hasCurrentNewRecommendationCopy)) { markTodayPerformanceStage('snapshotRejectReason', 'COPY_CONTRACT'); return false; }
-    const valid = isValidSceneSnapshotCountState(snapshot);
-    if (!valid) markTodayPerformanceStage('snapshotRejectReason', 'COUNT_CONTRACT');
-    return valid;
-  }
-
-  function getRecommendationInputVersions(authContext?: ActiveAuthContext | null) {
-    const wardrobeVersion = getUserStorageSync<number>(
-      TODAY_WARDROBE_INPUT_VERSION_KEY,
-      { authContext },
-    );
-    const profileVersion = getUserStorageSync<number>(
-      TODAY_PROFILE_INPUT_VERSION_KEY,
-      { authContext },
-    );
-    return {
-      wardrobeVersion: `wardrobe-${Number(wardrobeVersion) || 0}`,
-      profileVersion: `profile-${Number(profileVersion) || 0}`,
-    };
-  }
-
-  function getRecommendationInputSignature({
-    sceneKey,
-    weather,
-    recommendationBatchId: batchId,
-    excludedOutfitKeys = [],
-    requestKind = 'initial',
-  }: {
-    sceneKey: SceneKey
-    weather?: WeatherSnapshot
-    recommendationBatchId?: string
-    excludedOutfitKeys?: string[]
-    requestKind?: 'initial' | 'refresh'
-  }) {
-    const inputVersions = getRecommendationInputVersions();
-    return buildRecommendationInputSignature({
-      userRuntimeKey: runtimeKey || '',
-      sceneKey,
-      date: getToday(),
-      timeOfDay: TODAY_TIME_OF_DAY,
-      weatherFingerprint: getRecommendationWeatherFingerprint(weather),
-      wardrobeVersion: inputVersions.wardrobeVersion,
-      profileVersion: inputVersions.profileVersion,
-      recommendationBatchId: batchId,
-      excludedOutfitKeys,
-      requestKind,
-    });
-  }
-
-  function activateCachedRecommendationIntent({
-    intentId,
-    sceneKey,
-    weather,
-  }: {
-    intentId: string
-    sceneKey: SceneKey
-    weather?: WeatherSnapshot
-  }) {
-    const intent = recommendationIntentRegistryRef.current?.activate({
-      intentId,
-      inputSignature: getRecommendationInputSignature({
-        sceneKey,
-        weather,
-      }),
-    });
-    activeRequestSeqRef.current = null;
-    return intent;
-  }
-
-  function restoreSceneSnapshotToPage(
-    snapshot: ExtendedSceneSnapshot,
-    sceneKey: SceneKey,
-    weather: WeatherSnapshot | undefined,
-    weatherMode: WeatherMode,
-  ) {
-    const authContext = captureAuthContext();
-    const nextOutfits = applyTodayOutfitStatuses(snapshot.outfits, authContext);
-    const nextIndex = clampIndex(snapshot.currentIndex ?? 0, nextOutfits.length);
-    const weatherFingerprint = getRecommendationWeatherFingerprint(weather);
-    selectedSceneKeyRef.current = sceneKey;
-    selectedSceneRef.current = SCENE_TAGS[sceneKey];
-    outfitsRef.current = nextOutfits;
-    currentIndexRef.current = nextIndex;
-    recommendationBatchIdRef.current = snapshot.recommendationBatchId;
-    countContractRef.current = snapshot.countContract;
-    hasRecommendationsRef.current = snapshot.hasRecommendations !== false;
-    batchLimitedRef.current = Boolean(snapshot.batchLimited);
-    batchExhaustedRef.current = Boolean(snapshot.batchExhausted);
-    recommendationNoticeRef.current = snapshot.recommendationNotice || '';
-    recommendationWeatherSnapshotRef.current = weather;
-    recommendationWeatherFingerprintRef.current = weatherFingerprint;
-    setSelectedSceneKey(sceneKey);
-    setOutfits(nextOutfits);
-    setCurrentIndex(nextIndex);
-    setHasRecommendations(snapshot.hasRecommendations !== false);
-    setRecommendationBatchId(snapshot.recommendationBatchId);
-    setBatchLimited(Boolean(snapshot.batchLimited));
-    setBatchExhausted(Boolean(snapshot.batchExhausted));
-    setRecommendationNotice(snapshot.recommendationNotice || '');
-    setMissingRoles([]);
-    setMissingFacts([]);
-    setError('');
-    setLoading(false);
-    if (nextOutfits.length > 0) {
-      markOutfitShown(nextOutfits[nextIndex]);
-      trackCurrentOutfitExposure(nextOutfits[nextIndex], nextIndex, snapshot.recommendationBatchId);
-    }
-    storeTodayRestoreSnapshot({
-      outfits: nextOutfits,
-      currentIndex: nextIndex,
-      selectedSceneKey: sceneKey,
-      weatherSnapshot: weather,
-      weatherMode,
-      weatherFingerprint,
-      recommendationBatchId: snapshot.recommendationBatchId,
-      hasRecommendations: snapshot.hasRecommendations !== false,
-      batchLimited: Boolean(snapshot.batchLimited),
-      batchExhausted: Boolean(snapshot.batchExhausted),
-      noMoreRecommendations: snapshot.noMoreRecommendations === true,
-      countContract: snapshot.countContract,
-      lastVisibleBatch: snapshot.lastVisibleBatch,
-      recommendationNotice: snapshot.recommendationNotice || '',
-    }, authContext);
-  }
-
-  function getSceneSnapshotKey(scene: SceneTag, weatherFingerprint = currentWeatherFingerprintRef.current) {
-    const inputVersions = getRecommendationInputVersions();
-    return buildSceneSnapshotKey({
-      // authEpoch is a request/session guard, not an ownership input. Using it
-      // here makes a remote identity refresh invalidate the same user's snapshot.
-      userRuntimeKey: captureAuthContext()?.userScope || '',
-      date: getToday(),
-      timeOfDay: TODAY_TIME_OF_DAY,
-      scene,
-      weatherFingerprint,
-      wardrobeVersion: inputVersions.wardrobeVersion,
-      profileVersion: inputVersions.profileVersion,
-      reasonVersion: 'recommendation-reason-v3',
-      copyVersion: TODAY_SCENE_COPY_VERSION,
-    });
-  }
-
-  function readSceneSnapshot(key: string) {
-    const memorySnapshot = sceneSnapshotsRef.current[key];
-    const snapshot = memorySnapshot
-      ?? getUserStorageSync<ExtendedSceneSnapshot>([TODAY_SCENE_SNAPSHOT_STORAGE_PREFIX, key]);
-    if (!snapshot || !shouldUseSceneSnapshot(snapshot, { key })) return null;
-    sceneSnapshotsRef.current[key] = snapshot;
-    return snapshot;
-  }
-
-  function storeSceneSnapshot({
-    sceneKey,
-    scene,
-    weather,
-    weatherMode = currentWeatherModeRef.current,
-    weatherFingerprint = getRecommendationWeatherFingerprint(weather),
-    outfits: snapshotOutfits,
-    currentIndex: snapshotIndex,
-    recommendationBatchId: snapshotBatchId,
-    hasRecommendations: snapshotHasRecommendations,
-    batchLimited: snapshotBatchLimited,
-    batchExhausted: snapshotBatchExhausted,
-    noMoreRecommendations: snapshotNoMoreRecommendations = false,
-    countContract: snapshotCountContract,
-    lastVisibleBatch: snapshotLastVisibleBatch,
-    recommendationNotice: snapshotRecommendationNotice,
-  }: {
-    sceneKey: SceneKey
-    scene: SceneTag
-    weather?: WeatherSnapshot
-    weatherMode?: WeatherMode
-    weatherFingerprint?: RecommendationWeatherFingerprint
-    outfits: Outfit[]
-    currentIndex: number
-    recommendationBatchId: string | undefined
-    hasRecommendations: boolean
-    batchLimited: boolean
-    batchExhausted: boolean
-    noMoreRecommendations?: boolean
-    countContract?: RecommendationCountContract
-    lastVisibleBatch?: SceneSnapshot['lastVisibleBatch']
-    recommendationNotice: string
-  }) {
-    const key = getSceneSnapshotKey(scene, weatherFingerprint);
-    const snapshot: ExtendedSceneSnapshot = {
-      key,
-      outfits: snapshotOutfits,
-      currentIndex: snapshotIndex,
-      hasRecommendations: snapshotHasRecommendations,
-      recommendationBatchId: snapshotBatchId,
-      batchLimited: snapshotBatchLimited,
-      batchExhausted: snapshotBatchExhausted,
-      noMoreRecommendations: snapshotNoMoreRecommendations,
-      countContract: snapshotCountContract ?? countContractRef.current,
-      lastVisibleBatch: snapshotLastVisibleBatch,
-      recommendationNotice: snapshotRecommendationNotice,
-      generatedAt: Date.now(),
-      weatherMode,
-      sceneKey,
-    };
-    if (!shouldUseSceneSnapshot(snapshot, { key })) return;
-    sceneSnapshotsRef.current[key] = snapshot;
-    setUserStorageSync([TODAY_SCENE_SNAPSHOT_STORAGE_PREFIX, key], snapshot);
   }
 
   function createRecommendationRequestContext(
@@ -2246,51 +893,6 @@ export default function TodayPage() {
     };
   }
 
-  function validateSceneContract(
-    requestContext: RecommendationRequestContext,
-    data: RecommendResponse,
-  ): SceneContractValidation {
-    return validateSceneContractPure(
-      requestContext,
-      data,
-      activeRequestSeqRef.current ?? -1,
-      selectedSceneKeyRef.current,
-    );
-  }
-
-  function logSceneContractReject(
-    auditId: string,
-    data: RecommendResponse,
-    validation: Exclude<SceneContractValidation, { ok: true }>,
-  ) {
-    logRecommendationEvent('[RecommendReject]', {
-      auditId: getRecommendationAuditId(data, auditId),
-      reason: validation.reason,
-      seq: validation.requestSeq,
-      requestScene: validation.requestSceneKey,
-      responseSceneKey: validation.responseSceneKey,
-      responseScene: validation.responseScene,
-      topLevelKeys: Object.keys(data).slice(0, 20),
-      cloudBuild: data.debug?.cloudBuildVersion ?? data.meta?.cloudBuildVersion ?? '',
-      transport: getCloudResponseTransportDiagnostics(data),
-    });
-  }
-
-  function logRecommendationIntentReject(
-    requestContext: RecommendationRequestContext,
-    data: RecommendResponse,
-    reason: string,
-  ) {
-    logRecommendationEvent('[RecommendReject]', {
-      auditId: getRecommendationAuditId(data, requestContext.auditId),
-      seq: requestContext.requestSeq,
-      intentId: requestContext.intentId,
-      intentGeneration: requestContext.intentGeneration,
-      sceneKey: requestContext.sceneKey,
-      reason,
-    });
-  }
-
   function logRecommendationStart(
     requestContext: RecommendationRequestContext,
     trigger: string,
@@ -2308,125 +910,11 @@ export default function TodayPage() {
     });
   }
 
-  function logRecommendationResponse(
-    requestContext: RecommendationRequestContext,
-    data: RecommendResponse,
-    trigger: string,
-    outfitCount: number,
-  ) {
-    if (!isRecommendationDiagnosticEnvironment()) return;
-    const debug = data.debug;
-    const qaAudit = data.qaBatchAudit;
-    logRecommendationEvent('[RecommendResponse]', {
-      auditId: getRecommendationAuditId(data, requestContext.auditId),
-      seq: requestContext.requestSeq,
-      trigger,
-      sceneKey: requestContext.sceneKey,
-      scene: data.scene,
-      outfitCount,
-      cloudBuild: debug?.cloudBuildVersion ?? data.meta?.cloudBuildVersion ?? '',
-      executionMode: readDebugString(debug?.executionMode),
-      cacheHit: debug?.cacheHit === true,
-      cacheMissReason: readDebugString(debug?.cacheMissReason),
-      candidatePoolSaveStatus: readDebugString(debug?.candidatePoolSaveStatus),
-      candidatePoolSaveReason: readDebugString(debug?.candidatePoolSaveReason),
-      candidatePoolSerializedBytes: readDebugNumber(debug?.candidatePoolSerializedBytes),
-      candidatePoolChunkCount: readDebugNumber(debug?.candidatePoolChunkCount),
-      candidatePoolManifestBytes: readDebugNumber(debug?.candidatePoolManifestBytes),
-      candidatePoolChunksBytes: readDebugNumber(debug?.candidatePoolChunksBytes),
-      countContract: data.countContract ? { ...data.countContract, candidatePoolId: null } : null,
-      requestedExcludedCount: readDebugNumber(debug?.requestedExcludedCount),
-      actualExcludedCandidateCount: readDebugNumber(debug?.actualExcludedCandidateCount),
-      remainingCandidateCount: readDebugNumber(debug?.remainingCandidateCount),
-      recommendationBatchIdPresent: debug?.recommendationBatchIdPresent === true || qaAudit?.recommendationBatchIdPresent === true,
-      recommendationBatchIdLength: readDebugNumber(debug?.recommendationBatchIdLength ?? qaAudit?.recommendationBatchIdLength),
-      requestedCandidatePoolIdPresent: debug?.requestedCandidatePoolIdPresent === true || qaAudit?.requestedCandidatePoolIdPresent === true,
-      requestedCandidatePoolIdLength: readDebugNumber(debug?.requestedCandidatePoolIdLength ?? qaAudit?.requestedCandidatePoolIdLength),
-      timings: debug?.timings ?? qaAudit?.timings ?? {},
-      responseBytes: debug?.responseBytes ?? qaAudit?.responseBytes ?? {},
-      transport: getCloudResponseTransportDiagnostics(data),
-      qaEnabled: Boolean(data.qaBatchAudit),
-    });
-  }
-
-  function readDebugString(value: unknown): string {
-    return typeof value === 'string' ? value : '';
-  }
-
-  function readDebugNumber(value: unknown): number {
-    const num = Number(value);
-    return Number.isFinite(num) && num >= 0 ? num : 0;
-  }
-
-  function logRecommendationQa(data: RecommendResponse, fallbackAuditId: string) {
-    if (!isRecommendationDiagnosticEnvironment() || !data.qaBatchAudit) return;
-    const summary = buildRecommendationQaLogSummary(data.qaBatchAudit);
-    if (!summary) return;
-    logRecommendationEvent('[RecommendationQA]', {
-      ...summary,
-      auditId: getRecommendationAuditId(data, fallbackAuditId),
-    });
-  }
-
-  function beginClientImageTiming({
-    auditId,
-    cloudRoundTripMs,
-    clientApplyMs,
-    transport,
-    firstOutfit,
-  }: {
-    auditId: string;
-    cloudRoundTripMs: number;
-    clientApplyMs: number;
-    transport: ReturnType<typeof getCloudResponseTransportDiagnostics>;
-    firstOutfit?: Outfit;
-  }) {
-    if (!isRecommendationDiagnosticEnvironment()) return;
-    if (clientImageTimingRef.current?.timeoutId) clearTimeout(clientImageTimingRef.current.timeoutId);
-    const requestedImageCount = firstOutfit
-      ? buildOutfitCardViewModel(firstOutfit).previewItems.filter((item) => Boolean(item.thumbnailUrl || item.imageUrl)).length
-      : 0;
-    const timing: ClientImageTiming = {
-      auditId,
-      cloudRoundTripMs,
-      clientApplyMs,
-      transport,
-      requestedImageCount,
-      resolvedImageCount: 0,
-      applyFinishedAt: Date.now(),
-    };
-    clientImageTimingRef.current = timing;
-    if (requestedImageCount === 0) {
-      finishClientImageTiming(timing, false);
-      return;
-    }
-    timing.timeoutId = setTimeout(() => finishClientImageTiming(timing, true), 8_000);
-  }
-
-  function handleRecommendationImageResolved() {
-    const timing = clientImageTimingRef.current;
-    if (!timing) return;
-    timing.resolvedImageCount += 1;
-    if (timing.resolvedImageCount >= timing.requestedImageCount) finishClientImageTiming(timing, false);
-  }
-
-  function finishClientImageTiming(timing: ClientImageTiming, imageTimeout: boolean) {
-    if (clientImageTimingRef.current !== timing) return;
-    if (timing.timeoutId) clearTimeout(timing.timeoutId);
-    clientImageTimingRef.current = null;
-    logRecommendationEvent('[RecommendDone]', {
-      auditId: timing.auditId,
-      clientTimings: {
-        cloudRoundTripMs: timing.cloudRoundTripMs,
-        clientApplyMs: timing.clientApplyMs,
-        imageReadyMs: Date.now() - timing.applyFinishedAt,
-        imageTimeout,
-        requestedImageCount: timing.requestedImageCount,
-        resolvedImageCount: timing.resolvedImageCount,
-        transport: timing.transport,
-      },
-    });
-  }
+  function nextRequestSeq() { requestSeq.current += 1; return requestSeq.current; }
+  function nextRecommendationIntentId(kind: string) { intentCounterRef.current += 1; return kind + ':' + (runtimeKey || 'anonymous') + ':' + intentCounterRef.current; }
+  function isRecommendationIntentCurrent(intent: RecommendationIntent) { return recommendationIntentRegistryRef.current?.isCurrent(intent) === true; }
+  function setLoadingForRequest(seq: number) { loadingOwnerSeqRef.current = seq; setLoading(true); }
+  function clearLoadingForRequest(seq: number) { if (loadingOwnerSeqRef.current === seq) { loadingOwnerSeqRef.current = null; setLoading(false); } }
 
   function logRecommendationError(auditId: string, seq: number, stage: string, error: unknown) {
     const cloudError = error as {
@@ -2451,50 +939,6 @@ export default function TodayPage() {
     });
   }
 
-  function getRecommendationAuditId(data: RecommendResponse, fallback: string) {
-    return fallback || data.debug?.auditId || data.meta?.auditId || data.qaBatchAudit?.auditId || 'missing-audit-id';
-  }
-
-  function getBatchNotice(notice: string | undefined, limited: boolean, exhausted: boolean) {
-    if (exhausted) return notice || getProductStateCopy('exhausted');
-    if (limited) return notice ?? '';
-    return notice ?? '';
-  }
-
-  function formatOutfitMeta(outfit: Outfit) {
-    const facts = [
-      currentWeather ? `${currentWeather.temp}° ${currentWeather.weather}` : '',
-      String(outfit.scene || selectedScene || ''),
-      `${outfit.clothingIds?.length ?? 0} 件`,
-    ];
-    return facts.filter(Boolean).join(' · ');
-  }
-
-  function nextRequestSeq() {
-    requestSeq.current += 1;
-    return requestSeq.current;
-  }
-
-  function nextRecommendationIntentId(kind: string) {
-    intentCounterRef.current += 1;
-    return `${kind}:${runtimeKey || 'anonymous'}:${intentCounterRef.current}`;
-  }
-
-  function isRecommendationIntentCurrent(intent: RecommendationIntent) {
-    return recommendationIntentRegistryRef.current?.isCurrent(intent) === true;
-  }
-
-  function setLoadingForRequest(seq: number) {
-    loadingOwnerSeqRef.current = seq;
-    setLoading(true);
-  }
-
-  function clearLoadingForRequest(seq: number) {
-    if (loadingOwnerSeqRef.current !== seq) return;
-    loadingOwnerSeqRef.current = null;
-    setLoading(false);
-  }
-
   function setOperationForRequest(seq: number, nextOperation: Exclude<OutfitOperation, null>) {
     operationOwnerSeqRef.current = seq;
     setOperation(nextOperation);
@@ -2510,38 +954,8 @@ export default function TodayPage() {
     return seq === activeRequestSeqRef.current;
   }
 
-  function isCurrentMutation(
-    authContext: ActiveAuthContext,
-    expectedOperation: OutfitOperation,
-    expectedOutfitKey: string,
-  ) {
-    const target = operationTargetRef.current;
-    return Boolean(
-      authContext
-        && isAuthContextCurrent(authContext)
-        && target
-        && target.operation === expectedOperation
-        && target.outfitKey === expectedOutfitKey,
-    );
-  }
-
-  const currentOutfit = outfits[currentIndex];
-  useEffect(() => {
-    if (!loading && !operation) {
-      setShowDelayedRequestHint(false);
-      return undefined;
-    }
-    const timer = setTimeout(() => setShowDelayedRequestHint(true), 300);
-    return () => clearTimeout(timer);
-  }, [loading, operation]);
   const isRefreshing = operation === 'refresh';
-  const isNoMoreRecommendations = isNoMoreRecommendationState({
-    batchExhausted,
-    countContract: countContractRef.current,
-  });
-  const isFavoriteBusy = operation === 'favorite';
-  const isWearBusy = operation === 'wear';
-
+  const isNoMoreRecommendations = batchExhausted;
   useEffect(() => {
     if (!isTodayDiagnosticsRuntime()) return undefined;
     const diagnosticsGlobal = globalThis as typeof globalThis & {
@@ -2556,34 +970,28 @@ export default function TodayPage() {
       readCopyAcceptanceState: () => ({
         sceneKey: selectedSceneKeyRef.current,
         recommendationBatchId: recommendationBatchIdRef.current,
-        outfits: outfitsRef.current.map((outfit) => ({
-          id: outfit.id,
-          outfitKey: outfit.outfitKey,
-          scene: outfit.scene,
-          clothingIds: outfit.clothingIds,
-          copyContractVersion: outfit.copyContractVersion,
-          copyContract: outfit.copyContract,
-          canonicalRecommendationCopyV2: outfit.canonicalRecommendationCopyV2,
-        } as Outfit)),
+        cards: (v2Snapshot?.cards ?? []).map((card) => ({
+          outfitKey: card.outfitKey,
+          displayTitle: card.displayTitle,
+          todayReason: card.todayReason,
+          isFavorite: card.isFavorite,
+          isWornToday: card.isWornToday,
+        })),
       }),
       readUsableCardState: () => {
-        const batch = outfitsRef.current;
+        const batch = v2Snapshot?.cards ?? [];
         const index = currentIndexRef.current;
-        const outfit = batch[index];
-        const canonicalCopy = outfit?.canonicalRecommendationCopyV2;
-        const copyText = canonicalCopy?.text
-          || outfit?.copyContract?.todayReason
-          || outfit?.reason
-          || '';
+        const card = batch[index];
+        const copyText = card?.todayReason || '';
         return {
-          batchIndex: outfit ? index + 1 : 0,
+          batchIndex: card ? index + 1 : 0,
           batchTotal: batch.length,
-          hasOutfit: Boolean(outfit && Array.isArray(outfit.clothingIds) && outfit.clothingIds.length > 0),
+          hasOutfit: Boolean(card),
           copyTextPresent: Boolean(copyText.trim()),
-          copySource: canonicalCopy?.source || 'legacy',
+          copySource: 'safe',
           canSwipe: batch.length > 1,
-          canFavorite: Boolean(outfit?.id) && operation !== 'favorite',
-          canOpenDetail: Boolean(outfit?.id),
+          canFavorite: Boolean(card) && operation !== 'favorite',
+          canOpenDetail: Boolean(card),
         };
       },
       releaseCaptureLock: () => {
@@ -2611,12 +1019,6 @@ export default function TodayPage() {
         if (loading || operation) throw new Error('Today recommendation handler is busy');
         copyAcceptanceCaptureLockRef.current = true;
         const acceptanceRequest = { ...request, performanceDiagnostics: true };
-        // Keep the strict acceptance bridge on the V2 dispatcher explicitly.
-        // This remains memory-only when the product flag is OFF; ordinary UI
-        // refresh continues through the legacy dispatcher below.
-        if (isStrictV2Acceptance(acceptanceRequest)) {
-          return handleV2Refresh(acceptanceRequest);
-        }
         return handleRefresh(acceptanceRequest);
       },
     };
@@ -2627,15 +1029,6 @@ export default function TodayPage() {
       }
     };
   });
-
-  useEffect(() => {
-    markTodayPerformanceStage('reactCommitAfterOutfits');
-    if (currentOutfit) {
-      markTodayPerformanceStage('firstCardMounted');
-      markTodayPerformanceStage('finalCardCount', outfits.length);
-      markTodayPerformanceDuration('onShowToFirstCard', 'todayOnShow', 'firstCardMounted');
-    }
-  }, [currentOutfit, outfits.length]);
 
   return (
     <View className="today-page">
@@ -2674,7 +1067,7 @@ export default function TodayPage() {
       </View>
 
       <View className="outfit-section">
-        {v2RuntimeActive && v2Snapshot && (
+        {v2Snapshot && (
           <View className="recommendation-browser recommendation-browser-v2">
             <Swiper className="outfit-swiper" current={currentIndex} circular={false} onChange={(event) => setCurrentIndex(event.detail.current)}>
               {v2Snapshot.cards.map((card) => (
@@ -2689,176 +1082,14 @@ export default function TodayPage() {
               ))}
             </Swiper>
             <View className="swiper-footer"><Text>{currentIndex + 1} / {v2Snapshot.cards.length}</Text></View>
-            <View className={`refresh-btn ${v2Snapshot.core.countContract.exhausted || v2MemoryOnly ? 'disabled' : ''}`} onClick={() => { if (!v2Snapshot.core.countContract.exhausted && !v2MemoryOnly) void handleRefresh(); }}><Text className="refresh-text">{v2Snapshot.core.countContract.exhausted ? '这一轮已看完' : '换一批灵感'}</Text></View>
+            <View className={`refresh-btn ${v2Snapshot.core.countContract.exhausted ? 'disabled' : ''}`} onClick={() => { if (!v2Snapshot.core.countContract.exhausted) void handleRefresh(); }}><Text className="refresh-text">{v2Snapshot.core.countContract.exhausted ? '这一轮已看完' : '换一批灵感'}</Text></View>
           </View>
         )}
-        {v2RuntimeActive && !v2Snapshot && loading && (
+        {!v2Snapshot && loading && (
           <View className="loading-state"><View className="loading-spinner" /><Text className="loading-text">正在生成今日搭配…</Text></View>
         )}
-        {v2RuntimeActive && !v2Snapshot && !loading && error && (
+        {!v2Snapshot && !loading && error && (
           <View className="empty-state"><Text className="empty-text">{error}</Text></View>
-        )}
-        {!v2RuntimeActive && (
-          <>
-        {loading && !currentOutfit && showDelayedRequestHint && (
-          <View className="loading-state">
-            <View className="loading-spinner" />
-            <Text className="loading-text">{getProductStateCopy('loading')}</Text>
-          </View>
-        )}
-
-        {!loading && error && !currentOutfit && (
-          <View className="empty-state">
-            <View className="empty-icon-wrap">
-              <View className="empty-icon" />
-            </View>
-            <Text className="empty-text">{error}</Text>
-            <View className="empty-action" onClick={() => {
-              void requestRecommendations({
-                intentId: nextRecommendationIntentId('retry'),
-                sceneKey: selectedSceneKeyRef.current,
-                weather: currentWeatherRef.current,
-                weatherMode: currentWeatherModeRef.current,
-                trigger: 'retry',
-              });
-            }}>
-              <Text className="empty-action-text">重新获取</Text>
-            </View>
-          </View>
-        )}
-
-        {!loading && !error && !hasRecommendations && (
-          <View className="empty-state">
-            <View className="empty-icon-wrap">
-              <View className="empty-icon" />
-            </View>
-            <Text className="empty-text">{recommendationNotice || getRecommendationEmptyStateCopy(missingRoles, missingFacts)}</Text>
-            {missingRoles.length > 0 || missingFacts.length > 0 ? (
-              <>
-                <Text className="empty-desc">补齐当前场景需要的衣物后，再来试试</Text>
-                <View className="empty-action" onClick={goToWardrobe}>
-                  <Text className="empty-action-text">去衣橱</Text>
-                </View>
-              </>
-            ) : null}
-          </View>
-        )}
-
-        {currentOutfit && (
-          <View className="recommendation-browser">
-            {loading && showDelayedRequestHint && (
-              <View className="scene-loading-overlay">
-                <View className="loading-spinner small" />
-                <Text className="scene-loading-text">{getProductStateCopy('refreshing')}</Text>
-              </View>
-            )}
-            <Swiper
-              className="outfit-swiper"
-              current={currentIndex}
-              circular={false}
-              onChange={handleSwiperChange}
-            >
-              {outfits.map((outfit, index) => {
-                const cardViewModel = buildOutfitCardViewModel(outfit);
-                const previewItems = cardViewModel.previewItems;
-                const hiddenItemCount = cardViewModel.hiddenItemCount;
-                const todayReason = hasCurrentNewRecommendationCopy(outfit)
-                  ? outfit.copyContract.todayReason
-                  : '';
-                return (
-                <SwiperItem key={outfit.outfitKey || outfit.id} className="outfit-slide">
-                  <View
-                    className={`outfit-card ${cardViewModel.layoutVariant} ${recommendationBatchId ? 'has-batch' : ''} ${
-                      batchLimited || batchExhausted ? 'limited' : ''
-                    }`}
-                    onClick={() => goToOutfitDetail(outfit.id)}
-                  >
-                    <View className="outfit-card-header">
-                      <View className="outfit-title-section">
-                        <Text className="outfit-title">{getOutfitDisplayTitle(outfit, '今日推荐')}</Text>
-                        <Text className="outfit-meta">{formatOutfitMeta(outfit)}</Text>
-                      </View>
-                      <Text className="card-count">{index + 1} / {outfits.length}</Text>
-                    </View>
-
-                    {getDeletedItemCount(outfit) > 0 && (
-                      <View className="deleted-notice">
-                        <Text className="deleted-notice-text">
-                          这套搭配中有 {getDeletedItemCount(outfit)} 件衣服已从衣橱删除
-                        </Text>
-                      </View>
-                    )}
-
-                    <View className="outfit-collage">
-                      {previewItems.map((item, itemIndex) => (
-                        <View key={item.clothingId} className={`collage-item ${item.isDeleted ? 'deleted' : ''}`}>
-                          <RecommendationImage
-                            src={item.thumbnailUrl || item.imageUrl}
-                            cacheIdentity={item.clothingId}
-                            onResolved={index === 0 ? handleRecommendationImageResolved : undefined}
-                          />
-                          {hiddenItemCount > 0 && itemIndex === previewItems.length - 1 && (
-                            <View className="collage-more">
-                              <Text className="collage-more-text">+{hiddenItemCount}</Text>
-                            </View>
-                          )}
-                        </View>
-                      ))}
-                    </View>
-
-                    <View className="outfit-tags">
-                      {getOutfitStyleTags(outfit, index).slice(0, 3).map((tag) => (
-                        <Text key={tag} className="style-tag">{tag}</Text>
-                      ))}
-                    </View>
-
-                    <View className="outfit-reason">
-                      <Text className="reason-label">小搭推荐</Text>
-                      <Text className="reason-text">{todayReason}</Text>
-                    </View>
-                  </View>
-                </SwiperItem>
-                );
-              })}
-            </Swiper>
-
-            <View className="swiper-footer">
-              <View className="pagination-dots">
-                {outfits.map((outfit, index) => (
-                  <View key={outfit.outfitKey || outfit.id} className={`pagination-dot ${index === currentIndex ? 'active' : ''}`} />
-                ))}
-              </View>
-            </View>
-
-            {(error || recommendationNotice) && (
-              <View className="inline-notice">
-                <Text className="inline-notice-text">{error || recommendationNotice}</Text>
-              </View>
-            )}
-
-            <View className="outfit-actions" onClick={(event: TapEvent) => event.stopPropagation()}>
-              <View
-                className={`action-btn ${currentOutfit.isFavorite ? 'active' : ''} ${
-                  isFavoriteBusy ? 'disabled' : ''
-                }`}
-                onClick={handleToggleFavorite}
-              >
-                <Text className="action-text">{currentOutfit.isFavorite ? '已收藏' : '收藏'}</Text>
-              </View>
-              <View className={`action-btn primary ${isWearBusy ? 'disabled' : ''}`} onClick={handleConfirmWear}>
-                <Text className="action-text">{isWearBusy ? '记录中...' : currentOutfit.isWornToday ? '今天穿过' : '穿它'}</Text>
-              </View>
-              <View className="action-btn detail" onClick={() => goToOutfitDetail(currentOutfit.id)}>
-                <Text className="action-text">详情</Text>
-              </View>
-            </View>
-
-            <View className={`refresh-btn ${isRefreshing || isNoMoreRecommendations ? 'disabled' : ''}`} onClick={() => { void handleRefresh(); }}>
-              <Text className="refresh-text">{isRefreshing && showDelayedRequestHint ? '正在换一批…' : isNoMoreRecommendations ? '这一轮已看完' : '换一批灵感'}</Text>
-            </View>
-          </View>
-        )}
-          </>
         )}
       </View>
     </View>
@@ -2896,134 +1127,6 @@ function formatPerformanceMs(value: number | undefined) {
   return typeof value === 'number' ? `${Math.round(value)}ms` : 'NOT_OBSERVED';
 }
 
-function RecommendationImage({
-  src,
-  cacheIdentity,
-  onResolved,
-}: {
-  src?: string;
-  cacheIdentity?: string;
-  onResolved?: () => void;
-}) {
-  const [status, setStatus] = useState<'loading' | 'loaded' | 'failed' | 'empty'>(
-    src ? (isImageSessionReady(src, cacheIdentity) ? 'loaded' : 'loading') : 'empty',
-  );
-  const [retryKey, setRetryKey] = useState(0);
-  const resolvedSourceRef = useRef('');
-
-  useEffect(() => {
-    if (src) markTodayPerformanceStage('firstImageLoadStart');
-    resolvedSourceRef.current = '';
-    setStatus(src ? (isImageSessionReady(src, cacheIdentity) ? 'loaded' : 'loading') : 'empty');
-    setRetryKey(0);
-    return subscribeImageSession(src, cacheIdentity, (state) => {
-      if (state === 'ready') setStatus('loaded');
-    });
-  }, [cacheIdentity, src]);
-
-  useEffect(() => recordImageSessionMount(), []);
-
-  useEffect(() => {
-    if (!src || (status !== 'loaded' && status !== 'failed') || resolvedSourceRef.current === src) return;
-    resolvedSourceRef.current = src;
-    onResolved?.();
-  }, [onResolved, src, status]);
-
-  if (!src || status === 'empty') {
-    return (
-      <View className="image-fallback empty">
-        <Text className="image-fallback-text">暂无图片</Text>
-      </View>
-    );
-  }
-
-  if (status === 'failed') {
-    return (
-      <View
-        className="image-fallback failed"
-        onClick={(event: TapEvent) => {
-          event.stopPropagation();
-          setStatus('loading');
-          setRetryKey((value) => value + 1);
-        }}
-      >
-        <Text className="image-fallback-text">图片暂时没取到</Text>
-        <Text className="image-retry-text">点一下重试</Text>
-      </View>
-    );
-  }
-
-  return (
-    <View className="image-stage">
-      {status === 'loading' && (
-        <View className="image-skeleton">
-          <View className="image-skeleton-shine" />
-          <Text className="image-skeleton-text">小搭取图中</Text>
-        </View>
-      )}
-      <Image
-        key={`${src}:${retryKey}`}
-        className={`item-image ${status === 'loaded' ? 'loaded' : ''}`}
-        src={src}
-        mode="aspectFit"
-        onLoad={() => {
-          markImageSessionReady(src, cacheIdentity);
-          setStatus('loaded');
-          const performanceRun = readTodayPerformanceLedger().active;
-          const setOutfitsAt = performanceRun?.stages.setOutfitsCalled;
-          const firstCardMountedAt = performanceRun?.stages.firstCardMounted;
-          if (
-            performanceRun?.complete !== true
-            && typeof setOutfitsAt === 'number'
-            && typeof firstCardMountedAt === 'number'
-            && firstCardMountedAt >= setOutfitsAt
-          ) {
-            markTodayPerformanceStage('firstImageLoaded');
-            completeTodayPerformanceRun();
-          }
-        }}
-        onError={() => {
-          markImageSessionFailed(src, cacheIdentity);
-          setStatus('failed');
-        }}
-      />
-    </View>
-  );
-}
-
-async function preloadRecommendationCards(
-  outfits: Outfit[],
-  currentIndex: number,
-  isCurrent: () => boolean,
-): Promise<void> {
-  const remainingIndexes = outfits
-    .map((_, index) => index)
-    .filter((index) => index !== currentIndex);
-  const orderedIndexes = [
-    currentIndex + 1,
-    currentIndex - 1,
-    ...remainingIndexes,
-  ].filter((index, position, values) => (
-    index >= 0
-    && index < outfits.length
-    && values.indexOf(index) === position
-  ));
-
-  for (let offset = 0; offset < orderedIndexes.length; offset += 2) {
-    if (!isCurrent()) return;
-    const cardIndexes = orderedIndexes.slice(offset, offset + 2);
-    await Promise.all(cardIndexes.map(async (cardIndex) => {
-      const outfit = outfits[cardIndex];
-      if (!outfit) return;
-      const items = buildOutfitCardViewModel(outfit).previewItems;
-      await Promise.all(items.map((item) => preloadImageSession(
-        item.thumbnailUrl || item.imageUrl,
-        item.clothingId,
-      )));
-    }));
-  }
-}
-
 function getToday() {
   return new Date().toISOString().split('T')[0]!;
 }
@@ -3045,19 +1148,4 @@ function getWeatherKey(weather: WeatherSnapshot) {
     weather.wind,
     weather.uv,
   ].join(':');
-}
-
-function getSnapshotWeatherFingerprint(snapshot: TodayRestoreSnapshot) {
-  return snapshot.weatherFingerprint ?? getRecommendationWeatherFingerprint(snapshot.weatherSnapshot);
-}
-
-function getDeletedItemCount(outfit: Outfit) {
-  if (typeof outfit.deletedItemCount === 'number') return outfit.deletedItemCount;
-  const snapshotCount = outfit.snapshotItems?.filter((item) => item.isDeleted || item.deletedAt).length ?? 0;
-  const itemCount = outfit.items?.filter((item) => item.isDeleted).length ?? 0;
-  return Math.max(snapshotCount, itemCount);
-}
-
-function getMutationTargetKey(outfit: Outfit) {
-  return outfit.outfitKey || outfit.id;
 }

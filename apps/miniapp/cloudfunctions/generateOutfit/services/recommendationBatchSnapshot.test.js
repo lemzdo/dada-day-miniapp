@@ -5,6 +5,8 @@ const test = require('node:test');
 
 const { buildSyntheticContractBatchSummaries } = require('./recommendationCopyProductMatrix.fixture');
 
+const source = fs.readFileSync(path.join(__dirname, '..', 'index.js'), 'utf8');
+
 test('synthetic new-recommendation batches skip coverage gaps and never return hidden-copy cards', () => {
   const batches = buildSyntheticContractBatchSummaries();
   for (const [scene, batch] of Object.entries(batches)) {
@@ -28,25 +30,16 @@ test('snapshot acceptance depends on evidence rather than sentence diversity', (
   assert.equal(new Set(acceptedClaims).size <= acceptedClaims.length, true);
 });
 
-test('cloud entrypoint uses the tested finalizer and preserves Contract metadata on snapshot writes', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '../index.js'), 'utf8');
-  assert.match(source, /finalizeAcceptedRecommendations\(compiledOutfits, \{/);
-  assert.match(source, /\.\.\.pickRecommendationCopyContractFields\(payload\)/);
-  assert.match(source, /canonicalRecommendations = canonicalizeRecommendationBatch\(finalRecommendations, \{ scene \}\)/);
-  assert.match(source, /upsertRecommendationOutfitsBatch\(\{\s*openid: OPENID,\s*bases: canonicalRecommendations,/);
-  assert.doesNotMatch(source, /serializedBytes\(canonicalRecommendations\)/);
-  assert.match(source, /diagnostics\.snapshotPayloadBytes = Math\.max\([\s\S]*snapshotOps\?\.snapshot\?\.inputPayloadBytes/);
-  assert.match(source, /data\.recommendationContentHash = buildRecommendationContentHash\(data\)/);
-  assert.match(source, /hydratedOutfits\.length !== finalRecommendationCount/);
-  assert.match(source, /item\.copyContract\.todayReason\.trim\(\)\.length > 0/);
-  assert.match(source, /styleTags: readStringArray\(item\.styleTags\)\.length \? readStringArray\(item\.styleTags\) : \[\]/);
+test('Today uses Minimal Batch Persistence and native Home Light only', () => {
+  assert.match(source, /persistRecommendationBatchV2/);
+  assert.match(source, /projectHomeLightV2/);
+  assert.doesNotMatch(source, /upsertRecommendationOutfitsBatch|projectRecommendationResponseOutfits|snapshotUpsert/);
 });
 
-test('saved snapshot fields remain the sole source for Today and detail rendering', () => {
-  const detailPresentation = fs.readFileSync(path.resolve(__dirname, '../../../src/utils/outfitContextText.ts'), 'utf8');
-  const favoritePage = fs.readFileSync(path.resolve(__dirname, '../../../src/pages/favorite-outfits/index.tsx'), 'utf8');
-  const historyPage = fs.readFileSync(path.resolve(__dirname, '../../../src/pages/outfit-history/index.tsx'), 'utf8');
-  assert.match(detailPresentation, /return normalizeTags\(outfit\.styleTags \?\? \[\]\);/);
-  assert.match(favoritePage, /getOutfitStyleTags\(/);
-  assert.match(historyPage, /getOutfitStyleTags\(/);
+test('Detail and action lifecycles remain lazy and immutable', () => {
+  assert.match(source, /loadV2OutfitPayload/);
+  assert.match(source, /getOutfitDetailV2/);
+  assert.match(source, /updateFavoriteV2/);
+  assert.match(source, /confirmWearV2/);
+  assert.match(source, /addOutfitHistory/);
 });

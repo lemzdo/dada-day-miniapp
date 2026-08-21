@@ -5,36 +5,20 @@ const test = require('node:test');
 
 const source = fs.readFileSync(path.join(__dirname, 'todayV2Adapter.ts'), 'utf8');
 
-test('Today V2 adapter uses an independent snapshot key and whitelist copy', () => {
+test('Home Light adapter uses a minimal whitelist and independent snapshot key', () => {
   assert.match(source, /TODAY_V2_SNAPSHOT_KEY/);
-  assert.match(source, /runtimeVersion/);
-  assert.match(source, /batchId/);
-  assert.doesNotMatch(source, /normalizeOutfitSnapshot|storeOutfitDetailDraft/);
+  assert.match(source, /core: response\.batch/);
+  assert.match(source, /displayImageUrl/);
+  assert.doesNotMatch(source, /isTodayV2Enabled|TARO_APP_RECOMMENDATION_V2_ENABLED/);
 });
 
-test('Today V2 flag is a build-time constant, not a runtime Node dependency', () => {
-  assert.match(source, /process\.env\.TARO_APP_RECOMMENDATION_V2_ENABLED/);
-  const config = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'config', 'index.ts'), 'utf8');
-  assert.match(config, /defineConstants/);
-  assert.match(config, /TARO_APP_RECOMMENDATION_V2_ENABLED/);
+test('Home Light snapshot rejects deep product payloads', () => {
+  assert.match(source, /forbidden = \['snapshotItems', 'itemsSnapshot'/);
+  assert.match(source, /thumbnailUrl', 'imageUrl'/);
+  assert.match(source, /snapshot\.core\.countContract\?\.returnedCardCount/);
 });
 
-test('Today V2 status patch is batch and outfit scoped', () => {
+test('status patches are batch and outfit scoped', () => {
   assert.match(source, /snapshot\.batchId !== patch\.batchId/);
   assert.match(source, /card\.outfitKey === patch\.outfitKey/);
-});
-
-test('Today V2 snapshot requires minimal core and rejects deep storage fields', () => {
-  assert.match(source, /core: response\.batch/);
-  assert.match(source, /snapshot\.core\.countContract\?\.requestedCardCount/);
-  assert.match(source, /forbidden = \['snapshotItems', 'itemsSnapshot'/);
-  assert.match(source, /displayImageUrl/);
-  assert.match(source, /thumbnailUrl', 'imageUrl'/);
-});
-
-test('Today V2 usable persistence is image-ready and excludes aliases', () => {
-  assert.match(source, /card\.items\.length === 0/);
-  assert.match(source, /item\.isDeleted/);
-  assert.match(source, /!item\.displayImageUrl\.trim\(\)/);
-  assert.match(source, /clothingId: item\.clothingId,[\s\S]*displayImageUrl: item\.displayImageUrl/);
 });

@@ -5,19 +5,25 @@ const test = require('node:test');
 
 const source = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
 
-test('V2 generation is server-flag and client-runtime gated', () => {
-  assert.match(source, /RECOMMENDATION_V2_ENABLED === 'true'/);
-  assert.match(source, /runtimeVersion === RECOMMENDATION_V2_RUNTIME_VERSION/);
-  assert.match(source, /runId\.startsWith\('ttui-v2-'\)/);
-  assert.match(source, /captureId === `\$\{runId\}-capture`/);
+test('Today has one Recommendation Runtime entry and no V1/V2 selector', () => {
+  assert.doesNotMatch(source, /RECOMMENDATION_V2_ENABLED/);
+  assert.doesNotMatch(source, /shouldUseRecommendationV2/);
+  assert.match(source, /return generateRecommendationV2\(\{/);
 });
 
-test('V2 branch is before Legacy presentation and persistence barriers', () => {
-  const branch = source.indexOf('if (shouldUseRecommendationV2(event))');
-  const legacyBarrier = source.indexOf('const cardCompilationPromise');
-  assert.ok(branch >= 0 && branch < legacyBarrier);
-  assert.match(source, /persistRecommendationBatchV2/);
-  assert.doesNotMatch(source.slice(branch, legacyBarrier), /upsertRecommendationOutfitsBatch|enrichOutfitsState|saveOutfitExposures/);
+test('normal generation uses minimal atomic batch persistence before legacy helpers', () => {
+  const entry = source.indexOf('return generateRecommendationV2({');
+  assert.ok(entry >= 0);
+  const runtime = source.slice(source.indexOf('async function generateRecommendationV2'), source.indexOf('function validateCandidatePoolAvailability'));
+  assert.match(runtime, /persistRecommendationBatchV2/);
+});
+
+test('FULL_COMPUTE schedules existing candidate-pool persistence while cache hits do not', () => {
+  assert.match(source, /candidatePoolPersistenceInput = \{/);
+  assert.match(source, /persistGeneratedCandidatePool\(\{/);
+  assert.match(source, /await candidatePoolPersistPromise/);
+  assert.match(source, /tryPersistCandidatePool/);
+  assert.doesNotMatch(source, /upsertRecommendationOutfitsBatch|projectRecommendationResponseOutfits/);
 });
 
 test('V2 reasons use the deterministic safe renderer and do not start AI renderer', () => {
@@ -27,35 +33,21 @@ test('V2 reasons use the deterministic safe renderer and do not start AI rendere
   assert.match(branch, /compileRecommendationReasonsV2/);
   assert.match(branch, /V2_SAFE_REASON_INCOMPLETE/);
   assert.doesNotMatch(branch, /buildRecommendationVoiceRendererExecution|runRecommendationVoiceRenderer/);
-  assert.doesNotMatch(branch, /recommendation\?\.reasoning/);
 });
 
-test('V2 status queries use projected fields and parallel execution', () => {
-  assert.match(source, /findV2FavoriteKeys\(openid, order\)/);
-  assert.match(source, /findV2WornKeys\(openid, order, targetDate\)/);
-  assert.match(source, /typeof query\.field === 'function'/);
-  assert.match(source, /query\.field\(\{ outfitKey: true/);
-});
-
-test('V2 action snapshot seed comes from immutable envelope context', () => {
-  assert.match(source, /const core = envelope\.core/);
-  assert.match(source, /todayReason: envelopeCard\.todayReason/);
-  assert.match(source, /weatherSnapshot: core\.weatherSnapshot/);
-  assert.match(source, /recommendationBatchId: core\.batchId/);
-  assert.match(source, /JSON\.stringify\(ref\.clothingIds\) !== JSON\.stringify\(envelopeCard\.clothingIds\)/);
-});
-
-test('V2 generation accepts refresh exclusions without invoking Legacy response parsing', () => {
-  assert.match(source, /excludedOutfitKeys/);
-  assert.match(source, /shouldUseRecommendationV2\(event\)/);
-});
-
-test('V2 performance ledger is acceptance-only and records safety gates', () => {
+test('acceptance metadata only observes the same light runtime', () => {
   const start = source.indexOf('async function generateRecommendationV2');
   const end = source.indexOf('function validateCandidatePoolAvailability', start);
   const branch = source.slice(start, end);
-  assert.match(branch, /isRecommendationV2Acceptance\(event\)/);
-  assert.match(branch, /legacyPersistenceCalled: false/);
-  assert.match(branch, /aiStarted: false/);
-  assert.match(branch, /responseSerializationBytes/);
+  assert.match(branch, /RecommendationRuntimeObservation/);
+  assert.doesNotMatch(branch, /response\.diagnostics/);
+  assert.doesNotMatch(branch, /responseSerializationBytes|copyContract|snapshotItems|evidence/);
+});
+
+test('V2 status queries and immutable action seed remain projected', () => {
+  assert.match(source, /findV2FavoriteKeys\(openid, order\)/);
+  assert.match(source, /findV2WornKeys\(openid, order, targetDate\)/);
+  assert.match(source, /const core = envelope\.core/);
+  assert.match(source, /todayReason: envelopeCard\.todayReason/);
+  assert.match(source, /recommendationBatchId: core\.batchId/);
 });

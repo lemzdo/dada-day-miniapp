@@ -5,60 +5,27 @@ const test = require('node:test');
 
 const source = fs.readFileSync(path.join(__dirname, 'index.tsx'), 'utf8');
 
-test('V2 runtime is the single mutually-exclusive render gate', () => {
-  assert.match(source, /const v2RuntimeActive = todayV2Enabled \|\| v2MemoryOnly/);
-  assert.match(source, /!v2RuntimeActive/);
-  assert.match(source, /v2RuntimeActive && v2Snapshot/);
+test('Today has one light runtime and no V1/V2 selector', () => {
+  assert.doesNotMatch(source, /isTodayV2Enabled|TARO_APP_RECOMMENDATION_V2_ENABLED|todayV2Enabled|v2MemoryOnly/);
+  assert.match(source, /generateCloudOutfitV2/);
+  assert.match(source, /toTodayV2Snapshot/);
 });
 
-test('acceptance requires diagnostics, ttui-v2 prefix and exact capture', () => {
-  assert.match(source, /request\?\.performanceDiagnostics === true/);
-  assert.match(source, /runId\.startsWith\('ttui-v2-'\)/);
-  assert.match(source, /request\?\.captureId === `\$\{runId\}-capture`/);
+test('acceptance metadata is forwarded without a strict business branch', () => {
+  assert.doesNotMatch(source, /isStrictV2Acceptance/);
+  assert.match(source, /acceptanceRunId/);
+  assert.match(source, /captureId/);
+  assert.match(source, /return handleV2Refresh\(acceptanceDiagnostics\)/);
 });
 
-test('memory-only acceptance disables user mutations and storage writes', () => {
-  assert.match(source, /v2MemoryOnly\) return/);
-  assert.match(source, /!memoryOnly\) setUserStorageSync/);
+test('Today persists only the Home Light snapshot', () => {
+  assert.match(source, /setUserStorageSync\(TODAY_V2_SNAPSHOT_KEY, nextSnapshot/);
+  assert.match(source, /setUserStorageSync\(TODAY_V2_SNAPSHOT_KEY, next/);
+  assert.match(source, /HomeLightCardV2/);
 });
 
-test('strict acceptance bridge explicitly dispatches V2 refresh with Flag OFF', () => {
-  assert.match(source, /const acceptanceRequest = \{ \.\.\.request, performanceDiagnostics: true \};/);
-  assert.match(source, /if \(isStrictV2Acceptance\(acceptanceRequest\)\) \{\s*return handleV2Refresh\(acceptanceRequest\);/);
-  assert.match(source, /return handleRefresh\(acceptanceRequest\);/);
-});
-
-test('diagnostics bridge exposes an immutable client bundle revision', () => {
-  assert.match(source, /bundleRevision: 'today-v2-client-4b51368'/);
-});
-
-test('passive V2 Cold telemetry is diagnostics-only and excludes refresh', () => {
+test('passive cold telemetry remains observation-only', () => {
   assert.match(source, /isRecommendationDiagnosticEnvironment\(\)/);
   assert.match(source, /requestKind !== 'refresh'/);
-  assert.match(source, /todayV2EntryColdEligibleRef\.current/);
-  assert.match(source, /trigger !== 'pull-down'/);
-  assert.match(source, /trigger !== 'scene'/);
-  assert.match(source, /!silent/);
-  assert.match(source, /requestKind: passiveColdTelemetry \? 'cold' : \(requestKind === 'refresh' \? 'refresh' : 'initial'\)/);
-  assert.match(source, /markTodayV2ColdUsable\(correlationId, Date\.now\(\)\)/);
-});
-
-test('existing V2 batch plus hard-invalid explicitly re-arms and passes the Cold gate', () => {
-  const hardInvalid = source.match(/async function refreshHardInvalidRecommendation[\s\S]*?\n  async function fetchRecommendations/);
-  assert.ok(hardInvalid);
-  assert.match(hardInvalid[0], /resetUserState\(\);\s*todayV2EntryColdEligibleRef\.current = true/);
-  const gate = source.match(/const passiveColdTelemetry = [\s\S]*?&& \(trigger === 'hard-invalid' \|\| \(outfitsRef\.current\.length === 0 && !v2Snapshot\)\);/);
-  assert.ok(gate);
-  assert.match(gate[0], /trigger === 'hard-invalid' \|\| todayV2EntryColdEligibleRef\.current/);
-  assert.match(gate[0], /trigger === 'hard-invalid' \|\| \(outfitsRef\.current\.length === 0 && !v2Snapshot\)/);
-});
-
-test('V2 Cold usable mark waits for committed eight-card image-ready light', () => {
-  const usable = source.match(/useEffect\(\(\) => \{[\s\S]*?markTodayV2ColdUsable\(correlationId, Date\.now\(\)\);[\s\S]*?\}, \[v2Snapshot\]\);/);
-  assert.ok(usable);
-  assert.match(usable[0], /v2Snapshot\.cards\.length !== 8/);
-  assert.match(usable[0], /card\.items\.length === 0/);
-  assert.match(usable[0], /item\.isDeleted/);
-  assert.match(usable[0], /item\.displayImageUrl\.trim\(\)/);
-  assert.match(usable[0], /todayV2ColdCorrelationRef\.current = null/);
+  assert.match(source, /markTodayV2ColdUsable/);
 });
