@@ -19,6 +19,7 @@ import {
   generateCloudOutfit,
   generateCloudOutfitV2,
   getCloudResponseTransportDiagnostics,
+  isDevelopV2ColdTelemetryEnvironment,
   isRecommendationDiagnosticEnvironment,
   materializeCloudRecommendationCopyV2,
   removeFavoriteOutfit,
@@ -75,9 +76,13 @@ import {
 import { getProductStateCopy } from '@/utils/xiaodaProductStateCopy';
 import { buildOutfitCardViewModel } from './cardViewModel';
 import {
+  beginTodayV2ColdTelemetry,
   completeTodayPerformanceRun,
   markTodayPerformanceDuration,
   markTodayPerformanceStage,
+  markTodayV2ColdRequestSent,
+  markTodayV2ColdResponseResolved,
+  markTodayV2ColdUsable,
   recordTodayAuthContextCurrentChecked,
   recordTodayRestoreDispatchAttempt,
   recordTodayRestoreException,
@@ -451,6 +456,9 @@ export default function TodayPage() {
   const operationTargetRef = useRef<{ operation: OutfitOperation; outfitKey: string } | null>(null);
   const behaviorTrackerRef = useRef(createOutfitBehaviorExposureTracker());
   const copyAcceptanceCaptureLockRef = useRef(false);
+  const todayV2EntryAtRef = useRef<number | null>(null);
+  const todayV2EntryColdEligibleRef = useRef(false);
+  const todayV2ColdCorrelationRef = useRef<string | null>(null);
   const sceneSnapshotsRef = useRef<Record<string, ExtendedSceneSnapshot>>({});
   const [currentWeather, setCurrentWeather] = useState<WeatherSnapshot | undefined>(undefined);
   const [performanceSnapshot, setPerformanceSnapshot] = useState<TodayPerformanceLedgerSnapshot>({ active: null, history: [] });
@@ -471,6 +479,13 @@ export default function TodayPage() {
   });
 
   useEffect(() => subscribeTodayPerformanceLedger(setPerformanceSnapshot), []);
+
+  useEffect(() => {
+    const correlationId = todayV2ColdCorrelationRef.current;
+    if (!correlationId || !v2Snapshot || v2Snapshot.cards.length !== 8) return;
+    markTodayV2ColdUsable(correlationId, Date.now());
+    todayV2ColdCorrelationRef.current = null;
+  }, [v2Snapshot]);
 
   useEffect(() => {
     if (!todayV2Enabled || !isAuthenticated) return;
@@ -556,6 +571,9 @@ export default function TodayPage() {
   });
 
   useDidShow(() => {
+    todayV2EntryAtRef.current = Date.now();
+    todayV2EntryColdEligibleRef.current = !(v2Snapshot?.cards.length === 8 || outfitsRef.current.length > 0);
+    todayV2ColdCorrelationRef.current = null;
     startTodayPerformanceRun();
     markTodayPerformanceStage('appOrPageEntry');
     markTodayPerformanceStage('todayComponentEnter');
@@ -712,6 +730,7 @@ export default function TodayPage() {
     hardRefreshInFlightRef.current = true;
     markAcceptanceClientMilestone(acceptanceDiagnostics, 'runtimeStateResetStartedAt');
     resetUserState();
+    todayV2EntryColdEligibleRef.current = true;
     markAcceptanceClientMilestone(acceptanceDiagnostics, 'runtimeStateResetCompletedAt');
     setRecommendationNotice('正在重新搭配…');
     try {
@@ -771,12 +790,31 @@ export default function TodayPage() {
     try {
       const strictV2Acceptance = isStrictV2Acceptance(acceptanceDiagnostics);
       if (todayV2Enabled || strictV2Acceptance) {
+        const passiveColdTelemetry = isRecommendationDiagnosticEnvironment()
+          && isDevelopV2ColdTelemetryEnvironment()
+          && (todayV2Enabled || acceptanceDiagnostics?.performanceDiagnostics === true)
+          && requestKind !== 'refresh'
+          && (trigger === 'hard-invalid' || todayV2EntryColdEligibleRef.current)
+          && !silent
+          && trigger !== 'pull-down'
+          && trigger !== 'scene'
+          && (trigger === 'hard-invalid' || (outfitsRef.current.length === 0 && !v2Snapshot));
+        const telemetryCorrelationId = passiveColdTelemetry
+          ? (todayV2ColdCorrelationRef.current
+            || (todayV2ColdCorrelationRef.current = beginTodayV2ColdTelemetry(
+              todayV2EntryAtRef.current || Date.now(),
+            ) || null))
+          : null;
+        if (passiveColdTelemetry) todayV2EntryColdEligibleRef.current = false;
         const response = await generateCloudOutfitV2({
           date: getToday(),
           scene,
           timeOfDay: TODAY_TIME_OF_DAY,
           weatherMode,
           trigger,
+          requestKind: passiveColdTelemetry ? 'cold' : (requestKind === 'refresh' ? 'refresh' : 'initial'),
+          ...(telemetryCorrelationId ? { telemetryCorrelationId } : {}),
+          ...(passiveColdTelemetry ? { performanceDiagnostics: true } : {}),
           ...(excludedOutfitKeys.length > 0 ? { excludedOutfitKeys } : {}),
           ...(weather ? { weather } : {}),
           ...(acceptanceDiagnostics ? {
@@ -786,6 +824,18 @@ export default function TodayPage() {
             clientMilestones: acceptanceDiagnostics.clientMilestones,
           } : {}),
         });
+        if (telemetryCorrelationId) {
+          const transport = getCloudResponseTransportDiagnostics(response);
+          const performance = (transport?.performance && typeof transport.performance === 'object')
+            ? transport.performance as { serverTotalMs?: number; serverResponseReadyAt?: number }
+            : undefined;
+          if (typeof transport?.immediatelyBeforeCallFunction === 'number') {
+            markTodayV2ColdRequestSent(telemetryCorrelationId, transport.immediatelyBeforeCallFunction);
+          }
+          if (typeof transport?.callFunctionPromiseResolved === 'number') {
+            markTodayV2ColdResponseResolved(telemetryCorrelationId, transport.callFunctionPromiseResolved, performance);
+          }
+        }
         markAcceptanceClientMilestone(acceptanceDiagnostics, 'v2ResponseReceivedAt');
         const v2IntentCurrent = isRecommendationIntentCurrent(intent);
         const v2AuthCurrent = isAuthContextCurrent(authContext);

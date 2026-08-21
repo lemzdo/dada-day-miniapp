@@ -50,3 +50,16 @@ test('permission wait is recorded independently from weather and recommendation 
   assert.match(weather, /onLocationPermissionPrompt/);
   assert.match(weather, /onLocationPermissionResolved/);
 });
+
+test('V2 cold telemetry is timestamped once and persisted through the existing ledger sink', () => {
+  const source = require('node:fs').readFileSync(require('node:path').join(__dirname, 'todayPerformanceLedger.ts'), 'utf8');
+  assert.match(source, /TODAY_V2_COLD_TELEMETRY_SCHEMA_VERSION/);
+  assert.match(source, /isDevelopV2ColdTelemetryEnvironment\(\)/);
+  assert.match(source, /beginTodayV2ColdTelemetry/);
+  assert.match(source, /markTodayV2ColdRequestSent/);
+  assert.match(source, /markTodayV2ColdResponseResolved/);
+  assert.match(source, /markTodayV2ColdUsable/);
+  assert.match(source, /if \(!isEnabled\(\) \|\| !isDevelopV2ColdTelemetryEnvironment\(\) \|\| v2ColdTelemetry\?\.correlationId !== correlationId/);
+  assert.match(source, /v2ColdTelemetry\.complete = true/);
+  assert.match(source, /v2ColdTelemetry \? \{ v2ColdTelemetry \} : \{\}/);
+});

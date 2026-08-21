@@ -192,3 +192,21 @@ test('V2 ledger predicate requires the exact strict acceptance tuple', () => {
   assert.equal(predicate({ performanceDiagnostics: true, acceptanceRunId: 'ttui-v2-run', captureId: 'wrong' }), false);
   assert.equal(predicate({ performanceDiagnostics: false, acceptanceRunId: 'ttui-v2-run', captureId: 'ttui-v2-run-capture' }), false);
 });
+
+test('V2 cold diagnostics can create an internal correlation without caller acceptance ids', () => {
+  const source = require('node:fs').readFileSync(require('node:path').join(__dirname, 'cloud.ts'), 'utf8');
+  assert.match(source, /createPassiveV2ColdAcceptance/);
+  assert.match(source, /params\.performanceDiagnostics === true/);
+  assert.match(source, /params\.requestKind !== 'cold'/);
+  assert.match(source, /isDevelopV2ColdTelemetryEnvironment\(\)/);
+  assert.match(source, /ttui-v2-passive-/);
+  assert.match(source, /telemetryCorrelationId/);
+});
+
+test('passive V2 Cold gate is develop-only while generic diagnostics remain separate', () => {
+  const source = require('node:fs').readFileSync(require('node:path').join(__dirname, 'cloud.ts'), 'utf8');
+  const section = source.match(/export function isDevelopV2ColdTelemetryEnvironment[\s\S]*?\n\}/);
+  assert.ok(section);
+  assert.match(section[0], /raw === 'develop'/);
+  assert.doesNotMatch(section[0], /trial/);
+});

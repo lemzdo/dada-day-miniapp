@@ -765,7 +765,32 @@ export interface RecommendationV2Request {
   captureId?: string;
   trigger?: string;
   excludedOutfitKeys?: string[];
+  requestKind?: 'cold' | 'initial' | 'refresh';
+  telemetryCorrelationId?: string;
   clientMilestones?: Record<string, number>;
+}
+
+function createPassiveV2ColdAcceptance(params: RecommendationV2Request) {
+  if (!isDevelopV2ColdTelemetryEnvironment()
+    || params.performanceDiagnostics !== true
+    || params.requestKind !== 'cold'
+    || params.acceptanceRunId
+    || params.captureId) return null;
+  const acceptanceRunId = params.telemetryCorrelationId
+    ? `ttui-v2-passive-${params.telemetryCorrelationId}`
+    : `ttui-v2-passive-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  return { acceptanceRunId, captureId: `${acceptanceRunId}-capture` };
+}
+
+export function isDevelopV2ColdTelemetryEnvironment(): boolean {
+  try {
+    const raw = (Taro as typeof Taro & {
+      getAccountInfoSync?: () => { miniProgram?: { envVersion?: string } };
+    }).getAccountInfoSync?.().miniProgram?.envVersion;
+    return raw === 'develop';
+  } catch {
+    return false;
+  }
 }
 
 export function isStrictV2AcceptanceRequest(params: RecommendationV2Request) {
@@ -806,8 +831,11 @@ function assertHomeLightV2(value: unknown): RecommendationHomeLightResponseV2 {
 
 export async function generateCloudOutfitV2(params: RecommendationV2Request = {}) {
   const wrapperStart = Date.now();
+  const passiveAcceptance = createPassiveV2ColdAcceptance(params);
+  const requestParams = passiveAcceptance ? { ...params, ...passiveAcceptance } : params;
+  const strictAcceptance = isStrictV2AcceptanceRequest(params) || isStrictV2AcceptanceRequest(requestParams);
   const result = await callCloudFunction<RecommendationV2Response>('generateOutfit', {
-    ...params,
+    ...requestParams,
     runtimeVersion: RECOMMENDATION_V2_RUNTIME_VERSION,
   });
   const transport = getCloudResponseTransportDiagnostics(result);
@@ -816,19 +844,19 @@ export async function generateCloudOutfitV2(params: RecommendationV2Request = {}
       ...transport,
       generateOutfitWrapperStart: wrapperStart,
       generateOutfitWrapperEnd: Date.now(),
-      ...(params.clientMilestones ? {
+      ...(requestParams.clientMilestones ? {
         clientMilestones: {
-          ...params.clientMilestones,
+          ...requestParams.clientMilestones,
           generateOutfitWrapperStart: wrapperStart,
         },
       } : {}),
     });
   }
-  if (isStrictV2AcceptanceRequest(params)) {
+  if (strictAcceptance) {
     const acceptanceTransport = getCloudResponseTransportDiagnostics(result);
     Taro.setStorageSync(GENERATE_OUTFIT_ACCEPTANCE_TRANSPORT_KEY, {
-      acceptanceRunId: params.acceptanceRunId,
-      captureId: params.captureId,
+      acceptanceRunId: requestParams.acceptanceRunId || params.acceptanceRunId,
+      captureId: requestParams.captureId || params.captureId,
       ...(acceptanceTransport ?? {}),
       clientTotalMs: acceptanceTransport?.immediatelyBeforeCallFunction !== undefined
         && acceptanceTransport.callFunctionPromiseResolved !== undefined
@@ -836,7 +864,7 @@ export async function generateCloudOutfitV2(params: RecommendationV2Request = {}
         : undefined,
     });
   }
-  if (isStrictV2AcceptanceRequest(params)) {
+  if (strictAcceptance) {
     const performance = (result as RecommendationV2Response & {
       diagnostics?: { performance?: unknown };
     })?.diagnostics?.performance

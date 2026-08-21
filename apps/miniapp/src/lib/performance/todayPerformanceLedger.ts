@@ -1,8 +1,9 @@
 import Taro from '@tarojs/taro';
-import { isRecommendationDiagnosticEnvironment } from '@/lib/cloud';
+import { isDevelopV2ColdTelemetryEnvironment, isRecommendationDiagnosticEnvironment } from '@/lib/cloud';
 
 export const TODAY_PERFORMANCE_LEDGER_KEY = 'today:performance-ledger:v1';
 export const TODAY_PERFORMANCE_LEDGER_SCHEMA_VERSION = 3;
+export const TODAY_V2_COLD_TELEMETRY_SCHEMA_VERSION = 1;
 const HISTORY_LIMIT = 5;
 const PUBLISH_DEBOUNCE_MS = 250;
 
@@ -57,6 +58,22 @@ export interface TodayPerformanceLedgerRecord {
 export interface TodayPerformanceLedgerSnapshot {
   active: TodayPerformanceLedgerRecord | null;
   history: TodayPerformanceLedgerRecord[];
+  v2ColdTelemetry?: TodayV2ColdTelemetryRecord;
+}
+
+export interface TodayV2ColdTelemetryRecord {
+  schemaVersion: number;
+  correlationId: string;
+  todayEnterAt: number;
+  requestSentAt?: number;
+  responseResolvedAt?: number;
+  firstEightLightUsableAt?: number;
+  enterToRequestMs?: number;
+  requestToUsableMs?: number;
+  coldTtuiMs?: number;
+  serverTotalMs?: number;
+  serverResponseReadyAt?: number;
+  complete: boolean;
 }
 
 let active: TodayPerformanceLedgerRecord | null = null;
@@ -64,6 +81,7 @@ let history: TodayPerformanceLedgerRecord[] = [];
 let enabledState: boolean | undefined;
 const listeners = new Set<(snapshot: TodayPerformanceLedgerSnapshot) => void>();
 let publishTimer: ReturnType<typeof setTimeout> | undefined;
+let v2ColdTelemetry: TodayV2ColdTelemetryRecord | undefined;
 
 function now() {
   const perf = (globalThis as { performance?: { now?: () => number } }).performance;
@@ -89,7 +107,7 @@ function publishNow() {
     clearTimeout(publishTimer);
     publishTimer = undefined;
   }
-  const snapshot = { active: { ...active, stages: { ...active.stages }, durations: { ...active.durations } }, history: history.map((item) => ({ ...item, stages: { ...item.stages }, durations: { ...item.durations } })) };
+  const snapshot = { active: { ...active, stages: { ...active.stages }, durations: { ...active.durations } }, history: history.map((item) => ({ ...item, stages: { ...item.stages }, durations: { ...item.durations } })), ...(v2ColdTelemetry ? { v2ColdTelemetry } : {}) };
   for (const listener of listeners) listener(snapshot);
   try {
     Taro.setStorageSync(TODAY_PERFORMANCE_LEDGER_KEY, snapshot);
@@ -115,10 +133,60 @@ export function readTodayPerformanceLedger(): TodayPerformanceLedgerSnapshot {
     if (stored?.active) {
       active = stored.active;
       history = Array.isArray(stored.history) ? stored.history.slice(0, HISTORY_LIMIT) : [];
+      v2ColdTelemetry = stored.v2ColdTelemetry;
       return { active, history };
     }
   } catch { /* no-op */ }
   return emptySnapshot();
+}
+
+function persistV2ColdTelemetry() {
+  try {
+    const stored = Taro.getStorageSync(TODAY_PERFORMANCE_LEDGER_KEY) as TodayPerformanceLedgerSnapshot | undefined;
+    Taro.setStorageSync(TODAY_PERFORMANCE_LEDGER_KEY, {
+      ...(stored && typeof stored === 'object' ? stored : emptySnapshot()),
+      ...(v2ColdTelemetry ? { v2ColdTelemetry } : {}),
+    });
+  } catch {
+    // Passive diagnostics must never affect the page.
+  }
+}
+
+export function beginTodayV2ColdTelemetry(todayEnterAt = Date.now()) {
+  if (!isEnabled() || !isDevelopV2ColdTelemetryEnvironment()) return undefined;
+  const correlationId = `today-v2-cold-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  v2ColdTelemetry = {
+    schemaVersion: TODAY_V2_COLD_TELEMETRY_SCHEMA_VERSION,
+    correlationId,
+    todayEnterAt,
+    complete: false,
+  };
+  persistV2ColdTelemetry();
+  return correlationId;
+}
+
+export function markTodayV2ColdRequestSent(correlationId: string, requestSentAt: number) {
+  if (!isEnabled() || !isDevelopV2ColdTelemetryEnvironment() || v2ColdTelemetry?.correlationId !== correlationId || v2ColdTelemetry.requestSentAt) return;
+  v2ColdTelemetry.requestSentAt = requestSentAt;
+  v2ColdTelemetry.enterToRequestMs = Math.max(0, requestSentAt - v2ColdTelemetry.todayEnterAt);
+  persistV2ColdTelemetry();
+}
+
+export function markTodayV2ColdResponseResolved(correlationId: string, responseResolvedAt: number, performance?: { serverTotalMs?: number; serverResponseReadyAt?: number }) {
+  if (!isEnabled() || !isDevelopV2ColdTelemetryEnvironment() || v2ColdTelemetry?.correlationId !== correlationId || v2ColdTelemetry.responseResolvedAt) return;
+  v2ColdTelemetry.responseResolvedAt = responseResolvedAt;
+  if (typeof performance?.serverTotalMs === 'number') v2ColdTelemetry.serverTotalMs = performance.serverTotalMs;
+  if (typeof performance?.serverResponseReadyAt === 'number') v2ColdTelemetry.serverResponseReadyAt = performance.serverResponseReadyAt;
+  persistV2ColdTelemetry();
+}
+
+export function markTodayV2ColdUsable(correlationId: string, usableAt: number) {
+  if (!isEnabled() || !isDevelopV2ColdTelemetryEnvironment() || v2ColdTelemetry?.correlationId !== correlationId || v2ColdTelemetry.firstEightLightUsableAt) return;
+  v2ColdTelemetry.firstEightLightUsableAt = usableAt;
+  if (v2ColdTelemetry.requestSentAt) v2ColdTelemetry.requestToUsableMs = Math.max(0, usableAt - v2ColdTelemetry.requestSentAt);
+  v2ColdTelemetry.coldTtuiMs = Math.max(0, usableAt - v2ColdTelemetry.todayEnterAt);
+  v2ColdTelemetry.complete = true;
+  persistV2ColdTelemetry();
 }
 
 export function subscribeTodayPerformanceLedger(listener: (snapshot: TodayPerformanceLedgerSnapshot) => void) {
@@ -228,6 +296,7 @@ export function completeTodayPerformanceRun() {
 export function resetTodayPerformanceLedgerForTest() {
   active = null;
   history = [];
+  v2ColdTelemetry = undefined;
   enabledState = undefined;
   listeners.clear();
   if (publishTimer !== undefined) clearTimeout(publishTimer);

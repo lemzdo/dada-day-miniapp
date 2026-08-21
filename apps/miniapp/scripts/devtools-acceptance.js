@@ -118,7 +118,7 @@ function summarizeLedger(snapshot) {
   const durations = active?.durations || {};
   const firstCard = durations.onShowToFirstCard ?? delta(stages.todayOnShow, stages.firstCardMounted);
   const firstImage = durations.onShowToFirstImage ?? delta(stages.todayOnShow, stages.firstImageLoaded);
-  return { runId: active?.runId || null, ledgerSchemaVersion: active?.ledgerSchemaVersion ?? 'NOT_OBSERVED', restoreDispatchAttempt: active?.restoreDispatchAttempt ?? 'NOT_OBSERVED', restoreFunctionEntered: active?.restoreFunctionEntered ?? 'NOT_OBSERVED', authContextCurrentChecked: active?.authContextCurrentChecked ?? 'NOT_OBSERVED', authContextCurrentResult: active?.authContextCurrentResult ?? 'NOT_OBSERVED', restoreReturnReason: active?.restoreReturnReason ?? 'NOT_OBSERVED', snapshotReadStart: active?.snapshotReadStart ?? stages.snapshotReadStart ?? 'NOT_OBSERVED', restoreException: active?.restoreException ?? 'NOT_OBSERVED', snapshotFound: normalizeStageBoolean(stages.snapshotFound), snapshotValid: normalizeStageBoolean(stages.snapshotValid), snapshotRejectReason: normalizeObserved(stages.snapshotRejectReason) || '', snapshotCardCount: stages.snapshotCardCount ?? 'NOT_OBSERVED', finalCardCount: active?.finalCardCount ?? stages.finalCardCount ?? 'NOT_OBSERVED', generateOutfitRequestCount: active?.generateOutfitRequestCount ?? stages.generateOutfitRequestCount ?? 'NOT_OBSERVED', executionMode: active?.executionMode || stages.executionMode || 'UNKNOWN', complete: active?.complete || false, stages, durations, firstCardMs: firstCard, firstImageMs: firstImage };
+  return { runId: active?.runId || null, ledgerSchemaVersion: active?.ledgerSchemaVersion ?? 'NOT_OBSERVED', restoreDispatchAttempt: active?.restoreDispatchAttempt ?? 'NOT_OBSERVED', restoreFunctionEntered: active?.restoreFunctionEntered ?? 'NOT_OBSERVED', authContextCurrentChecked: active?.authContextCurrentChecked ?? 'NOT_OBSERVED', authContextCurrentResult: active?.authContextCurrentResult ?? 'NOT_OBSERVED', restoreReturnReason: active?.restoreReturnReason ?? 'NOT_OBSERVED', snapshotReadStart: active?.snapshotReadStart ?? stages.snapshotReadStart ?? 'NOT_OBSERVED', restoreException: active?.restoreException ?? 'NOT_OBSERVED', snapshotFound: normalizeStageBoolean(stages.snapshotFound), snapshotValid: normalizeStageBoolean(stages.snapshotValid), snapshotRejectReason: normalizeObserved(stages.snapshotRejectReason) || '', snapshotCardCount: stages.snapshotCardCount ?? 'NOT_OBSERVED', finalCardCount: active?.finalCardCount ?? stages.finalCardCount ?? 'NOT_OBSERVED', generateOutfitRequestCount: active?.generateOutfitRequestCount ?? stages.generateOutfitRequestCount ?? 'NOT_OBSERVED', executionMode: active?.executionMode || stages.executionMode || 'UNKNOWN', complete: active?.complete || false, stages, durations, firstCardMs: firstCard, firstImageMs: firstImage, v2ColdTelemetry: snapshot?.v2ColdTelemetry || null };
 }
 function normalizeObserved(value) { return value === 'NOT_OBSERVED' ? undefined : value; }
 function normalizeStageBoolean(value) {
@@ -189,6 +189,13 @@ async function todayHot() {
 async function main() {
   const command = process.argv[2] || 'health';
   if (command === 'health') { const result = await health(); json(result); if (result.classification !== 'AUTOMATOR_OK') process.exitCode = 1; return; }
+  if (command === 'today-ledger') {
+    const session = await connectHealth();
+    if (!session) return;
+    try { json(summarizeLedger(await readLedger(session.mini))); }
+    finally { try { session.mini.disconnect(); } catch {} }
+    return;
+  }
   if (command === 'today-hot') return todayHot();
   throw new Error(`Unknown command: ${command}`);
 }

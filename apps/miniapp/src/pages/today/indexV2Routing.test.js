@@ -31,3 +31,24 @@ test('strict acceptance bridge explicitly dispatches V2 refresh with Flag OFF', 
 test('diagnostics bridge exposes an immutable client bundle revision', () => {
   assert.match(source, /bundleRevision: 'today-v2-client-4b51368'/);
 });
+
+test('passive V2 Cold telemetry is diagnostics-only and excludes refresh', () => {
+  assert.match(source, /isRecommendationDiagnosticEnvironment\(\)/);
+  assert.match(source, /requestKind !== 'refresh'/);
+  assert.match(source, /todayV2EntryColdEligibleRef\.current/);
+  assert.match(source, /trigger !== 'pull-down'/);
+  assert.match(source, /trigger !== 'scene'/);
+  assert.match(source, /!silent/);
+  assert.match(source, /requestKind: passiveColdTelemetry \? 'cold' : \(requestKind === 'refresh' \? 'refresh' : 'initial'\)/);
+  assert.match(source, /markTodayV2ColdUsable\(correlationId, Date\.now\(\)\)/);
+});
+
+test('existing V2 batch plus hard-invalid explicitly re-arms and passes the Cold gate', () => {
+  const hardInvalid = source.match(/async function refreshHardInvalidRecommendation[\s\S]*?\n  async function fetchRecommendations/);
+  assert.ok(hardInvalid);
+  assert.match(hardInvalid[0], /resetUserState\(\);\s*todayV2EntryColdEligibleRef\.current = true/);
+  const gate = source.match(/const passiveColdTelemetry = [\s\S]*?&& \(trigger === 'hard-invalid' \|\| \(outfitsRef\.current\.length === 0 && !v2Snapshot\)\);/);
+  assert.ok(gate);
+  assert.match(gate[0], /trigger === 'hard-invalid' \|\| todayV2EntryColdEligibleRef\.current/);
+  assert.match(gate[0], /trigger === 'hard-invalid' \|\| \(outfitsRef\.current\.length === 0 && !v2Snapshot\)/);
+});
