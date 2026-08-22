@@ -772,7 +772,8 @@ export default function TodayPage() {
         } : {}),
       });
       if (!isAuthContextCurrent(authContext) || activeRequestSeqRef.current !== refreshSeq) return false;
-      const next = toTodayV2Snapshot(response);
+      const resolvedResponse = await resolveRecommendationMedia(response);
+      const next = toTodayV2Snapshot(resolvedResponse);
       setV2Snapshot(next);
       setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, next, { authContext });
       setRecommendationBatchId(next.batchId);

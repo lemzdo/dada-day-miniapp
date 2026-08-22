@@ -37,6 +37,13 @@ test('media resolution is owner-checked before and after asynchronous work', () 
   assert.ok(mediaResolve < mediaOwnerCheck);
 });
 
+test('refresh resolves media before committing Home Light state', () => {
+  const refreshStart = todaySource.indexOf('async function handleV2Refresh');
+  const resolve = todaySource.indexOf('resolveRecommendationMedia(response)', refreshStart);
+  const snapshot = todaySource.indexOf('const next = toTodayV2Snapshot(resolvedResponse)', refreshStart);
+  assert.ok(refreshStart >= 0 && resolve > refreshStart && snapshot > resolve);
+});
+
 test('renderer consumes only the resolved canonical displayImageUrl', () => {
   assert.match(cardSource, /src=\{item\.displayImageUrl\}/);
   assert.doesNotMatch(cardSource, /resolveRecommendationMedia|getTempFileURL|cloud\.downloadFile/);

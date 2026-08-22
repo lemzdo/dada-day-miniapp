@@ -19,6 +19,28 @@ test('resolves canonical displayImageUrl cloud fixture in one batch', async () =
   assert.equal(calls, 1);
 });
 
+test('resolves the real wx cloud contract shape to the renderer source', async () => {
+  const source = 'cloud://cloud1-d8gl3k1vkdf0b7f05/wardrobe/top-1.png';
+  const previousWx = globalThis.wx;
+  globalThis.wx = {
+    cloud: {
+      getTempFileURL: async ({ fileList }) => ({
+        fileList: fileList.map((fileID) => ({
+          fileID,
+          tempFileURL: 'https://example.test/temp/top-1.png',
+          status: 0,
+        })),
+      }),
+    },
+  };
+  try {
+    const result = await resolveRecommendationMedia(response(source));
+    assert.equal(result.light.cards[0].items[0].displayImageUrl, 'https://example.test/temp/top-1.png');
+  } finally {
+    globalThis.wx = previousWx;
+  }
+});
+
 test('cache prevents resolution work from repeating across renders', async () => {
   let calls = 0;
   const resolver = async (ids) => { calls += 1; return { [ids[0]]: 'https://cdn.example/xxx.png' }; };
