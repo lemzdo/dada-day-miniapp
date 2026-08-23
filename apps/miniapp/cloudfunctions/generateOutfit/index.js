@@ -242,7 +242,14 @@ exports.main = async (event = {}) => {
       return ok(await materializeRecommendationCanonicalCopyV2(event));
     }
 
-    return ok(await generate(event, recommendationDiagnostics));
+    const data = await generate(event, recommendationDiagnostics);
+    const response = ok(data);
+    emitRecommendationServerDone({
+      diagnostics: recommendationDiagnostics,
+      executionMode: recommendationDiagnostics.executionMode,
+      response,
+    });
+    return response;
   } catch (error) {
     const isAiReviewAction = action === 'getAiComment' || action === 'aiComment';
     if (error?.businessCode === 'OUTFIT_REFERENCE_WRITE_FAILED') {
@@ -302,11 +309,13 @@ async function generateRecommendationV2({
   if (new Set(order).size !== 8 || order.some((key) => !key)) {
     throw createBusinessError('V2_RECOMMENDATION_IDENTITY_INVALID', 'V2 requires eight unique outfit identities');
   }
+  const reasonPreparationStartedAt = Date.now();
   const safeReasons = compileRecommendationReasonsV2({
     outfits: recommendations,
     scene,
     weather: weatherSnapshot,
   });
+  diagnostics.timings.reasonPreparationMs = Date.now() - reasonPreparationStartedAt;
   if (!Array.isArray(safeReasons) || safeReasons.length !== 8
     || safeReasons.some((entry) => typeof entry.reason !== 'string' || !entry.reason.trim())) {
     throw createBusinessError('V2_SAFE_REASON_INCOMPLETE', 'V2 safe reasons must cover all cards');
@@ -321,6 +330,7 @@ async function generateRecommendationV2({
     isFavorite: Boolean(favoriteMap.get(outfitKey)) || recommendations[index].isFavorite === true,
     isWornToday: Boolean(wornMap.get(outfitKey)) || recommendations[index].isWornToday === true,
   }));
+  const cardCompilationStartedAt = Date.now();
   const light = projectHomeLightV2(recommendations.map((recommendation, index) => ({
     referenceId: stableReferenceId(openid, order[index]),
     outfitKey: order[index],
@@ -340,6 +350,7 @@ async function generateRecommendationV2({
     }),
     ...status[index],
   })), batchId);
+  diagnostics.timings.cardCompilationMs = Date.now() - cardCompilationStartedAt;
   const coreInput = {
     batchId,
     sceneKey: sceneContract.sceneKey,
@@ -377,6 +388,7 @@ async function generateRecommendationV2({
     clothingIds: light.cards[position].clothingIds,
     position,
   }));
+  const batchPersistenceStartedAt = Date.now();
   const persisted = await persistRecommendationBatchV2({
     database: db,
     openid,
@@ -390,12 +402,15 @@ async function generateRecommendationV2({
     },
     now,
   });
+  diagnostics.timings.batchPersistenceMs = Date.now() - batchPersistenceStartedAt;
+  const finalizationStartedAt = Date.now();
   const response = {
     runtimeVersion: RECOMMENDATION_V2_RUNTIME_VERSION,
     schemaVersion: RECOMMENDATION_V2_SCHEMA_VERSION,
     batch: projectBatchCoreV2(persisted.batch),
     light,
   };
+  diagnostics.timings.finalizationMs = Date.now() - finalizationStartedAt;
   if (diagnostics?.diagnosticsRequested === true) {
     console.log('[RecommendationRuntimeObservation]', {
       auditId: diagnostics.auditId,
@@ -501,8 +516,27 @@ function createRecommendationDiagnostics(event = {}, handlerStartAt = Date.now()
     timings: { dataLoadMs: 0, identityMs: 0, candidatePoolLoadMs: 0, candidatePoolSaveMs: 0,
       candidatePoolPlanMs: 0, candidatePoolSerializationMs: 0, candidatePoolChunkWriteMs: 0,
       candidatePoolValidationMs: 0, candidatePoolManifestWriteMs: 0, poolDbReadCount: 0,
-      cardPreparation: {}, totalMs: 0 }, databaseOps: { reads: 0, writes: 0 },
+      cardPreparation: {}, cardCompilationMs: 0, reasonPreparationMs: 0,
+      batchPersistenceMs: 0, finalizationMs: 0, serializationMs: 0,
+      qaAuditMs: 0, totalMs: 0 }, databaseOps: { reads: 0, writes: 0 },
   };
+}
+
+function emitRecommendationServerDone({ diagnostics, executionMode, response } = {}) {
+  if (!diagnostics || !response) return null;
+  const totalMs = Math.max(0, Date.now() - diagnostics.startedAt);
+  const serializationStartedAt = Date.now();
+  const responseBytes = serializedBytes(response);
+  diagnostics.executionMode = executionMode || 'unknown';
+  diagnostics.timings.totalMs = totalMs;
+  diagnostics.timings.serializationMs = Date.now() - serializationStartedAt;
+  console.log('[RecommendationServerDone]', {
+    executionMode: diagnostics.executionMode,
+    timings: diagnostics.timings,
+    totalMs,
+    responseBytes,
+  });
+  return { executionMode: diagnostics.executionMode, timings: diagnostics.timings, totalMs, responseBytes };
 }
 
 function recordServerPhase(diagnostics, name, startedAt, endedAt = Date.now()) {
@@ -682,6 +716,7 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
   if (candidatePoolPersistenceInput) {
     await candidatePoolPersistPromise;
   }
+  diagnostics.executionMode = executionMode;
   return generateRecommendationV2({
     event,
     recommendations,
@@ -5045,6 +5080,7 @@ if (process.env.NODE_ENV === 'test') {
     canonicalizeAiCommentSource,
     createRecommendationSceneContract,
     createRecommendationDiagnostics,
+    emitRecommendationServerDone,
     recordServerPhase,
     measureCanonicalBatchInput,
     measureHomeLightMaterialization,
