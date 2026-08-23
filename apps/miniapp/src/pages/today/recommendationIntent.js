@@ -105,6 +105,7 @@ function createRecommendationIntentRegistry() {
     activate,
     getActive: () => activeIntent,
     isCurrent,
+    hasInFlight: () => inFlightBySignature.size > 0,
     reset,
     run,
   };
@@ -144,8 +145,13 @@ function createRecommendationInputCoordinator() {
   return { report, reset };
 }
 
+function shouldPreserveRecommendationLifecycle(previousRuntimeKey, hasInFlight) {
+  return previousRuntimeKey == null && hasInFlight === true;
+}
+
 module.exports = {
   buildRecommendationInputSignature,
   createRecommendationIntentRegistry,
   createRecommendationInputCoordinator,
+  shouldPreserveRecommendationLifecycle,
 };

@@ -58,7 +58,7 @@ test('restored canonical snapshot resolves before entering renderer state', () =
 });
 
 test('reset and unload invalidate an in-flight restore owner', () => {
-  const resetStart = todaySource.indexOf('const resetUserState = useCallback(() => {');
+  const resetStart = todaySource.indexOf('const resetUserState = useCallback(');
   const resetEnd = todaySource.indexOf('  }, []);', resetStart);
   const unloadStart = todaySource.indexOf('useUnload(() => {');
   const unloadEnd = todaySource.indexOf('  });', unloadStart);
@@ -71,4 +71,19 @@ test('canonical ref and storage are written only inside the successful commit bo
   assert.match(todaySource, /setCanonicalRef/);
   assert.match(todaySource, /persistCanonical/);
   assert.doesNotMatch(todaySource, /canonicalSnapshotRef\.current = canonicalSnapshot/);
+});
+
+test('weather dispatch=false exits before recommendation request', () => {
+  const weatherStart = todaySource.indexOf('async function handleWeatherChange(');
+  const noDispatch = todaySource.indexOf("if (!inputRelease.dispatch)", weatherStart);
+  assert.equal(noDispatch, -1);
+  assert.match(todaySource, /shouldPreserveRecommendationLifecycle/);
+  assert.match(todaySource, /preserveRecommendationLifecycle: preservePendingRecommendation/);
+});
+
+test('logout path keeps full reset semantics', () => {
+  const identityStart = todaySource.indexOf('if (!isAuthenticated || !runtimeKey)');
+  const identityEnd = todaySource.indexOf('if (lastHandledRuntimeKeyRef.current === runtimeKey)', identityStart);
+  assert.match(todaySource.slice(identityStart, identityEnd), /resetUserState\(\)/);
+  assert.doesNotMatch(todaySource.slice(identityStart, identityEnd), /preserveRecommendationLifecycle/);
 });

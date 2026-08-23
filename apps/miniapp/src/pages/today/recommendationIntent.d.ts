@@ -26,6 +26,7 @@ export interface RecommendationIntentRun<T> {
 export interface RecommendationIntentRegistry {
   activate(input: { intentId: string; inputSignature: string }): RecommendationIntent;
   getActive(): RecommendationIntent | null;
+  hasInFlight(): boolean;
   isCurrent(intent: RecommendationIntent | null | undefined): boolean;
   reset(): void;
   run<T>(input: {
@@ -44,3 +45,4 @@ export interface RecommendationInputCoordinator {
 export function buildRecommendationInputSignature(input?: RecommendationIntentSignatureInput): string;
 export function createRecommendationIntentRegistry(): RecommendationIntentRegistry;
 export function createRecommendationInputCoordinator(): RecommendationInputCoordinator;
+export function shouldPreserveRecommendationLifecycle(previousRuntimeKey: string | null, hasInFlight: boolean): boolean;

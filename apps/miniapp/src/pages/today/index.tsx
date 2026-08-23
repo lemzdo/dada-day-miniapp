@@ -93,6 +93,7 @@ import {
   buildRecommendationInputSignature,
   createRecommendationInputCoordinator,
   createRecommendationIntentRegistry,
+  shouldPreserveRecommendationLifecycle,
   type RecommendationIntent,
   type RecommendationIntentRegistry,
 } from './recommendationIntent';
@@ -420,13 +421,16 @@ export default function TodayPage() {
     ), undefined, { generation: restoreGeneration, batchId: snapshot.batchId });
   }, [isAuthenticated]);
 
-  const resetUserState = useCallback(() => {
+  const resetUserState = useCallback((options: { preserveRecommendationLifecycle?: boolean } = {}) => {
+    const preserveRecommendationLifecycle = options.preserveRecommendationLifecycle === true;
     restoreGenerationRef.current += 1;
-    recommendationInputCoordinatorRef.current.reset();
-    requestSeq.current += 1;
-    activeRequestSeqRef.current = null;
-    recommendationIntentRegistryRef.current?.reset();
-    requestContextByIntentGenerationRef.current = {};
+    if (!preserveRecommendationLifecycle) {
+      recommendationInputCoordinatorRef.current.reset();
+      requestSeq.current += 1;
+      activeRequestSeqRef.current = null;
+      recommendationIntentRegistryRef.current?.reset();
+      requestContextByIntentGenerationRef.current = {};
+    }
     seenOutfitKeysRef.current = new Set();
     seenOutfitKeysBySceneIdentityRef.current = {};
     seenIdentityHashBySceneRef.current = {};
@@ -519,7 +523,11 @@ export default function TodayPage() {
     }
 
     if (lastHandledRuntimeKeyRef.current === runtimeKey) return;
-    resetUserState();
+    const preservePendingRecommendation = shouldPreserveRecommendationLifecycle(
+      lastHandledRuntimeKeyRef.current,
+      Boolean(recommendationIntentRegistryRef.current?.hasInFlight()),
+    );
+    resetUserState({ preserveRecommendationLifecycle: preservePendingRecommendation });
     lastHandledRuntimeKeyRef.current = runtimeKey;
     markTodayPerformanceStage('identityRemoteStart');
     markTodayPerformanceStage('identityReady');
