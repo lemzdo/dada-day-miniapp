@@ -10,9 +10,11 @@ async function commitCanonicalSnapshotForRender({
   setCanonicalRef,
   setRenderState,
   assertRenderState,
+  traceContext,
 }) {
   if (!isOwner()) return null;
-  const hydratedLight = await hydrate(canonicalSnapshot);
+  const hydratedLight = await hydrate(canonicalSnapshot, traceContext);
+  if (!hydratedLight) return null;
   if (!isOwner() || !hydratedLight) return null;
   const renderSnapshot = { ...canonicalSnapshot, cards: hydratedLight.cards };
   if (assertRenderState && !assertRenderState(renderSnapshot)) return null;

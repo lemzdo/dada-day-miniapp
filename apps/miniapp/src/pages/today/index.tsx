@@ -130,6 +130,11 @@ function assertNoCloudUrlInRenderState(snapshot: TodayV2Snapshot | null): boolea
   return false;
 }
 
+function traceTodayRuntime(stage: string, generation: string | number, batchId: string | undefined, fields: Record<string, unknown> = {}) {
+  if (process.env.NODE_ENV === 'production') return;
+  console.log(`[TodayRuntime] ${stage}`, { generation, batchId, ...fields });
+}
+
 type OutfitOperation = 'favorite' | 'wear' | 'refresh' | null;
 type SceneKey = 'home' | 'work' | 'date' | 'sport';
 type TimeOfDay = 'all_day';
@@ -282,6 +287,7 @@ export default function TodayPage() {
   const [v2Snapshot, setV2Snapshot] = useState<TodayV2Snapshot | null>(null);
   const v2SnapshotRef = useRef<TodayV2Snapshot | null>(null);
   const canonicalSnapshotRef = useRef<TodayV2Snapshot | null>(null);
+  const renderTraceContextRef = useRef<{ generation: string | number; batchId?: string } | null>(null);
   const [selectedSceneKey, setSelectedSceneKey] = useState<SceneKey>('home');
   const [currentIndex, setCurrentIndex] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -351,15 +357,41 @@ export default function TodayPage() {
   recommendationNoticeRef.current = recommendationNotice;
   selectedSceneRef.current = selectedScene;
 
-  const commitCanonicalSnapshotForRender = (canonicalSnapshot: TodayV2Snapshot, isOwner: () => boolean, persistCanonical?: () => void) => commitRenderBoundary({
-    canonicalSnapshot,
-    isOwner,
-    hydrate: hydrateHomeLightForRender,
-    setCanonicalRef: (snapshot) => { canonicalSnapshotRef.current = snapshot; },
-    persistCanonical,
-    setRenderState: setV2Snapshot,
-    assertRenderState: assertNoCloudUrlInRenderState,
-  });
+  const commitCanonicalSnapshotForRender = async (canonicalSnapshot: TodayV2Snapshot, isOwner: () => boolean, persistCanonical?: () => void, traceContext?: { generation: string | number; batchId?: string }) => {
+    const context = traceContext || renderTraceContextRef.current || { generation: 'pending', batchId: canonicalSnapshot.batchId };
+    traceTodayRuntime('commit:start', context.generation, context.batchId || canonicalSnapshot.batchId);
+    let result;
+    try {
+      result = await commitRenderBoundary({
+        canonicalSnapshot,
+        isOwner,
+        hydrate: (snapshot, mediaContext) => hydrateHomeLightForRender(snapshot, undefined, mediaContext),
+        setCanonicalRef: (snapshot) => { canonicalSnapshotRef.current = snapshot; },
+        persistCanonical,
+        setRenderState: setV2Snapshot,
+        assertRenderState: assertNoCloudUrlInRenderState,
+        traceContext: { ...context, batchId: context.batchId || canonicalSnapshot.batchId, trace: (stage, fields) => traceTodayRuntime(stage, context.generation, context.batchId || canonicalSnapshot.batchId, fields) },
+      });
+    } catch (error) {
+      traceTodayRuntime('commit:rejected', context.generation, canonicalSnapshot.batchId, { error: String(error) });
+      throw error;
+    }
+    if (result) {
+      renderTraceContextRef.current = { generation: context.generation, batchId: result.batchId };
+      traceTodayRuntime('commit:done', context.generation, result.batchId);
+    } else {
+      traceTodayRuntime('commit:rejected', context.generation, canonicalSnapshot.batchId);
+    }
+    return result;
+  };
+
+  useEffect(() => {
+    if (!v2Snapshot) return;
+    traceTodayRuntime('render', renderTraceContextRef.current?.generation || 'pending', v2Snapshot.batchId, {
+      itemCount: v2Snapshot.cards.reduce((sum, card) => sum + card.items.length, 0),
+      firstSrc: v2Snapshot.cards[0]?.items[0]?.displayImageUrl,
+    });
+  }, [v2Snapshot]);
 
   useLoad(() => {
     markTodayPerformanceStage('todayOnLoad');
@@ -385,7 +417,7 @@ export default function TodayPage() {
     const restoreGeneration = ++restoreGenerationRef.current;
     void commitCanonicalSnapshotForRender(snapshot, () => (
       restoreGeneration === restoreGenerationRef.current && isAuthContextCurrent(authContext)
-    ));
+    ), undefined, { generation: restoreGeneration, batchId: snapshot.batchId });
   }, [isAuthenticated]);
 
   const resetUserState = useCallback(() => {
@@ -661,6 +693,7 @@ export default function TodayPage() {
     const auditId = requestContext.auditId;
     const authContext = captureAuthContext();
     if (!authContext) return false;
+    const traceGeneration = intent.generation;
     logRecommendationStart(requestContext, trigger, Boolean(weather));
 
     if (!silent) {
@@ -690,7 +723,10 @@ export default function TodayPage() {
             ) || null))
           : null;
         if (passiveColdTelemetry) todayV2EntryColdEligibleRef.current = false;
-        const rawResponse = await generateCloudOutfitV2({
+        let rawResponse;
+        try {
+          traceTodayRuntime('recommendation:start', traceGeneration, undefined, { requestKind, trigger });
+          rawResponse = await generateCloudOutfitV2({
           date: getToday(),
           scene,
           timeOfDay: TODAY_TIME_OF_DAY,
@@ -707,7 +743,13 @@ export default function TodayPage() {
             captureId: acceptanceDiagnostics.captureId,
             clientMilestones: acceptanceDiagnostics.clientMilestones,
           } : {}),
-        });
+          });
+        } catch (error) {
+          traceTodayRuntime('recommendation:error', traceGeneration, undefined, { error: String(error) });
+          throw error;
+        }
+        const responseBatchId = toTodayV2Snapshot(rawResponse).batchId;
+        traceTodayRuntime('recommendation:done', traceGeneration, responseBatchId, { requestKind, trigger });
         if (telemetryCorrelationId) {
           const transport = getCloudResponseTransportDiagnostics(rawResponse);
           const performance = (transport?.performance && typeof transport.performance === 'object')
@@ -736,7 +778,8 @@ export default function TodayPage() {
         }
         const committed = await commitCanonicalSnapshotForRender(canonicalSnapshot,
           () => isRecommendationIntentCurrent(intent) && isAuthContextCurrent(authContext),
-          () => setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, canonicalSnapshot, { authContext }));
+          () => setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, canonicalSnapshot, { authContext }),
+          { generation: traceGeneration, batchId: canonicalSnapshot.batchId });
         if (!committed) {
           markAcceptanceClientMilestone(acceptanceDiagnostics, 'v2MediaResolutionRejectedAt');
           return false;
@@ -777,10 +820,14 @@ export default function TodayPage() {
     const refreshSeq = requestSeq.current + 1;
     requestSeq.current = refreshSeq;
     activeRequestSeqRef.current = refreshSeq;
+    const traceGeneration = refreshSeq;
     setOperationForRequest(refreshSeq, 'refresh');
     setError('');
     try {
-      const response = await generateCloudOutfitV2({
+      let response;
+      try {
+        traceTodayRuntime('recommendation:start', traceGeneration, undefined, { requestKind: 'refresh', trigger: 'refresh' });
+        response = await generateCloudOutfitV2({
         date: getToday(),
         scene: selectedSceneRef.current,
         timeOfDay: TODAY_TIME_OF_DAY,
@@ -794,12 +841,19 @@ export default function TodayPage() {
           captureId: acceptanceDiagnostics?.captureId,
           clientMilestones: acceptanceDiagnostics?.clientMilestones,
         } : {}),
-      });
+        });
+      } catch (error) {
+        traceTodayRuntime('recommendation:error', traceGeneration, undefined, { error: String(error) });
+        throw error;
+      }
+      const responseBatchId = toTodayV2Snapshot(response).batchId;
+      traceTodayRuntime('recommendation:done', traceGeneration, responseBatchId, { requestKind: 'refresh', trigger: 'refresh' });
       if (!isAuthContextCurrent(authContext) || activeRequestSeqRef.current !== refreshSeq) return false;
       const canonicalSnapshot = toTodayV2Snapshot(response);
       const committed = await commitCanonicalSnapshotForRender(canonicalSnapshot,
         () => isAuthContextCurrent(authContext) && activeRequestSeqRef.current === refreshSeq,
-        () => setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, canonicalSnapshot, { authContext }));
+        () => setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, canonicalSnapshot, { authContext }),
+        { generation: traceGeneration, batchId: canonicalSnapshot.batchId });
       if (!committed) return false;
       const next = committed;
       setRecommendationBatchId(next.batchId);

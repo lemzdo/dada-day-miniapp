@@ -43,3 +43,13 @@ test('cloud render candidate is rejected by the invariant before any write', asy
   assert.equal(result, null);
   assert.equal(writes, 0);
 });
+
+test('hydrate rejection propagates through the commit boundary', async () => {
+  await assert.rejects(() => commitCanonicalSnapshotForRender({
+    canonicalSnapshot: canonicalSnapshot(),
+    isOwner: () => true,
+    hydrate: async () => { throw new Error('media reject'); },
+    setCanonicalRef: () => { throw new Error('must not write'); },
+    setRenderState: () => { throw new Error('must not write'); },
+  }), /media reject/);
+});
