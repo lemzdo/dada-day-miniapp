@@ -26,21 +26,21 @@ test('request identity and latest generation ownership are behavior primitives',
   assert.match(intentSource, /generation: \+\+nextGeneration/);
   assert.match(intentSource, /intent\.generation === activeIntent\.generation/);
   assert.match(todaySource, /!isRecommendationIntentCurrent\(intent\)/);
-  assert.match(todaySource, /resolveRecommendationMedia\(rawResponse\)/);
+  assert.match(todaySource, /hydrateHomeLightForRender/);
 });
 
 test('media resolution is owner-checked before and after asynchronous work', () => {
   const ownerCheck = todaySource.indexOf('const v2IntentCurrent = isRecommendationIntentCurrent(intent)');
-  const mediaResolve = todaySource.indexOf('const response = await resolveRecommendationMedia(rawResponse)');
-  const mediaOwnerCheck = todaySource.indexOf("v2MediaResolutionRejectedAt");
+  const mediaResolve = todaySource.indexOf('const committed = await commitCanonicalSnapshotForRender(canonicalSnapshot');
+  const mediaOwnerCheck = todaySource.indexOf("v2MediaResolutionRejectedAt", mediaResolve);
   assert.ok(ownerCheck >= 0 && ownerCheck < mediaResolve);
   assert.ok(mediaResolve < mediaOwnerCheck);
 });
 
 test('refresh resolves media before committing Home Light state', () => {
   const refreshStart = todaySource.indexOf('async function handleV2Refresh');
-  const resolve = todaySource.indexOf('resolveRecommendationMedia(response)', refreshStart);
-  const snapshot = todaySource.indexOf('const next = toTodayV2Snapshot(resolvedResponse)', refreshStart);
+  const resolve = todaySource.indexOf('commitCanonicalSnapshotForRender(canonicalSnapshot', refreshStart);
+  const snapshot = todaySource.indexOf('const next = committed', refreshStart);
   assert.ok(refreshStart >= 0 && resolve > refreshStart && snapshot > resolve);
 });
 
@@ -52,9 +52,9 @@ test('renderer consumes only the resolved canonical displayImageUrl', () => {
 
 test('restored canonical snapshot resolves before entering renderer state', () => {
   assert.match(todaySource, /readTodayV2Snapshot/);
-  assert.match(todaySource, /resolveRecommendationMedia\(\{ light: \{ cards: snapshot\.cards \} \}\)/);
+  assert.match(todaySource, /commitCanonicalSnapshotForRender\(snapshot/);
   assert.match(todaySource, /isAuthContextCurrent\(authContext\)/);
-  assert.match(todaySource, /setV2Snapshot\(\{ \.\.\.snapshot, cards: resolved\.light\.cards \}\)/);
+  assert.match(todaySource, /setRenderState: setV2Snapshot/);
 });
 
 test('reset and unload invalidate an in-flight restore owner', () => {
@@ -64,4 +64,11 @@ test('reset and unload invalidate an in-flight restore owner', () => {
   const unloadEnd = todaySource.indexOf('  });', unloadStart);
   assert.match(todaySource.slice(resetStart, resetEnd), /restoreGenerationRef\.current \+= 1/);
   assert.match(todaySource.slice(unloadStart, unloadEnd), /restoreGenerationRef\.current \+= 1/);
+});
+
+test('canonical ref and storage are written only inside the successful commit boundary', () => {
+  assert.match(todaySource, /commitRenderBoundary/);
+  assert.match(todaySource, /setCanonicalRef/);
+  assert.match(todaySource, /persistCanonical/);
+  assert.doesNotMatch(todaySource, /canonicalSnapshotRef\.current = canonicalSnapshot/);
 });

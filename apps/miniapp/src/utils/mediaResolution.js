@@ -8,7 +8,12 @@ function isCloudFileId(value) {
   return typeof value === 'string' && value.trim().startsWith('cloud://');
 }
 
-function resolveRecommendationMedia(response, resolveCloudFileIds = resolveCloudFileIdsWithWx) {
+function isRenderableUrl(value) {
+  return typeof value === 'string' && /^https:\/\//i.test(value.trim());
+}
+
+function resolveHomeLight(canonicalLight, resolveCloudFileIds = resolveCloudFileIdsWithWx) {
+  const response = { light: canonicalLight };
   const cards = response?.light?.cards;
   if (!Array.isArray(cards)) return Promise.resolve(response);
   const fileIds = [...new Set(cards.flatMap((card) => (Array.isArray(card?.items) ? card.items : []))
@@ -30,6 +35,17 @@ function resolveRecommendationMedia(response, resolveCloudFileIds = resolveCloud
       })),
     },
   }));
+}
+
+// Canonical snapshots retain cloud file IDs. This is the single conversion
+// boundary used before a light enters React render state.
+function hydrateHomeLightForRender(canonicalLight, resolveCloudFileIds = resolveCloudFileIdsWithWx) {
+  return resolveHomeLight(canonicalLight, resolveCloudFileIds).then((resolved) => {
+    const light = resolved?.light;
+    const hasUnresolvedCloud = light?.cards?.some((card) => (card.items || [])
+      .some((item) => isCloudFileId(item?.displayImageUrl) || !isRenderableUrl(item?.displayImageUrl)));
+    return hasUnresolvedCloud ? null : light;
+  });
 }
 
 function resolveMediaBatch(fileIds, resolveCloudFileIds) {
@@ -60,7 +76,9 @@ function resolveCloudFileIdsWithWx(fileIds) {
   return Promise.resolve(wxCloud.getTempFileURL({ fileList: fileIds })).then((result) => {
     const output = new Map();
     (result?.fileList || []).forEach((entry) => {
-      if (entry?.fileID && typeof entry.tempFileURL === 'string' && entry.status !== 1) output.set(entry.fileID, entry.tempFileURL);
+      if (entry?.fileID && entry.status === 0 && isRenderableUrl(entry.tempFileURL)) {
+        output.set(entry.fileID, entry.tempFileURL);
+      }
     });
     return output;
   });
@@ -73,7 +91,5 @@ function clearMediaResolutionCache() {
 
 module.exports = {
   clearMediaResolutionCache,
-  isCloudFileId,
-  resolveMediaBatch,
-  resolveRecommendationMedia,
+  hydrateHomeLightForRender,
 };

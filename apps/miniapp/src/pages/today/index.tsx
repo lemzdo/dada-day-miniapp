@@ -69,7 +69,7 @@ import {
   mergeSeenOutfitKeys,
 } from './refreshExclusions';
 import { getProductStateCopy } from '@/utils/xiaodaProductStateCopy';
-import { resolveRecommendationMedia } from '@/utils/mediaResolution';
+import { hydrateHomeLightForRender } from '@/utils/mediaResolution';
 import { buildOutfitCardViewModel } from './cardViewModel';
 import {
   beginTodayV2ColdTelemetry,
@@ -100,6 +100,7 @@ import { validateRecommendationCountContract } from './sceneResponseValidation';
 import type { RecommendationCountContract, RecommendationMissingFact, RecommendationMissingRole, SceneTag, WeatherMode, WeatherSnapshot } from '@starter-template/types';
 import './index.scss';
 import { HomeLightCardV2 } from './HomeLightCardV2';
+import { commitCanonicalSnapshotForRender as commitRenderBoundary } from './todayRenderCommit';
 const TODAY_TIME_OF_DAY: TimeOfDay = 'all_day';
 import {
   patchTodayV2CardStatus,
@@ -117,6 +118,16 @@ interface SwiperChangeEvent {
   detail: {
     current: number;
   };
+}
+
+function assertNoCloudUrlInRenderState(snapshot: TodayV2Snapshot | null): boolean {
+  const unresolved = snapshot?.cards?.flatMap((card) => card.items || [])
+    .filter((item) => typeof item.displayImageUrl === 'string' && item.displayImageUrl.startsWith('cloud://')) || [];
+  if (unresolved.length === 0) return true;
+  if (process.env.NODE_ENV !== 'production') {
+    console.error('[TodayRenderInvariant] unresolved cloud media', unresolved.map((item) => item.clothingId));
+  }
+  return false;
 }
 
 type OutfitOperation = 'favorite' | 'wear' | 'refresh' | null;
@@ -270,6 +281,7 @@ export default function TodayPage() {
   const { authStatus, runtimeKey, isAuthenticated } = useAuthRuntime();
   const [v2Snapshot, setV2Snapshot] = useState<TodayV2Snapshot | null>(null);
   const v2SnapshotRef = useRef<TodayV2Snapshot | null>(null);
+  const canonicalSnapshotRef = useRef<TodayV2Snapshot | null>(null);
   const [selectedSceneKey, setSelectedSceneKey] = useState<SceneKey>('home');
   const [currentIndex, setCurrentIndex] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -339,6 +351,16 @@ export default function TodayPage() {
   recommendationNoticeRef.current = recommendationNotice;
   selectedSceneRef.current = selectedScene;
 
+  const commitCanonicalSnapshotForRender = (canonicalSnapshot: TodayV2Snapshot, isOwner: () => boolean, persistCanonical?: () => void) => commitRenderBoundary({
+    canonicalSnapshot,
+    isOwner,
+    hydrate: hydrateHomeLightForRender,
+    setCanonicalRef: (snapshot) => { canonicalSnapshotRef.current = snapshot; },
+    persistCanonical,
+    setRenderState: setV2Snapshot,
+    assertRenderState: assertNoCloudUrlInRenderState,
+  });
+
   useLoad(() => {
     markTodayPerformanceStage('todayOnLoad');
   });
@@ -361,10 +383,9 @@ export default function TodayPage() {
     const snapshot = readTodayV2Snapshot((key) => getUserStorageSync(key, { authContext }));
     if (!snapshot) return;
     const restoreGeneration = ++restoreGenerationRef.current;
-    void resolveRecommendationMedia({ light: { cards: snapshot.cards } }).then((resolved) => {
-      if (restoreGeneration !== restoreGenerationRef.current || !isAuthContextCurrent(authContext)) return;
-      setV2Snapshot({ ...snapshot, cards: resolved.light.cards });
-    });
+    void commitCanonicalSnapshotForRender(snapshot, () => (
+      restoreGeneration === restoreGenerationRef.current && isAuthContextCurrent(authContext)
+    ));
   }, [isAuthenticated]);
 
   const resetUserState = useCallback(() => {
@@ -402,6 +423,7 @@ export default function TodayPage() {
     setRecommendationBatchId(undefined);
     setBatchLimited(false);
     setBatchExhausted(false);
+    canonicalSnapshotRef.current = null;
     setV2Snapshot(null);
   }, []);
 
@@ -708,16 +730,18 @@ export default function TodayPage() {
           return false;
         }
         const canonicalSnapshot = toTodayV2Snapshot(rawResponse);
-        setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, canonicalSnapshot, { authContext });
-        // Resolve media only while this request still owns the input. A
-        // superseded response must not trigger client-side media work.
-        const response = await resolveRecommendationMedia(rawResponse);
         if (!isRecommendationIntentCurrent(intent) || !isAuthContextCurrent(authContext)) {
           markAcceptanceClientMilestone(acceptanceDiagnostics, 'v2MediaResolutionRejectedAt');
           return false;
         }
-        const nextSnapshot = toTodayV2Snapshot(response);
-        setV2Snapshot(nextSnapshot);
+        const committed = await commitCanonicalSnapshotForRender(canonicalSnapshot,
+          () => isRecommendationIntentCurrent(intent) && isAuthContextCurrent(authContext),
+          () => setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, canonicalSnapshot, { authContext }));
+        if (!committed) {
+          markAcceptanceClientMilestone(acceptanceDiagnostics, 'v2MediaResolutionRejectedAt');
+          return false;
+        }
+        const nextSnapshot = committed;
         setLoading(false);
         setError('');
         setHasRecommendations(true);
@@ -772,10 +796,12 @@ export default function TodayPage() {
         } : {}),
       });
       if (!isAuthContextCurrent(authContext) || activeRequestSeqRef.current !== refreshSeq) return false;
-      const resolvedResponse = await resolveRecommendationMedia(response);
-      const next = toTodayV2Snapshot(resolvedResponse);
-      setV2Snapshot(next);
-      setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, next, { authContext });
+      const canonicalSnapshot = toTodayV2Snapshot(response);
+      const committed = await commitCanonicalSnapshotForRender(canonicalSnapshot,
+        () => isAuthContextCurrent(authContext) && activeRequestSeqRef.current === refreshSeq,
+        () => setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, canonicalSnapshot, { authContext }));
+      if (!committed) return false;
+      const next = committed;
       setRecommendationBatchId(next.batchId);
       setLoading(false);
       return true;
@@ -815,6 +841,8 @@ export default function TodayPage() {
 
   async function handleV2Favorite(card: import('@starter-template/types').HomeLightCardV2) {
     if (!v2Snapshot || operation) return;
+    const canonicalSnapshot = canonicalSnapshotRef.current;
+    if (!canonicalSnapshot || canonicalSnapshot.batchId !== v2Snapshot.batchId) return;
     const authContext = captureAuthContext();
     if (!authContext) return;
     setOperation('favorite');
@@ -824,9 +852,12 @@ export default function TodayPage() {
         outfitKey: card.outfitKey,
         isFavorite: !card.isFavorite,
       });
-      const next = patchTodayV2CardStatus(v2Snapshot, result);
-      setV2Snapshot(next);
-      setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, next, { authContext });
+      const nextRender = patchTodayV2CardStatus(v2Snapshot, result);
+      const nextCanonical = patchTodayV2CardStatus(canonicalSnapshot, result);
+      if (!assertNoCloudUrlInRenderState(nextRender)) return;
+      canonicalSnapshotRef.current = nextCanonical;
+      setV2Snapshot(nextRender);
+      setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, nextCanonical, { authContext });
     } finally {
       setOperation(null);
     }
@@ -834,14 +865,19 @@ export default function TodayPage() {
 
   async function handleV2Wear(card: import('@starter-template/types').HomeLightCardV2) {
     if (!v2Snapshot || operation || card.isWornToday) return;
+    const canonicalSnapshot = canonicalSnapshotRef.current;
+    if (!canonicalSnapshot || canonicalSnapshot.batchId !== v2Snapshot.batchId) return;
     const authContext = captureAuthContext();
     if (!authContext) return;
     setOperation('wear');
     try {
       const result = await updateCloudOutfitWearV2({ batchId: v2Snapshot.batchId, outfitKey: card.outfitKey, date: getToday() });
-      const next = patchTodayV2CardStatus(v2Snapshot, result);
-      setV2Snapshot(next);
-      setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, next, { authContext });
+      const nextRender = patchTodayV2CardStatus(v2Snapshot, result);
+      const nextCanonical = patchTodayV2CardStatus(canonicalSnapshot, result);
+      if (!assertNoCloudUrlInRenderState(nextRender)) return;
+      canonicalSnapshotRef.current = nextCanonical;
+      setV2Snapshot(nextRender);
+      setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, nextCanonical, { authContext });
     } finally {
       setOperation(null);
     }
