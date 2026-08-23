@@ -19,8 +19,9 @@ test('acceptance metadata is forwarded without a strict business branch', () => 
 });
 
 test('Today persists only the Home Light snapshot', () => {
-  assert.match(source, /setUserStorageSync\(TODAY_V2_SNAPSHOT_KEY, nextSnapshot/);
-  assert.match(source, /setUserStorageSync\(TODAY_V2_SNAPSHOT_KEY, next/);
+  assert.match(source, /setUserStorageSync\(TODAY_V2_SNAPSHOT_KEY, canonicalSnapshot/);
+  assert.match(source, /setUserStorageSync\(TODAY_V2_SNAPSHOT_KEY, nextCanonical/);
+  assert.match(source, /readTodayV2Snapshot|toTodayV2Snapshot/);
   assert.match(source, /HomeLightCardV2/);
 });
 

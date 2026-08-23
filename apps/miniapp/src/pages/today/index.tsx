@@ -1219,14 +1219,38 @@ export default function TodayPage() {
                 <SwiperItem key={card.outfitKey} className="outfit-slide">
                   <HomeLightCardV2
                     card={card}
-                    onFavorite={(value) => { void handleV2Favorite(value); }}
-                    onWear={(value) => { void handleV2Wear(value); }}
+                    position={card.position}
+                    total={v2Snapshot.cards.length}
                     onDetail={openV2Detail}
                   />
                 </SwiperItem>
               ))}
             </Swiper>
-            <View className="swiper-footer"><Text>{currentIndex + 1} / {v2Snapshot.cards.length}</Text></View>
+            <View className="swiper-footer">
+              <View className="pagination-dots">
+                {v2Snapshot.cards.map((card, index) => (
+                  <View key={card.outfitKey} className={`pagination-dot ${index === currentIndex ? 'active' : ''}`} />
+                ))}
+              </View>
+            </View>
+            {v2Snapshot.cards[currentIndex] && (() => {
+              const currentCard = v2Snapshot.cards[currentIndex];
+              return (
+                <>
+                  <View className="outfit-actions" onClick={(event) => event.stopPropagation()}>
+                    <View className={`action-btn ${currentCard.isFavorite ? 'active' : ''} ${operation === 'favorite' ? 'disabled' : ''}`} onClick={() => { void handleV2Favorite(currentCard); }}>
+                      <Text className="action-text">{currentCard.isFavorite ? '已收藏' : '收藏'}</Text>
+                    </View>
+                    <View className={`action-btn primary ${operation === 'wear' ? 'disabled' : ''}`} onClick={() => { void handleV2Wear(currentCard); }}>
+                      <Text className="action-text">{operation === 'wear' ? '记录中...' : currentCard.isWornToday ? '今天穿过' : '穿他'}</Text>
+                    </View>
+                    <View className="action-btn detail" onClick={() => openV2Detail(currentCard)}>
+                      <Text className="action-text">详情</Text>
+                    </View>
+                  </View>
+                </>
+              );
+            })()}
             <View className={`refresh-btn ${v2Snapshot.core.countContract.exhausted ? 'disabled' : ''}`} onClick={() => { if (!v2Snapshot.core.countContract.exhausted) void handleRefresh(); }}><Text className="refresh-text">{v2Snapshot.core.countContract.exhausted ? '这一轮已看完' : '换一批灵感'}</Text></View>
           </View>
         )}
