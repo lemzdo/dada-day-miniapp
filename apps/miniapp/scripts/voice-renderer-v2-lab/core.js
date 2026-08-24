@@ -9,7 +9,7 @@ const PERSONA_VERSION = 'xiaoda-friend-stylist-v2';
 const MODEL_ALLOWLIST = Object.freeze({
   max: 'qwen3.7-max',
   plus: 'qwen3.7-plus',
-  flash: 'qwen-flash',
+  flash: 'qwen3.7-flash',
 });
 const GENERATION_PARAMETERS = Object.freeze({
   temperature: 0.3,

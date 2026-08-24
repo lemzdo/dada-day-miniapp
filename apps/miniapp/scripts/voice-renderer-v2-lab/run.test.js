@@ -51,5 +51,15 @@ test('batch runner repeats Max and Plus with equivalent controlled requests and 
   assert.equal(fs.existsSync(path.join(outputDir, 'raw-runs.json')), true);
   assert.equal(artifact.summary.max.automatedFail, 0);
   assert.equal(artifact.summary.plus.automatedFail, 0);
+  assert.equal(artifact.summary.max.contractPassCalls, 2);
+  assert.equal(artifact.summary.max.validatorPassCalls, 2);
+  assert.equal(artifact.summary.max.factualViolationCount, 0);
+  assert.equal(artifact.summary.max.parseRetryCount, 0);
+  assert.equal(artifact.calls.every((call) => call.thinkingMode === 'disabled'), true);
+  assert.equal(artifact.calls.every((call) => call.inputChars > call.systemPromptChars), true);
+  assert.equal(artifact.calls.every((call) => call.userPayloadChars > 0), true);
+  assert.equal(artifact.calls.every((call) => call.outputChars > 0), true);
+  assert.equal(artifact.calls.every((call) => call.inputTokens === 1), true);
+  assert.equal(artifact.calls.every((call) => call.outputTokens === 1), true);
   assert.equal(artifact.manualReviewRequired, true);
 });

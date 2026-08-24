@@ -44,16 +44,29 @@ async function run({
         const goldPlan = goldPlans.find((plan) => plan.planId === output.planId);
         return { caseId: goldPlan.caseId, planId: goldPlan.planId, ...validateRendererOutput(output, goldPlan) };
       });
+      const usage = response.body?.usage || null;
+      const validatorFailures = checks.flatMap((check) => check.failures);
       calls.push({
         modelAlias,
         requestedModel: request.model,
         returnedModel: response.body?.model || null,
+        thinkingMode: request.enable_thinking === false ? 'disabled' : 'enabled',
         repetition,
         startedAt,
         latencyMs: Date.now() - started,
         ttftMs: Number(response.ttftMs) || Date.now() - started,
         httpStatus: response.status,
-        usage: response.body?.usage || null,
+        inputChars: request.messages.reduce((sum, message) => sum + message.content.length, 0),
+        systemPromptChars: request.messages[0].content.length,
+        userPayloadChars: request.messages[1].content.length,
+        outputChars: typeof rawContent === 'string' ? rawContent.length : 0,
+        inputTokens: Number(usage?.prompt_tokens) || null,
+        outputTokens: Number(usage?.completion_tokens) || null,
+        contractPass: true,
+        validatorPass: checks.every((check) => check.pass),
+        factualViolationCount: validatorFailures.filter((failure) => failure === 'UNSUPPORTED_FACT').length,
+        parseRetryCount: 0,
+        usage,
         requestFingerprint: hash({ modelAlias: 'controlled-variable', ...request, model: 'controlled-variable' }),
         outputs,
         checks,
@@ -105,6 +118,10 @@ function buildArtifact(goldPlans, inputs, calls, repetitions, modelAliases = Obj
       return [alias, {
         calls: selected.length,
         outputs: selected.flatMap((call) => call.outputs).length,
+        contractPassCalls: selected.filter((call) => call.contractPass).length,
+        validatorPassCalls: selected.filter((call) => call.validatorPass).length,
+        factualViolationCount: selected.reduce((sum, call) => sum + call.factualViolationCount, 0),
+        parseRetryCount: selected.reduce((sum, call) => sum + call.parseRetryCount, 0),
         automatedPass: checks.filter((check) => check.pass).length,
         automatedFail: checks.filter((check) => !check.pass).length,
       }];

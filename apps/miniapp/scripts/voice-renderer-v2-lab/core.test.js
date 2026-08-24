@@ -44,7 +44,7 @@ test('Renderer input is minimal and strips candidates, secondary, scores, and ra
   }
 });
 
-test('Max, Plus, and Flash requests differ only by model and keep generation parameters fixed', () => {
+test('Max, Plus, and current Flash requests differ only by model and keep generation parameters fixed', () => {
   const inputs = buildGoldPlans().map(buildRendererInput);
   const max = buildRequestBody('max', inputs);
   const plus = buildRequestBody('plus', inputs);
@@ -52,6 +52,7 @@ test('Max, Plus, and Flash requests differ only by model and keep generation par
   assert.equal(max.model, MODEL_ALLOWLIST.max);
   assert.equal(plus.model, MODEL_ALLOWLIST.plus);
   assert.equal(flash.model, MODEL_ALLOWLIST.flash);
+  assert.equal(flash.model, 'qwen3.7-flash');
   assert.deepEqual({ ...max, model: 'same' }, { ...plus, model: 'same' });
   assert.deepEqual({ ...max, model: 'same' }, { ...flash, model: 'same' });
   for (const [key, value] of Object.entries(GENERATION_PARAMETERS)) {
