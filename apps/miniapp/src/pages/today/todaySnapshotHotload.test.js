@@ -21,7 +21,7 @@ test('Today hot-load keeps background weather refresh from owning the full-scree
     todaySource.indexOf('async function handleWeatherChange('),
     todaySource.indexOf('function goToWardrobe()', todaySource.indexOf('async function handleWeatherChange(')),
   );
-  const backgroundRequest = weatherHandler.indexOf('silent: v2SnapshotRef.current?.cards.length === 8');
+  const backgroundRequest = weatherHandler.indexOf('silent: Boolean(v2SnapshotRef.current?.cards.length)');
   assert.ok(backgroundRequest >= 0, 'weather refresh must be silent after cards are present');
   assert.match(weatherHandler.slice(backgroundRequest), /trigger: options\.forceRefresh \? 'weather-force' : 'weather'/);
 });
@@ -29,7 +29,7 @@ test('Today hot-load keeps background weather refresh from owning the full-scree
 test('Today entry restore retains existing snapshot validity gates', () => {
   assert.match(adapterSource, /snapshot\.runtimeVersion !== 'today-runtime-v2'/);
   assert.match(adapterSource, /snapshot\.inputIdentity !== expectedInputIdentity/);
-  assert.match(adapterSource, /snapshot\.core\.countContract\?\.returnedCardCount !== 8/);
+  assert.match(adapterSource, /snapshot\.core\.countContract\?\.returnedCardCount !== snapshot\.core\.cardCount/);
   assert.match(todaySource, /commitCanonicalSnapshotForRender\(snapshot/);
 });
 
@@ -47,7 +47,7 @@ test('Background recommendation failure retains already visible cards', () => {
     todaySource.indexOf('async function fetchRecommendations('),
     todaySource.indexOf('function handleRefresh()', todaySource.indexOf('async function fetchRecommendations(')),
   );
-  assert.match(fetch, /if \(!\(v2SnapshotRef\.current\?\.cards\.length === 8\)\) \{/);
+  assert.match(fetch, /if \(!\(v2SnapshotRef\.current\?\.cards\.length\)\) \{/);
   assert.match(fetch, /setRecommendationNotice\(/);
   assert.match(fetch, /else \{/);
 });

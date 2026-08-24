@@ -809,16 +809,25 @@ function assertHomeLightV2(value: unknown): RecommendationHomeLightResponseV2 {
     || !response.batch || !response.light
     || response.batch.runtimeVersion !== RECOMMENDATION_V2_RUNTIME_VERSION
     || response.light.runtimeVersion !== RECOMMENDATION_V2_RUNTIME_VERSION
-    || response.batch.cardCount !== 8
+    || !Number.isInteger(response.batch.cardCount) || response.batch.cardCount < 0 || response.batch.cardCount > 8
     || !response.batch.contentHash
     || !response.batch.commitToken
     || response.batch.countContract?.requestedCardCount !== 8
-    || response.batch.countContract?.returnedCardCount !== 8
+    || !Number.isInteger(response.batch.countContract?.returnedCardCount)
+    || response.batch.countContract.returnedCardCount !== response.batch.cardCount
     || !Array.isArray(response.batch.order)
-    || response.batch.order.length !== 8
+    || response.batch.order.length !== response.batch.cardCount
+    || new Set(response.batch.order).size !== response.batch.cardCount
     || !Array.isArray(response.light.cards)
-    || response.light.cards.length !== 8) {
+    || response.light.cards.length !== response.batch.cardCount) {
     throw new Error('V2 response contract invalid');
+  }
+  const countContract = response.batch.countContract;
+  if (typeof countContract.limited !== 'boolean'
+    || typeof countContract.exhausted !== 'boolean'
+    || countContract.limited !== (countContract.returnedCardCount < 8)
+    || (countContract.returnedCardCount < 8 && countContract.exhausted !== true)) {
+    throw new Error('V2 response count contract invalid');
   }
   const order = response.batch.order;
   response.light.cards.forEach((card, index) => {

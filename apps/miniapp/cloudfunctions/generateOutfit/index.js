@@ -301,14 +301,14 @@ async function generateRecommendationV2({
   now,
   diagnostics,
 }) {
-  if (!Array.isArray(recommendations) || recommendations.length !== 8) {
-    throw createBusinessError('V2_RECOMMENDATION_COUNT_INVALID', 'V2 requires exactly eight selected recommendations');
+  if (!Array.isArray(recommendations) || recommendations.length > 8) {
+    throw createBusinessError('V2_RECOMMENDATION_COUNT_INVALID', 'V2 supports at most eight selected recommendations');
   }
   const batchId = readString(event.v2BatchId) || `v2-${createRecommendationBatchId(now)}`;
   const order = recommendations.map((recommendation) => readString(recommendation.outfitKey)
     || signature((recommendation.items || []).map((item) => item?._id).filter(Boolean)));
-  if (new Set(order).size !== 8 || order.some((key) => !key)) {
-    throw createBusinessError('V2_RECOMMENDATION_IDENTITY_INVALID', 'V2 requires eight unique outfit identities');
+  if (new Set(order).size !== recommendations.length || order.some((key) => !key)) {
+    throw createBusinessError('V2_RECOMMENDATION_IDENTITY_INVALID', 'V2 requires unique outfit identities');
   }
   const reasonPreparationStartedAt = Date.now();
   const safeReasons = compileRecommendationReasonsV2({
@@ -317,7 +317,7 @@ async function generateRecommendationV2({
     weather: weatherSnapshot,
   });
   diagnostics.timings.reasonPreparationMs = Date.now() - reasonPreparationStartedAt;
-  if (!Array.isArray(safeReasons) || safeReasons.length !== 8
+  if (!Array.isArray(safeReasons) || safeReasons.length !== recommendations.length
     || safeReasons.some((entry) => typeof entry.reason !== 'string' || !entry.reason.trim())) {
     throw createBusinessError('V2_SAFE_REASON_INCOMPLETE', 'V2 safe reasons must cover all cards');
   }
@@ -365,9 +365,9 @@ async function generateRecommendationV2({
     generatedAt: now,
     countContract: {
       requestedCardCount: 8,
-      returnedCardCount: 8,
-      limited: recommendations.limited === true,
-      exhausted: recommendations.exhausted === true,
+      returnedCardCount: recommendations.length,
+      limited: recommendations.limited === true || recommendations.length < 8,
+      exhausted: recommendations.exhausted === true || recommendations.length < 8,
     },
     order,
   };

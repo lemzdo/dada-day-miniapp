@@ -48,7 +48,7 @@ function projectWeatherSnapshot(weather = {}) {
 }
 
 function projectHomeLightV2(outfits = [], batchId = '') {
-  if (!Array.isArray(outfits) || outfits.length !== V2_CARD_COUNT) throw new Error('V2_HOME_LIGHT_REQUIRES_EIGHT_CARDS');
+  if (!Array.isArray(outfits) || outfits.length > V2_CARD_COUNT) throw new Error('V2_HOME_LIGHT_CARD_COUNT_INVALID');
   if (!stringValue(batchId)) throw new Error('V2_HOME_LIGHT_BATCH_ID_REQUIRED');
   return {
     runtimeVersion: RUNTIME_VERSION,
@@ -60,14 +60,18 @@ function projectHomeLightV2(outfits = [], batchId = '') {
 
 function projectBatchCoreV2(input = {}) {
   const order = Array.isArray(input.order) ? input.order.map(stringValue).filter(Boolean) : [];
-  if (order.length !== V2_CARD_COUNT) throw new Error('V2_BATCH_CORE_REQUIRES_EIGHT_ORDER_KEYS');
+  if (order.length > V2_CARD_COUNT) throw new Error('V2_BATCH_CORE_ORDER_COUNT_INVALID');
   const countContract = {
     requestedCardCount: Number(input.countContract?.requestedCardCount),
     returnedCardCount: Number(input.countContract?.returnedCardCount),
     limited: input.countContract?.limited === true,
     exhausted: input.countContract?.exhausted === true,
   };
-  if (countContract.requestedCardCount !== 8 || countContract.returnedCardCount !== 8) throw new Error('V2_BATCH_CORE_COUNT_INVALID');
+  if (countContract.requestedCardCount !== 8 || !Number.isInteger(countContract.returnedCardCount)
+    || countContract.returnedCardCount < 0 || countContract.returnedCardCount > 8
+    || countContract.returnedCardCount !== order.length
+    || countContract.limited !== (countContract.returnedCardCount < 8)
+    || (countContract.returnedCardCount < 8 && countContract.exhausted !== true)) throw new Error('V2_BATCH_CORE_COUNT_INVALID');
   return {
     runtimeVersion: RUNTIME_VERSION,
     schemaVersion: SCHEMA_VERSION,
@@ -85,7 +89,7 @@ function projectBatchCoreV2(input = {}) {
     generatedAt: stringValue(input.generatedAt),
     countContract,
     ...(stringValue(input.notice) ? { notice: stringValue(input.notice) } : {}),
-    cardCount: 8,
+    cardCount: order.length,
     order,
   };
 }
