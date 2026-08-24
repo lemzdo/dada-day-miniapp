@@ -19,7 +19,7 @@ for (const mode of ['all-existing', 'mixed', 'all-new']) {
   test(`V2 home light fixture keeps the same eight-card contract for ${mode}`, () => {
     const result = projectHomeLightV2(baseCards(mode), `batch-${mode}`);
     assert.equal(result.cards.length, 8);
-    assert.deepEqual(Object.keys(result.cards[0]).sort(), ['clothingIds', 'displayTitle', 'isFavorite', 'isWornToday', 'items', 'outfitKey', 'position', 'referenceId', 'styleTags', 'todayReason'].sort());
+    assert.deepEqual(Object.keys(result.cards[0]).sort(), ['aiState', 'clothingIds', 'copySource', 'displayTitle', 'isFavorite', 'isWornToday', 'items', 'outfitKey', 'position', 'referenceId', 'styleTags', 'todayReason'].sort());
     assert.equal(result.cards[0].styleTags.length, 3);
     assert.equal('scores' in result.cards[0], false);
     assert.equal('hidden' in result.cards[0].items[0], false);

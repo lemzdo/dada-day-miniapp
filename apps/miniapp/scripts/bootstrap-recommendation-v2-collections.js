@@ -2,6 +2,8 @@
 
 const COLLECTIONS = Object.freeze([
   'recommendation_batches_v2',
+  'recommendation_copy_jobs_v2',
+  'recommendation_canonical_copy_cache_v2',
 ]);
 
 function normalizeCollectionNames(result) {

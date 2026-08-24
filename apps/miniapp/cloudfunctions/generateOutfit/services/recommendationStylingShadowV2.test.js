@@ -231,7 +231,7 @@ test('Shadow fails open without changing the recommendation path', () => {
 test('generateOutfit diagnostic Narrative Plans are ready before candidate-pool persistence', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'index.js'), 'utf8');
   const recommendationIndex = source.indexOf('recommendations = generateRuleRecommendations({');
-  const shadowIndex = source.indexOf('const shadow = runRecommendationStylingShadowV2Safely({');
+  const shadowIndex = source.indexOf('const stylingPlans = runRecommendationStylingShadowV2Safely({');
   const persistenceIndex = source.indexOf('candidatePoolPersistPromise = Promise.resolve()', shadowIndex);
   assert.ok(recommendationIndex > 0);
   assert.ok(shadowIndex > recommendationIndex);

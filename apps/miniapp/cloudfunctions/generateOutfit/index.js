@@ -12,6 +12,24 @@ const {
   runRecommendationStylingShadowV2Safely,
 } = require('./services/recommendationStylingShadowV2');
 const {
+  PRODUCTION_MODEL,
+  PRODUCTION_PROMPT_VERSION,
+  PRODUCTION_RENDERER_VERSION,
+  buildProductionRendererEntry,
+  consumeProductionRendererStream,
+} = require('./services/recommendationVoiceRendererProductionV2');
+const {
+  acquireRecommendationCopyJob,
+  ensureRecommendationCopyCollections,
+  finishRecommendationCopyJob,
+  persistValidatedCanonicalCopy,
+  publishCachedCanonicalCopies,
+  prepareRecommendationCopyJob,
+  readCachedCopies,
+  readRecommendationCopyOverlay,
+} = require('./services/recommendationCopyProductionJobV2');
+const { dispatchScfEvent } = require('./services/scfAsyncEventDispatcher');
+const {
   buildRecommendationVoiceRendererExecution,
   runRecommendationVoiceRendererShadowV2Safely,
 } = require('./services/recommendationVoiceRendererShadowV2');
@@ -204,7 +222,7 @@ const RECOMMENDATION_SCENE_LABELS = Object.freeze({
   sport: '运动',
 });
 
-exports.main = async (event = {}) => {
+exports.main = async (event = {}, context = {}) => {
   const requestMonotonicOriginAt = process.hrtime.bigint();
   const action = event.action || 'generate';
   const handlerStartedAt = Date.now();
@@ -219,6 +237,18 @@ exports.main = async (event = {}) => {
     ? createRecommendationDiagnostics(event, handlerStartedAt, requestMonotonicOriginAt)
     : null;
   try {
+    if (action === 'bootstrapRecommendationCopyStorageV2') {
+      if (event.confirmRendererVersion !== PRODUCTION_RENDERER_VERSION) {
+        throw createBusinessError('COPY_STORAGE_BOOTSTRAP_CONFIRMATION_REQUIRED', 'renderer version confirmation is required');
+      }
+      return ok(await ensureRecommendationCopyCollections(db));
+    }
+    if (action === 'materializeRecommendationCopyJobV2') {
+      return ok(await runRecommendationCopyJobV2(event));
+    }
+    if (action === 'canonicalCopyOverlayV2') {
+      return ok(await getRecommendationCopyOverlayV2(event));
+    }
     if (action === 'detailV2') {
       return ok(await getOutfitDetailV2(event));
     }
@@ -244,7 +274,7 @@ exports.main = async (event = {}) => {
       return ok(await materializeRecommendationCanonicalCopyV2(event));
     }
 
-    const data = await generate(event, recommendationDiagnostics);
+    const data = await generate(event, recommendationDiagnostics, context);
     const response = ok(data);
     emitRecommendationServerDone({
       diagnostics: recommendationDiagnostics,
@@ -291,6 +321,8 @@ function buildRecommendationV2TodayReason(recommendation, safeReason) {
 async function generateRecommendationV2({
   event,
   recommendations,
+  batchId,
+  copyJob,
   openid,
   sceneContract,
   scene,
@@ -305,7 +337,6 @@ async function generateRecommendationV2({
   if (!Array.isArray(recommendations) || recommendations.length > 8) {
     throw createBusinessError('V2_RECOMMENDATION_COUNT_INVALID', 'V2 supports at most eight selected recommendations');
   }
-  const batchId = readString(event.v2BatchId) || `v2-${createRecommendationBatchId(now)}`;
   const order = recommendations.map((recommendation) => readString(recommendation.outfitKey)
     || signature((recommendation.items || []).map((item) => item?._id).filter(Boolean)));
   if (new Set(order).size !== recommendations.length || order.some((key) => !key)) {
@@ -333,11 +364,21 @@ async function generateRecommendationV2({
     isWornToday: Boolean(wornMap.get(outfitKey)) || recommendations[index].isWornToday === true,
   }));
   const cardCompilationStartedAt = Date.now();
+  const initialCopiesByOutfitKey = new Map((Array.isArray(copyJob?.initialCopies) ? copyJob.initialCopies : [])
+    .map((copy) => [copy.outfitKey, copy]));
   const light = projectHomeLightV2(recommendations.map((recommendation, index) => ({
+    ...(() => {
+      const canonical = initialCopiesByOutfitKey.get(order[index]);
+      return {
+        todayReason: canonical?.text || buildRecommendationV2TodayReason(recommendation, safeReasons[index].reason),
+        copySource: canonical ? 'ai_cache' : 'safe',
+        aiState: canonical ? 'ready' : copyJob?.dispatch?.accepted ? 'materializing' : 'failed',
+        ...(canonical?.availableAt ? { canonicalAvailableAt: canonical.availableAt } : {}),
+      };
+    })(),
     referenceId: stableReferenceId(openid, order[index]),
     outfitKey: order[index],
     displayTitle: recommendation.displayTitle || recommendation.title || '今日搭配',
-    todayReason: buildRecommendationV2TodayReason(recommendation, safeReasons[index].reason),
     styleTags: recommendation.styleTags,
     clothingIds: (recommendation.items || []).map((item) => item?._id).filter(Boolean),
     items: (recommendation.items || []).map((item) => {
@@ -594,7 +635,7 @@ function measureCanonicalBatchInput(records = []) {
   return { totalBytes, structuralBytes: 0, measuredBytes: totalBytes, cardBytes: records.map(serializedBytes), topLevelFields, primaryCategories: [], unclassifiedFields: topLevelFields.map((item) => item.field), classificationMethod: 'native_light_observation_v1', nestedHotspots: [], nestedHotspotsAreNonAdditive: true };
 }
 
-async function generate(event, diagnostics = createRecommendationDiagnostics(event)) {
+async function generate(event, diagnostics = createRecommendationDiagnostics(event), scfContext = {}) {
   const requestParseStartedAt = diagnostics.startedAt;
   diagnostics.stage = 'loadWardrobe';
   recordServerPhase(diagnostics, 'requestParse', requestParseStartedAt);
@@ -733,17 +774,45 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
       debugCandidatePoolProjection: event.debugCandidatePoolProjection === true,
     };
   }
-  // C2 is diagnostic-only: run the existing Narrative Plan shadow synchronously
-  // after stable selection/materialization and before persistence is scheduled.
-  if (diagnostics?.diagnosticsRequested === true) {
-    const shadow = runRecommendationStylingShadowV2Safely({
-      recommendations,
-      scene,
-      weather: weatherSnapshot,
-      recommendationInstanceSeed: diagnostics.auditId || 'diagnostic',
-      telemetrySampleRate: 0,
-    });
-    recordNarrativePlansReady(diagnostics, recommendations, shadow);
+  // C2: selection/materialization and card order are frozen. Narrative Plans are
+  // complete and bound before persistence is scheduled, so only async dispatch
+  // acceptance—not provider completion—may delay the recommendation response.
+  const v2BatchId = readString(event.v2BatchId) || `v2-${createRecommendationBatchId(now)}`;
+  const stylingPlans = runRecommendationStylingShadowV2Safely({
+    recommendations,
+    scene,
+    weather: weatherSnapshot,
+    recommendationInstanceSeed: diagnostics.auditId || v2BatchId,
+    telemetrySampleRate: 0,
+  });
+  recordNarrativePlansReady(diagnostics, recommendations, stylingPlans);
+  let copyJob = null;
+  if (recommendations.length > 0
+    && stylingPlans?.diagnostics?.status === 'completed'
+    && stylingPlans.plans.length === recommendations.length) {
+    try {
+      const entries = stylingPlans.plans.map((plan, position) => buildProductionRendererEntry(
+        plan,
+        recommendations[position],
+        position,
+        recommendations[position]?.outfitKey,
+      ));
+      copyJob = await prepareRecommendationCopyJob({
+        database: db,
+        openid: OPENID,
+        batchId: v2BatchId,
+        inputIdentityHash: candidatePoolIdentity.identityHash,
+        rendererVersion: PRODUCTION_RENDERER_VERSION,
+        entries,
+        dispatch: (payload) => dispatchScfEvent({ event: payload, context: scfContext }),
+      });
+    } catch (error) {
+      console.warn('[RecommendationCopyDispatchFailOpen]', {
+        auditId: diagnostics.auditId,
+        batchId: v2BatchId,
+        failureCode: getRecommendationErrorCode(error),
+      });
+    }
   }
   if (candidatePoolPersistenceInput) {
     candidatePoolPersistPromise = Promise.resolve().then(() => persistGeneratedCandidatePool({
@@ -760,10 +829,25 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
   if (candidatePoolPersistenceInput) {
     await candidatePoolPersistPromise;
   }
+  if (copyJob?.jobId) {
+    try {
+      const latestCopyOverlay = await readRecommendationCopyOverlay(
+        db,
+        OPENID,
+        v2BatchId,
+        PRODUCTION_RENDERER_VERSION,
+      );
+      if (latestCopyOverlay.copies.length > 0) {
+        copyJob = { ...copyJob, initialCopies: latestCopyOverlay.copies };
+      }
+    } catch { /* A late cache read is optional; Safe Copy remains the response fallback. */ }
+  }
   diagnostics.executionMode = executionMode;
   return generateRecommendationV2({
     event,
     recommendations,
+    batchId: v2BatchId,
+    copyJob,
     openid: OPENID,
     sceneContract,
     scene,
@@ -875,6 +959,82 @@ async function materializeRecommendationCanonicalCopyV2(event, {
     latencyMs: Number(result.latencyMs) || 0,
     ttftMs: Number(result.ttftMs) || 0,
   };
+}
+
+async function runRecommendationCopyJobV2(event, {
+  database = db,
+  consumeStream = consumeProductionRendererStream,
+} = {}) {
+  const jobId = readString(event.jobId);
+  if (!jobId || jobId.length > 96) throw createBusinessError('COPY_JOB_ID_REQUIRED', 'jobId is required');
+  const acquired = await acquireRecommendationCopyJob(database, jobId, readString(event.dispatchToken));
+  if (!acquired.acquired) {
+    return {
+      version: PRODUCTION_RENDERER_VERSION,
+      status: acquired.status,
+      jobId,
+      providerRequestCount: 0,
+    };
+  }
+  const { job, leaseToken } = acquired;
+  const cachedNow = await readCachedCopies(database, job._openid, job.rendererVersion, job.entries);
+  await publishCachedCanonicalCopies(database, job, cachedNow);
+  const cachedIds = new Set(cachedNow.map((copy) => copy.cacheId));
+  const misses = job.entries.filter((entry) => !cachedIds.has(entry.cacheId));
+  let readyCount = Math.max(0, cachedNow.length - (Number(job.cacheHitCount) || 0));
+  let invalidCount = 0;
+  let providerRequestCount = 0;
+  let failureCode = '';
+  try {
+    if (misses.length > 0) {
+      const summary = await consumeStream({
+        preparedEntries: misses.map((entry) => entry.preparedEntry),
+        onValidated: async (copy) => {
+          const entry = misses.find((candidate) => candidate.preparedEntry?.plan?.planId === copy.planId);
+          if (!entry || copy.renderInputFingerprint !== entry.renderInputFingerprint) {
+            invalidCount += 1;
+            return;
+          }
+          try {
+            await persistValidatedCanonicalCopy(database, job, entry, copy);
+            readyCount += 1;
+          } catch {
+            invalidCount += 1;
+          }
+        },
+        onInvalid: async () => { invalidCount += 1; },
+      });
+      providerRequestCount = Number(summary?.requestCount ?? summary?.providerCalls) || 0;
+      failureCode = readString(summary?.failureCode);
+    }
+  } catch (error) {
+    failureCode = getRecommendationErrorCode(error);
+  }
+  const finished = await finishRecommendationCopyJob(database, job, leaseToken, {
+    readyCount,
+    invalidCount,
+    failureCode,
+  });
+  return {
+    version: PRODUCTION_RENDERER_VERSION,
+    model: PRODUCTION_MODEL,
+    promptVersion: PRODUCTION_PROMPT_VERSION,
+    status: finished.status || 'failed_open',
+    jobId,
+    providerRequestCount,
+    readyCount: finished.readyCount || 0,
+    invalidCount: finished.invalidCount || 0,
+    failureCode,
+  };
+}
+
+async function getRecommendationCopyOverlayV2(event, database = db) {
+  const { OPENID } = cloud.getWXContext();
+  const batchId = readString(event.recommendationBatchId || event.batchId);
+  if (!batchId || batchId.length > 160) {
+    throw createBusinessError('CANONICAL_OVERLAY_BATCH_ID_REQUIRED', 'recommendationBatchId is required');
+  }
+  return readRecommendationCopyOverlay(database, OPENID, batchId, PRODUCTION_RENDERER_VERSION);
 }
 
 async function persistCanonicalCopyMaterialization(database, record, update) {
@@ -1121,12 +1281,20 @@ async function loadV2OutfitPayload(event) {
   const clothes = await loadClothesByIds(OPENID, clothingIds);
   const itemsSnapshot = clothes.map((item) => snapshotFromClothing(item, null, item._id));
   const core = storedBatch.envelope.core;
+  const copyOverlay = await readRecommendationCopyOverlay(
+    db,
+    OPENID,
+    batchId,
+    PRODUCTION_RENDERER_VERSION,
+  );
+  const canonicalCopy = copyOverlay.copies.find((copy) => copy.outfitKey === outfitKey);
+  const reason = canonicalCopy?.text || envelopeCard.todayReason;
   return {
     id: undefined,
     title: envelopeCard.displayTitle,
     displayTitle: envelopeCard.displayTitle,
-    reason: envelopeCard.todayReason,
-    todayReason: envelopeCard.todayReason,
+    reason,
+    todayReason: reason,
     styleTags: envelopeCard.styleTags,
     outfitKey,
     clothingIds,
@@ -1140,6 +1308,7 @@ async function loadV2OutfitPayload(event) {
     weatherMode: core.weatherMode,
     recommendationBatchId: core.batchId,
     batchId: core.batchId,
+    ...(canonicalCopy ? { canonicalCopy } : {}),
   };
 }
 
@@ -1152,6 +1321,7 @@ async function getOutfitDetailV2(event) {
     outfitKey: event.outfitKey,
     detailIdentityReady: true,
     persistedDetailDocumentReady: false,
+    ...(payload.canonicalCopy ? { canonicalCopy: payload.canonicalCopy } : {}),
     detail: {
       outfitKey: payload.outfitKey,
       clothingIds: payload.clothingIds,

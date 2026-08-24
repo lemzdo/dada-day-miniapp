@@ -47,6 +47,9 @@ export function toTodayV2Snapshot(
       })),
       isFavorite: card.isFavorite,
       isWornToday: card.isWornToday,
+      copySource: card.copySource,
+      aiState: card.aiState,
+      canonicalAvailableAt: card.canonicalAvailableAt,
     })),
     savedAt: new Date().toISOString(),
   };

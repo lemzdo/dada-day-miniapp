@@ -35,6 +35,16 @@ export function applyOutfitDetailV2Load(
   if (response.batchId !== state.batchId || response.outfitKey !== state.outfitKey) return state;
   return {
     ...state,
+    shell: response.canonicalCopy
+      && response.canonicalCopy.outfitKey === state.outfitKey
+      ? {
+        ...state.shell,
+        todayReason: response.canonicalCopy.text,
+        copySource: 'ai_cache',
+        aiState: 'ready',
+        canonicalAvailableAt: response.canonicalCopy.availableAt,
+      }
+      : state.shell,
     detail: response.detail,
     detailIdentityReady: true,
     persistedDetailDocumentReady: response.persistedDetailDocumentReady,

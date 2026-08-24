@@ -12,9 +12,9 @@ import {
 } from '@/lib/cacheInvalidation';
 import {
   getCloudResponseTransportDiagnostics,
+  getCloudRecommendationCanonicalOverlayV2,
   isDevelopV2ColdTelemetryEnvironment,
   isRecommendationDiagnosticEnvironment,
-  materializeCloudRecommendationCopyV2,
   updateCloudOutfitFavoriteV2,
   updateCloudOutfitWearV2,
 } from '@/lib/cloud';
@@ -114,6 +114,10 @@ import {
   TODAY_V2_SNAPSHOT_KEY,
   type TodayV2Snapshot,
 } from './todayV2Adapter';
+import {
+  applyCanonicalCopyOverlay,
+  runBoundedCanonicalCopyRefresh,
+} from './canonicalCopyOverlayCore';
 
 interface TapEvent {
   stopPropagation: () => void;
@@ -296,6 +300,12 @@ export default function TodayPage() {
   const v2SnapshotRef = useRef<TodayV2Snapshot | null>(null);
   const canonicalSnapshotRef = useRef<TodayV2Snapshot | null>(null);
   const renderTraceContextRef = useRef<{ generation: string | number; batchId?: string } | null>(null);
+  const canonicalRefreshStartedRef = useRef<Set<string>>(new Set());
+  const canonicalRefreshEpochRef = useRef(0);
+  const initialRenderTracedRef = useRef<Set<string>>(new Set());
+  const firstCanonicalAvailableRef = useRef<Set<string>>(new Set());
+  const firstCanonicalAppliedRef = useRef<Set<string>>(new Set());
+  const pendingCanonicalAppliedRef = useRef<{ batchId: string; outfitKey: string; cardIndex: number } | null>(null);
   const [selectedSceneKey, setSelectedSceneKey] = useState<SceneKey>('home');
   const [currentIndex, setCurrentIndex] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -395,11 +405,93 @@ export default function TodayPage() {
 
   useEffect(() => {
     if (!v2Snapshot) return;
+    if (initialRenderTracedRef.current.has(v2Snapshot.batchId)) return;
+    initialRenderTracedRef.current.add(v2Snapshot.batchId);
+    const renderedAt = Date.now();
     traceTodayRuntime('render', renderTraceContextRef.current?.generation || 'pending', v2Snapshot.batchId, {
       itemCount: v2Snapshot.cards.reduce((sum, card) => sum + card.items.length, 0),
       firstSrc: v2Snapshot.cards[0]?.items[0]?.displayImageUrl,
+      renderedAt,
+    });
+    const firstAiCard = v2Snapshot.cards.find((card) => card.copySource === 'ai_cache' && card.aiState === 'ready');
+    if (firstAiCard) {
+      const cardIndex = v2Snapshot.cards.indexOf(firstAiCard);
+      firstCanonicalAvailableRef.current.add(v2Snapshot.batchId);
+      firstCanonicalAppliedRef.current.add(v2Snapshot.batchId);
+      traceTodayRuntime('ai:firstCanonicalAvailable', renderTraceContextRef.current?.generation || 'pending', v2Snapshot.batchId, {
+        outfitKey: firstAiCard.outfitKey,
+        cardIndex,
+        availableAt: firstAiCard.canonicalAvailableAt,
+        observedAt: renderedAt,
+        alreadyPresentAtRender: true,
+      });
+      traceTodayRuntime('ai:firstCanonicalApplied', renderTraceContextRef.current?.generation || 'pending', v2Snapshot.batchId, {
+        outfitKey: firstAiCard.outfitKey,
+        cardIndex,
+        appliedAt: renderedAt,
+        alreadyPresentAtRender: true,
+      });
+    }
+  }, [v2Snapshot]);
+
+  useEffect(() => {
+    const pending = pendingCanonicalAppliedRef.current;
+    if (!pending || !v2Snapshot || pending.batchId !== v2Snapshot.batchId
+      || firstCanonicalAppliedRef.current.has(pending.batchId)) return;
+    const card = v2Snapshot.cards[pending.cardIndex];
+    if (!card || card.outfitKey !== pending.outfitKey || card.copySource !== 'ai_cache') return;
+    firstCanonicalAppliedRef.current.add(pending.batchId);
+    pendingCanonicalAppliedRef.current = null;
+    traceTodayRuntime('ai:firstCanonicalApplied', renderTraceContextRef.current?.generation || 'pending', pending.batchId, {
+      outfitKey: pending.outfitKey,
+      cardIndex: pending.cardIndex,
+      appliedAt: Date.now(),
+      alreadyPresentAtRender: false,
     });
   }, [v2Snapshot]);
+
+  useEffect(() => {
+    if (!v2Snapshot || !isAuthenticated || canonicalRefreshStartedRef.current.has(v2Snapshot.batchId)) return;
+    const authContext = captureAuthContext();
+    if (!authContext) return;
+    const batchId = v2Snapshot.batchId;
+    const generation = renderTraceContextRef.current?.generation || 'pending';
+    const epoch = canonicalRefreshEpochRef.current;
+    canonicalRefreshStartedRef.current.add(batchId);
+    void runBoundedCanonicalCopyRefresh({
+      batchId,
+      read: getCloudRecommendationCanonicalOverlayV2,
+      isCurrent: () => epoch === canonicalRefreshEpochRef.current
+        && isAuthContextCurrent(authContext)
+        && v2SnapshotRef.current?.batchId === batchId,
+      onAvailable: (overlay) => {
+        if (firstCanonicalAvailableRef.current.has(batchId)) return;
+        const first = [...overlay.copies].sort((left, right) => left.cardIndex - right.cardIndex)[0];
+        if (!first) return;
+        firstCanonicalAvailableRef.current.add(batchId);
+        traceTodayRuntime('ai:firstCanonicalAvailable', generation, batchId, {
+          outfitKey: first.outfitKey,
+          cardIndex: first.cardIndex,
+          availableAt: first.availableAt,
+          observedAt: Date.now(),
+          alreadyPresentAtRender: false,
+        });
+      },
+      apply: (overlay) => {
+        const current = v2SnapshotRef.current;
+        const patched = applyCanonicalCopyOverlay(current, overlay);
+        if (!current || patched.snapshot === current || patched.applied.length === 0) return;
+        const first = [...patched.applied].sort((left, right) => left.cardIndex - right.cardIndex)[0];
+        if (first && !firstCanonicalAppliedRef.current.has(batchId)) {
+          pendingCanonicalAppliedRef.current = { batchId, outfitKey: first.outfitKey, cardIndex: first.cardIndex };
+        }
+        canonicalSnapshotRef.current = patched.snapshot;
+        v2SnapshotRef.current = patched.snapshot;
+        setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, patched.snapshot, { authContext });
+        setV2Snapshot(patched.snapshot);
+      },
+    });
+  }, [isAuthenticated, v2Snapshot?.batchId]);
 
   useLoad(() => {
     markTodayPerformanceStage('todayOnLoad');
@@ -468,6 +560,12 @@ export default function TodayPage() {
     loadingOwnerSeqRef.current = null;
     operationOwnerSeqRef.current = null;
     behaviorTrackerRef.current = createOutfitBehaviorExposureTracker();
+    canonicalRefreshEpochRef.current += 1;
+    canonicalRefreshStartedRef.current.clear();
+    initialRenderTracedRef.current.clear();
+    firstCanonicalAvailableRef.current.clear();
+    firstCanonicalAppliedRef.current.clear();
+    pendingCanonicalAppliedRef.current = null;
     setCurrentIndex(0);
     setLoading(false);
     setOperation(null);
@@ -484,6 +582,7 @@ export default function TodayPage() {
   }, []);
 
   useUnload(() => {
+    canonicalRefreshEpochRef.current += 1;
     restoreGenerationRef.current += 1;
     if (clientImageTimingRef.current?.timeoutId) clearTimeout(clientImageTimingRef.current.timeoutId);
     clientImageTimingRef.current = null;

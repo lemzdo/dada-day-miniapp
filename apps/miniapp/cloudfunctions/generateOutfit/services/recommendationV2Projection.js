@@ -34,6 +34,11 @@ function projectHomeLightCardV2(outfit = {}, position = 0) {
     items,
     isFavorite: outfit.isFavorite === true,
     isWornToday: outfit.isWornToday === true,
+    ...(outfit.copySource === 'ai_cache' ? { copySource: 'ai_cache' } : { copySource: 'safe' }),
+    aiState: ['ready', 'failed'].includes(outfit.aiState) ? outfit.aiState : 'materializing',
+    ...(stringValue(outfit.canonicalAvailableAt)
+      ? { canonicalAvailableAt: stringValue(outfit.canonicalAvailableAt) }
+      : {}),
   };
 }
 

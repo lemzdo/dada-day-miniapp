@@ -21,6 +21,7 @@ import type {
   UserClothingMaterial,
   WardrobeCapacity,
   RecommendationDetailResponseV2,
+  RecommendationCanonicalOverlayV2,
   RecommendationHomeLightResponseV2,
   RecommendationV2Response,
 } from '@starter-template/types';
@@ -939,6 +940,13 @@ export async function materializeCloudRecommendationCopyV2(recommendationBatchId
     ttftMs?: number;
   }>('generateOutfit', {
     action: 'materializeRecommendationCopyV2',
+    recommendationBatchId,
+  });
+}
+
+export async function getCloudRecommendationCanonicalOverlayV2(recommendationBatchId: string) {
+  return callCloudFunction<RecommendationCanonicalOverlayV2>('generateOutfit', {
+    action: 'canonicalCopyOverlayV2',
     recommendationBatchId,
   });
 }

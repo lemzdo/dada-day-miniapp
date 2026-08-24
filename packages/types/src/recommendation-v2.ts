@@ -23,6 +23,28 @@ export interface HomeLightCardV2 {
   items: HomeLightItemV2[];
   isFavorite: boolean;
   isWornToday: boolean;
+  copySource?: 'safe' | 'ai_cache';
+  aiState?: 'materializing' | 'ready' | 'failed';
+  canonicalAvailableAt?: string;
+}
+
+export interface RecommendationCanonicalOverlayCopyV2 {
+  outfitKey: string;
+  cardIndex: number;
+  text: string;
+  source: 'ai_cache';
+  availableAt: string;
+  rendererVersion: string;
+}
+
+export interface RecommendationCanonicalOverlayV2 {
+  version: string;
+  rendererVersion: string;
+  batchId: string;
+  status: 'not_found' | 'pending' | 'partial' | 'ready';
+  expectedCount?: number;
+  readyCount?: number;
+  copies: RecommendationCanonicalOverlayCopyV2[];
 }
 
 export interface HomeLightPayloadV2 {
@@ -68,6 +90,7 @@ export interface RecommendationDetailResponseV2 {
   detailIdentityReady: true;
   persistedDetailDocumentReady: boolean;
   detail: Record<string, unknown>;
+  canonicalCopy?: RecommendationCanonicalOverlayCopyV2;
 }
 
 export type RecommendationV2Response = RecommendationHomeLightResponseV2 | RecommendationDetailResponseV2;

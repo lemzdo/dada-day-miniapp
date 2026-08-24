@@ -6,8 +6,12 @@ const path = require('node:path');
 const test = require('node:test');
 const { COLLECTIONS } = require('./bootstrap-recommendation-v2-collections');
 
-test('V2 bootstrap provisions only the batch source collection', () => {
-  assert.deepEqual(COLLECTIONS, ['recommendation_batches_v2']);
+test('V2 bootstrap provisions the batch source and one canonical-copy worker/cache lifecycle', () => {
+  assert.deepEqual(COLLECTIONS, [
+    'recommendation_batches_v2',
+    'recommendation_copy_jobs_v2',
+    'recommendation_canonical_copy_cache_v2',
+  ]);
 });
 
 test('production source has no separate ref collection or helper references', () => {
