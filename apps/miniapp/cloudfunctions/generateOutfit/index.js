@@ -1071,7 +1071,7 @@ async function loadV2OutfitPayload(event) {
   }
   const clothes = await loadClothesByIds(OPENID, clothingIds);
   const itemsSnapshot = clothes.map((item) => snapshotFromClothing(item, null, item._id));
-  const core = envelope.core;
+  const core = storedBatch.envelope.core;
   return {
     id: undefined,
     title: envelopeCard.displayTitle,
