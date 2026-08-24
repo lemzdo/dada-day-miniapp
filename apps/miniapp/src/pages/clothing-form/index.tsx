@@ -136,7 +136,7 @@ export default function ClothingFormPage() {
     try {
       await updateCloudClothing(clothing.id, toUpdateInput(value));
       if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
-      await invalidateAfterWardrobeMutation({ authContext });
+      await invalidateAfterWardrobeMutation({ authContext, source: 'wardrobe_edit' });
       if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
 
       // 设置刷新标记

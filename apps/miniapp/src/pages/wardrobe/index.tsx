@@ -514,7 +514,7 @@ export default function WardrobePage() {
 
       const result = await deleteCloudClothing(item.id);
       if (!isCurrentAuthContext(authContext)) return;
-      await invalidateAfterWardrobeMutation({ authContext });
+      await invalidateAfterWardrobeMutation({ authContext, source: 'wardrobe_delete' });
       if (!isCurrentAuthContext(authContext)) return;
       Taro.showToast({
         title: result.referenceRepairPending ? '已从衣橱移除，历史记录正在整理' : '已删除',
@@ -561,7 +561,7 @@ export default function WardrobePage() {
       const result = await deleteCloudClothingBatch(ids);
       if (!isCurrentAuthContext(authContext)) return;
       if (result.successIds.length > 0) {
-        await invalidateAfterWardrobeMutation({ authContext });
+        await invalidateAfterWardrobeMutation({ authContext, source: 'wardrobe_delete' });
         if (!isCurrentAuthContext(authContext)) return;
         setClothes((prev) => prev.filter((item) => !result.successIds.includes(item.id)));
         setStats((prev) => ({ ...prev, used: Math.max(0, prev.used - result.successIds.length) }));
@@ -620,7 +620,7 @@ export default function WardrobePage() {
         return;
       }
       updateClothingInList(updated);
-      await invalidateAfterWardrobeMutation({ authContext });
+      await invalidateAfterWardrobeMutation({ authContext, source: 'wardrobe_reprocess' });
       if (!isCurrentAuthContext(authContext)) return;
       Taro.showToast({ title: '识别完成', icon: 'success' });
     } catch (err) {

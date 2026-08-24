@@ -3,7 +3,6 @@ import Taro, { useLoad, useUnload } from '@tarojs/taro';
 import { useCallback, useRef, useState, type ReactNode } from 'react';
 import { useBoundUserFlow } from '@/hooks/useBoundUserFlow';
 import {
-  classifyRecommendationProfileInvalidation,
   invalidateAfterProfileMutation,
 } from '@/lib/cacheInvalidation';
 import { updateCloudUserProfile } from '@/lib/cloud';
@@ -229,7 +228,6 @@ export default function StylePreferencesPage() {
     flowRuntimeKey: string | null,
   ) {
     if (!isFlowCurrent(authContext, flowRuntimeKey)) return false;
-    const previousProfile = useUserStore.getState().recommendationProfile;
     await updateCloudUserProfile(nextProfile);
     if (!isFlowCurrent(authContext, flowRuntimeKey)) return false;
     useUserStore.setState({
@@ -238,12 +236,7 @@ export default function StylePreferencesPage() {
     });
     await invalidateAfterProfileMutation({
       authContext,
-      recommendationImpact: classifyRecommendationProfileInvalidation(
-        previousProfile,
-        nextProfile,
-        { authContext },
-      ),
-      dirtyReason: 'preference_changed',
+      source: 'style_preference_save',
     });
     if (!isFlowCurrent(authContext, flowRuntimeKey)) return false;
     return true;

@@ -1,28 +1,6 @@
-function buildRecommendationInputSignature({
-  userRuntimeKey = '',
-  sceneKey = '',
-  date = '',
-  timeOfDay = '',
-  weatherFingerprint = '',
-  wardrobeVersion = '',
-  profileVersion = '',
-  recommendationBatchId = '',
-  excludedOutfitKeys = [],
-  requestKind = 'initial',
-} = {}) {
-  return [
-    userRuntimeKey,
-    sceneKey,
-    date,
-    timeOfDay,
-    weatherFingerprint,
-    wardrobeVersion,
-    profileVersion,
-    recommendationBatchId,
-    uniqueStrings(excludedOutfitKeys).sort().join(','),
-    requestKind,
-  ].map(encodePart).join('|');
-}
+const { buildRecommendationInputIdentity } = require('../../lib/recommendationIdentity');
+
+const buildRecommendationInputSignature = buildRecommendationInputIdentity;
 
 function createRecommendationIntentRegistry() {
   let nextGeneration = 0;
@@ -109,16 +87,6 @@ function createRecommendationIntentRegistry() {
     reset,
     run,
   };
-}
-
-function encodePart(value) {
-  return encodeURIComponent(String(value || ''));
-}
-
-function uniqueStrings(values) {
-  return [...new Set((Array.isArray(values) ? values : [])
-    .filter((value) => typeof value === 'string' && value.trim())
-    .map((value) => value.trim()))];
 }
 
 function createRecommendationInputCoordinator() {

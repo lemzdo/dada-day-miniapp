@@ -211,7 +211,7 @@ export default function ClothingDetailPage() {
         if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
         const result = await deleteCloudClothing(clothing.id);
         if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
-        await invalidateAfterWardrobeMutation({ authContext });
+        await invalidateAfterWardrobeMutation({ authContext, source: 'wardrobe_delete' });
         if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
         // 标记需要刷新衣橱
         setUserStorageSync(WARDROBE_REFRESH_STORAGE_KEY, true, { authContext });
@@ -261,7 +261,7 @@ export default function ClothingDetailPage() {
           await fetchClothing(id, { force: true });
           return;
         }
-        await invalidateAfterWardrobeMutation({ authContext });
+        await invalidateAfterWardrobeMutation({ authContext, source: 'wardrobe_reprocess' });
         if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
         Taro.showToast({ title: '开始处理...', icon: 'none' });
         // 立即刷新页面
@@ -314,7 +314,7 @@ export default function ClothingDetailPage() {
           await fetchClothing(id, { force: true });
           return;
         }
-        await invalidateAfterWardrobeMutation({ authContext });
+        await invalidateAfterWardrobeMutation({ authContext, source: 'wardrobe_reprocess' });
         if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
         Taro.showToast({ title: '开始识别...', icon: 'none' });
         // 立即刷新页面

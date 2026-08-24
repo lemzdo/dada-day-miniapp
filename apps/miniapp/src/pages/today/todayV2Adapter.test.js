@@ -18,6 +18,11 @@ test('Home Light snapshot rejects deep product payloads', () => {
   assert.match(source, /snapshot\.core\.countContract\?\.returnedCardCount/);
 });
 
+test('Home Light snapshot is exact-input bound', () => {
+  assert.match(source, /inputIdentity: string/);
+  assert.match(source, /snapshot\.inputIdentity !== expectedInputIdentity/);
+});
+
 test('status patches are batch and outfit scoped', () => {
   assert.match(source, /snapshot\.batchId !== patch\.batchId/);
   assert.match(source, /card\.outfitKey === patch\.outfitKey/);

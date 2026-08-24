@@ -4,17 +4,16 @@ const path = require('node:path');
 const test = require('node:test');
 
 const todaySource = fs.readFileSync(path.join(__dirname, 'index.tsx'), 'utf8');
+const adapterSource = fs.readFileSync(path.join(__dirname, 'todayV2Adapter.ts'), 'utf8');
 
 test('Today restores a valid user snapshot during authenticated entry', () => {
-  const entry = todaySource.indexOf('entryIntentIdRef.current =');
-  const restore = todaySource.indexOf(
-    'restoreTodaySnapshotFromDetail(captureAuthContext(), { requireReturnIntent: false });',
-    entry,
-  );
+  const entry = todaySource.indexOf('if (!isAuthenticated) return;');
+  const restore = todaySource.indexOf('const snapshot = readTodayV2Snapshot(', entry);
   const weather = todaySource.indexOf('<WeatherCard', entry);
 
   assert.ok(entry >= 0, 'authenticated entry must be present');
-  assert.ok(restore > entry && restore < weather, 'snapshot restore must be scheduled before WeatherCard work');
+  assert.ok(restore > entry && restore < weather, 'exact snapshot restore must be scheduled before WeatherCard work');
+  assert.match(todaySource.slice(entry, weather), /effectiveInput\.identity/);
 });
 
 test('Today hot-load keeps background weather refresh from owning the full-screen loader', () => {
@@ -22,26 +21,25 @@ test('Today hot-load keeps background weather refresh from owning the full-scree
     todaySource.indexOf('async function handleWeatherChange('),
     todaySource.indexOf('function goToWardrobe()', todaySource.indexOf('async function handleWeatherChange(')),
   );
-  const backgroundRequest = weatherHandler.indexOf('silent: outfitsRef.current.length > 0');
+  const backgroundRequest = weatherHandler.indexOf('silent: v2SnapshotRef.current?.cards.length === 8');
   assert.ok(backgroundRequest >= 0, 'weather refresh must be silent after cards are present');
   assert.match(weatherHandler.slice(backgroundRequest), /trigger: options\.forceRefresh \? 'weather-force' : 'weather'/);
 });
 
 test('Today entry restore retains existing snapshot validity gates', () => {
-  const restore = todaySource.slice(todaySource.indexOf('function restoreTodaySnapshotFromDetail('));
-  assert.match(restore, /canRestoreTodaySnapshot\(snapshot\)/);
-  assert.match(restore, /applyTodayOutfitStatuses\(/);
-  assert.match(restore, /setOutfits\(restoredOutfits\)/);
-  assert.match(restore, /setLoading\(false\)/);
+  assert.match(adapterSource, /snapshot\.runtimeVersion !== 'today-runtime-v2'/);
+  assert.match(adapterSource, /snapshot\.inputIdentity !== expectedInputIdentity/);
+  assert.match(adapterSource, /snapshot\.core\.countContract\?\.returnedCardCount !== 8/);
+  assert.match(todaySource, /commitCanonicalSnapshotForRender\(snapshot/);
 });
 
 test('A valid entry restore does not invoke recommendation generation', () => {
-  const entry = todaySource.indexOf('restoreTodaySnapshotFromDetail(captureAuthContext(), { requireReturnIntent: false });');
+  const entry = todaySource.indexOf('const snapshot = readTodayV2Snapshot(');
   const restore = todaySource.slice(
-    todaySource.indexOf('function restoreTodaySnapshotFromDetail('),
-    todaySource.indexOf('function readTodayRestoreSnapshot(', entry),
+    entry,
+    todaySource.indexOf('const resetUserState = useCallback(', entry),
   );
-  assert.doesNotMatch(restore, /generateCloudOutfit\(/);
+  assert.doesNotMatch(restore, /acquireRecommendationForInput|generateCloudOutfit/);
 });
 
 test('Background recommendation failure retains already visible cards', () => {
@@ -49,7 +47,7 @@ test('Background recommendation failure retains already visible cards', () => {
     todaySource.indexOf('async function fetchRecommendations('),
     todaySource.indexOf('function handleRefresh()', todaySource.indexOf('async function fetchRecommendations(')),
   );
-  assert.match(fetch, /if \(outfitsRef\.current\.length === 0\) \{/);
+  assert.match(fetch, /if \(!\(v2SnapshotRef\.current\?\.cards\.length === 8\)\) \{/);
   assert.match(fetch, /setRecommendationNotice\(/);
   assert.match(fetch, /else \{/);
 });

@@ -3,19 +3,24 @@ import type {
   RecommendationBatchCoreV2,
   RecommendationHomeLightResponseV2,
 } from '@starter-template/types';
+import { TODAY_V2_SNAPSHOT_KEY } from '@/lib/recommendationInputKeys';
 
-export const TODAY_V2_SNAPSHOT_KEY = 'd1d:today:v2:home-light';
+export { TODAY_V2_SNAPSHOT_KEY } from '@/lib/recommendationInputKeys';
 
 export interface TodayV2Snapshot {
   runtimeVersion: 'today-runtime-v2';
   schemaVersion: 'today-v2';
+  inputIdentity: string;
   batchId: string;
   core: RecommendationBatchCoreV2;
   cards: HomeLightCardV2[];
   savedAt: string;
 }
 
-export function toTodayV2Snapshot(response: RecommendationHomeLightResponseV2): TodayV2Snapshot {
+export function toTodayV2Snapshot(
+  response: RecommendationHomeLightResponseV2,
+  inputIdentity: string,
+): TodayV2Snapshot {
   response.light.cards.forEach((card) => {
     if (card.items.length === 0 || card.items.some((item) => item.isDeleted || !item.displayImageUrl.trim())) {
       throw new Error('V2 home light image contract invalid');
@@ -24,6 +29,7 @@ export function toTodayV2Snapshot(response: RecommendationHomeLightResponseV2): 
   return {
     runtimeVersion: response.runtimeVersion,
     schemaVersion: response.schemaVersion,
+    inputIdentity,
     batchId: response.batch.batchId,
     core: response.batch,
     cards: response.light.cards.map((card) => ({
@@ -46,12 +52,18 @@ export function toTodayV2Snapshot(response: RecommendationHomeLightResponseV2): 
   };
 }
 
-export function readTodayV2Snapshot(read: (key: string) => unknown): TodayV2Snapshot | null {
+export function readTodayV2Snapshot(
+  read: (key: string) => unknown,
+  expectedInputIdentity?: string,
+): TodayV2Snapshot | null {
   const value = read(TODAY_V2_SNAPSHOT_KEY);
   if (!value || typeof value !== 'object') return null;
   const snapshot = value as Partial<TodayV2Snapshot>;
   if (snapshot.runtimeVersion !== 'today-runtime-v2'
     || snapshot.schemaVersion !== 'today-v2'
+    || typeof snapshot.inputIdentity !== 'string'
+    || !snapshot.inputIdentity
+    || (expectedInputIdentity !== undefined && snapshot.inputIdentity !== expectedInputIdentity)
     || typeof snapshot.batchId !== 'string'
     || !snapshot.core || snapshot.core.batchId !== snapshot.batchId
     || snapshot.core.cardCount !== 8
@@ -75,9 +87,10 @@ export function readTodayV2Snapshot(read: (key: string) => unknown): TodayV2Snap
 
 export function writeTodayV2Snapshot(
   response: RecommendationHomeLightResponseV2,
+  inputIdentity: string,
   write: (key: string, value: TodayV2Snapshot) => void,
 ) {
-  const snapshot = toTodayV2Snapshot(response);
+  const snapshot = toTodayV2Snapshot(response, inputIdentity);
   write(TODAY_V2_SNAPSHOT_KEY, snapshot);
   return snapshot;
 }

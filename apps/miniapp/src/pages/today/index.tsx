@@ -4,18 +4,13 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { WeatherCard, type WeatherRecommendationRefreshResult } from '@/components/WeatherCard';
 import { useAuthRuntime } from '@/hooks/useAuthRuntime';
 import {
-  TODAY_PROFILE_INPUT_VERSION_KEY,
   TODAY_RECOMMENDATION_HARD_INVALID_KEY,
-  TODAY_WARDROBE_INPUT_VERSION_KEY,
-  clearTodayRecommendationDirty,
   clearTodayRecommendationHardInvalid,
-  getTodayRecommendationDirty,
   hasTodayRecommendationHardInvalid,
   invalidateAfterOutfitFavoriteMutation,
   invalidateAfterOutfitWornMutation,
 } from '@/lib/cacheInvalidation';
 import {
-  generateCloudOutfitV2,
   getCloudResponseTransportDiagnostics,
   isDevelopV2ColdTelemetryEnvironment,
   isRecommendationDiagnosticEnvironment,
@@ -23,6 +18,14 @@ import {
   updateCloudOutfitFavoriteV2,
   updateCloudOutfitWearV2,
 } from '@/lib/cloud';
+import {
+  acquireRecommendationForInput,
+  buildEffectiveRecommendationInput,
+  getCurrentRecommendationInputIdentity,
+  isRecommendationInputIdentityCurrent,
+  registerRecommendationInputContext,
+  type EffectiveRecommendationInput,
+} from '@/lib/recommendationMutationCoordinator';
 import {
   buildRecommendationQaLogSummary,
   createRecommendationAuditId,
@@ -90,7 +93,6 @@ import {
   type TodayPerformanceLedgerSnapshot,
 } from '@/lib/performance/todayPerformanceLedger';
 import {
-  buildRecommendationInputSignature,
   createRecommendationInputCoordinator,
   createRecommendationIntentRegistry,
   shouldPreserveRecommendationLifecycle,
@@ -262,21 +264,24 @@ const SCENE_TAGS: Record<SceneKey, SceneTag> = {
   sport: '运动' as SceneTag,
 };
 
-function getRecommendationInputSignature(input: {
+function getEffectiveRecommendationInput(input: {
+  authContext: ActiveAuthContext;
   sceneKey: SceneKey;
   weather?: WeatherSnapshot;
+  weatherMode: WeatherMode;
   recommendationBatchId?: string;
   excludedOutfitKeys?: string[];
   requestKind?: 'initial' | 'refresh';
 }) {
-  return buildRecommendationInputSignature({
-    userRuntimeKey: '',
+  const context = {
     sceneKey: input.sceneKey,
-    date: getToday(),
+    scene: SCENE_TAGS[input.sceneKey],
     timeOfDay: TODAY_TIME_OF_DAY,
-    weatherFingerprint: getRecommendationWeatherFingerprint(input.weather),
-    wardrobeVersion: 'wardrobe-0',
-    profileVersion: 'profile-0',
+    weather: input.weather,
+    weatherMode: input.weatherMode,
+  };
+  registerRecommendationInputContext(context, input.authContext);
+  return buildEffectiveRecommendationInput(input.authContext, context, {
     recommendationBatchId: input.recommendationBatchId,
     excludedOutfitKeys: input.excludedOutfitKeys || [],
     requestKind: input.requestKind || 'initial',
@@ -322,7 +327,6 @@ export default function TodayPage() {
   const hasRecommendationsRef = useRef(true);
   const batchLimitedRef = useRef(false);
   const batchExhaustedRef = useRef(false);
-  const dirtyRefreshInFlightRef = useRef(false);
   const hardRefreshInFlightRef = useRef(false);
   const recommendationInputCoordinatorRef = useRef(createRecommendationInputCoordinator());
   const countContractRef = useRef<RecommendationCountContract | undefined>(undefined);
@@ -413,7 +417,17 @@ export default function TodayPage() {
     if (!isAuthenticated) return;
     const authContext = captureAuthContext();
     if (!authContext) return;
-    const snapshot = readTodayV2Snapshot((key) => getUserStorageSync(key, { authContext }));
+    const effectiveInput = getEffectiveRecommendationInput({
+      authContext,
+      sceneKey: selectedSceneKeyRef.current,
+      weather: currentWeatherRef.current,
+      weatherMode: currentWeatherModeRef.current,
+    });
+    if (hasTodayRecommendationHardInvalid({ authContext })) return;
+    const snapshot = readTodayV2Snapshot(
+      (key) => getUserStorageSync(key, { authContext }),
+      effectiveInput.identity,
+    );
     if (!snapshot) return;
     const restoreGeneration = ++restoreGenerationRef.current;
     void commitCanonicalSnapshotForRender(snapshot, () => (
@@ -501,7 +515,7 @@ export default function TodayPage() {
     if (hasTodayRecommendationHardInvalid({ authContext })) {
       if (!currentWeatherRef.current && currentWeatherModeRef.current === 'disabled') {
         recommendationInputCoordinatorRef.current.report({
-          inputIdentity: `${runtimeKey || 'anonymous'}|${selectedSceneKeyRef.current}|initial`,
+          inputIdentity: getCurrentRecommendationInputIdentity(authContext),
           readiness: 'deferred',
         });
       } else {
@@ -543,7 +557,7 @@ export default function TodayPage() {
       markAcceptanceClientMilestone(acceptanceDiagnostics, 'hardInvalidDetectedAt');
       if (!currentWeatherRef.current && currentWeatherModeRef.current === 'disabled') {
         recommendationInputCoordinatorRef.current.report({
-          inputIdentity: `${runtimeKey || 'anonymous'}|${selectedSceneKeyRef.current}|initial`,
+          inputIdentity: getCurrentRecommendationInputIdentity(authContext),
           readiness: 'deferred',
         });
       } else {
@@ -580,13 +594,18 @@ export default function TodayPage() {
     acceptanceDiagnostics?: TodayFullComputeAcceptanceRequest
   }): Promise<boolean> {
     markAcceptanceClientMilestone(acceptanceDiagnostics, 'requestRecommendationsStartedAt');
-    const inputSignature = getRecommendationInputSignature({
+    const authContext = captureAuthContext();
+    if (!authContext) return Promise.resolve(false);
+    const effectiveInput = getEffectiveRecommendationInput({
+      authContext,
       sceneKey,
       weather,
+      weatherMode,
       recommendationBatchId: requestKind === 'refresh' ? recommendationBatchIdRef.current : undefined,
       excludedOutfitKeys,
       requestKind,
     });
+    const inputSignature = effectiveInput.requestIdentity;
     markAcceptanceClientMilestone(acceptanceDiagnostics, 'requestIdentityConstructedAt');
     const registry = recommendationIntentRegistryRef.current;
     if (!registry) return Promise.resolve(false);
@@ -605,6 +624,7 @@ export default function TodayPage() {
         return fetchRecommendations({
           intent,
           requestContext,
+          effectiveInput,
           weather,
           excludedOutfitKeys,
           silent,
@@ -620,30 +640,6 @@ export default function TodayPage() {
       if (!silent) setLoadingForRequest(joinedContext.requestSeq);
     }
     return run.promise;
-  }
-
-  async function refreshDirtyRecommendation(authContext: ActiveAuthContext) {
-    if (dirtyRefreshInFlightRef.current || !(v2SnapshotRef.current?.cards.length === 8)) return;
-    const dirty = getTodayRecommendationDirty({ authContext });
-    if (!dirty) return;
-    dirtyRefreshInFlightRef.current = true;
-    setRecommendationNotice(dirty.message);
-    try {
-      const refreshed = await requestRecommendations({
-        intentId: nextRecommendationIntentId(`dirty-${dirty.reason}`),
-        sceneKey: selectedSceneKeyRef.current,
-        weather: currentWeatherRef.current,
-        weatherMode: currentWeatherModeRef.current,
-        silent: true,
-        trigger: dirty.reason,
-      });
-      if (refreshed && isAuthContextCurrent(authContext)) {
-        clearTodayRecommendationDirty({ authContext });
-        setRecommendationNotice('');
-      }
-    } finally {
-      dirtyRefreshInFlightRef.current = false;
-    }
   }
 
   async function refreshHardInvalidRecommendation(
@@ -668,7 +664,10 @@ export default function TodayPage() {
         acceptanceDiagnostics,
       });
       if (refreshed && isAuthContextCurrent(authContext)) {
-        clearTodayRecommendationHardInvalid({ authContext });
+        clearTodayRecommendationHardInvalid({
+          authContext,
+          identity: getCurrentRecommendationInputIdentity(authContext),
+        });
       }
     } finally {
       hardRefreshInFlightRef.current = false;
@@ -678,6 +677,7 @@ export default function TodayPage() {
   async function fetchRecommendations({
     intent,
     requestContext,
+    effectiveInput,
     weather = currentWeatherRef.current,
     excludedOutfitKeys = [],
     silent = false,
@@ -687,6 +687,7 @@ export default function TodayPage() {
   }: {
     intent: RecommendationIntent
     requestContext: RecommendationRequestContext
+    effectiveInput: EffectiveRecommendationInput
     weather?: WeatherSnapshot
     excludedOutfitKeys?: string[]
     silent?: boolean
@@ -734,29 +735,27 @@ export default function TodayPage() {
         let rawResponse;
         try {
           traceTodayRuntime('recommendation:start', traceGeneration, undefined, { requestKind, trigger });
-          rawResponse = await generateCloudOutfitV2({
-          date: getToday(),
-          scene,
-          timeOfDay: TODAY_TIME_OF_DAY,
-          weatherMode,
-          trigger,
-          requestKind: passiveColdTelemetry ? 'cold' : (requestKind === 'refresh' ? 'refresh' : 'initial'),
-          ...(telemetryCorrelationId ? { telemetryCorrelationId } : {}),
-          ...(passiveColdTelemetry ? { performanceDiagnostics: true } : {}),
-          ...(excludedOutfitKeys.length > 0 ? { excludedOutfitKeys } : {}),
-          ...(weather ? { weather } : {}),
-          ...(acceptanceDiagnostics ? {
-            performanceDiagnostics: true,
-            acceptanceRunId: acceptanceDiagnostics.acceptanceRunId,
-            captureId: acceptanceDiagnostics.captureId,
-            clientMilestones: acceptanceDiagnostics.clientMilestones,
-          } : {}),
+          const acquisition = acquireRecommendationForInput({
+            input: effectiveInput,
+            trigger,
+            requestOverrides: {
+              requestKind: passiveColdTelemetry ? 'cold' : requestKind,
+              ...(telemetryCorrelationId ? { telemetryCorrelationId } : {}),
+              ...(passiveColdTelemetry ? { performanceDiagnostics: true } : {}),
+              ...(acceptanceDiagnostics ? {
+                performanceDiagnostics: true,
+                acceptanceRunId: acceptanceDiagnostics.acceptanceRunId,
+                captureId: acceptanceDiagnostics.captureId,
+                clientMilestones: acceptanceDiagnostics.clientMilestones,
+              } : {}),
+            },
           });
+          rawResponse = await acquisition.promise;
         } catch (error) {
           traceTodayRuntime('recommendation:error', traceGeneration, undefined, { error: String(error) });
           throw error;
         }
-        const responseBatchId = toTodayV2Snapshot(rawResponse).batchId;
+        const responseBatchId = toTodayV2Snapshot(rawResponse, effectiveInput.identity).batchId;
         traceTodayRuntime('recommendation:done', traceGeneration, responseBatchId, { requestKind, trigger });
         if (telemetryCorrelationId) {
           const transport = getCloudResponseTransportDiagnostics(rawResponse);
@@ -775,17 +774,22 @@ export default function TodayPage() {
         const v2AuthCurrent = isAuthContextCurrent(authContext);
         if (v2IntentCurrent) markAcceptanceClientMilestone(acceptanceDiagnostics, 'v2IntentCurrentAt');
         if (v2AuthCurrent) markAcceptanceClientMilestone(acceptanceDiagnostics, 'v2AuthContextCurrentAt');
-        if (!v2IntentCurrent || !v2AuthCurrent) {
+        const v2InputCurrent = isRecommendationInputIdentityCurrent(effectiveInput.identity, authContext);
+        if (!v2IntentCurrent || !v2AuthCurrent || !v2InputCurrent) {
           markAcceptanceClientMilestone(acceptanceDiagnostics, 'v2ApplyRejectedAt');
           return false;
         }
-        const canonicalSnapshot = toTodayV2Snapshot(rawResponse);
-        if (!isRecommendationIntentCurrent(intent) || !isAuthContextCurrent(authContext)) {
+        const canonicalSnapshot = toTodayV2Snapshot(rawResponse, effectiveInput.identity);
+        if (!isRecommendationIntentCurrent(intent)
+          || !isAuthContextCurrent(authContext)
+          || !isRecommendationInputIdentityCurrent(effectiveInput.identity, authContext)) {
           markAcceptanceClientMilestone(acceptanceDiagnostics, 'v2MediaResolutionRejectedAt');
           return false;
         }
         const committed = await commitCanonicalSnapshotForRender(canonicalSnapshot,
-          () => isRecommendationIntentCurrent(intent) && isAuthContextCurrent(authContext),
+          () => isRecommendationIntentCurrent(intent)
+            && isAuthContextCurrent(authContext)
+            && isRecommendationInputIdentityCurrent(effectiveInput.identity, authContext),
           () => setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, canonicalSnapshot, { authContext }),
           { generation: traceGeneration, batchId: canonicalSnapshot.batchId });
         if (!committed) {
@@ -824,6 +828,15 @@ export default function TodayPage() {
     const authContext = captureAuthContext();
     if (!authContext) return false;
     const exclusions = previous?.cards.map((card) => card.outfitKey) ?? [];
+    const effectiveInput = getEffectiveRecommendationInput({
+      authContext,
+      sceneKey: selectedSceneKeyRef.current,
+      weather: currentWeatherRef.current,
+      weatherMode: currentWeatherModeRef.current,
+      recommendationBatchId: previous?.batchId,
+      excludedOutfitKeys: exclusions,
+      requestKind: 'refresh',
+    });
     setLoading(true);
     const refreshSeq = requestSeq.current + 1;
     requestSeq.current = refreshSeq;
@@ -835,31 +848,30 @@ export default function TodayPage() {
       let response;
       try {
         traceTodayRuntime('recommendation:start', traceGeneration, undefined, { requestKind: 'refresh', trigger: 'refresh' });
-        response = await generateCloudOutfitV2({
-        date: getToday(),
-        scene: selectedSceneRef.current,
-        timeOfDay: TODAY_TIME_OF_DAY,
-        weather: currentWeatherRef.current,
-        weatherMode: currentWeatherModeRef.current,
-        trigger: 'refresh',
-        excludedOutfitKeys: exclusions,
-        ...(acceptanceDiagnostics ? {
-          performanceDiagnostics: true,
-          acceptanceRunId: acceptanceDiagnostics?.acceptanceRunId,
-          captureId: acceptanceDiagnostics?.captureId,
-          clientMilestones: acceptanceDiagnostics?.clientMilestones,
-        } : {}),
-        });
+        response = await acquireRecommendationForInput({
+          input: effectiveInput,
+          trigger: 'refresh',
+          requestOverrides: acceptanceDiagnostics ? {
+            performanceDiagnostics: true,
+            acceptanceRunId: acceptanceDiagnostics.acceptanceRunId,
+            captureId: acceptanceDiagnostics.captureId,
+            clientMilestones: acceptanceDiagnostics.clientMilestones,
+          } : undefined,
+        }).promise;
       } catch (error) {
         traceTodayRuntime('recommendation:error', traceGeneration, undefined, { error: String(error) });
         throw error;
       }
-      const responseBatchId = toTodayV2Snapshot(response).batchId;
+      const responseBatchId = toTodayV2Snapshot(response, effectiveInput.identity).batchId;
       traceTodayRuntime('recommendation:done', traceGeneration, responseBatchId, { requestKind: 'refresh', trigger: 'refresh' });
-      if (!isAuthContextCurrent(authContext) || activeRequestSeqRef.current !== refreshSeq) return false;
-      const canonicalSnapshot = toTodayV2Snapshot(response);
+      if (!isAuthContextCurrent(authContext)
+        || activeRequestSeqRef.current !== refreshSeq
+        || !isRecommendationInputIdentityCurrent(effectiveInput.identity, authContext)) return false;
+      const canonicalSnapshot = toTodayV2Snapshot(response, effectiveInput.identity);
       const committed = await commitCanonicalSnapshotForRender(canonicalSnapshot,
-        () => isAuthContextCurrent(authContext) && activeRequestSeqRef.current === refreshSeq,
+        () => isAuthContextCurrent(authContext)
+          && activeRequestSeqRef.current === refreshSeq
+          && isRecommendationInputIdentityCurrent(effectiveInput.identity, authContext),
         () => setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, canonicalSnapshot, { authContext }),
         { generation: traceGeneration, batchId: canonicalSnapshot.batchId });
       if (!committed) return false;
@@ -971,12 +983,19 @@ export default function TodayPage() {
     }
 
     const sceneKey = selectedSceneKeyRef.current;
+    const authContext = captureAuthContext();
+    const effectiveInput = authContext ? getEffectiveRecommendationInput({
+      authContext,
+      sceneKey,
+      weather,
+      weatherMode: options.weatherMode,
+    }) : null;
     const inputRelease = recommendationInputCoordinatorRef.current.report({
-      inputIdentity: `${runtimeKey || 'anonymous'}|${sceneKey}|${weatherFingerprint}`,
+      inputIdentity: effectiveInput?.identity
+        ?? `${runtimeKey || 'anonymous'}|${sceneKey}|${weatherFingerprint}`,
       readiness: weather ? 'ready' : (options.weatherMode === 'disabled' || options.weatherMode === 'unavailable' ? 'unavailable' : 'deferred'),
     });
     if (inputRelease.dispatch) {
-      const authContext = captureAuthContext();
       if (authContext && hasTodayRecommendationHardInvalid({ authContext })) {
         void refreshHardInvalidRecommendation(authContext);
         markTodayPerformanceStage('weatherEnd');
