@@ -20,7 +20,9 @@ import {
 } from '@/lib/cloud';
 import {
   acquireRecommendationForInput,
+  acquireNextRecommendationForInput,
   buildEffectiveRecommendationInput,
+  prepareNextRecommendationForInput,
   getCurrentRecommendationInputIdentity,
   isRecommendationInputIdentityCurrent,
   registerRecommendationInputContext,
@@ -432,7 +434,9 @@ export default function TodayPage() {
     const restoreGeneration = ++restoreGenerationRef.current;
     void commitCanonicalSnapshotForRender(snapshot, () => (
       restoreGeneration === restoreGenerationRef.current && isAuthContextCurrent(authContext)
-    ), undefined, { generation: restoreGeneration, batchId: snapshot.batchId });
+    ), undefined, { generation: restoreGeneration, batchId: snapshot.batchId }).then((committed) => {
+      if (committed) prefetchNextBatch(effectiveInput, committed);
+    });
   }, [isAuthenticated]);
 
   const resetUserState = useCallback((options: { preserveRecommendationLifecycle?: boolean } = {}) => {
@@ -642,6 +646,16 @@ export default function TodayPage() {
     return run.promise;
   }
 
+  function prefetchNextBatch(effectiveInput: EffectiveRecommendationInput, snapshot: TodayV2Snapshot) {
+    const run = prepareNextRecommendationForInput(effectiveInput, {
+      currentBatchId: snapshot.batchId,
+      currentContentHash: snapshot.core.contentHash,
+      excludedOutfitKeys: snapshot.cards.map((card) => card.outfitKey),
+      refreshSemantics: 'refresh',
+    });
+    void run.promise.catch(() => undefined);
+  }
+
   async function refreshHardInvalidRecommendation(
     authContext: ActiveAuthContext,
     acceptanceDiagnostics?: TodayFullComputeAcceptanceRequest,
@@ -801,6 +815,7 @@ export default function TodayPage() {
         setError('');
         setHasRecommendations(true);
         setRecommendationBatchId(nextSnapshot.batchId);
+        prefetchNextBatch(effectiveInput, nextSnapshot);
         markAcceptanceClientMilestone(acceptanceDiagnostics, 'v2ApplyCommittedAt');
         return true;
       }
@@ -848,7 +863,14 @@ export default function TodayPage() {
       let response;
       try {
         traceTodayRuntime('recommendation:start', traceGeneration, undefined, { requestKind: 'refresh', trigger: 'refresh' });
-        response = await acquireRecommendationForInput({
+        const nextOptions = {
+          currentBatchId: previous?.batchId || '',
+          currentContentHash: previous?.core.contentHash || '',
+          excludedOutfitKeys: exclusions,
+          refreshSemantics: 'refresh',
+        };
+        const nextRun = acquireNextRecommendationForInput(effectiveInput, nextOptions);
+        const fallbackRefresh = () => acquireRecommendationForInput({
           input: effectiveInput,
           trigger: 'refresh',
           requestOverrides: acceptanceDiagnostics ? {
@@ -858,6 +880,17 @@ export default function TodayPage() {
             clientMilestones: acceptanceDiagnostics.clientMilestones,
           } : undefined,
         }).promise;
+        if (nextRun.source === 'next-ready' || nextRun.source === 'next-running') {
+          try {
+            response = await nextRun.promise;
+          } catch {
+            // Prefetch is an optimization: a joined successor failure falls
+            // through to the normal refresh in this same click.
+            response = await fallbackRefresh();
+          }
+        } else {
+          response = await fallbackRefresh();
+        }
       } catch (error) {
         traceTodayRuntime('recommendation:error', traceGeneration, undefined, { error: String(error) });
         throw error;
@@ -877,6 +910,7 @@ export default function TodayPage() {
       if (!committed) return false;
       const next = committed;
       setRecommendationBatchId(next.batchId);
+      prefetchNextBatch(effectiveInput, next);
       setLoading(false);
       return true;
     } catch (error) {
