@@ -49,3 +49,25 @@
 - 按 Phase 0 停止条件，没有继续其他组合。
 
 Lab-only contract 已修正为允许并忽略 CloudBase 自动注入的 `tcbContext` / `userInfo`，同时补齐 canonical copy 返回、Gold meaning preservation 与 secondary 越界 validator。生产路径和模型路由没有改动。下一次任务只需重新执行 Phase 0 smoke；本记录不构成任何模型/Prompt 胜出证据。
+
+## 2026-08-24 首次真实低延迟矩阵
+
+上述 transport blocker 修复并重新部署后，本轮按“一次 invocation 只执行一次模型调用”完成 5 次真实调用。所有请求均为 `enable_thinking=false`；current 使用 strict JSON array，compressed 使用 `response_format=json_object`。没有 retry。
+
+| phase | caseId | model | prompt | request chars | prompt / completion tokens | provider / E2E | parser | contract | validator | factual | Sol persona / naturalness | canonical copy |
+| --- | --- | --- | --- | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- |
+| smoke | `primary-pattern-focus` | `qwen3.7-max` | current | 1,708 | 389 / 112 | 2,310 / 2,310ms | PASS | PASS | PASS | no | PASS | 条纹上衣是这套搭配里唯一的图案重点，纯色长裤保持简单就好。 |
+| C1 | `primary-pattern-focus` | `qwen3.7-flash` | current | 1,710 | 389 / 111 | 1,155 / 1,155ms | PASS | PASS | PASS | no | PASS | 条纹上衣是这套搭配唯一明确的图案重点，纯色长裤保持简单。 |
+| C2 | `competing-pattern-and-silhouette` | `qwen3.7-flash` | current | 1,754 | 407 / 123 | 1,282 / 1,282ms | PASS | PASS | PASS | no | FAIL | 条纹修身上衣是这套搭配唯一需要表达的图案重点，纯色阔腿裤保持简单。 |
+| B1 | `primary-pattern-focus` | `qwen3.7-max` | compressed | 1,046 | 203 / 24 | 1,757 / 1,757ms | PASS | PASS | PASS | no | PASS | 条纹上衣是这套唯一的图案重点，纯色长裤保持简单。 |
+| B2 | `competing-pattern-and-silhouette` | `qwen3.7-max` | compressed | 1,070 | 212 / 28 | 1,744 / 1,744ms | PASS | PASS | PASS | no | PASS | 条纹修身上衣是这套的图案重点，纯色阔腿裤保持简单。 |
+
+Flash/current 的第二条虽通过自动禁词和事实 validator，但“唯一需要表达”是在谈写作任务，不像朋友直接评价衣服。Sol 将其判为明显 persona/naturalness regression，因此 Flash/current 没有满足“两次均过质量门”，Flash/compressed 按条件没有执行。
+
+### 分变量结论
+
+- Model effect：同一 `primary-pattern-focus + current` 下，Flash 为 1,155ms，Max 为 2,310ms，Flash 减少 1,155ms（50.0%，约 2.00×）；但 Flash 在 Competing case 出现人工质量失败，所以速度优势未形成稳定路线。
+- Prompt effect：同一 `primary-pattern-focus + Max` 下，compressed 为 1,757ms，current 为 2,310ms，减少 553ms（23.9%，约 1.31×）；prompt tokens 从 389 降至 203（47.8%）。这证明压缩不只是减少静态字符，也降低了真实模型 E2E。
+- Quality effect：Max/compressed 两个代表 case 均保持 Narrative Plan ownership、事实边界、contract、validator 与自然朋友语气；Flash/current 为 1/2 人工自然度通过。所有 5 次均无事实越界、parse/contract failure 或 retry。
+
+历史 13,140–13,424ms 基线是 8-case batch；本轮为 single-case invocation，不能把 13s 与 1.7–2.3s 的全部差值归因于模型或 prompt。可严格比较的是同 case 的受控差值。当前最快稳定有效路线是 `qwen3.7-max + compressed`：1,744–1,757ms，达到原始 ≤3s excellent 目标。推荐它作为后续选型评审候选，但本轮不改生产路由。
