@@ -3,8 +3,24 @@
 const MODELS = Object.freeze({ max: 'qwen3.7-max', flash: 'qwen3.7-flash' });
 const PROMPT_VARIANTS = Object.freeze(['current', 'compressed']);
 const GENERATION_PARAMETERS = Object.freeze({ temperature: 0.3, top_p: 0.8, max_tokens: 1200, stream: false, enable_thinking: false });
-const PERSONA_FAILURE_TERMS = ['算法', '模型判断', '候选', '主洞察', '次要洞察', '编辑感', '高级感拉满', '绝绝子'];
-const UNSUPPORTED_FACT_TERMS = ['显瘦', '显高', '显腿长', '显白', '修饰身材', '遮肉', '透气', '保暖', '舒适', '柔软', '省心', '百搭'];
+const PERSONA_FAILURE_TERMS = [
+  '算法', '模型判断', '候选', '主洞察', '次要洞察', '视觉焦点', '视觉结构', '色彩关系',
+  '轮廓关系', '搭配公式', '编辑感', '高级感拉满', '氛围感拉满', '绝绝子', '拿捏',
+];
+const UNSUPPORTED_FACT_TERMS = [
+  '显瘦', '显高', '显腿长', '显白', '修饰身材', '遮肉', '透气', '保暖', '舒适', '柔软',
+  '省心', '不用想', '百搭', '显精神',
+];
+const CASE_VALIDATION = Object.freeze({
+  'primary-pattern-focus': { required: [['条纹', '图案', '花纹'], ['简单', '重点', '不乱']], forbidden: ['修身', '阔腿', '松紧', '轮廓'] },
+  'primary-silhouette-contrast': { required: [['修身', '一紧一松'], ['阔腿', '轮廓']], forbidden: ['条纹', '图案', '同色'] },
+  'primary-monochromatic': { required: [['蓝色', '藏青'], ['同色', '统一', '颜色']], forbidden: ['修身', '阔腿', '图案'] },
+  'scene-primary-work-structure': { required: [['衬衫', '西装长裤'], ['上班', '通勤']], forbidden: ['天气', '保暖', '修身'] },
+  'weak-formality-only': { required: [['简单', '日常', '基础', '直接']], forbidden: [] },
+  'sparse-low-confidence-pattern': { required: [['简单', '日常', '基础', '直接']], forbidden: ['图案重点', '印花重点', '呼应'] },
+  'sparse-basic-no-evidence': { required: [['简单', '日常', '基础', '直接']], forbidden: [] },
+  'competing-pattern-and-silhouette': { required: [['条纹', '图案'], ['简单', '重点', '不乱']], forbidden: ['一紧一松', '轮廓对比', '松紧', '平衡'] },
+});
 
 function buildRequest({ model, promptVariant, input }) {
   if (!MODELS[model]) throw new Error('MODEL_NOT_ALLOWED');
@@ -30,7 +46,7 @@ function buildSystemPrompt(variant) {
   ].join('\n');
 }
 
-function parseAndValidate(raw, promptVariant, input) {
+function parseAndValidate(raw, promptVariant, input, caseId) {
   const text = typeof raw === 'string' ? raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '') : '';
   let parsed;
   try { parsed = JSON.parse(text); } catch { throw new Error('OUTPUT_PARSE'); }
@@ -53,7 +69,18 @@ function parseAndValidate(raw, promptVariant, input) {
   if (UNSUPPORTED_FACT_TERMS.some((term) => output.text.includes(term))) failures.push('UNSUPPORTED_FACT');
   if (!input.garments.some((garment) => output.text.includes(garment))) failures.push('GARMENT_GROUNDING');
   if (input.expressionMode === 'baseline' && !['简单', '日常', '基础', '直接', '普通', '利落'].some((term) => output.text.includes(term))) failures.push('BASELINE_RESTRAINT');
-  return { contractPass: true, validatorPass: failures.length === 0, factualViolation: failures.includes('UNSUPPORTED_FACT'), personaNaturalness: !failures.includes('PERSONA_OR_EDITORIAL_LANGUAGE'), validatorFailures: failures };
+  const policy = CASE_VALIDATION[caseId];
+  if (!policy) throw new Error('CASE_VALIDATION_NOT_FOUND');
+  for (const group of policy.required) if (!group.some((term) => output.text.includes(term))) failures.push('MEANING_NOT_PRESERVED');
+  if (policy.forbidden.some((term) => output.text.includes(term))) failures.push('NEW_REASON_OR_SECONDARY');
+  return {
+    canonicalCopy: output.text,
+    contractPass: true,
+    validatorPass: failures.length === 0,
+    factualViolation: failures.includes('UNSUPPORTED_FACT'),
+    personaNaturalness: !failures.includes('PERSONA_OR_EDITORIAL_LANGUAGE'),
+    validatorFailures: [...new Set(failures)],
+  };
 }
 
-module.exports = { GENERATION_PARAMETERS, MODELS, PROMPT_VARIANTS, buildRequest, buildSystemPrompt, parseAndValidate };
+module.exports = { CASE_VALIDATION, GENERATION_PARAMETERS, MODELS, PROMPT_VARIANTS, buildRequest, buildSystemPrompt, parseAndValidate };

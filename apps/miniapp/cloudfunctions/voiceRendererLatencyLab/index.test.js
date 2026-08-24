@@ -69,6 +69,8 @@ test('mock provider returns minimal timing/token/contract/validator fields', asy
     assert.equal(result.promptTokens, 20);
     assert.equal(result.completionTokens, 8);
     assert.equal(result.retryCount, 0);
+    assert.equal(result.canonicalCopy, '条纹上衣突出图案重点，纯色长裤保持简单。');
+    assert.deepEqual(result.validatorFailures, []);
     assert.equal(JSON.stringify(result).includes('test-only-marker'), false);
   } finally {
     if (previous === undefined) delete process.env.BAILIAN_API_KEY; else process.env.BAILIAN_API_KEY = previous;
@@ -85,9 +87,19 @@ test('compressed mock output is parsed and factual/persona failures are surfaced
   assert.equal(result.validatorPass, false);
   assert.equal(result.factualViolation, true);
   assert.equal(result.personaNaturalness, true);
+  assert.ok(result.validatorFailures.includes('MEANING_NOT_PRESERVED'));
+});
+
+test('validator rejects secondary meaning even when the JSON contract passes', () => {
+  const competing = buildRendererInput(buildGoldPlans().find((plan) => plan.caseId === 'competing-pattern-and-silhouette'));
+  const result = renderer.parseAndValidate(JSON.stringify([{ planId: competing.planId, insightId: competing.primary.insightId, text: '条纹修身上衣是图案重点，一紧一松也很平衡。' }]), 'current', competing, 'competing-pattern-and-silhouette');
+  assert.equal(result.contractPass, true);
+  assert.equal(result.validatorPass, false);
+  assert.ok(result.validatorFailures.includes('NEW_REASON_OR_SECONDARY'));
 });
 
 test('case, model, prompt, input and execute flags are validated', () => {
+  assert.doesNotThrow(() => lab.__test.assertEvent({ ...baseEvent, tcbContext: { platform: 'cloudbase' }, userInfo: { openId: 'platform-injected' } }));
   assert.throws(() => lab.__test.assertEvent({ ...baseEvent, caseId: 'unknown' }), /CASE_ID_NOT_ALLOWED/);
   assert.throws(() => lab.__test.assertEvent({ ...baseEvent, model: 'plus' }), /MODEL_NOT_ALLOWED/);
   assert.throws(() => lab.__test.assertEvent({ ...baseEvent, promptVariant: 'other' }), /PROMPT_VARIANT_NOT_ALLOWED/);

@@ -37,3 +37,15 @@
 - 当前最快且有真实稳定证据的路线仍是 Max/current，最快历史调用 13,140ms。
 - 在提供本地百炼 key，或提供不依赖 DevTools 自动化的 token-gated lab endpoint 后，直接运行现有条件矩阵；无需再改生产代码。
 - 在取得真实证据前，生产路由保持不变；若 Flash 不稳定，则维持 Max 并转向 async cache / pre-generation。
+
+## 2026-08-24 第一次真实调用尝试
+
+独立 `voiceRendererLatencyLab` 已部署且平台 timeout 为 60 秒。Phase 0 按要求只发起一次 `max + current + primary-pattern-focus` 云函数 invocation；CloudBase 在 event 中自动注入 `tcbContext`，旧的严格事件白名单在 provider 请求前返回 `EVENT_KEY_NOT_ALLOWED:tcbContext`。
+
+- 云函数 invocation：1 次。
+- 真实 provider/model calls：0 次。
+- Max current / Flash current / Flash compressed / Max compressed：均无模型结果。
+- 没有把 transport contract failure 记为模型延迟、质量失败或模型不可用。
+- 按 Phase 0 停止条件，没有继续其他组合。
+
+Lab-only contract 已修正为允许并忽略 CloudBase 自动注入的 `tcbContext` / `userInfo`，同时补齐 canonical copy 返回、Gold meaning preservation 与 secondary 越界 validator。生产路径和模型路由没有改动。下一次任务只需重新执行 Phase 0 smoke；本记录不构成任何模型/Prompt 胜出证据。

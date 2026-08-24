@@ -44,7 +44,7 @@ async function executeProvider(event, apiKey, fetchImpl = require('node-fetch'))
   if (!response.ok) throw new Error(`PROVIDER_HTTP_${response.status}`);
   if (body?.model !== request.model) throw new Error('MODEL_MISMATCH');
   const rawContent = body?.choices?.[0]?.message?.content;
-  const result = parseAndValidate(rawContent, event.promptVariant, event.input);
+  const result = parseAndValidate(rawContent, event.promptVariant, event.input, event.caseId);
   return {
     benchmarkOnly: true, action: ACTION, status: 'completed', caseId: event.caseId, model: request.model,
     promptVariant: event.promptVariant, nonThinking: request.enable_thinking === false,
@@ -54,12 +54,12 @@ async function executeProvider(event, apiKey, fetchImpl = require('node-fetch'))
     promptTokens: Number(body.usage?.prompt_tokens) || null, completionTokens: Number(body.usage?.completion_tokens) || null,
     e2eLatencyMs, providerLatencyMs: e2eLatencyMs, parserPass: true, contractPass: result.contractPass,
     validatorPass: result.validatorPass, factualViolation: result.factualViolation, personaNaturalness: result.personaNaturalness,
-    retryCount: 0, outputCount: 1,
+    retryCount: 0, outputCount: 1, canonicalCopy: result.canonicalCopy, validatorFailures: result.validatorFailures,
   };
 }
 
 function assertEvent(event) {
-  const allowed = new Set(['caseId', 'model', 'promptVariant', 'input', 'execute']);
+  const allowed = new Set(['caseId', 'model', 'promptVariant', 'input', 'execute', 'tcbContext', 'userInfo']);
   for (const key of Object.keys(event || {})) if (!allowed.has(key)) throw new Error(`EVENT_KEY_NOT_ALLOWED:${key}`);
   if (typeof event.caseId !== 'string' || !CASE_IDS.has(event.caseId)) throw new Error('CASE_ID_NOT_ALLOWED');
   if (!Object.hasOwn(MODELS, event.model)) throw new Error('MODEL_NOT_ALLOWED');
