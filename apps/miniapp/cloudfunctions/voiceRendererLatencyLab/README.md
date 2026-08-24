@@ -2,7 +2,7 @@
 
 完全独立的 lab-only 凭据 smoke 函数。Today、`generateOutfit`、生产 Renderer、Recommendation Runtime 和 provider 默认路由均不引用此目录。
 
-本提交是安全的 contract-only 版本：只验证 benchmark event 并检查运行时是否存在 `BAILIAN_API_KEY`（fallback `DASHSCOPE_API_KEY`），不向百炼发起请求、不打印或返回 Key。缺少凭据时返回 `status=failed`、`errorCode=LAB_CREDENTIAL_MISSING`；即使凭据存在，provider call 仍返回 `providerCall=disabled_by_safety_gate`，因此本轮不会发生真实模型调用。
+函数已具备后续真实 benchmark 能力，但本轮不执行真实调用。它只从 `BAILIAN_API_KEY`（fallback `DASHSCOPE_API_KEY`）读取运行时凭据；缺少凭据时在网络请求前返回 `LAB_CREDENTIAL_MISSING`。只有显式 `execute:true` 才会调用 DashScope compatible endpoint；请求固定 non-thinking、structured output、模型白名单和 prompt，响应经 JSON contract 与 validator 后只返回脱敏统计字段，绝不返回或记录 Key。
 
 ## Event
 
@@ -12,11 +12,11 @@
   "model": "flash",
   "promptVariant": "compressed",
   "input": "由 apps/miniapp/scripts/voice-renderer-v2-lab/core.js 的 buildRendererInput 生成的单条 input",
-  "execute": false
+  "execute": true
 }
 ```
 
-`model` 仅允许 `max` / `flash`，映射 `qwen3.7-max` / `qwen3.7-flash`；`promptVariant` 仅允许 `current` / `compressed`；`caseId` 必须是既有 Gold case。正式请求 payload、non-thinking、structured output、validator 仍由现有 lab core/矩阵负责；该函数暂不承担 provider 请求。
+`model` 仅允许 `max` / `flash`，映射 `qwen3.7-max` / `qwen3.7-flash`；`promptVariant` 仅允许 `current` / `compressed`；`caseId` 必须是既有 Gold case。`execute:false` 只做凭据/契约 ready 检查；真实 benchmark 才使用 `execute:true`。本轮测试通过 mock fetch，不触发真实 provider。
 
 ## 部署与 smoke
 
@@ -26,7 +26,7 @@
 cloud functions deploy --env <environment> --paths cloudfunctions/voiceRendererLatencyLab --remote-npm-install --report --project .
 ```
 
-缺凭据 smoke event 使用上面的 JSON，预期返回：
+缺凭据 smoke event 使用 `execute:false` 的 JSON，预期返回：
 
 ```json
 {
@@ -37,4 +37,4 @@ cloud functions deploy --env <environment> --paths cloudfunctions/voiceRendererL
 }
 ```
 
-生产 `generateOutfit` 的函数私有环境变量不会自动复制到新函数。需要在 CloudBase 控制台为本函数手动配置 `BAILIAN_API_KEY` 后，另行实现并审核 provider egress；不要把 Key 发给 Codex。
+生产 `generateOutfit` 的函数私有环境变量不会自动复制到新函数。需要在 CloudBase 控制台为本函数手动配置 `BAILIAN_API_KEY` 后再显式执行 benchmark；不要把 Key 发给 Codex。
