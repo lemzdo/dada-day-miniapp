@@ -66,11 +66,16 @@ export function readTodayV2Snapshot(
     || (expectedInputIdentity !== undefined && snapshot.inputIdentity !== expectedInputIdentity)
     || typeof snapshot.batchId !== 'string'
     || !snapshot.core || snapshot.core.batchId !== snapshot.batchId
-    || !Number.isInteger(snapshot.core.cardCount) || snapshot.core.cardCount < 0 || snapshot.core.cardCount > 8
+    || !Number.isInteger(snapshot.core.cardCount) || snapshot.core.cardCount < 1 || snapshot.core.cardCount > 8
     || snapshot.core.countContract?.requestedCardCount !== 8
     || snapshot.core.countContract?.returnedCardCount !== snapshot.core.cardCount
+    || typeof snapshot.core.countContract?.limited !== 'boolean'
+    || typeof snapshot.core.countContract?.exhausted !== 'boolean'
+    || snapshot.core.countContract.limited !== (snapshot.core.cardCount < 8)
+    || (snapshot.core.cardCount < 8 && snapshot.core.countContract.exhausted !== true)
     || !Array.isArray(snapshot.core.order)
     || snapshot.core.order.length !== snapshot.core.cardCount
+    || new Set(snapshot.core.order).size !== snapshot.core.cardCount
     || snapshot.core.order.some((key, index) => key !== snapshot.cards?.[index]?.outfitKey)
     || !Array.isArray(snapshot.cards)
     || snapshot.cards.length !== snapshot.core.cardCount

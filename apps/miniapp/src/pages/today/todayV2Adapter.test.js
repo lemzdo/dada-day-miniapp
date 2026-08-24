@@ -23,6 +23,14 @@ test('Home Light snapshot is exact-input bound', () => {
   assert.match(source, /snapshot\.inputIdentity !== expectedInputIdentity/);
 });
 
+test('persisted current snapshots reject zero and malformed partial count contracts', () => {
+  assert.match(source, /snapshot\.core\.cardCount < 1/);
+  assert.match(source, /snapshot\.core\.countContract\.limited !== \(snapshot\.core\.cardCount < 8\)/);
+  assert.match(source, /new Set\(snapshot\.core\.order\)\.size/);
+  assert.match(source, /if \(snapshot\.cards\.length === 0\) return null/);
+  assert.match(source, /response\.light\.cards\.map/);
+});
+
 test('status patches are batch and outfit scoped', () => {
   assert.match(source, /snapshot\.batchId !== patch\.batchId/);
   assert.match(source, /card\.outfitKey === patch\.outfitKey/);

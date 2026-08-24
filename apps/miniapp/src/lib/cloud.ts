@@ -822,6 +822,13 @@ function assertHomeLightV2(value: unknown): RecommendationHomeLightResponseV2 {
     || response.light.cards.length !== response.batch.cardCount) {
     throw new Error('V2 response contract invalid');
   }
+  const countContract = response.batch.countContract;
+  if (typeof countContract.limited !== 'boolean'
+    || typeof countContract.exhausted !== 'boolean'
+    || countContract.limited !== (countContract.returnedCardCount < 8)
+    || (countContract.returnedCardCount < 8 && countContract.exhausted !== true)) {
+    throw new Error('V2 response count contract invalid');
+  }
   const order = response.batch.order;
   response.light.cards.forEach((card, index) => {
     if (card.position !== index || card.outfitKey !== order[index]) throw new Error('V2 response order invalid');
