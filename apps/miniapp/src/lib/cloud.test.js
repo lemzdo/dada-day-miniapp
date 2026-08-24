@@ -112,6 +112,16 @@ test('cloud.ts unwraps the formal response once and preserves data.countContract
   assert.doesNotMatch(callSection[0], /result\.(?:debug|qaBatchAudit|recommendation)\??\.countContract/);
 });
 
+test('client V2 transport validates partial count contract self-consistency', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'cloud.ts'), 'utf8');
+  const section = source.match(/function assertHomeLightV2[\s\S]*?\n\}/);
+  assert.ok(section, 'should find V2 client assertion');
+  assert.match(section[0], /typeof countContract\.limited !== 'boolean'/);
+  assert.match(section[0], /typeof countContract\.exhausted !== 'boolean'/);
+  assert.match(section[0], /countContract\.limited !== \(countContract\.returnedCardCount < 8\)/);
+  assert.match(section[0], /countContract\.returnedCardCount < 8 && countContract\.exhausted !== true/);
+});
+
 test('cloud.ts same semantic request with different trigger produces identical cacheKeyData', () => {
   // Simulate the destructuring logic from cloud.ts
   function buildCacheKeyData(params) {

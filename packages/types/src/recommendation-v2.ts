@@ -47,9 +47,9 @@ export interface RecommendationBatchCoreV2 {
   weatherFingerprint: string;
   inputIdentityHash: string;
   generatedAt: string;
-  countContract: { requestedCardCount: 8; returnedCardCount: 8; limited: boolean; exhausted: boolean };
+  countContract: { requestedCardCount: 8; returnedCardCount: number; limited: boolean; exhausted: boolean };
   notice?: string;
-  cardCount: 8;
+  cardCount: number;
   order: string[];
 }
 

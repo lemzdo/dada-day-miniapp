@@ -59,6 +59,13 @@ interface AcquireOptions {
   requestOverrides?: Partial<RecommendationV2Request>;
 }
 
+export interface NextBatchOptions {
+  currentBatchId: string;
+  currentContentHash: string;
+  excludedOutfitKeys: string[];
+  refreshSemantics?: string;
+}
+
 const DEFAULT_CONTEXT: RecommendationInputContext = {
   sceneKey: 'home',
   scene: '居家' as SceneTag,
@@ -190,6 +197,52 @@ export function acquireRecommendationForInput(options: AcquireOptions) {
       }).promise;
     }),
   };
+}
+
+/** Identity for the sole prefetched successor of a visible batch. */
+export function buildNextBatchIdentity(input: EffectiveRecommendationInput, options: NextBatchOptions): string {
+  const exclusions = [...new Set(options.excludedOutfitKeys.filter((key) => typeof key === 'string' && key.trim()))]
+    .map((key) => key.trim()).sort();
+  return [
+    input.identity,
+    options.currentBatchId,
+    options.currentContentHash,
+    options.refreshSemantics ?? 'refresh',
+    exclusions.join(','),
+  ].map((value) => encodeURIComponent(String(value))).join('|');
+}
+
+export function prepareNextRecommendationForInput(
+  input: EffectiveRecommendationInput,
+  options: NextBatchOptions,
+) {
+  const excludedOutfitKeys = [...new Set(options.excludedOutfitKeys.filter((key) => typeof key === 'string' && key.trim()))]
+    .map((key) => key.trim()).sort();
+  const request = toRecommendationRequest({
+    ...input,
+    recommendationBatchId: options.currentBatchId,
+    excludedOutfitKeys,
+    requestKind: 'refresh',
+  }, 'refresh');
+  return coordinator.prepareNext({
+    identity: input.identity,
+    requestKey: buildNextBatchIdentity(input, options),
+    request,
+  });
+}
+
+export function acquireNextRecommendationForInput(
+  input: EffectiveRecommendationInput,
+  options: NextBatchOptions,
+) {
+  return coordinator.acquireNext({
+    identity: input.identity,
+    requestKey: buildNextBatchIdentity(input, options),
+  });
+}
+
+export function getNextRecommendationState() {
+  return coordinator.getNextState();
 }
 
 export function isRecommendationInputIdentityCurrent(

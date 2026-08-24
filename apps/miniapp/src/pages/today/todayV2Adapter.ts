@@ -66,14 +66,19 @@ export function readTodayV2Snapshot(
     || (expectedInputIdentity !== undefined && snapshot.inputIdentity !== expectedInputIdentity)
     || typeof snapshot.batchId !== 'string'
     || !snapshot.core || snapshot.core.batchId !== snapshot.batchId
-    || snapshot.core.cardCount !== 8
+    || !Number.isInteger(snapshot.core.cardCount) || snapshot.core.cardCount < 1 || snapshot.core.cardCount > 8
     || snapshot.core.countContract?.requestedCardCount !== 8
-    || snapshot.core.countContract?.returnedCardCount !== 8
+    || snapshot.core.countContract?.returnedCardCount !== snapshot.core.cardCount
+    || typeof snapshot.core.countContract?.limited !== 'boolean'
+    || typeof snapshot.core.countContract?.exhausted !== 'boolean'
+    || snapshot.core.countContract.limited !== (snapshot.core.cardCount < 8)
+    || (snapshot.core.cardCount < 8 && snapshot.core.countContract.exhausted !== true)
     || !Array.isArray(snapshot.core.order)
-    || snapshot.core.order.length !== 8
+    || snapshot.core.order.length !== snapshot.core.cardCount
+    || new Set(snapshot.core.order).size !== snapshot.core.cardCount
     || snapshot.core.order.some((key, index) => key !== snapshot.cards?.[index]?.outfitKey)
     || !Array.isArray(snapshot.cards)
-    || snapshot.cards.length !== 8
+    || snapshot.cards.length !== snapshot.core.cardCount
     || snapshot.cards.some((card) => !Array.isArray(card.items) || card.items.length === 0
       || card.items.some((item) => item.isDeleted || typeof item.displayImageUrl !== 'string' || !item.displayImageUrl.trim()))) return null;
   const forbidden = ['snapshotItems', 'itemsSnapshot', 'scores', 'eligibility', 'copyContract', 'debug', 'evidence', 'thumbnailUrl', 'imageUrl'];
@@ -91,6 +96,7 @@ export function writeTodayV2Snapshot(
   write: (key: string, value: TodayV2Snapshot) => void,
 ) {
   const snapshot = toTodayV2Snapshot(response, inputIdentity);
+  if (snapshot.cards.length === 0) return null;
   write(TODAY_V2_SNAPSHOT_KEY, snapshot);
   return snapshot;
 }
