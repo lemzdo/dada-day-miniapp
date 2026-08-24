@@ -211,3 +211,28 @@ test('successful promotion permits exactly one successor prefetch', async () => 
   assert.equal(await next.promise, 'batch-3');
   assert.equal(calls, 2);
 });
+
+test('partial exhausted successor is ready and promotes with its three cards', async () => {
+  let calls = 0;
+  const result = { batch: { countContract: { returnedCardCount: 3, exhausted: true } }, cards: ['a', 'b', 'c'] };
+  const coordinator = createRecommendationCoordinatorCore({ execute: async () => { calls += 1; return result; } });
+  await coordinator.prepareNext({ identity: 'input-a', requestKey: 'next-a', request: {} }).promise;
+  const promoted = coordinator.acquireNext({ identity: 'input-a', requestKey: 'next-a' });
+  assert.equal(promoted.source, 'next-ready');
+  assert.deepEqual(await promoted.promise, result);
+  assert.equal(calls, 1);
+});
+
+test('zero-card exhausted successor remains sticky and never computes again', async () => {
+  let calls = 0;
+  const result = { batch: { countContract: { returnedCardCount: 0, exhausted: true } }, cards: [] };
+  const coordinator = createRecommendationCoordinatorCore({ execute: async () => { calls += 1; return result; } });
+  await coordinator.prepareNext({ identity: 'input-a', requestKey: 'next-a', request: {} }).promise;
+  const first = coordinator.acquireNext({ identity: 'input-a', requestKey: 'next-a' });
+  const second = coordinator.acquireNext({ identity: 'input-a', requestKey: 'next-a' });
+  assert.equal(first.source, 'next-exhausted');
+  assert.equal(second.source, 'next-exhausted');
+  assert.deepEqual(await first.promise, result);
+  assert.deepEqual(await second.promise, result);
+  assert.equal(calls, 1);
+});

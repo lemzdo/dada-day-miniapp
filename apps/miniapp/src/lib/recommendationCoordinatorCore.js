@@ -109,9 +109,9 @@ function createRecommendationCoordinatorCore({ execute }) {
     record.promise.then(
       (result) => {
         record.result = result;
-        const exhausted = Boolean(result?.batch?.countContract?.exhausted)
-          || Boolean(result?.core?.countContract?.exhausted)
-          || Number(result?.batch?.countContract?.returnedCardCount ?? result?.core?.countContract?.returnedCardCount) === 0;
+        const returnedCardCount = Number(result?.batch?.countContract?.returnedCardCount
+          ?? result?.core?.countContract?.returnedCardCount);
+        const exhausted = returnedCardCount === 0;
         record.status = nextSlot === record && latestIdentity === normalized ? (exhausted ? 'exhausted' : 'ready') : 'stale';
         if (record.status === 'stale' && nextSlot === record) nextSlot = null;
       },
@@ -134,7 +134,7 @@ function createRecommendationCoordinatorCore({ execute }) {
     // A ready value is consumed immediately. Keep a running record until it
     // settles (or is replaced/invalidated), so concurrent consumers still
     // join the same in-flight successor.
-    if (nextSlot.status === 'ready' || nextSlot.status === 'exhausted') nextSlot = null;
+    if (nextSlot.status === 'ready') nextSlot = null;
     return run;
   }
 

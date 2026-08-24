@@ -45,3 +45,12 @@ test('next identity and request contract bind effective input, current batch, ha
   assert.match(prepareBody, /excludedOutfitKeys/);
   assert.match(prepareBody, /requestKey: buildNextBatchIdentity/);
 });
+
+test('exhausted displayed partial batches are recorded before compute is skipped', () => {
+  const prefetchBody = source.slice(source.indexOf('function prefetchNextBatch'), source.indexOf('async function refreshHardInvalidRecommendation'));
+  assert.ok(prefetchBody.indexOf('snapshot.cards.forEach') < prefetchBody.indexOf('snapshot.core.countContract.exhausted'));
+  assert.match(prefetchBody, /seenOutfitKeysRef\.current\.add\(card\.outfitKey\)/);
+  const refreshBody = source.slice(source.indexOf('async function handleV2Refresh'), source.indexOf('async function handleRefresh'));
+  assert.ok(refreshBody.indexOf("setRecommendationNotice('这一轮暂时没有更多新搭配了')") < refreshBody.indexOf('acquireNextRecommendationForInput'));
+  assert.match(refreshBody, /previous\?\.core\.countContract\.exhausted/);
+});

@@ -655,16 +655,18 @@ export default function TodayPage() {
   }
 
   function prefetchNextBatch(effectiveInput: EffectiveRecommendationInput, snapshot: TodayV2Snapshot) {
-    if (!snapshot.cards.length || snapshot.core.countContract.exhausted) {
-      batchExhaustedRef.current = true;
-      setBatchExhausted(true);
-      return;
-    }
     if (seenInputIdentityRef.current !== effectiveInput.identity) {
       seenInputIdentityRef.current = effectiveInput.identity;
       seenOutfitKeysRef.current = new Set();
     }
     snapshot.cards.forEach((card) => seenOutfitKeysRef.current.add(card.outfitKey));
+    if (!snapshot.cards.length || snapshot.core.countContract.exhausted) {
+      batchExhaustedRef.current = true;
+      setBatchExhausted(true);
+      return;
+    }
+    batchExhaustedRef.current = false;
+    setBatchExhausted(false);
     const run = prepareNextRecommendationForInput(effectiveInput, {
       currentBatchId: snapshot.batchId,
       currentContentHash: snapshot.core.contentHash,
@@ -888,6 +890,10 @@ export default function TodayPage() {
       excludedOutfitKeys: exclusions,
       requestKind: 'refresh',
     });
+    if (batchExhaustedRef.current || previous?.core.countContract.exhausted === true) {
+      setRecommendationNotice('这一轮暂时没有更多新搭配了');
+      return false;
+    }
     setLoading(true);
     const refreshSeq = requestSeq.current + 1;
     requestSeq.current = refreshSeq;
