@@ -53,16 +53,6 @@ export interface RecommendationBatchCoreV2 {
   order: string[];
 }
 
-export interface RecommendationOutfitRefV2 {
-  runtimeVersion: typeof RECOMMENDATION_V2_RUNTIME_VERSION;
-  schemaVersion: typeof RECOMMENDATION_V2_SCHEMA_VERSION;
-  latestBatchId: string;
-  outfitKey: string;
-  referenceId: string;
-  latestPosition: number;
-  clothingIds: string[];
-}
-
 export interface RecommendationHomeLightResponseV2 {
   runtimeVersion: typeof RECOMMENDATION_V2_RUNTIME_VERSION;
   schemaVersion: typeof RECOMMENDATION_V2_SCHEMA_VERSION;

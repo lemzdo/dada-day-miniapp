@@ -479,7 +479,7 @@ export default function OutfitDetailPage() {
   }, [authStatus, id, isAuthenticated, resetUserState, runtimeKey]);
 
   useEffect(() => {
-    if (!isAuthenticated || !runtimeKey || !v2BatchId || !v2OutfitKey) return;
+    if (!isAuthenticated || !runtimeKey || !v2BatchId || !v2OutfitKey || !v2ReferenceId) return;
     const authContext = captureAuthContext();
     if (!authContext) return;
     const snapshot = readTodayV2Snapshot((key) => getUserStorageSync(key, { authContext }));

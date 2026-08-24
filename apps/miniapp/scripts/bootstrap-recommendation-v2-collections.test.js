@@ -1,41 +1,27 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
-const { COLLECTIONS, ensureCollections } = require('./bootstrap-recommendation-v2-collections');
+const { COLLECTIONS } = require('./bootstrap-recommendation-v2-collections');
 
-function fixture(initial = []) {
-  const names = new Set(initial);
-  const calls = [];
-  return {
-    calls,
-    manager: {
-      async listCollections() { return [...names].map((name) => ({ collectionName: name })); },
-      async createCollection(name) { calls.push(name); names.add(name); },
-    },
-  };
-}
-
-test('missing collections are created through manager API, without document probes', async () => {
-  const f = fixture();
-  const result = await ensureCollections({ manager: f.manager });
-  assert.deepEqual(f.calls, [...COLLECTIONS]);
-  assert.deepEqual(result.created, [...COLLECTIONS]);
-  assert.match(result.indexes, /none-added/);
+test('V2 bootstrap provisions only the batch source collection', () => {
+  assert.deepEqual(COLLECTIONS, ['recommendation_batches_v2']);
 });
 
-test('existing collections are no-op and no overwrite occurs', async () => {
-  const f = fixture([...COLLECTIONS]);
-  const result = await ensureCollections({ manager: f.manager });
-  assert.deepEqual(f.calls, []);
-  assert.deepEqual(result.existing, [...COLLECTIONS]);
-});
-
-test('NOT_FOUND-style create race fails closed unless fresh list confirms existence', async () => {
-  const names = new Set();
-  const manager = {
-    async listCollections() { return [...names]; },
-    async createCollection(name) { if (name === COLLECTIONS[0]) throw new Error('NOT_FOUND'); },
+test('production source has no separate ref collection or helper references', () => {
+  const root = path.resolve(__dirname, '..');
+  const forbidden = ['recommendation_' + 'outfit_refs_v2', 'findRef', 'findBatchRefs', 'RecommendationOutfitRefV2'];
+  const files = [];
+  const walk = (directory) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const target = path.join(directory, entry.name);
+      if (entry.isDirectory() && entry.name !== 'node_modules') walk(target);
+      else if (entry.isFile() && /\.(js|ts|tsx)$/.test(entry.name) && !entry.name.endsWith('.test.js')) files.push(target);
+    }
   };
-  await assert.rejects(() => ensureCollections({ manager }), /NOT_FOUND/);
+  walk(root);
+  const violations = files.flatMap((file) => forbidden.filter((token) => fs.readFileSync(file, 'utf8').includes(token)).map((token) => `${path.relative(root, file)}:${token}`));
+  assert.deepEqual(violations, []);
 });

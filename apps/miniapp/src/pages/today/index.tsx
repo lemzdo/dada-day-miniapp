@@ -912,6 +912,7 @@ export default function TodayPage() {
       const result = await updateCloudOutfitFavoriteV2({
         batchId: v2Snapshot.batchId,
         outfitKey: card.outfitKey,
+        referenceId: card.referenceId,
         isFavorite: !card.isFavorite,
       });
       const nextRender = patchTodayV2CardStatus(v2Snapshot, result);
@@ -933,7 +934,7 @@ export default function TodayPage() {
     if (!authContext) return;
     setOperation('wear');
     try {
-      const result = await updateCloudOutfitWearV2({ batchId: v2Snapshot.batchId, outfitKey: card.outfitKey, date: getToday() });
+      const result = await updateCloudOutfitWearV2({ batchId: v2Snapshot.batchId, outfitKey: card.outfitKey, referenceId: card.referenceId, date: getToday() });
       const nextRender = patchTodayV2CardStatus(v2Snapshot, result);
       const nextCanonical = patchTodayV2CardStatus(canonicalSnapshot, result);
       if (!assertNoCloudUrlInRenderState(nextRender)) return;

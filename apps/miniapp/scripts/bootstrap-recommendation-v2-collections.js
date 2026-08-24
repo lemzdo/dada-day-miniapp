@@ -2,7 +2,6 @@
 
 const COLLECTIONS = Object.freeze([
   'recommendation_batches_v2',
-  'recommendation_outfit_refs_v2',
 ]);
 
 function normalizeCollectionNames(result) {

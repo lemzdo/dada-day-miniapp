@@ -95,6 +95,7 @@ const {
 } = require('./services/recommendationV2Projection');
 const {
   persistRecommendationBatchV2,
+  resolveV2BatchEnvelopeCard,
   stableReferenceId,
 } = require('./services/recommendationV2BatchRepository');
 const {
@@ -380,21 +381,12 @@ async function generateRecommendationV2({
     .update(`${batchId}|${contentHash}`)
     .digest('hex');
   const batch = projectBatchCoreV2({ ...coreInput, contentHash, commitToken });
-  const refs = order.map((outfitKey, position) => ({
-    runtimeVersion: RECOMMENDATION_V2_RUNTIME_VERSION,
-    schemaVersion: RECOMMENDATION_V2_SCHEMA_VERSION,
-    outfitKey,
-    referenceId: light.cards[position].referenceId,
-    clothingIds: light.cards[position].clothingIds,
-    position,
-  }));
   const batchPersistenceStartedAt = Date.now();
   const batchPersistenceTiming = {};
   const persisted = await persistRecommendationBatchV2({
     database: db,
     openid,
     batch,
-    refs,
     envelope: {
       runtimeVersion: RECOMMENDATION_V2_RUNTIME_VERSION,
       schemaVersion: RECOMMENDATION_V2_SCHEMA_VERSION,
@@ -1063,31 +1055,21 @@ async function getAiComment(event) {
 async function loadV2OutfitPayload(event) {
   const { OPENID } = cloud.getWXContext();
   const outfitKey = readString(event.outfitKey);
+  const referenceId = readString(event.referenceId);
   const batchId = readString(event.batchId);
-  if (!outfitKey || !batchId) throw createBusinessError('V2_OUTFIT_IDENTITY_REQUIRED', 'batchId and outfitKey are required');
+  if (!outfitKey || !batchId || !referenceId) throw createBusinessError('V2_OUTFIT_IDENTITY_REQUIRED', 'batchId, outfitKey and referenceId are required');
   const batchResult = await db.collection('recommendation_batches_v2')
     .where({ _openid: OPENID, batchId }).limit(1).get();
   const storedBatch = batchResult.data?.[0];
-  const envelope = storedBatch?.envelope;
-  const position = Array.isArray(storedBatch?.order) ? storedBatch.order.indexOf(outfitKey) : -1;
-  const envelopeCard = envelope?.light?.cards?.[position];
-  if (!storedBatch || !envelope || storedBatch.contentHash !== envelope.core?.contentHash
-    || storedBatch.commitToken !== envelope.core?.commitToken || position < 0
-    || envelopeCard?.outfitKey !== outfitKey || envelopeCard?.position !== position
-    || envelopeCard.referenceId !== stableReferenceId(OPENID, outfitKey)) {
+  const envelopeCard = resolveV2BatchEnvelopeCard(storedBatch, OPENID, batchId, outfitKey, referenceId);
+  if (!envelopeCard) {
     throw createBusinessError('V2_BATCH_ENVELOPE_INVALID', 'V2 immutable batch envelope invalid');
   }
-  const refResult = await db.collection('recommendation_outfit_refs_v2')
-    .where({ _openid: OPENID, outfitKey }).limit(1).get();
-  const ref = refResult.data?.[0];
-  if (!ref || ref.referenceId !== stableReferenceId(OPENID, outfitKey)
-    || !Array.isArray(ref.clothingIds) || ref.clothingIds.length === 0) {
+  const clothingIds = envelopeCard.clothingIds;
+  if (!Array.isArray(clothingIds) || clothingIds.length === 0) {
     throw createBusinessError('V2_OUTFIT_REFERENCE_NOT_FOUND', 'V2 outfit reference not found');
   }
-  if (JSON.stringify(ref.clothingIds) !== JSON.stringify(envelopeCard.clothingIds)) {
-    throw createBusinessError('V2_OUTFIT_REFERENCE_MISMATCH', 'V2 ref clothing identity mismatch');
-  }
-  const clothes = await loadClothesByIds(OPENID, ref.clothingIds);
+  const clothes = await loadClothesByIds(OPENID, clothingIds);
   const itemsSnapshot = clothes.map((item) => snapshotFromClothing(item, null, item._id));
   const core = envelope.core;
   return {
@@ -1098,7 +1080,7 @@ async function loadV2OutfitPayload(event) {
     todayReason: envelopeCard.todayReason,
     styleTags: envelopeCard.styleTags,
     outfitKey,
-    clothingIds: ref.clothingIds,
+    clothingIds,
     itemsSnapshot,
     items: clothes,
     source: 'recommend',

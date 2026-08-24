@@ -2,185 +2,80 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { persistRecommendationBatchV2, stableReferenceId } = require('./recommendationV2BatchRepository');
+const { persistRecommendationBatchV2, resolveV2BatchEnvelopeCard, stableReferenceId } = require('./recommendationV2BatchRepository');
 
-function fixture(mode) {
-  const batchId = `batch-${mode}`;
-  const order = Array.from({ length: 8 }, (_, index) => `${mode}-key-${index}`);
-  const batch = { runtimeVersion: 'today-runtime-v2', schemaVersion: 'today-v2', batchId, commitToken: `commit-${mode}`, contentHash: `hash-${mode}`, sceneKey: 'home', scene: '居家', targetDate: '2026-08-20', timeOfDay: 'all_day', weatherMode: 'live', weatherSnapshot: { temp: 28, humidity: 60, weather: '多云', wind: 2, uv: 3 }, weatherFingerprint: 'weather', inputIdentityHash: 'input', generatedAt: '2026-08-20T00:00:00.000Z', cardCount: 8, order, countContract: { requestedCardCount: 8, returnedCardCount: 8, limited: false, exhausted: false } };
-  const refs = order.map((outfitKey, position) => ({ runtimeVersion: 'today-runtime-v2', schemaVersion: 'today-v2', outfitKey, referenceId: `unstable-${position}`, position, clothingIds: [`clothing-${position}`] }));
-  const envelope = {
-    runtimeVersion: 'today-runtime-v2',
-    schemaVersion: 'today-v2',
-    core: batch,
-    light: {
-      runtimeVersion: 'today-runtime-v2',
-      schemaVersion: 'today-v2',
-      batchId,
-      cards: refs.map((ref, position) => ({
-        referenceId: stableReferenceId('user-1', ref.outfitKey),
-        outfitKey: ref.outfitKey,
-        position,
-        displayTitle: '今日搭配',
-        todayReason: '适合今天',
-        styleTags: [],
-        clothingIds: ref.clothingIds,
-        items: [],
-        isFavorite: false,
-        isWornToday: false,
-      })),
-    },
-  };
-  return { batch, refs, envelope };
+function fixture(suffix = 'one') {
+  const order = Array.from({ length: 8 }, (_, index) => `${suffix}-key-${index}`);
+  const batch = { runtimeVersion: 'today-runtime-v2', schemaVersion: 'today-v2', batchId: `batch-${suffix}`, commitToken: `commit-${suffix}`, contentHash: `hash-${suffix}`, sceneKey: 'home', scene: '居家', targetDate: '2026-08-20', timeOfDay: 'all_day', weatherMode: 'live', weatherSnapshot: {}, weatherFingerprint: 'weather', inputIdentityHash: 'input', generatedAt: '2026-08-20T00:00:00.000Z', cardCount: 8, order, countContract: { requestedCardCount: 8, returnedCardCount: 8, limited: false, exhausted: false } };
+  const envelope = { runtimeVersion: 'today-runtime-v2', schemaVersion: 'today-v2', core: batch, light: { runtimeVersion: 'today-runtime-v2', schemaVersion: 'today-v2', batchId: batch.batchId, cards: order.map((outfitKey, position) => ({ referenceId: stableReferenceId('user-1', outfitKey), outfitKey, position, displayTitle: '今日搭配', todayReason: '适合今天', styleTags: [], clothingIds: [`clothing-${position}`], items: [], isFavorite: false, isWornToday: false })) } };
+  return { batch, envelope };
 }
 
-function createDatabase(existingKeys = [], options = {}) {
-  const records = { recommendation_batches_v2: [], recommendation_outfit_refs_v2: existingKeys.map((outfitKey) => ({ _id: `old-${outfitKey}`, _openid: 'user-1', outfitKey, latestBatchId: 'old-batch', referenceId: stableReferenceId('user-1', outfitKey), latestPosition: 0 })) };
-  const operations = { transactions: 0, reads: 0, writes: 0, adds: 0, updates: 0, rollbacks: 0 };
+function createDatabase(options = {}) {
+  const records = { recommendation_batches_v2: [] };
+  const operations = { transactions: 0, reads: 0, writes: 0, rollbacks: 0 };
   let transactionTail = Promise.resolve();
-  const makeDatabase = () => ({
-    collection(name) {
-      const rows = records[name];
-      const query = { filters: {}, where(filters) { this.filters = filters; return this; }, limit() { return this; }, async get() { operations.reads += 1; return { data: rows.filter((row) => Object.entries(this.filters).every(([key, value]) => row[key] === value)) }; }, async add({ data }) { if (options.failRefAdd && name === 'recommendation_outfit_refs_v2') throw new Error('injected write failure'); operations.adds += 1; operations.writes += 1; const entries = Array.isArray(data) ? data : [data]; entries.forEach((entry, index) => rows.push({ ...entry, _id: entry._id || `${name}-${rows.length + index}` })); return { _id: rows.at(-1)._id }; } };
-      query.doc = (id) => ({ async update({ data }) { operations.updates += 1; operations.writes += 1; const index = rows.findIndex((row) => row._id === id); if (index < 0) throw new Error('V2_TEST_REF_NOT_FOUND'); rows[index] = { ...rows[index], ...data }; } });
-      return query;
-    },
-    async runTransaction(callback) { const execute = async () => { operations.transactions += 1; const snapshot = JSON.parse(JSON.stringify(records)); try { return await callback(makeDatabase()); } catch (error) { records.recommendation_batches_v2 = snapshot.recommendation_batches_v2; records.recommendation_outfit_refs_v2 = snapshot.recommendation_outfit_refs_v2; operations.rollbacks += 1; throw error; } }; const result = transactionTail.then(execute, execute); transactionTail = result.then(() => undefined, () => undefined); return result; },
-  });
-  return { database: makeDatabase(), records, operations };
+  const database = { collection(name) { const rows = records[name]; return { where(filters) { this.filters = filters; return this; }, limit() { return this; }, async get() { operations.reads += 1; return { data: rows.filter((row) => Object.entries(this.filters).every(([key, value]) => row[key] === value)) }; }, async add({ data }) { if (options.failWrite) throw new Error('injected write failure'); operations.writes += 1; rows.push({ ...data, _id: `${name}-${rows.length}` }); return { _id: rows.at(-1)._id }; } }; }, async runTransaction(callback) { const execute = async () => { operations.transactions += 1; const snapshot = JSON.parse(JSON.stringify(records)); try { return await callback(database); } catch (error) { records.recommendation_batches_v2.splice(0, records.recommendation_batches_v2.length, ...snapshot.recommendation_batches_v2); operations.rollbacks += 1; throw error; } }; const result = transactionTail.then(execute, execute); transactionTail = result.then(() => undefined, () => undefined); return result; } };
+  return { database, records, operations };
 }
 
-for (const [mode, existingCount] of [['all-existing', 8], ['mixed', 4], ['all-new', 0]]) {
-  test(`V2 repository uses one atomic path and stable identities for ${mode}`, async () => {
-    const input = fixture(mode);
-    const existingKeys = input.refs.slice(0, existingCount).map((ref) => ref.outfitKey);
-    const { database, records, operations } = createDatabase(existingKeys);
-    const first = await persistRecommendationBatchV2({ database, openid: 'user-1', ...input });
-    assert.equal(first.idempotent, false);
-    assert.equal(records.recommendation_batches_v2.length, 1);
-    assert.equal(records.recommendation_outfit_refs_v2.length, 8);
-    assert.equal(operations.transactions, 1);
-    assert.deepEqual(first.refs.map((ref) => ref.referenceId), input.refs.map((ref) => stableReferenceId('user-1', ref.outfitKey)));
-    const retry = await persistRecommendationBatchV2({ database, openid: 'user-1', ...input });
-    assert.equal(retry.idempotent, true);
-    assert.equal(retry.writes, 0);
-    assert.equal(operations.transactions, 2);
-  });
-}
-
-test('V2 persistence exposes truthful serialized operation timing', async () => {
-  const input = fixture('timing');
-  const { database, operations } = createDatabase();
-  const timing = {};
-  const first = await persistRecommendationBatchV2({ database, openid: 'user-1', ...input, timing });
-  assert.equal(first.timing.sequential, true);
-  assert.equal(first.timing.readCount, 9);
-  assert.equal(first.timing.writeCount, 9);
-  assert.equal(first.timing.transactionAttempts, 1);
-  assert.equal(operations.reads, 9);
-  assert.equal(operations.writes, 9);
-  for (const field of ['transactionBeginMs', 'preconditionReadMs', 'refsReadMs', 'batchWriteMs', 'refsWriteMs', 'commitMs', 'otherMs', 'totalMs']) {
-    assert.equal(typeof first.timing[field], 'number');
-    assert.ok(first.timing[field] >= 0);
-  }
-  const measured = ['transactionBeginMs', 'preconditionReadMs', 'refsReadMs', 'batchWriteMs', 'refsWriteMs', 'commitMs', 'otherMs']
-    .reduce((sum, field) => sum + first.timing[field], 0);
-  assert.ok(measured <= first.timing.totalMs + 2);
-  const retryTiming = {};
-  const retry = await persistRecommendationBatchV2({ database, openid: 'user-1', ...input, timing: retryTiming });
-  assert.equal(retry.idempotent, true);
-  assert.equal(retry.timing.readCount, 9);
-  assert.equal(retry.timing.writeCount, 0);
-  assert.equal(retry.timing.sequential, true);
+test('batch is the sole atomic source: new write is one read and one write', async () => {
+  const input = fixture(); const { database, records, operations } = createDatabase();
+  const result = await persistRecommendationBatchV2({ database, openid: 'user-1', ...input });
+  assert.equal(result.idempotent, false); assert.equal(result.writes, 1); assert.equal(records.recommendation_batches_v2.length, 1);
+  assert.equal(operations.reads, 1); assert.equal(operations.writes, 1); assert.equal(result.timing.readCount, 1); assert.equal(result.timing.writeCount, 1); assert.equal(result.timing.sequential, false); assert.equal(result.timing.refsReadMs, 0); assert.equal(result.timing.refsWriteMs, 0);
 });
 
-test('V2 repository concurrent same-hash calls return one write and one idempotent result', async () => {
-  const input = fixture('concurrent');
-  const { database, records } = createDatabase();
-  const results = await Promise.all([persistRecommendationBatchV2({ database, openid: 'user-1', ...input }), persistRecommendationBatchV2({ database, openid: 'user-1', ...input })]);
-  assert.deepEqual(results.map((result) => result.idempotent).sort(), [false, true]);
-  assert.equal(records.recommendation_batches_v2.length, 1);
-  assert.equal(records.recommendation_outfit_refs_v2.length, 8);
+test('same content repeats idempotently with one read and no write', async () => {
+  const input = fixture(); const { database, operations } = createDatabase();
+  await persistRecommendationBatchV2({ database, openid: 'user-1', ...input }); const before = { ...operations };
+  const result = await persistRecommendationBatchV2({ database, openid: 'user-1', ...input });
+  assert.equal(result.idempotent, true); assert.equal(result.writes, 0); assert.equal(operations.reads - before.reads, 1); assert.equal(operations.writes - before.writes, 0);
 });
 
-test('V2 immutable batch membership survives a partially overlapping later batch', async () => {
-  const first = fixture('overlap-a');
-  const second = fixture('overlap-b');
-  first.batch.order = Array.from({ length: 8 }, (_, index) => `overlap-${index}`);
-  first.refs = first.batch.order.map((outfitKey, position) => ({ ...first.refs[position], outfitKey, referenceId: `unstable-${position}` }));
-  first.envelope = fixture('overlap-a-updated').envelope;
-  first.envelope.core = first.batch;
-  first.envelope.light.cards = first.refs.map((ref, position) => ({ ...first.envelope.light.cards[position], outfitKey: ref.outfitKey, referenceId: stableReferenceId('user-1', ref.outfitKey), position, clothingIds: ref.clothingIds }));
-  second.batch.order = Array.from({ length: 8 }, (_, index) => `overlap-${index + 4}`);
-  second.refs = second.batch.order.map((outfitKey, position) => ({ ...second.refs[position], outfitKey, referenceId: `unstable-${position}` }));
-  second.envelope = fixture('overlap-b-updated').envelope;
-  second.envelope.core = second.batch;
-  second.envelope.light.cards = second.refs.map((ref, position) => ({ ...second.envelope.light.cards[position], outfitKey: ref.outfitKey, referenceId: stableReferenceId('user-1', ref.outfitKey), position, clothingIds: ref.clothingIds }));
-  const { database } = createDatabase();
-  const firstResult = await persistRecommendationBatchV2({ database, openid: 'user-1', ...first });
-  await persistRecommendationBatchV2({ database, openid: 'user-1', ...second });
-  const retry = await persistRecommendationBatchV2({ database, openid: 'user-1', ...first });
-  assert.equal(firstResult.idempotent, false);
-  assert.equal(retry.idempotent, true);
-  assert.deepEqual(retry.refs.map((ref) => ref.outfitKey), first.batch.order);
-});
-
-test('V2 repository rolls back partial writes and fails closed', async () => {
-  const input = fixture('rollback');
-  const { database, records, operations } = createDatabase([], { failRefAdd: true });
-  await assert.rejects(() => persistRecommendationBatchV2({ database, openid: 'user-1', ...input }), /injected write failure/);
-  assert.equal(records.recommendation_batches_v2.length, 0);
-  assert.equal(records.recommendation_outfit_refs_v2.length, 0);
-  assert.equal(operations.rollbacks, 1);
-});
-
-test('V2 repository rejects a partial batch before writing', async () => {
-  const input = fixture('partial');
-  const { database, records } = createDatabase();
-  records.recommendation_batches_v2.push({ ...input.batch, envelope: input.envelope, _openid: 'user-1' });
-  records.recommendation_outfit_refs_v2.push({ ...input.refs[0], _id: 'partial-ref', _openid: 'user-1', referenceId: stableReferenceId('user-1', input.refs[0].outfitKey) });
-  await assert.rejects(() => persistRecommendationBatchV2({ database, openid: 'user-1', ...input }), /V2_BATCH_REFS_INCOMPLETE/);
-});
-
-test('V2 repository rejects same batch id with a different hash', async () => {
-  const input = fixture('conflict');
-  const { database } = createDatabase();
+test('same batch id with a different hash fails closed and rolls back', async () => {
+  const input = fixture(); const { database, records, operations } = createDatabase();
   await persistRecommendationBatchV2({ database, openid: 'user-1', ...input });
-  await assert.rejects(() => persistRecommendationBatchV2({ database, openid: 'user-1', batch: { ...input.batch, contentHash: 'different' }, refs: input.refs, envelope: { ...input.envelope, core: { ...input.batch, contentHash: 'different' } } }), /V2_BATCH_COMMIT_VALIDATION_FAILED/);
+  await assert.rejects(() => persistRecommendationBatchV2({ database, openid: 'user-1', batch: { ...input.batch, contentHash: 'different' }, envelope: { ...input.envelope, core: { ...input.batch, contentHash: 'different' } } }), /V2_BATCH_COMMIT_VALIDATION_FAILED/);
+  assert.equal(records.recommendation_batches_v2.length, 1); assert.equal(operations.rollbacks, 1);
 });
 
-test('V2 envelope is atomic and rejects deep snapshot fields', async () => {
-  const input = fixture('envelope');
-  const envelope = {
-    runtimeVersion: 'today-runtime-v2',
-    schemaVersion: 'today-v2',
-    core: input.batch,
-    light: {
-      runtimeVersion: 'today-runtime-v2',
-      schemaVersion: 'today-v2',
-      batchId: input.batch.batchId,
-      cards: input.refs.map((ref, position) => ({
-        referenceId: stableReferenceId('user-1', ref.outfitKey),
-        outfitKey: ref.outfitKey,
-        position,
-        displayTitle: '今日搭配',
-        todayReason: '适合今天',
-        styleTags: [],
-        clothingIds: ref.clothingIds,
-        items: [],
-        isFavorite: false,
-        isWornToday: false,
-      })),
-    },
-  };
+test('transaction failure leaves no batch document', async () => {
+  const input = fixture(); const { database, records, operations } = createDatabase({ failWrite: true });
+  await assert.rejects(() => persistRecommendationBatchV2({ database, openid: 'user-1', ...input }), /injected write failure/);
+  assert.equal(records.recommendation_batches_v2.length, 0); assert.equal(operations.reads, 1); assert.equal(operations.writes, 0); assert.equal(operations.rollbacks, 1);
+});
+
+test('envelope enforces all eight ordered stable identities and lazy clothing ids', async () => {
+  const input = fixture(); const invalid = structuredClone(input); invalid.envelope.light.cards[3].referenceId = 'wrong'; const { database } = createDatabase();
+  await assert.rejects(() => persistRecommendationBatchV2({ database, openid: 'user-1', ...invalid }), /V2_BATCH_ENVELOPE_ORDER_INVALID/);
+  const missingIds = structuredClone(input); missingIds.envelope.light.cards[0].clothingIds = []; await assert.rejects(() => persistRecommendationBatchV2({ database, openid: 'user-1', ...missingIds }), /V2_BATCH_ENVELOPE_ORDER_INVALID/);
+});
+
+test('concurrent same-content calls serialize to one write and one idempotent result', async () => {
+  const input = fixture('concurrent'); const { database, records, operations } = createDatabase();
+  const results = await Promise.all([
+    persistRecommendationBatchV2({ database, openid: 'user-1', ...input }),
+    persistRecommendationBatchV2({ database, openid: 'user-1', ...input }),
+  ]);
+  assert.equal(records.recommendation_batches_v2.length, 1); assert.equal(operations.writes, 1);
+  assert.deepEqual(results.map((result) => result.idempotent).sort(), [false, true]);
+  assert.deepEqual(results.map((result) => result.timing.writeCount).sort(), [0, 1]);
+});
+
+test('forbidden deep snapshot fields are rejected before persistence', async () => {
+  const input = fixture('forbidden'); input.envelope.light.cards[0].items[0] = { snapshotItems: [{ clothingId: 'hidden' }] };
   const { database, records } = createDatabase();
-  const result = await persistRecommendationBatchV2({ database, openid: 'user-1', ...input, envelope });
-  assert.equal(result.idempotent, false);
-  assert.ok(records.recommendation_batches_v2[0].envelope);
-  await assert.rejects(() => persistRecommendationBatchV2({
-    database,
-    openid: 'user-1',
-    ...input,
-    envelope: { ...envelope, light: { ...envelope.light, cards: envelope.light.cards.map((card) => ({ ...card, snapshotItems: [] })) } },
-  }), /V2_BATCH_ENVELOPE_FORBIDDEN_FIELD|V2_BATCH_COMMIT_VALIDATION_FAILED/);
+  await assert.rejects(() => persistRecommendationBatchV2({ database, openid: 'user-1', ...input }), /V2_BATCH_ENVELOPE_FORBIDDEN_FIELD/);
+  assert.equal(records.recommendation_batches_v2.length, 0);
+});
+
+test('batch envelope resolver is the detail/action descriptor dependency', async () => {
+  const input = fixture('resolve'); const { database } = createDatabase();
+  await persistRecommendationBatchV2({ database, openid: 'user-1', ...input });
+  const stored = (await database.collection('recommendation_batches_v2').where({ _openid: 'user-1', batchId: input.batch.batchId }).get()).data[0];
+  const card = input.envelope.light.cards[4];
+  assert.deepEqual(resolveV2BatchEnvelopeCard(stored, 'user-1', input.batch.batchId, card.outfitKey, card.referenceId).clothingIds, card.clothingIds);
+  assert.equal(resolveV2BatchEnvelopeCard(stored, 'user-1', input.batch.batchId, card.outfitKey, 'wrong'), null);
+  assert.equal(resolveV2BatchEnvelopeCard(stored, 'user-1', input.batch.batchId, 'wrong-key', card.referenceId), null);
 });

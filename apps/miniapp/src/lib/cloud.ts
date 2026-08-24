@@ -886,7 +886,7 @@ export async function generateCloudOutfitV2(params: RecommendationV2Request = {}
   return assertHomeLightV2(result);
 }
 
-export async function getCloudOutfitDetailV2(input: { batchId: string; outfitKey: string; referenceId?: string }) {
+export async function getCloudOutfitDetailV2(input: { batchId: string; outfitKey: string; referenceId: string }) {
   const result = await callCloudFunction<RecommendationV2Response>('generateOutfit', {
     action: 'detailV2',
     runtimeVersion: RECOMMENDATION_V2_RUNTIME_VERSION,
@@ -900,7 +900,7 @@ export async function getCloudOutfitDetailV2(input: { batchId: string; outfitKey
   return result as RecommendationDetailResponseV2;
 }
 
-export async function updateCloudOutfitFavoriteV2(input: { batchId: string; outfitKey: string; isFavorite: boolean }) {
+export async function updateCloudOutfitFavoriteV2(input: { batchId: string; outfitKey: string; referenceId: string; isFavorite: boolean }) {
   return callCloudFunction<{ batchId: string; outfitKey: string; isFavorite: boolean }>('generateOutfit', {
     action: 'favoriteV2',
     runtimeVersion: RECOMMENDATION_V2_RUNTIME_VERSION,
@@ -908,7 +908,7 @@ export async function updateCloudOutfitFavoriteV2(input: { batchId: string; outf
   });
 }
 
-export async function updateCloudOutfitWearV2(input: { batchId: string; outfitKey: string; date?: string }) {
+export async function updateCloudOutfitWearV2(input: { batchId: string; outfitKey: string; referenceId: string; date?: string }) {
   return callCloudFunction<{ batchId: string; outfitKey: string; isWornToday: boolean }>('generateOutfit', {
     action: 'wearV2',
     runtimeVersion: RECOMMENDATION_V2_RUNTIME_VERSION,
