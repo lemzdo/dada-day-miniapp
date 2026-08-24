@@ -11,6 +11,10 @@ async function invokeOnce({ model, promptVariant, caseId, timeoutMs = 65000, dep
   const goldPlan = buildGoldPlans().find((plan) => plan.caseId === caseId);
   if (!goldPlan) throw new Error('CASE_ID_NOT_ALLOWED');
   const event = { model, promptVariant, caseId, input: buildRendererInput(goldPlan), execute: true };
+  return callLabEvent(event, { timeoutMs, deps });
+}
+
+async function callLabEvent(event, { timeoutMs = 65000, deps = {} } = {}) {
   const session = deps.mini ? null : await ensureDevToolsDirectSession({ deps, preserveCurrentPage: true });
   const mini = deps.mini || session.mini;
   const requestId = crypto.randomUUID();
@@ -55,4 +59,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { invokeOnce };
+module.exports = { callLabEvent, invokeOnce };

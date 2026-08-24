@@ -71,3 +71,62 @@ Flash/current 的第二条虽通过自动禁词和事实 validator，但“唯�
 - Quality effect：Max/compressed 两个代表 case 均保持 Narrative Plan ownership、事实边界、contract、validator 与自然朋友语气；Flash/current 为 1/2 人工自然度通过。所有 5 次均无事实越界、parse/contract failure 或 retry。
 
 历史 13,140–13,424ms 基线是 8-case batch；本轮为 single-case invocation，不能把 13s 与 1.7–2.3s 的全部差值归因于模型或 prompt。可严格比较的是同 case 的受控差值。当前最快稳定有效路线是 `qwen3.7-max + compressed`：1,744–1,757ms，达到原始 ≤3s excellent 目标。推荐它作为后续选型评审候选，但本轮不改生产路由。
+
+## 2026-08-24 生产接入前最终验证
+
+### 最新生产执行语义
+
+本节基于合入 `origin/main@dec28de` 后的最新生产代码，不以旧 lab 行为反推生产：
+
+- Render unit：生产固定 `mode='batch'`；一次 provider request 最多携带 8 个 Narrative Plans，并返回最多 8 条 canonical copies。分组逻辑见 `recommendationVoiceRendererShadowV2.js:155-165`，生产调用见 `generateOutfit/index.js:777-781`。
+- Calls per 8 cards：batch 模式最多 1 次 provider call；single 模式才会最多 8 次。groups 由 `Promise.all` 并行执行；生产 8-card batch 只有 1 group，single 没有额外 concurrency limiter。
+- Persist：推荐 batch 在 generate 返回前 `await persistRecommendationBatchV2`；copy materialization 是独立 `materializeRecommendationCopyV2` action，它在 action 内等待 renderer 和最多 8 条 canonical writes 完成。
+- Trigger：仓库只导出 `materializeCloudRecommendationCopyV2` helper，没有发现 Today/Detail/runtime 的实际调用方。因此当前 AI materialization 不在 Today acquisition 关键路径，也没有生产自动触发者。
+- Cache：per Narrative Plan/card，以 `voice-copy-v2:<renderInputFingerprint>` 为 key。fingerprint 包含 semantic meaning、expression mode、subject garments、garments、allowed claims、scene、persona/contract/model-route 版本、model、generation parameters 与 locale。
+- Reuse：同一 canonical text 以 composition key 匹配 outfit，写入 `reason` 与 `copyContract.todayReason`；Detail/Xiaoda 从 canonical copy 派生/复用，不需要重复模型调用。
+- Historical baseline：13,140–13,424ms 是一次 Max/current provider request 携带 8 Gold Plans、返回 8 outputs，不是 8 次单 plan 调用。
+
+### Max/compressed：8 次独立 invocation
+
+顺序 runner 对既有 8 个 Gold cases 各执行一次独立 CloudBase invocation，每次只含一次 Max/compressed provider call。`requestChars` 为函数记录的 UTF-8 request bytes；provider token 字段均可用。
+
+| caseId | category | request chars | prompt/completion tokens | provider/E2E ms | parser/contract/validator | factual | Sol persona/naturalness | retry | canonical copy |
+| --- | --- | ---: | ---: | ---: | --- | --- | --- | ---: | --- |
+| `primary-pattern-focus` | Pattern | 1,046 | 203/24 | 1,940/1,940 | PASS/PASS/PASS | no | PASS | 0 | 条纹上衣是这套唯一的图案重点，纯色长裤保持简单。 |
+| `primary-silhouette-contrast` | Silhouette | 1,019 | 206/27 | 3,010/3,010 | PASS/PASS/PASS | no | PASS | 0 | 修身上衣配阔腿裤，一紧一松的轮廓对比。 |
+| `primary-monochromatic` | Color | 1,037 | 205/26 | 1,236/1,236 | PASS/PASS/PASS | no | PASS | 0 | 蓝色上衣配藏青长裤，同属蓝色系，色调统一。 |
+| `scene-primary-work-structure` | Scene | 1,039 | 203/25 | 1,116/1,116 | PASS/PASS/PASS | no | PASS | 0 | 衬衫、西装长裤配商务鞋，是一套清楚完整的上班搭配。 |
+| `weak-formality-only` | Weak | 962 | 189/21 | 1,899/1,899 | PASS/PASS/PASS | no | PASS | 0 | 基础上衣配基础长裤，简单日常的一套。 |
+| `sparse-low-confidence-pattern` | Sparse | 962 | 189/21 | 2,023/2,023 | PASS/PASS/PASS | no | PASS | 0 | 图案上衣配印花长裤，简单日常的一套。 |
+| `sparse-basic-no-evidence` | Baseline | 960 | 190/22 | 873/873 | PASS/PASS/PASS | no | PASS | 0 | 白色T恤配灰色长裤，简单日常的一套。 |
+| `competing-pattern-and-silhouette` | Competing | 1,070 | 212/28 | 1,506/1,506 | PASS/PASS/PASS | no | PASS | 0 | 条纹修身上衣是这套的图案重点，纯色阔腿裤保持简单。 |
+
+统计：runner wall-clock 21,141ms；provider latency sum 13,603ms；per-case range 873–3,010ms；median 1,702.5ms；retries=0。8/8 parser、contract、validator、事实授权、Narrative Plan ownership、自然中文、无元语言和无模板泄漏均通过。该执行方式包含 8 次云调用开销，不是生产 batch 的推荐替代。
+
+### Apples-to-apples：单请求 8-output batch
+
+为匹配历史执行语义，lab-only batch event 在一次 CloudBase invocation 内只发起一次 Max/compressed provider request，并携带相同 8 个 Gold cases：
+
+```text
+prompt=272 system chars + 446 user chars = 718 chars
+request=1,837 UTF-8 bytes
+usage=393 prompt tokens / 143 completion tokens
+provider latency=E2E=2,455ms
+outputs=8
+parser=8/8 PASS
+contract=8/8 PASS
+validator=5/8 PASS
+factual violations=0
+persona/meta-language failures=0
+retries=0
+```
+
+失败集中在 Weak、Sparse、Baseline：三条都输出“这套简单日常。”，自然且无事实越界，但没有提到任何输入衣物，触发 `GARMENT_GROUNDING`。Pattern、Silhouette、Color、Scene、Competing 均通过。由于不是单一 case 缺陷，而是同一缺失约束在 3 个 baseline-like cases 上复现，本轮按规则不追加 compressed prompt delta。
+
+### 最终判断
+
+- Batch latency：compressed 2,455ms 对历史 current 13,140–13,424ms，观察绝对减少 10,685–10,969ms，相对减少 81.3%–81.7%。模型固定为 Max，因此这是 Prompt/请求形状的观测效应，不是 Model Effect。
+- Quality：独立 single-case 为 8/8，但真实生产语义 batch 只有 5/8 validator PASS。压缩 prompt 删除了 current 中“使用输入中的可读衣物名”的强制规则，在 batch baseline-like outputs 上暴露稳定 grounding 回退。
+- Model decision：保持 `qwen3.7-max`，不重新搜索 Flash/Plus。
+- Prompt decision：当前 `compressed` 不能直接替代生产 `current`；`READY_FOR_PRODUCTION_INTEGRATION=no`。下一次应先做一个仅恢复 garment-grounding 规则的最小 prompt delta，再只测 3 个失败 case 与相关回归 case。
+- Execution decision：只换 Prompt 不足以完成生产接入。生产 batch renderer/cache/write 结构本身无需改成 per-card parallel；但当前没有 production materialization trigger，正式接入需要新增非阻塞、fail-open 的触发编排，并继续保持 AI 退出 Today 首屏关键路径。

@@ -106,3 +106,53 @@ test('case, model, prompt, input and execute flags are validated', () => {
   assert.throws(() => lab.__test.assertEvent({ ...baseEvent, input: null }), /INPUT_OBJECT/);
   assert.throws(() => lab.__test.assertEvent({ ...baseEvent, execute: 'yes' }), /EXECUTE_FLAG/);
 });
+
+test('batch route accepts at most eight unique Gold cases and fixes Max compressed', () => {
+  const cases = buildGoldPlans().map((plan) => ({ caseId: plan.caseId, input: buildRendererInput(plan) }));
+  assert.doesNotThrow(() => lab.__test.assertEvent({ batch: true, model: 'max', promptVariant: 'compressed', cases, execute: false }));
+  assert.throws(() => lab.__test.assertEvent({ batch: true, model: 'flash', promptVariant: 'compressed', cases, execute: false }), /BATCH_ROUTE_FIXED/);
+  assert.throws(() => lab.__test.assertEvent({ batch: true, model: 'max', promptVariant: 'current', cases, execute: false }), /BATCH_ROUTE_FIXED/);
+  assert.throws(() => lab.__test.assertEvent({ batch: true, model: 'max', promptVariant: 'compressed', cases: cases.slice(0, 7).concat(cases[0]), execute: false }), /BATCH_CASE_ID/);
+});
+
+test('batch compressed request carries eight inputs in one structured request', () => {
+  const cases = buildGoldPlans().map((plan) => ({ caseId: plan.caseId, input: buildRendererInput(plan) }));
+  const request = renderer.buildRequest({ model: 'max', promptVariant: 'compressed', inputs: cases.map((entry) => entry.input) });
+  assert.deepEqual(request.response_format, { type: 'json_object' });
+  assert.equal(request.enable_thinking, false);
+  assert.equal(JSON.parse(request.messages[1].content).length, 8);
+  assert.equal(JSON.parse(request.messages[1].content)[7].id, '8');
+});
+
+test('batch parser validates every returned copy and exposes canonical copies', () => {
+  const cases = buildGoldPlans().map((plan) => ({ caseId: plan.caseId, input: buildRendererInput(plan) }));
+  const outputs = { copies: cases.map((entry, index) => ({ id: String(index + 1), text: entry.input.garments[0] + (entry.input.expressionMode === 'baseline' ? '简单日常。' : '保持简单。') })) };
+  const result = renderer.parseAndValidateBatch(JSON.stringify(outputs), 'compressed', cases);
+  assert.equal(result.length, 8);
+  assert.equal(result[0].result.canonicalCopy.includes(cases[0].input.garments[0]), true);
+});
+
+test('mock batch provider performs one request and returns aggregate canonical copies', async () => {
+  const cases = buildGoldPlans().map((plan) => ({ caseId: plan.caseId, input: buildRendererInput(plan) }));
+  const texts = [
+    '条纹上衣是这套搭配唯一明确的图案重点，纯色长裤保持简单。',
+    '修身上衣与阔腿裤形成一紧一松的轮廓对比。',
+    '蓝色上衣和藏青长裤处在接近的蓝色系，颜色保持统一。',
+    '衬衫、西装长裤和商务鞋组成清楚完整的上班搭配。',
+    '基础上衣和基础长裤，简单日常就好。',
+    '图案上衣和印花长裤，简单日常就好。',
+    '白色T恤和灰色长裤，简单日常就好。',
+    '条纹修身上衣是这套搭配的图案重点，纯色阔腿裤保持简单。',
+  ];
+  const result = await lab.__test.executeProvider({ batch: true, model: 'max', promptVariant: 'compressed', cases, execute: true }, 'test-only-marker', mockFetch((options) => ({
+    model: JSON.parse(options.body).model,
+    choices: [{ message: { content: JSON.stringify({ copies: texts.map((text, index) => ({ id: String(index + 1), text })) }) } }],
+    usage: { prompt_tokens: 100, completion_tokens: 80 },
+  })));
+  assert.equal(result.status, 'completed');
+  assert.equal(result.batch, true);
+  assert.equal(result.outputCount, 8);
+  assert.equal(result.contractPass, true);
+  assert.equal(result.validatorPass, true);
+  assert.equal(result.canonicalCopies.length, 8);
+});

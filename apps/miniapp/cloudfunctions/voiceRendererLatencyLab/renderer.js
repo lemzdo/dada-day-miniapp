@@ -22,11 +22,14 @@ const CASE_VALIDATION = Object.freeze({
   'competing-pattern-and-silhouette': { required: [['条纹', '图案'], ['简单', '重点', '不乱']], forbidden: ['一紧一松', '轮廓对比', '松紧', '平衡'] },
 });
 
-function buildRequest({ model, promptVariant, input }) {
+function buildRequest({ model, promptVariant, input, inputs }) {
   if (!MODELS[model]) throw new Error('MODEL_NOT_ALLOWED');
   if (!PROMPT_VARIANTS.includes(promptVariant)) throw new Error('PROMPT_VARIANT_NOT_ALLOWED');
   const compressed = promptVariant === 'compressed';
-  const user = compressed ? JSON.stringify([{ id: '1', m: input.primary?.meaning || null, g: input.garments.slice() }]) : JSON.stringify([input]);
+  const batchInputs = Array.isArray(inputs) && inputs.length > 0 ? inputs : [input];
+  const user = compressed
+    ? JSON.stringify(batchInputs.map((value, index) => ({ id: String(index + 1), m: value.primary?.meaning || null, g: value.garments.slice() })))
+    : JSON.stringify(batchInputs);
   return { model: MODELS[model], ...GENERATION_PARAMETERS, messages: [{ role: 'system', content: buildSystemPrompt(promptVariant) }, { role: 'user', content: user }], ...(compressed ? { response_format: { type: 'json_object' } } : {}) };
 }
 
@@ -83,4 +86,18 @@ function parseAndValidate(raw, promptVariant, input, caseId) {
   };
 }
 
-module.exports = { CASE_VALIDATION, GENERATION_PARAMETERS, MODELS, PROMPT_VARIANTS, buildRequest, buildSystemPrompt, parseAndValidate };
+function parseAndValidateBatch(raw, promptVariant, cases) {
+  if (!Array.isArray(cases) || cases.length === 0 || cases.length > 8) throw new Error('BATCH_CASE_COUNT');
+  const text = typeof raw === 'string' ? raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '') : '';
+  let parsed;
+  try { parsed = JSON.parse(text); } catch { throw new Error('OUTPUT_PARSE'); }
+  if (!parsed || Array.isArray(parsed) || !Array.isArray(parsed.copies) || parsed.copies.length !== cases.length) throw new Error('OUTPUT_CONTRACT');
+  const byId = new Map(parsed.copies.map((copy) => [String(copy?.id), copy]));
+  return cases.map((entry, index) => {
+    const copy = byId.get(String(index + 1));
+    if (!copy || Object.keys(copy).sort().join(',') !== 'id,text' || typeof copy.text !== 'string') throw new Error('OUTPUT_CONTRACT');
+    return { caseId: entry.caseId, result: parseAndValidate(JSON.stringify([{ planId: entry.input.planId, insightId: entry.input.primary?.insightId || null, text: copy.text }]), 'current', entry.input, entry.caseId) };
+  });
+}
+
+module.exports = { CASE_VALIDATION, GENERATION_PARAMETERS, MODELS, PROMPT_VARIANTS, buildRequest, buildSystemPrompt, parseAndValidate, parseAndValidateBatch };
