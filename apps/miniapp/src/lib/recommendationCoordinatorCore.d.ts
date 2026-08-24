@@ -7,7 +7,7 @@ export interface RecommendationCoordinatorRun<T> {
 }
 
 export interface RecommendationNextRun<T> extends Omit<RecommendationCoordinatorRun<T>, 'source'> {
-  source: 'next-ready' | 'next-running' | 'next-failed' | 'next-missing' | 'next-stale';
+  source: 'next-ready' | 'next-running' | 'next-failed' | 'next-exhausted' | 'next-missing' | 'next-stale';
 }
 
 export interface RecommendationCoordinatorCore<TRequest, TResult> {
@@ -16,7 +16,7 @@ export interface RecommendationCoordinatorCore<TRequest, TResult> {
   invalidateAndPrebuild(input: { identity: string; requestKey?: string; request: TRequest }): RecommendationCoordinatorRun<TResult>;
   prepareNext(input: { identity: string; requestKey?: string; request: TRequest }): RecommendationNextRun<TResult>;
   acquireNext(input: { identity: string; requestKey?: string }): RecommendationNextRun<TResult>;
-  getNextState(): { identity: string; requestKey: string; status: 'running' | 'ready' | 'failed' | 'stale' } | null;
+  getNextState(): { identity: string; requestKey: string; status: 'running' | 'ready' | 'failed' | 'exhausted' | 'stale' } | null;
   isLatest(identity: string): boolean;
   reset(): void;
   setLatestIdentity(identity: string): string;

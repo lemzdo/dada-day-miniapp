@@ -320,6 +320,7 @@ export default function TodayPage() {
   }
   const requestContextByIntentGenerationRef = useRef<Record<number, RecommendationRequestContext>>({});
   const seenOutfitKeysRef = useRef<Set<string>>(new Set());
+  const seenInputIdentityRef = useRef<string | null>(null);
   const seenOutfitKeysBySceneIdentityRef = useRef<Record<string, string[]>>({});
   const seenIdentityHashBySceneRef = useRef<Record<string, string>>({});
   const activeSeenSceneIdentityKeyRef = useRef(buildSceneIdentityKey('home', ''));
@@ -408,7 +409,7 @@ export default function TodayPage() {
 
   useEffect(() => {
     const correlationId = todayV2ColdCorrelationRef.current;
-    if (!correlationId || !v2Snapshot || v2Snapshot.cards.length !== 8
+    if (!correlationId || !v2Snapshot || v2Snapshot.cards.length === 0
       || v2Snapshot.cards.some((card) => card.items.length === 0
         || card.items.some((item) => item.isDeleted || !item.displayImageUrl.trim()))) return;
     markTodayV2ColdUsable(correlationId, Date.now());
@@ -450,6 +451,7 @@ export default function TodayPage() {
       requestContextByIntentGenerationRef.current = {};
     }
     seenOutfitKeysRef.current = new Set();
+    seenInputIdentityRef.current = null;
     seenOutfitKeysBySceneIdentityRef.current = {};
     seenIdentityHashBySceneRef.current = {};
     activeSeenSceneIdentityKeyRef.current = buildSceneIdentityKey('home', '');
@@ -507,7 +509,7 @@ export default function TodayPage() {
 
   useDidShow(() => {
     todayV2EntryAtRef.current = Date.now();
-    todayV2EntryColdEligibleRef.current = !(v2SnapshotRef.current?.cards.length === 8);
+    todayV2EntryColdEligibleRef.current = !(v2SnapshotRef.current?.cards.length);
     todayV2ColdCorrelationRef.current = null;
     startTodayPerformanceRun();
     markTodayPerformanceStage('appOrPageEntry');
@@ -609,6 +611,12 @@ export default function TodayPage() {
       excludedOutfitKeys,
       requestKind,
     });
+    if (seenInputIdentityRef.current !== effectiveInput.identity) {
+      seenInputIdentityRef.current = effectiveInput.identity;
+      seenOutfitKeysRef.current = new Set();
+      setBatchExhausted(false);
+      batchExhaustedRef.current = false;
+    }
     const inputSignature = effectiveInput.requestIdentity;
     markAcceptanceClientMilestone(acceptanceDiagnostics, 'requestIdentityConstructedAt');
     const registry = recommendationIntentRegistryRef.current;
@@ -647,10 +655,20 @@ export default function TodayPage() {
   }
 
   function prefetchNextBatch(effectiveInput: EffectiveRecommendationInput, snapshot: TodayV2Snapshot) {
+    if (!snapshot.cards.length || snapshot.core.countContract.exhausted) {
+      batchExhaustedRef.current = true;
+      setBatchExhausted(true);
+      return;
+    }
+    if (seenInputIdentityRef.current !== effectiveInput.identity) {
+      seenInputIdentityRef.current = effectiveInput.identity;
+      seenOutfitKeysRef.current = new Set();
+    }
+    snapshot.cards.forEach((card) => seenOutfitKeysRef.current.add(card.outfitKey));
     const run = prepareNextRecommendationForInput(effectiveInput, {
       currentBatchId: snapshot.batchId,
       currentContentHash: snapshot.core.contentHash,
-      excludedOutfitKeys: snapshot.cards.map((card) => card.outfitKey),
+      excludedOutfitKeys: [...seenOutfitKeysRef.current],
       refreshSemantics: 'refresh',
     });
     void run.promise.catch(() => undefined);
@@ -738,7 +756,7 @@ export default function TodayPage() {
           && !silent
           && trigger !== 'pull-down'
           && trigger !== 'scene'
-          && (trigger === 'hard-invalid' || !(v2SnapshotRef.current?.cards.length === 8));
+          && (trigger === 'hard-invalid' || !(v2SnapshotRef.current?.cards.length));
         const telemetryCorrelationId = passiveColdTelemetry
           ? (todayV2ColdCorrelationRef.current
             || (todayV2ColdCorrelationRef.current = beginTodayV2ColdTelemetry(
@@ -794,6 +812,11 @@ export default function TodayPage() {
           return false;
         }
         const canonicalSnapshot = toTodayV2Snapshot(rawResponse, effectiveInput.identity);
+        if (canonicalSnapshot.cards.length === 0) {
+          setRecommendationNotice('当前暂时无法形成有效推荐');
+          setHasRecommendations(false);
+          return false;
+        }
         if (!isRecommendationIntentCurrent(intent)
           || !isAuthContextCurrent(authContext)
           || !isRecommendationInputIdentityCurrent(effectiveInput.identity, authContext)) {
@@ -824,7 +847,7 @@ export default function TodayPage() {
       logRecommendationError(auditId, seq, 'fetchRecommendations', err);
       if (!silent) {
         setError('获取推荐失败，请稍后再试');
-        if (!(v2SnapshotRef.current?.cards.length === 8)) {
+        if (!(v2SnapshotRef.current?.cards.length)) {
           setHasRecommendations(false);
         } else {
           setRecommendationNotice('新场景暂时没取到，先保留刚才这批');
@@ -842,8 +865,21 @@ export default function TodayPage() {
     const previous = v2Snapshot;
     const authContext = captureAuthContext();
     if (!authContext) return false;
-    const exclusions = previous?.cards.map((card) => card.outfitKey) ?? [];
-    const effectiveInput = getEffectiveRecommendationInput({
+    let effectiveInput = getEffectiveRecommendationInput({
+      authContext,
+      sceneKey: selectedSceneKeyRef.current,
+      weather: currentWeatherRef.current,
+      weatherMode: currentWeatherModeRef.current,
+      recommendationBatchId: previous?.batchId,
+      excludedOutfitKeys: [],
+      requestKind: 'refresh',
+    });
+    if (seenInputIdentityRef.current !== effectiveInput.identity) {
+      seenInputIdentityRef.current = effectiveInput.identity;
+      seenOutfitKeysRef.current = new Set();
+    }
+    const exclusions = [...seenOutfitKeysRef.current];
+    effectiveInput = getEffectiveRecommendationInput({
       authContext,
       sceneKey: selectedSceneKeyRef.current,
       weather: currentWeatherRef.current,
@@ -880,6 +916,10 @@ export default function TodayPage() {
             clientMilestones: acceptanceDiagnostics.clientMilestones,
           } : undefined,
         }).promise;
+        if (nextRun.source === 'next-exhausted') {
+          setRecommendationNotice('这一轮暂时没有更多新搭配了');
+          return false;
+        }
         if (nextRun.source === 'next-ready' || nextRun.source === 'next-running') {
           try {
             response = await nextRun.promise;
@@ -901,6 +941,10 @@ export default function TodayPage() {
         || activeRequestSeqRef.current !== refreshSeq
         || !isRecommendationInputIdentityCurrent(effectiveInput.identity, authContext)) return false;
       const canonicalSnapshot = toTodayV2Snapshot(response, effectiveInput.identity);
+      if (canonicalSnapshot.cards.length === 0) {
+        setRecommendationNotice('这一轮暂时没有更多新搭配了');
+        return false;
+      }
       const committed = await commitCanonicalSnapshotForRender(canonicalSnapshot,
         () => isAuthContextCurrent(authContext)
           && activeRequestSeqRef.current === refreshSeq
@@ -909,6 +953,7 @@ export default function TodayPage() {
         { generation: traceGeneration, batchId: canonicalSnapshot.batchId });
       if (!committed) return false;
       const next = committed;
+      next.cards.forEach((card) => seenOutfitKeysRef.current.add(card.outfitKey));
       setRecommendationBatchId(next.batchId);
       prefetchNextBatch(effectiveInput, next);
       setLoading(false);
@@ -1036,25 +1081,25 @@ export default function TodayPage() {
         return 'refreshed';
       }
     }
-    if (v2SnapshotRef.current?.cards.length === 8 && sameRecommendationWeather) {
+    if (v2SnapshotRef.current?.cards.length && sameRecommendationWeather) {
       markTodayPerformanceStage('weatherEnd');
       return 'unchanged';
     }
 
     try {
-      const hasVisibleBatch = v2SnapshotRef.current?.cards.length === 8;
+      const hasVisibleBatch = Boolean(v2SnapshotRef.current?.cards.length);
       if (hasVisibleBatch) {
         markTodayPerformanceStage('backgroundRefreshStart');
         setRecommendationNotice('天气变了，正在更新搭配…');
       }
       const refreshed = await requestRecommendations({
-        intentId: !(v2SnapshotRef.current?.cards.length === 8)
+        intentId: !(v2SnapshotRef.current?.cards.length)
           ? entryIntentIdRef.current
           : nextRecommendationIntentId(options.forceRefresh ? 'weather-force' : 'weather'),
         sceneKey,
         weather,
         weatherMode: options.weatherMode,
-        silent: v2SnapshotRef.current?.cards.length === 8,
+        silent: Boolean(v2SnapshotRef.current?.cards.length),
         trigger: options.forceRefresh ? 'weather-force' : 'weather',
       });
       if (hasVisibleBatch) {

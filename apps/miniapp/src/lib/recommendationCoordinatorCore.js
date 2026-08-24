@@ -1,5 +1,4 @@
 'use strict';
-/* global module */
 
 function createRecommendationCoordinatorCore({ execute }) {
   if (typeof execute !== 'function') throw new Error('recommendation coordinator requires execute');
@@ -75,7 +74,8 @@ function createRecommendationCoordinatorCore({ execute }) {
   }
 
   function nextRun(record, joined, safeFailure = false) {
-    const source = record.status === 'ready' ? 'next-ready'
+    const source = record.status === 'exhausted' ? 'next-exhausted'
+      : record.status === 'ready' ? 'next-ready'
       : record.status === 'failed' ? 'next-failed'
         : record.status === 'running' ? 'next-running' : 'next-stale';
     return {
@@ -109,7 +109,10 @@ function createRecommendationCoordinatorCore({ execute }) {
     record.promise.then(
       (result) => {
         record.result = result;
-        record.status = nextSlot === record && latestIdentity === normalized ? 'ready' : 'stale';
+        const exhausted = Boolean(result?.batch?.countContract?.exhausted)
+          || Boolean(result?.core?.countContract?.exhausted)
+          || Number(result?.batch?.countContract?.returnedCardCount ?? result?.core?.countContract?.returnedCardCount) === 0;
+        record.status = nextSlot === record && latestIdentity === normalized ? (exhausted ? 'exhausted' : 'ready') : 'stale';
         if (record.status === 'stale' && nextSlot === record) nextSlot = null;
       },
       (error) => {
@@ -131,7 +134,7 @@ function createRecommendationCoordinatorCore({ execute }) {
     // A ready value is consumed immediately. Keep a running record until it
     // settles (or is replaced/invalidated), so concurrent consumers still
     // join the same in-flight successor.
-    if (nextSlot.status === 'ready') nextSlot = null;
+    if (nextSlot.status === 'ready' || nextSlot.status === 'exhausted') nextSlot = null;
     return run;
   }
 

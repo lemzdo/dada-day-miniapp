@@ -43,3 +43,21 @@ test('V2 projection emits only the display image field and fails closed', () => 
   assert.throws(() => projectHomeLightItemV2({ clothingId: 'c-1', displayImageUrl: '' }), /V2_HOME_LIGHT_IMAGE_REQUIRED/);
   assert.throws(() => projectHomeLightItemV2({ clothingId: 'c-1', displayImageUrl: 'cloud://image', isDeleted: true }), /V2_HOME_LIGHT_DELETED_ITEM/);
 });
+
+test('V2 TARGET_8 accepts partial and empty batches with self-consistent contracts', () => {
+  for (const count of [7, 3, 1, 0]) {
+    const cards = baseCards(`partial-${count}`).slice(0, count);
+    const light = projectHomeLightV2(cards, `batch-partial-${count}`);
+    const core = projectBatchCoreV2({
+      batchId: `batch-partial-${count}`, commitToken: 'commit', contentHash: 'hash',
+      sceneKey: 'home', scene: '居家', targetDate: '2026-08-20', timeOfDay: 'all_day',
+      weatherMode: 'live', weatherSnapshot: {}, weatherFingerprint: 'weather', inputIdentityHash: 'input',
+      generatedAt: '2026-08-20T00:00:00.000Z',
+      countContract: { requestedCardCount: 8, returnedCardCount: count, limited: count < 8, exhausted: count < 8 },
+      order: cards.map((card) => card.outfitKey),
+    });
+    assert.equal(light.cards.length, count);
+    assert.equal(core.cardCount, count);
+    assert.equal(core.countContract.returnedCardCount, count);
+  }
+});

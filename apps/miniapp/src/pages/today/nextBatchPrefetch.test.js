@@ -1,6 +1,4 @@
 'use strict';
-/* eslint-disable @typescript-eslint/no-require-imports */
-/* global require, __dirname */
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -21,9 +19,9 @@ test('Today prefetches only after restored/current commits and joins failed pref
   assert.match(source, /\} else \{[\s\S]*?response = await fallbackRefresh\(\);/);
 });
 
-test('prefetch request uses refresh trigger and fixed visible eight-card exclusions', () => {
+test('prefetch request uses refresh trigger and accumulated seen exclusions', () => {
   assert.match(source, /currentContentHash: snapshot\.core\.contentHash/);
-  assert.match(source, /excludedOutfitKeys: snapshot\.cards\.map\(\(card\) => card\.outfitKey\)/);
+  assert.match(source, /excludedOutfitKeys: \[\.\.\.seenOutfitKeysRef\.current\]/);
   assert.match(source, /trigger: 'refresh'/);
 });
 

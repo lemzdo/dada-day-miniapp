@@ -14,16 +14,21 @@ function stableReferenceId(openid, outfitKey) {
 
 function assertBatchInput(batch) {
   if (!batch || batch.runtimeVersion !== 'today-runtime-v2' || batch.schemaVersion !== 'today-v2' || !batch.batchId || !batch.commitToken || !batch.contentHash || !batch.inputIdentityHash || !batch.generatedAt) throw new Error('V2_BATCH_CORE_INVALID');
-  if (batch.cardCount !== 8 || batch.countContract?.requestedCardCount !== 8 || batch.countContract?.returnedCardCount !== 8 || typeof batch.countContract.limited !== 'boolean' || typeof batch.countContract.exhausted !== 'boolean') throw new Error('V2_BATCH_CORE_COUNT_INVALID');
+  const returnedCardCount = batch.countContract?.returnedCardCount;
+  if (!Number.isInteger(returnedCardCount) || returnedCardCount < 0 || returnedCardCount > 8
+    || batch.cardCount !== returnedCardCount || batch.countContract?.requestedCardCount !== 8
+    || batch.countContract?.limited !== (returnedCardCount < 8)
+    || (returnedCardCount < 8 && batch.countContract?.exhausted !== true)
+    || typeof batch.countContract.limited !== 'boolean' || typeof batch.countContract.exhausted !== 'boolean') throw new Error('V2_BATCH_CORE_COUNT_INVALID');
   const order = Array.isArray(batch.order) ? batch.order : [];
-  if (order.length !== 8 || new Set(order).size !== 8 || order.some((key) => typeof key !== 'string' || !key)) throw new Error('V2_BATCH_ORDER_INVALID');
+  if (order.length !== returnedCardCount || new Set(order).size !== returnedCardCount || order.some((key) => typeof key !== 'string' || !key)) throw new Error('V2_BATCH_ORDER_INVALID');
 }
 
 function assertV2Envelope(envelope, batch, openid) {
   if (!envelope || envelope.runtimeVersion !== 'today-runtime-v2' || envelope.schemaVersion !== 'today-v2') throw new Error('V2_BATCH_ENVELOPE_INVALID');
   if (!envelope.core || envelope.core.batchId !== batch.batchId || envelope.core.contentHash !== batch.contentHash
     || envelope.core.commitToken !== batch.commitToken || !envelope.light
-    || !Array.isArray(envelope.light.cards) || envelope.light.cards.length !== 8) throw new Error('V2_BATCH_ENVELOPE_CORE_MISMATCH');
+    || !Array.isArray(envelope.light.cards) || envelope.light.cards.length !== batch.cardCount) throw new Error('V2_BATCH_ENVELOPE_CORE_MISMATCH');
   const walk = (value) => {
     if (!value || typeof value !== 'object') return;
     for (const [key, child] of Object.entries(value)) {
