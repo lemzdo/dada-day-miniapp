@@ -22,7 +22,7 @@ const CASE_VALIDATION = Object.freeze({
   'competing-pattern-and-silhouette': { required: [['条纹', '图案'], ['简单', '重点', '不乱']], forbidden: ['一紧一松', '轮廓对比', '松紧', '平衡'] },
 });
 
-function buildRequest({ model, promptVariant, input, inputs }) {
+function buildRequest({ model, promptVariant, input, inputs, stream = false, sequencing = false }) {
   if (!MODELS[model]) throw new Error('MODEL_NOT_ALLOWED');
   if (!PROMPT_VARIANTS.includes(promptVariant)) throw new Error('PROMPT_VARIANT_NOT_ALLOWED');
   const compressed = promptVariant !== 'current';
@@ -30,7 +30,8 @@ function buildRequest({ model, promptVariant, input, inputs }) {
   const user = compressed
     ? JSON.stringify(batchInputs.map((value, index) => ({ id: String(index + 1), m: value.primary?.meaning || null, g: value.garments.slice() })))
     : JSON.stringify(batchInputs);
-  return { model: MODELS[model], ...GENERATION_PARAMETERS, messages: [{ role: 'system', content: buildSystemPrompt(promptVariant) }, { role: 'user', content: user }], ...(compressed ? { response_format: { type: 'json_object' } } : {}) };
+  const system = buildSystemPrompt(promptVariant) + (stream && sequencing && compressed ? '\n按输入顺序逐项完成输出，先完成 id=1 再继续其余项。' : '');
+  return { model: MODELS[model], ...GENERATION_PARAMETERS, stream: stream === true, ...(stream === true ? { stream_options: { include_usage: true } } : {}), messages: [{ role: 'system', content: system }, { role: 'user', content: user }], ...(compressed ? { response_format: { type: 'json_object' } } : {}) };
 }
 
 function buildSystemPrompt(variant) {

@@ -53,6 +53,9 @@ test('request is non-thinking and structured for current and compressed variants
   assert.equal(JSON.parse(compressed.messages[1].content)[0].id, '1');
   assert.equal(compressedV2.messages[0].content, buildCompressedV2SystemPrompt());
   assert.deepEqual(compressedV2.response_format, { type: 'json_object' });
+  const streaming = renderer.buildRequest({ ...baseEvent, batch: true, inputs: [input], stream: true, sequencing: true, model: 'max', promptVariant: 'compressed-v2' });
+  assert.deepEqual(streaming.stream_options, { include_usage: true });
+  assert.equal(streaming.stream, true);
 });
 
 test('mock provider returns minimal timing/token/contract/validator fields', async () => {
@@ -159,4 +162,40 @@ test('mock batch provider performs one request and returns aggregate canonical c
   assert.equal(result.contractPass, true);
   assert.equal(result.validatorPass, true);
   assert.equal(result.canonicalCopies.length, 8);
+});
+
+test('streaming lab consumes SSE deltas and validates first output independently', async () => {
+  const cases = buildGoldPlans().map((plan) => ({ caseId: plan.caseId, input: buildRendererInput(plan) }));
+  const texts = ['条纹上衣是这套搭配唯一明确的图案重点，纯色长裤保持简单。', '修身上衣与阔腿裤形成一紧一松的轮廓对比。', '蓝色上衣和藏青长裤处在接近的蓝色系，颜色保持统一。', '衬衫、西装长裤和商务鞋组成清楚完整的上班搭配。', '基础上衣和基础长裤，简单日常就好。', '图案上衣和印花长裤，简单日常就好。', '白色T恤和灰色长裤，简单日常就好。', '条纹修身上衣是这套搭配的图案重点，纯色阔腿裤保持简单。'];
+  const raw = JSON.stringify({ copies: texts.map((text, index) => ({ id: String(index + 1), text })) });
+  const frames = [];
+  for (let i = 0; i < raw.length; i += 23) frames.push(`data: ${JSON.stringify({ choices: [{ delta: { content: raw.slice(i, i + 23) } }] })}\n\n`);
+  frames.push('data: [DONE]\n\n');
+  const body = { status: 200, ok: true, body: { async *[Symbol.asyncIterator]() { for (const frame of frames) yield Buffer.from(frame); } } };
+  const result = await lab.__test.executeProvider({ batch: true, model: 'max', promptVariant: 'compressed-v2', stream: true, sequencing: true, cases, execute: true }, 'test-only-marker', async () => body);
+  assert.equal(result.streamSupported, true);
+  assert.equal(result.streamFormat.startsWith('SSE:'), true);
+  assert.equal(result.FIRST_ITEM_VALIDATED_MS !== null, true);
+  assert.equal(result.SECOND_ITEM_VALIDATED_MS !== null, true);
+  assert.equal(result.FIRST_ITEM_PARSEABLE_MS <= result.FIRST_ITEM_VALIDATED_MS, true);
+  assert.equal(result.ALL_8_STREAM_COMPLETE_MS <= result.ALL_8_VALIDATED_MS, true);
+  assert.equal(result.parserPassCount, '8/8');
+  assert.equal(result.contractPassCount, '8/8');
+  assert.equal(result.validatorPassCount, '8/8');
+  assert.equal(result.factualFailures, 0);
+  assert.equal(result.personaFailures, 0);
+  assert.equal(result.outputCount, 8);
+  assert.equal(result.validatorPass, true);
+  assert.equal(result.factualViolation, false);
+  assert.equal(result.metaLanguageFailures, 0);
+});
+
+test('streaming lab supports isolated Plan #1 priority request', async () => {
+  const one = { caseId: 'primary-pattern-focus', input };
+  const raw = JSON.stringify({ copies: [{ id: '1', text: '条纹上衣突出图案重点，纯色长裤保持简单。' }] });
+  const body = { status: 200, ok: true, body: { async *[Symbol.asyncIterator]() { yield Buffer.from(`data: ${JSON.stringify({ choices: [{ delta: { content: raw } }] })}\n\n`); yield Buffer.from('data: [DONE]\n\n'); } } };
+  const result = await lab.__test.executeProvider({ ...one, model: 'max', promptVariant: 'compressed-v2', stream: true, execute: true }, 'test-only-marker', async () => body);
+  assert.equal(result.caseId, one.caseId);
+  assert.equal(result.parserPassCount, '1/1');
+  assert.equal(result.validatorPass, true);
 });

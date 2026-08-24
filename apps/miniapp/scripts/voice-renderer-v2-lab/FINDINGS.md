@@ -1,5 +1,27 @@
 # A.2.1 / B.0 Findings
 
+## Streaming latency lab (2026-08-24)
+
+Implemented an isolated `voiceRendererLatencyLab` streaming path for the fixed eight Gold Narrative Plans. It sends `qwen3.7-max` with `compressed-v2`, `enable_thinking=false`, and consumes DashScope-compatible SSE (`data: {choices:[{delta:{content}}]}`) inside the cloud function. `id=1` is independently framed, parsed, contract-checked and validator-checked before later ids are accepted. The provider stream is never forwarded to the miniapp.
+
+The result records `T0_REQUEST_SENT`, `TTFT_MS`, `FIRST_ITEM_PARSEABLE_MS`, `FIRST_ITEM_VALIDATED_MS`, `SECOND_ITEM_VALIDATED_MS`, `ALL_8_STREAM_COMPLETE_MS`, `ALL_8_VALIDATED_MS`, token usage, and quality counters. The existing validator remains authoritative; no copy is displayable before validation.
+
+The initial invocation hit a deployed-version mismatch (`EVENT_KEY_NOT_ALLOWED:sequencing`, then one narrow retry without that field returned `EVENT_KEY_NOT_ALLOWED:stream`). These attempts were excluded from samples. The isolated lab function was redeployed successfully, after which the three real provider runs below completed. Local SSE framing and 8/8 validation tests pass.
+
+### Streaming A result after isolated deployment
+
+The lab function was deployed directly from `apps/miniapp/cloudfunctions/voiceRendererLatencyLab` to `cloud1-d8gl3k1vkdf0b7f05`. Three real runs then completed with the same eight Plans and `qwen3.7-max` / `compressed-v2` / non-thinking:
+
+| run | TTFT ms | first parseable ms | first validated ms | second validated ms | stream complete ms | all validated ms | prompt/completion tokens |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 937.49 | 1242.51 | 1243.45 | 1546.70 | 2933.64 | 2934.58 | 467 / 161 |
+| 2 | 785.10 | 1090.48 | 1090.55 | 1349.92 | 2662.46 | 2662.69 | 467 / 160 |
+| 3 | 860.06 | 1210.24 | 1210.32 | 1505.85 | 3087.74 | 3088.16 | 467 / 161 |
+
+`FIRST_ITEM_VALIDATED`: median **1210.32 ms**, range 1090.55–1243.45 ms. Full batch: median **2934.58 ms**, range 2662.69–3088.16 ms. Every run was parser 8/8, contract 8/8, validator 8/8; factual=0, persona=0, meta-language=0. Since median exceeds 1200 ms, Priority Lane was required.
+
+Priority Lane was implemented as Plan #1 streaming plus Plans #2–8 stable batch in `Promise.all`. Its first attempt and one allowed retry both failed in the DevTools transport with `TCP timeout 9420`, before provider results; therefore Priority metrics are `TEST_INFRA_BLOCKED`, with no quality or token claims.
+
 ## Track A — Styling correctness
 
 受控真实衣橱的只读聚合结果：
