@@ -30,6 +30,7 @@ function loadInternals() {
 test('RecommendationServerDone emits the complete server timing envelope', () => {
   const internals = loadInternals();
   const diagnostics = internals.createRecommendationDiagnostics({ auditId: 'timing-test' }, Date.now() - 5);
+  diagnostics.timings.batchPersistence = { sequential: true, readCount: 9, writeCount: 9 };
   const entries = [];
   const originalLog = console.log;
   console.log = (...args) => entries.push(args);
@@ -47,6 +48,7 @@ test('RecommendationServerDone emits the complete server timing envelope', () =>
     assert.ok(result.responseBytes > 0);
     assert.ok(Object.hasOwn(entries[0][1].timings, 'cardCompilationMs'));
     assert.ok(Object.hasOwn(entries[0][1].timings, 'batchPersistenceMs'));
+    assert.deepEqual(entries[0][1].timings.batchPersistence, { sequential: true, readCount: 9, writeCount: 9 });
     assert.ok(Object.hasOwn(entries[0][1].timings, 'serializationMs'));
   } finally {
     console.log = originalLog;

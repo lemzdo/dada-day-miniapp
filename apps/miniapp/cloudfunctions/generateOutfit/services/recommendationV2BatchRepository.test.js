@@ -36,13 +36,13 @@ function fixture(mode) {
 
 function createDatabase(existingKeys = [], options = {}) {
   const records = { recommendation_batches_v2: [], recommendation_outfit_refs_v2: existingKeys.map((outfitKey) => ({ _id: `old-${outfitKey}`, _openid: 'user-1', outfitKey, latestBatchId: 'old-batch', referenceId: stableReferenceId('user-1', outfitKey), latestPosition: 0 })) };
-  const operations = { transactions: 0, adds: 0, updates: 0, rollbacks: 0 };
+  const operations = { transactions: 0, reads: 0, writes: 0, adds: 0, updates: 0, rollbacks: 0 };
   let transactionTail = Promise.resolve();
   const makeDatabase = () => ({
     collection(name) {
       const rows = records[name];
-      const query = { filters: {}, where(filters) { this.filters = filters; return this; }, limit() { return this; }, async get() { return { data: rows.filter((row) => Object.entries(this.filters).every(([key, value]) => row[key] === value)) }; }, async add({ data }) { if (options.failRefAdd && name === 'recommendation_outfit_refs_v2') throw new Error('injected write failure'); operations.adds += 1; const entries = Array.isArray(data) ? data : [data]; entries.forEach((entry, index) => rows.push({ ...entry, _id: entry._id || `${name}-${rows.length + index}` })); return { _id: rows.at(-1)._id }; } };
-      query.doc = (id) => ({ async update({ data }) { operations.updates += 1; const index = rows.findIndex((row) => row._id === id); if (index < 0) throw new Error('V2_TEST_REF_NOT_FOUND'); rows[index] = { ...rows[index], ...data }; } });
+      const query = { filters: {}, where(filters) { this.filters = filters; return this; }, limit() { return this; }, async get() { operations.reads += 1; return { data: rows.filter((row) => Object.entries(this.filters).every(([key, value]) => row[key] === value)) }; }, async add({ data }) { if (options.failRefAdd && name === 'recommendation_outfit_refs_v2') throw new Error('injected write failure'); operations.adds += 1; operations.writes += 1; const entries = Array.isArray(data) ? data : [data]; entries.forEach((entry, index) => rows.push({ ...entry, _id: entry._id || `${name}-${rows.length + index}` })); return { _id: rows.at(-1)._id }; } };
+      query.doc = (id) => ({ async update({ data }) { operations.updates += 1; operations.writes += 1; const index = rows.findIndex((row) => row._id === id); if (index < 0) throw new Error('V2_TEST_REF_NOT_FOUND'); rows[index] = { ...rows[index], ...data }; } });
       return query;
     },
     async runTransaction(callback) { const execute = async () => { operations.transactions += 1; const snapshot = JSON.parse(JSON.stringify(records)); try { return await callback(makeDatabase()); } catch (error) { records.recommendation_batches_v2 = snapshot.recommendation_batches_v2; records.recommendation_outfit_refs_v2 = snapshot.recommendation_outfit_refs_v2; operations.rollbacks += 1; throw error; } }; const result = transactionTail.then(execute, execute); transactionTail = result.then(() => undefined, () => undefined); return result; },
@@ -67,6 +67,32 @@ for (const [mode, existingCount] of [['all-existing', 8], ['mixed', 4], ['all-ne
     assert.equal(operations.transactions, 2);
   });
 }
+
+test('V2 persistence exposes truthful serialized operation timing', async () => {
+  const input = fixture('timing');
+  const { database, operations } = createDatabase();
+  const timing = {};
+  const first = await persistRecommendationBatchV2({ database, openid: 'user-1', ...input, timing });
+  assert.equal(first.timing.sequential, true);
+  assert.equal(first.timing.readCount, 9);
+  assert.equal(first.timing.writeCount, 9);
+  assert.equal(first.timing.transactionAttempts, 1);
+  assert.equal(operations.reads, 9);
+  assert.equal(operations.writes, 9);
+  for (const field of ['transactionBeginMs', 'preconditionReadMs', 'refsReadMs', 'batchWriteMs', 'refsWriteMs', 'commitMs', 'otherMs', 'totalMs']) {
+    assert.equal(typeof first.timing[field], 'number');
+    assert.ok(first.timing[field] >= 0);
+  }
+  const measured = ['transactionBeginMs', 'preconditionReadMs', 'refsReadMs', 'batchWriteMs', 'refsWriteMs', 'commitMs', 'otherMs']
+    .reduce((sum, field) => sum + first.timing[field], 0);
+  assert.ok(measured <= first.timing.totalMs + 2);
+  const retryTiming = {};
+  const retry = await persistRecommendationBatchV2({ database, openid: 'user-1', ...input, timing: retryTiming });
+  assert.equal(retry.idempotent, true);
+  assert.equal(retry.timing.readCount, 9);
+  assert.equal(retry.timing.writeCount, 0);
+  assert.equal(retry.timing.sequential, true);
+});
 
 test('V2 repository concurrent same-hash calls return one write and one idempotent result', async () => {
   const input = fixture('concurrent');

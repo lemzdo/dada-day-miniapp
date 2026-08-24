@@ -389,6 +389,7 @@ async function generateRecommendationV2({
     position,
   }));
   const batchPersistenceStartedAt = Date.now();
+  const batchPersistenceTiming = {};
   const persisted = await persistRecommendationBatchV2({
     database: db,
     openid,
@@ -401,8 +402,10 @@ async function generateRecommendationV2({
       light,
     },
     now,
+    timing: batchPersistenceTiming,
   });
   diagnostics.timings.batchPersistenceMs = Date.now() - batchPersistenceStartedAt;
+  diagnostics.timings.batchPersistence = persisted.timing;
   const finalizationStartedAt = Date.now();
   const response = {
     runtimeVersion: RECOMMENDATION_V2_RUNTIME_VERSION,

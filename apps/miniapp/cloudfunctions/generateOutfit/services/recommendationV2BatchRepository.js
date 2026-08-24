@@ -82,15 +82,39 @@ function assertStoredBatchComplete(batch, refs, requested) {
   if (refs.length !== 8 || refs.some((ref, index) => ref._openid !== requested._openid || ref.outfitKey !== requested.order[index] || ref.referenceId !== stableReferenceId(requested._openid, ref.outfitKey))) throw new Error('V2_BATCH_REFS_INCOMPLETE');
 }
 
-async function persistRecommendationBatchV2({ database, openid, batch, refs, envelope, now = new Date().toISOString() }) {
+function createBatchPersistenceTiming(timing = {}) {
+  const target = timing && typeof timing === 'object' ? timing : {};
+  for (const key of ['transactionBeginMs', 'preconditionReadMs', 'refsReadMs', 'batchWriteMs', 'refsWriteMs', 'commitMs', 'otherMs']) {
+    if (!Number.isFinite(target[key]) || target[key] < 0) target[key] = 0;
+  }
+  if (!Number.isInteger(target.transactionAttempts) || target.transactionAttempts < 0) target.transactionAttempts = 0;
+  target.sequential = true;
+  target.readCount = 0;
+  target.writeCount = 0;
+  return target;
+}
+
+async function persistRecommendationBatchV2({ database, openid, batch, refs, envelope, now = new Date().toISOString(), timing } = {}) {
   if (!openid) throw new Error('V2_BATCH_OPENID_REQUIRED');
   if (!envelope) throw new Error('V2_BATCH_ENVELOPE_REQUIRED');
   assertBatchInput(batch, refs);
   assertV2Envelope(envelope, batch, refs.map((ref) => ({ ...ref, _openid: openid })));
   let result;
+  const persistenceTiming = createBatchPersistenceTiming(timing);
+  const persistenceStartedAt = Date.now();
+  let callbackCompletedAt = persistenceStartedAt;
+  let attemptBoundaryAt = persistenceStartedAt;
   await database.runTransaction(async (transaction) => {
+    const attemptStartedAt = Date.now();
+    persistenceTiming.transactionAttempts += 1;
+    persistenceTiming.transactionBeginMs += Math.max(0, attemptStartedAt - attemptBoundaryAt);
+    try {
+    const readsStartedAt = Date.now();
     const existingBatch = await findBatch(transaction, openid, batch.batchId);
+    persistenceTiming.readCount += 1;
     const existingBatchRefs = existingBatch ? await findRefsForOrder(transaction, openid, batch.order) : [];
+    persistenceTiming.readCount += existingBatch ? batch.order.length : 0;
+    persistenceTiming.preconditionReadMs += Math.max(0, Date.now() - readsStartedAt);
     if (existingBatch) {
       assertStoredBatchComplete(existingBatch, existingBatchRefs, { ...batch, _openid: openid });
       if (envelope) assertV2Envelope(existingBatch.envelope, batch, existingBatchRefs);
@@ -98,22 +122,41 @@ async function persistRecommendationBatchV2({ database, openid, batch, refs, env
       return;
     }
     const batchRecord = { ...batch, ...(envelope ? { envelope } : {}), _openid: openid, createdAt: now, updatedAt: now };
+    const batchWriteStartedAt = Date.now();
     await transaction.collection(BATCH_COLLECTION).add({ data: batchRecord });
+    persistenceTiming.batchWriteMs += Math.max(0, Date.now() - batchWriteStartedAt);
+    persistenceTiming.writeCount += 1;
     const storedRefs = [];
     for (const ref of refs) {
+      const refReadStartedAt = Date.now();
       const existingRef = await findRef(transaction, openid, ref.outfitKey);
+      persistenceTiming.refsReadMs += Math.max(0, Date.now() - refReadStartedAt);
+      persistenceTiming.readCount += 1;
       const nextRef = { ...ref, latestBatchId: batch.batchId, latestPosition: ref.position, referenceId: existingRef?.referenceId || stableReferenceId(openid, ref.outfitKey), _openid: openid, updatedAt: now };
       delete nextRef.position;
       delete nextRef.batchId;
+      const refWriteStartedAt = Date.now();
       if (existingRef) await transaction.collection(REF_COLLECTION).doc(existingRef._id).update({ data: nextRef });
       else await transaction.collection(REF_COLLECTION).add({ data: { ...nextRef, createdAt: now } });
+      persistenceTiming.refsWriteMs += Math.max(0, Date.now() - refWriteStartedAt);
+      persistenceTiming.writeCount += 1;
       storedRefs.push(nextRef);
     }
     result = { idempotent: false, batch: batchRecord, refs: storedRefs, writes: 9 };
+    } finally {
+      const attemptFinishedAt = Date.now();
+      attemptBoundaryAt = attemptFinishedAt;
+      if (result) callbackCompletedAt = attemptFinishedAt;
+    }
   });
+  persistenceTiming.commitMs = Math.max(0, Date.now() - callbackCompletedAt);
+  persistenceTiming.totalMs = Math.max(0, Date.now() - persistenceStartedAt);
+  persistenceTiming.otherMs = Math.max(0, persistenceTiming.totalMs
+    - persistenceTiming.transactionBeginMs - persistenceTiming.preconditionReadMs
+    - persistenceTiming.refsReadMs - persistenceTiming.batchWriteMs - persistenceTiming.refsWriteMs - persistenceTiming.commitMs);
   if (!result) throw new Error('V2_BATCH_COMMIT_RESULT_MISSING');
   assertStoredBatchComplete(result.batch, result.refs, { ...batch, _openid: openid });
-  return result;
+  return { ...result, timing: persistenceTiming };
 }
 
-module.exports = { BATCH_COLLECTION, REF_COLLECTION, stableReferenceId, assertBatchInput, assertV2Envelope, findBatch, findRef, findBatchRefs, persistRecommendationBatchV2 };
+module.exports = { BATCH_COLLECTION, REF_COLLECTION, stableReferenceId, assertBatchInput, assertV2Envelope, findBatch, findRef, findBatchRefs, persistRecommendationBatchV2, createBatchPersistenceTiming };
