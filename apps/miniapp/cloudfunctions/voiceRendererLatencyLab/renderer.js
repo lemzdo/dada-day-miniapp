@@ -1,7 +1,7 @@
 'use strict';
 
 const MODELS = Object.freeze({ max: 'qwen3.7-max', flash: 'qwen3.7-flash' });
-const PROMPT_VARIANTS = Object.freeze(['current', 'compressed']);
+const PROMPT_VARIANTS = Object.freeze(['current', 'compressed', 'compressed-v2']);
 const GENERATION_PARAMETERS = Object.freeze({ temperature: 0.3, top_p: 0.8, max_tokens: 1200, stream: false, enable_thinking: false });
 const PERSONA_FAILURE_TERMS = [
   '算法', '模型判断', '候选', '主洞察', '次要洞察', '视觉焦点', '视觉结构', '色彩关系',
@@ -25,7 +25,7 @@ const CASE_VALIDATION = Object.freeze({
 function buildRequest({ model, promptVariant, input, inputs }) {
   if (!MODELS[model]) throw new Error('MODEL_NOT_ALLOWED');
   if (!PROMPT_VARIANTS.includes(promptVariant)) throw new Error('PROMPT_VARIANT_NOT_ALLOWED');
-  const compressed = promptVariant === 'compressed';
+  const compressed = promptVariant !== 'current';
   const batchInputs = Array.isArray(inputs) && inputs.length > 0 ? inputs : [input];
   const user = compressed
     ? JSON.stringify(batchInputs.map((value, index) => ({ id: String(index + 1), m: value.primary?.meaning || null, g: value.garments.slice() })))
@@ -34,12 +34,16 @@ function buildRequest({ model, promptVariant, input, inputs }) {
 }
 
 function buildSystemPrompt(variant) {
-  if (variant === 'compressed') return [
-    '你是小搭，像熟悉用户衣橱的朋友，表达自然、克制、有判断。穿搭和语义已由 Narrative Plan 决定，你只负责改写，不能重新搭配。',
-    '每项 m 是唯一获准表达的意思；m=null 时只诚实说这套简单日常。g 是可用衣物名。不得增加第二个分析点、理由、事实、效果或衣物。',
-    '禁止推断身体效果、体感、材质、天气、偏好或便利性；禁止算法腔、报告腔、杂志腔、营销流行语。通常一句，最多两句短句。',
-    '只返回 JSON 对象：{"copies":[{"id":"原样复制输入id","text":"中文文案"}]}。不得增加字段、Markdown 或解释。',
-  ].join('\n');
+  if (variant === 'compressed' || variant === 'compressed-v2') {
+    const prompt = [
+      '你是小搭，像熟悉用户衣橱的朋友，表达自然、克制、有判断。穿搭和语义已由 Narrative Plan 决定，你只负责改写，不能重新搭配。',
+      '每项 m 是唯一获准表达的意思；m=null 时只诚实说这套简单日常。g 是可用衣物名。不得增加第二个分析点、理由、事实、效果或衣物。',
+      '禁止推断身体效果、体感、材质、天气、偏好或便利性；禁止算法腔、报告腔、杂志腔、营销流行语。通常一句，最多两句短句。',
+      '只返回 JSON 对象：{"copies":[{"id":"原样复制输入id","text":"中文文案"}]}。不得增加字段、Markdown 或解释。',
+    ];
+    if (variant === 'compressed-v2') prompt.push('逐项独立按 id 对应：每条只依据自己的 m 和 g，不借用其他项；至少自然提及本项 g 中的一个衣物名。m=null 或证据弱时也要以本项衣物关系落地，不得只写泛化套话。');
+    return prompt.join('\n');
+  }
   return [
     '你是小搭，一位熟悉用户现有衣橱的朋友型私人穿搭顾问。自然、有判断、克制，不是杂志编辑、算法解说员或营销账号。',
     '穿搭方案和语义已经由 Gold Narrative Plan 决定。你只负责把既定意思说成自然中文，不重新搭配。',
@@ -54,7 +58,7 @@ function parseAndValidate(raw, promptVariant, input, caseId) {
   let parsed;
   try { parsed = JSON.parse(text); } catch { throw new Error('OUTPUT_PARSE'); }
   let output;
-  if (promptVariant === 'compressed') {
+  if (promptVariant === 'compressed' || promptVariant === 'compressed-v2') {
     if (!parsed || Array.isArray(parsed) || !Array.isArray(parsed.copies) || parsed.copies.length !== 1) throw new Error('OUTPUT_CONTRACT');
     const copy = parsed.copies[0];
     if (!copy || Object.keys(copy).sort().join(',') !== 'id,text' || copy.id !== '1' || typeof copy.text !== 'string') throw new Error('OUTPUT_CONTRACT');

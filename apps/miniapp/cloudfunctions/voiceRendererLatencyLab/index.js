@@ -24,7 +24,7 @@ function readyResult(event) {
   return {
     benchmarkOnly: true, action: ACTION, status: 'ready', ...(event.batch ? { batch: true, caseIds: event.cases.map((entry) => entry.caseId) } : { caseId: event.caseId }), model: request.model,
     promptVariant: event.promptVariant, nonThinking: true,
-    structuredOutput: event.promptVariant === 'compressed' ? 'json_object' : 'strict_json_array',
+    structuredOutput: event.promptVariant === 'current' ? 'strict_json_array' : 'json_object',
     requestChars: Buffer.byteLength(JSON.stringify(request), 'utf8'), promptChars: request.messages.reduce((sum, message) => sum + message.content.length, 0),
     callsExecuted: 0, providerCall: 'disabled_without_execute_flag',
   };
@@ -53,7 +53,7 @@ async function executeProvider(event, apiKey, fetchImpl = require('node-fetch'))
   return {
     benchmarkOnly: true, action: ACTION, status: 'completed', ...(batchCases ? { batch: true, caseIds: batchCases.map((entry) => entry.caseId) } : { caseId: event.caseId }), model: request.model,
     promptVariant: event.promptVariant, nonThinking: request.enable_thinking === false,
-    structuredOutput: event.promptVariant === 'compressed' ? 'json_object' : 'strict_json_array',
+    structuredOutput: event.promptVariant === 'current' ? 'strict_json_array' : 'json_object',
     requestChars: Buffer.byteLength(JSON.stringify(request), 'utf8'), promptChars: request.messages.reduce((sum, message) => sum + message.content.length, 0),
     inputChars: request.messages[1].content.length, outputChars: typeof rawContent === 'string' ? rawContent.length : 0,
     promptTokens: Number(body.usage?.prompt_tokens) || null, completionTokens: Number(body.usage?.completion_tokens) || null,
@@ -67,7 +67,7 @@ function assertEvent(event) {
   const allowed = new Set(['caseId', 'model', 'promptVariant', 'input', 'execute', 'batch', 'cases', 'tcbContext', 'userInfo']);
   for (const key of Object.keys(event || {})) if (!allowed.has(key)) throw new Error(`EVENT_KEY_NOT_ALLOWED:${key}`);
   if (event.batch === true) {
-    if (event.model !== 'max' || event.promptVariant !== 'compressed') throw new Error('BATCH_ROUTE_FIXED_TO_MAX_COMPRESSED');
+    if (event.model !== 'max' || !['compressed', 'compressed-v2'].includes(event.promptVariant)) throw new Error('BATCH_ROUTE_FIXED_TO_MAX_COMPRESSED');
     if (!Array.isArray(event.cases) || event.cases.length < 1 || event.cases.length > 8) throw new Error('BATCH_CASE_COUNT');
     const ids = new Set();
     event.cases.forEach((entry) => {

@@ -8,6 +8,7 @@
 - `low-latency-matrix.js`：只运行 B=Max/compressed、C=Flash/current、D=Flash/compressed；D 受 C 的质量门禁约束，并实现两次模型不可用/连续契约事实失败停止规则。A=Max/current 只引用历史基线。
 - `run-eight-case-compressed.js`：顺序执行 8 个独立 Max/compressed 云函数 invocation，用于记录 per-case range、provider latency sum 与 runner wall-clock。
 - `invoke-latency-lab-batch.js`：单次云函数 invocation 内只发起一个 Max/compressed provider request，并返回 8 个 Gold outputs，用于与历史 8-case batch 做同语义校准。
+- `invoke-compressed-v2-batch.js`：先用一个 3-plan request 回归 Weak/Sparse/Baseline，再在门禁通过后用一个 8-plan request 完整回归 Max/compressed-v2。
 - `prepare-cloud-benchmark.js` / `stage-cloud-benchmark.js`：从生产源码创建独立 staging 副本，注入 token 门控的最小云端 benchmark action，生产源码保持不变。
 - `cloud-helper-template.js`：固定 Prompt、模型白名单、请求/输出白名单；Key 只从云函数环境读取。
 - `smoke-cloud.js` / `run-cloud.js`：经微信开发者工具验证隔离门控并运行真实 B.0 批次。
@@ -23,3 +24,5 @@ node apps/miniapp/scripts/voice-renderer-v2-lab/low-latency-matrix.js
 ```
 
 当前任务禁止 DevTools/GUI 自动化，因此不得用 `run-cloud.js` 绕过本地凭据门禁。未到达 provider 的调度错误不能记作模型调用、模型延迟或 `MODEL_NOT_ALLOWED`。
+
+compressed-v2 只在 compressed-v1 后追加逐 Plan 绑定与 garment-grounding 规则；不扩大 Narrative Plan 的事实授权，不接入生产 Renderer。

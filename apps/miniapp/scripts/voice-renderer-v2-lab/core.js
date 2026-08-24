@@ -6,6 +6,8 @@ const LAB_VERSION = 'voice-renderer-v2-lab-v1';
 const INPUT_VERSION = 'voice-renderer-input-v2.0';
 const PROMPT_VERSION = 'voice-contract-v2.0-lab1';
 const COMPRESSED_PROMPT_VERSION = 'voice-contract-v2.0-compressed-lab1';
+const COMPRESSED_V2_PROMPT_VERSION = 'voice-contract-v2.0-compressed-v2-lab1';
+const COMPRESSED_V2_GROUNDING_RULE = '逐项独立按 id 对应：每条只依据自己的 m 和 g，不借用其他项；至少自然提及本项 g 中的一个衣物名。m=null 或证据弱时也要以本项衣物关系落地，不得只写泛化套话。';
 const PERSONA_VERSION = 'xiaoda-friend-stylist-v2';
 const MODEL_ALLOWLIST = Object.freeze({
   max: 'qwen3.7-max',
@@ -130,6 +132,13 @@ function buildCompressedSystemPrompt() {
   ].join('\n');
 }
 
+function buildCompressedV2SystemPrompt() {
+  return [
+    buildCompressedSystemPrompt(),
+    COMPRESSED_V2_GROUNDING_RULE,
+  ].join('\n');
+}
+
 function buildCompressedPayload(inputs) {
   if (!Array.isArray(inputs) || inputs.length === 0) throw new Error('INPUTS_REQUIRED');
   inputs.forEach(assertRendererInput);
@@ -145,13 +154,13 @@ function buildRequestBody(modelAlias, inputs, { promptVariant = 'current' } = {}
   if (!model) throw new Error(`MODEL_NOT_ALLOWED:${modelAlias}`);
   if (!Array.isArray(inputs) || inputs.length === 0) throw new Error('INPUTS_REQUIRED');
   inputs.forEach(assertRendererInput);
-  if (!['current', 'compressed'].includes(promptVariant)) throw new Error(`PROMPT_VARIANT_NOT_ALLOWED:${promptVariant}`);
-  const compressed = promptVariant === 'compressed';
+  if (!['current', 'compressed', 'compressed-v2'].includes(promptVariant)) throw new Error(`PROMPT_VARIANT_NOT_ALLOWED:${promptVariant}`);
+  const compressed = promptVariant !== 'current';
   return {
     model,
     ...GENERATION_PARAMETERS,
     messages: [
-      { role: 'system', content: compressed ? buildCompressedSystemPrompt() : buildSystemPrompt() },
+      { role: 'system', content: promptVariant === 'compressed-v2' ? buildCompressedV2SystemPrompt() : compressed ? buildCompressedSystemPrompt() : buildSystemPrompt() },
       { role: 'user', content: JSON.stringify(compressed ? buildCompressedPayload(inputs) : inputs) },
     ],
     ...(compressed ? { response_format: { type: 'json_object' } } : {}),
@@ -184,7 +193,7 @@ function parseCompressedRendererOutputs(rawText, expectedInputs) {
 }
 
 function parseRequestOutputs(rawText, expectedInputs, promptVariant = 'current') {
-  if (promptVariant === 'compressed') return parseCompressedRendererOutputs(rawText, expectedInputs);
+  if (promptVariant === 'compressed' || promptVariant === 'compressed-v2') return parseCompressedRendererOutputs(rawText, expectedInputs);
   if (promptVariant === 'current') return parseRendererOutputs(rawText, expectedInputs);
   throw new Error(`PROMPT_VARIANT_NOT_ALLOWED:${promptVariant}`);
 }
@@ -263,6 +272,8 @@ function readText(value) {
 module.exports = {
   GENERATION_PARAMETERS,
   COMPRESSED_PROMPT_VERSION,
+  COMPRESSED_V2_PROMPT_VERSION,
+  COMPRESSED_V2_GROUNDING_RULE,
   INPUT_VERSION,
   LAB_VERSION,
   MODEL_ALLOWLIST,
@@ -272,6 +283,7 @@ module.exports = {
   buildRendererInput,
   buildCompressedPayload,
   buildCompressedSystemPrompt,
+  buildCompressedV2SystemPrompt,
   buildRequestBody,
   buildSystemPrompt,
   findForbiddenKeys,

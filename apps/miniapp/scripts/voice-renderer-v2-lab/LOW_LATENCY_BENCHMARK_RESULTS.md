@@ -130,3 +130,51 @@ retries=0
 - Model decision：保持 `qwen3.7-max`，不重新搜索 Flash/Plus。
 - Prompt decision：当前 `compressed` 不能直接替代生产 `current`；`READY_FOR_PRODUCTION_INTEGRATION=no`。下一次应先做一个仅恢复 garment-grounding 规则的最小 prompt delta，再只测 3 个失败 case 与相关回归 case。
 - Execution decision：只换 Prompt 不足以完成生产接入。生产 batch renderer/cache/write 结构本身无需改成 per-card parallel；但当前没有 production materialization trigger，正式接入需要新增非阻塞、fail-open 的触发编排，并继续保持 AI 退出 Today 首屏关键路径。
+
+## 2026-08-24 compressed-v2 batch grounding regression
+
+### Phase 0 — 定向根因
+
+只比较 current 与 compressed-v1 的 garment grounding、弱/稀疏/baseline 和 batch binding 语义，并复核上一轮三条失败 input/output/reason：三条输入均为 `expressionMode=baseline`、`primary=null`，输出均为“这套简单日常。”，唯一 validator failure 均为 `GARMENT_GROUNDING`。
+
+```text
+LOST_RULE=current 的“使用输入中的可读衣物名”强制语义，以及每条输出独立绑定对应 id/m/g 的 batch 约束
+BATCH_SPECIFIC_FAILURE=yes
+WHY_SINGLE_PASS_BATCH_FAIL=single-case 时唯一 g 自然获得完整注意力；8-plan batch 中三个 m=null 项共享同一 baseline 指令，缺少强制 garment anchor 后共同退化为最短合规泛化句
+```
+
+### Phase 1 — compressed-v2
+
+```text
+compressed-v1 chars=718
+compressed-v2 chars=805
+added chars=87（86-char rule + 1 newline）
+added semantic rule=逐项按 id 独立使用自己的 m/g，不借用相邻项；每条至少自然提及本项一个衣物名；m=null 或证据弱时仍以本项衣物关系落地，不得只写泛化套话
+```
+
+没有要求必须写颜色、版型或图案，没有添加 case template，也没有扩大 Narrative Plan 的事实授权。
+
+### Phase 2 — Weak/Sparse/Baseline 单 request
+
+| outputs | prompt chars | prompt/completion tokens | provider/E2E | parser | contract | validator | factual | persona | meta-language | retry |
+| ---: | ---: | ---: | ---: | --- | --- | --- | ---: | ---: | ---: | ---: |
+| 3 | 480 | 280/58 | 1,653/1,653ms | 3/3 PASS | 3/3 PASS | 3/3 PASS | 0 | 0 | 0 | 0 |
+
+三条输出分别落到各自衣物：`基础上衣/基础长裤`、`图案上衣/印花长裤`、`白色T恤/灰色长裤`；均只表达简单日常的当前衣物组合，没有新推断。
+
+### Phase 3 — 原始 8-case 单 request
+
+| outputs | prompt chars | prompt/completion tokens | provider/E2E | parser | contract | validator | factual | persona | meta-language | retry |
+| ---: | ---: | ---: | ---: | --- | --- | --- | ---: | ---: | ---: | ---: |
+| 8 | 805 | 449/161 | 2,666/2,666ms | 8/8 PASS | 8/8 PASS | 8/8 PASS | 0 | 0 | 0 | 0 |
+
+相对 compressed-v1 的 2,455ms 增加 211ms（8.6%），仍保持 2–3 秒级。相对 Max/current 历史 13,140–13,424ms 减少 79.7%–80.1%，约 4.93–5.04× faster。质量与 ≤3.5s 性能门槛同时满足，按 Stop Rule 停止 Prompt 实验。
+
+```text
+MODEL=qwen3.7-max
+PROMPT=compressed-v2
+READY_FOR_PRODUCTION_INTEGRATION=yes
+PRODUCTION_TRIGGER_STILL_MISSING=yes
+```
+
+本结论只批准后续单独 Goal 进入 production integration；本轮没有修改 `materializeRecommendationCopyV2` 调用方、生产 Renderer、Today、Recommendation Runtime、cache、canonical writer 或 provider 默认模型。

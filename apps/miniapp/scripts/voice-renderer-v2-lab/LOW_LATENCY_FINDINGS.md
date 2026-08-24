@@ -21,6 +21,24 @@ Narrative Plan
 → Canonical Copy
 ```
 
+## 2026-08-24 compressed-v2 garment grounding
+
+本轮只比较 current 与 compressed-v1 中直接关系到 garment grounding、弱证据和 batch 绑定的语义。current 明确要求“使用输入中的可读衣物名”；compressed-v1 只说明 `g` 是可用衣物名，既没有要求每条 copy 必须落到自己的 `g`，也没有明确弱证据项不能退化为泛化句。
+
+```text
+LOST_RULE=current 的“使用输入中的可读衣物名”强制语义，以及每条输出独立绑定对应 id/m/g 的 batch 约束
+BATCH_SPECIFIC_FAILURE=yes
+WHY_SINGLE_PASS_BATCH_FAIL=single-case 时唯一 g 自然获得完整注意力；8-plan batch 中三个 m=null 项共享同一 baseline 指令，缺少强制 garment anchor 后共同退化为最短合规泛化句“这套简单日常。”
+```
+
+compressed-v2 没有重写 v1，只追加一条 86-char 语义规则（含连接换行总增量 87 chars）：逐项按 `id` 独立使用自己的 `m/g`，不得借用其他项；至少自然提及本项一个衣物名；`m=null` 或证据弱时仍以当前衣物关系落地，不能只写泛化套话。它没有要求颜色、版型或图案，也没有扩大事实授权。
+
+Weak/Sparse/Baseline 单 request：3/3 parser、contract、validator PASS；factual/persona/meta-language failures 均为 0；1,653ms；0 retry。
+
+原始 8-case 单 request：8/8 parser、contract、validator PASS；factual/persona/meta-language failures 均为 0；449 prompt tokens / 161 completion tokens；provider/E2E 2,666ms；0 retry。达到 ≤3.5s 停止条件，Prompt 实验立即停止。
+
+`materializeRecommendationCopyV2` 仍无生产调用方；本轮没有修复或接入生产触发。
+
 - 当前模型：`qwen3.7-max`；生产 route 为 `voice-renderer-model-route-v1-max`。
 - 参数：`temperature=0.3`、`top_p=0.8`、`max_tokens=1200`、`stream=false`、`enable_thinking=false`。
 - System prompt：594 chars。

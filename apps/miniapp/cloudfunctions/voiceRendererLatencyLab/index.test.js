@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
-const { buildRendererInput } = require('../../scripts/voice-renderer-v2-lab/core');
+const { buildCompressedV2SystemPrompt, buildRendererInput } = require('../../scripts/voice-renderer-v2-lab/core');
 const { buildGoldPlans } = require('../../scripts/voice-renderer-v2-lab/gold-plans');
 const lab = require('./index');
 const renderer = require('./renderer');
@@ -18,7 +18,7 @@ function mockFetch(body, status = 200) {
 
 test('isolated function supports required allowlists and has no production references', () => {
   assert.deepEqual(lab.__test.MODELS, { max: 'qwen3.7-max', flash: 'qwen3.7-flash' });
-  assert.deepEqual(lab.__test.PROMPT_VARIANTS, ['current', 'compressed']);
+  assert.deepEqual(lab.__test.PROMPT_VARIANTS, ['current', 'compressed', 'compressed-v2']);
   const source = `${fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8')}\n${fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8')}`;
   assert.doesNotMatch(source, /recommendationMutationCoordinator|P3|prefetch/i);
   assert.doesNotMatch(source, /console\.(log|error|warn)\s*\(/i);
@@ -45,11 +45,14 @@ test('missing credential fails before fetch and does not leak secret', async () 
 test('request is non-thinking and structured for current and compressed variants', () => {
   const current = renderer.buildRequest(baseEvent);
   const compressed = renderer.buildRequest({ ...baseEvent, promptVariant: 'compressed' });
+  const compressedV2 = renderer.buildRequest({ ...baseEvent, promptVariant: 'compressed-v2' });
   assert.equal(current.enable_thinking, false);
   assert.equal(compressed.enable_thinking, false);
   assert.deepEqual(compressed.response_format, { type: 'json_object' });
   assert.equal(current.model, 'qwen3.7-flash');
   assert.equal(JSON.parse(compressed.messages[1].content)[0].id, '1');
+  assert.equal(compressedV2.messages[0].content, buildCompressedV2SystemPrompt());
+  assert.deepEqual(compressedV2.response_format, { type: 'json_object' });
 });
 
 test('mock provider returns minimal timing/token/contract/validator fields', async () => {
@@ -110,6 +113,7 @@ test('case, model, prompt, input and execute flags are validated', () => {
 test('batch route accepts at most eight unique Gold cases and fixes Max compressed', () => {
   const cases = buildGoldPlans().map((plan) => ({ caseId: plan.caseId, input: buildRendererInput(plan) }));
   assert.doesNotThrow(() => lab.__test.assertEvent({ batch: true, model: 'max', promptVariant: 'compressed', cases, execute: false }));
+  assert.doesNotThrow(() => lab.__test.assertEvent({ batch: true, model: 'max', promptVariant: 'compressed-v2', cases, execute: false }));
   assert.throws(() => lab.__test.assertEvent({ batch: true, model: 'flash', promptVariant: 'compressed', cases, execute: false }), /BATCH_ROUTE_FIXED/);
   assert.throws(() => lab.__test.assertEvent({ batch: true, model: 'max', promptVariant: 'current', cases, execute: false }), /BATCH_ROUTE_FIXED/);
   assert.throws(() => lab.__test.assertEvent({ batch: true, model: 'max', promptVariant: 'compressed', cases: cases.slice(0, 7).concat(cases[0]), execute: false }), /BATCH_CASE_ID/);

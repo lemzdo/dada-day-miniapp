@@ -7,6 +7,7 @@ const {
   MODEL_ALLOWLIST,
   buildCompressedPayload,
   buildCompressedSystemPrompt,
+  buildCompressedV2SystemPrompt,
   buildRendererInput,
   buildRequestBody,
   findForbiddenKeys,
@@ -50,6 +51,19 @@ test('compressed prompt removes repeated transport metadata but keeps the author
   const currentChars = current.messages.reduce((sum, message) => sum + message.content.length, 0);
   const compressedChars = compressed.messages.reduce((sum, message) => sum + message.content.length, 0);
   assert.ok(compressedChars / currentChars < 0.15);
+});
+
+test('compressed-v2 adds only per-plan garment grounding and stays below 1000 prompt chars', () => {
+  const inputs = buildGoldPlans().map(buildRendererInput);
+  const v1 = buildRequestBody('max', inputs, { promptVariant: 'compressed' });
+  const v2 = buildRequestBody('max', inputs, { promptVariant: 'compressed-v2' });
+  assert.equal(buildCompressedV2SystemPrompt(), v2.messages[0].content);
+  assert.equal(v2.messages[1].content, v1.messages[1].content);
+  assert.match(v2.messages[0].content, /逐项独立按 id 对应/);
+  assert.match(v2.messages[0].content, /至少自然提及本项 g 中的一个衣物名/);
+  assert.match(v2.messages[0].content, /不得只写泛化套话/);
+  assert.equal(v2.messages[0].content.startsWith(`${v1.messages[0].content}\n`), true);
+  assert.ok(v2.messages.reduce((sum, message) => sum + message.content.length, 0) <= 1000);
 });
 
 test('compressed output parser restores authoritative plan and insight bindings server-side', () => {

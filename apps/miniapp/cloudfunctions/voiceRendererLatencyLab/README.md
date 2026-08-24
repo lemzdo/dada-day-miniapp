@@ -16,7 +16,7 @@
 }
 ```
 
-`model` 仅允许 `max` / `flash`，映射 `qwen3.7-max` / `qwen3.7-flash`；`promptVariant` 仅允许 `current` / `compressed`；`caseId` 必须是既有 Gold case。`execute:false` 只做凭据/契约 ready 检查；真实 benchmark 才使用 `execute:true`。本轮测试通过 mock fetch，不触发真实 provider。
+`model` 仅允许 `max` / `flash`，映射 `qwen3.7-max` / `qwen3.7-flash`；`promptVariant` 仅允许 `current` / `compressed` / `compressed-v2`；`caseId` 必须是既有 Gold case。`execute:false` 只做凭据/契约 ready 检查；真实 benchmark 才使用 `execute:true`。
 
 CloudBase 可能自动注入 `tcbContext` / `userInfo`；函数只允许并忽略这两个平台字段，不把它们传给模型或返回客户端。
 

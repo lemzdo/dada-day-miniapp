@@ -7,7 +7,7 @@ const { buildGoldPlans } = require('./gold-plans');
 
 async function invokeOnce({ model, promptVariant, caseId, timeoutMs = 65000, deps = {} }) {
   if (!['max', 'flash'].includes(model)) throw new Error('MODEL_NOT_ALLOWED');
-  if (!['current', 'compressed'].includes(promptVariant)) throw new Error('PROMPT_VARIANT_NOT_ALLOWED');
+  if (!['current', 'compressed', 'compressed-v2'].includes(promptVariant)) throw new Error('PROMPT_VARIANT_NOT_ALLOWED');
   const goldPlan = buildGoldPlans().find((plan) => plan.caseId === caseId);
   if (!goldPlan) throw new Error('CASE_ID_NOT_ALLOWED');
   const event = { model, promptVariant, caseId, input: buildRendererInput(goldPlan), execute: true };
