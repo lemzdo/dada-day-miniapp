@@ -54,3 +54,45 @@ test('RecommendationServerDone emits the complete server timing envelope', () =>
     console.log = originalLog;
   }
 });
+
+test('diagnostic C2 is recorded only for eight complete materialized plans and C4 is monotonic', () => {
+  const internals = loadInternals();
+  const monotonicOrigin = process.hrtime.bigint();
+  const diagnostics = internals.createRecommendationDiagnostics({ auditId: 'c2-c4-test', diagnostics: true }, Date.now(), monotonicOrigin);
+  assert.equal(diagnostics.monotonicOriginAt, monotonicOrigin);
+  const recommendations = Array.from({ length: 8 }, (_, index) => ({
+    outfitKey: `outfit-${index}`, items: [{ _id: `item-${index}` }], itemIds: [`item-${index}`], reasoning: 'reason',
+  }));
+  const shadow = {
+    diagnostics: { status: 'completed' },
+    plans: recommendations.map((recommendation, index) => ({
+      planId: `plan-${index}`,
+      identity: { outfitComposition: { key: recommendation.outfitKey, itemIds: recommendation.itemIds.slice() } },
+    })),
+  };
+  assert.equal(internals.recordNarrativePlansReady(diagnostics, recommendations, shadow), true);
+  assert.equal(typeof diagnostics.narrativePlansReadyMs, 'number');
+  assert.equal(diagnostics.narrativePlanCount, 8);
+  const entries = [];
+  const originalLog = console.log;
+  console.log = (...args) => entries.push(args);
+  try {
+    const result = internals.emitRecommendationServerDone({ diagnostics, executionMode: 'full_compute', response: { code: 0, data: {}, message: 'ok' } });
+    const payload = entries[0][1];
+    assert.equal(typeof payload.C2_MS, 'number');
+    assert.equal(typeof payload.C4_MS, 'number');
+    assert.equal(payload.C4_MS >= payload.C2_MS, true);
+    assert.equal(payload.C4_MINUS_C2_MS, diagnostics.c4MinusC2Ms);
+    assert.equal(payload.TOTAL_SERVER_MS, payload.C4_MS);
+    assert.equal(result.responseBytes > 0, true);
+  } finally {
+    console.log = originalLog;
+  }
+  const incomplete = internals.createRecommendationDiagnostics({ auditId: 'c2-incomplete', diagnostics: true });
+  assert.equal(internals.recordNarrativePlansReady(incomplete, recommendations.slice(0, 7), shadow), false);
+  assert.equal(incomplete.narrativePlansReadyMs, null);
+  const mismatch = internals.createRecommendationDiagnostics({ auditId: 'c2-mismatch', diagnostics: true }, Date.now(), monotonicOrigin);
+  const mismatchedShadow = { ...shadow, plans: shadow.plans.map((plan, index) => index === 1 ? { ...plan, identity: { outfitComposition: { key: 'wrong-index', itemIds: plan.identity.outfitComposition.itemIds } } } : plan) };
+  assert.equal(internals.recordNarrativePlansReady(mismatch, recommendations, mismatchedShadow), false);
+  assert.equal(mismatch.narrativePlansReadyMs, null);
+});

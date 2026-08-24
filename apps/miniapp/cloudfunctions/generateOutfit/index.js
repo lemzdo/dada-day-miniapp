@@ -205,6 +205,7 @@ const RECOMMENDATION_SCENE_LABELS = Object.freeze({
 });
 
 exports.main = async (event = {}) => {
+  const requestMonotonicOriginAt = process.hrtime.bigint();
   const action = event.action || 'generate';
   const handlerStartedAt = Date.now();
   if (action === 'transport_probe' || action === 'transport_probe_small' || action === 'transport_probe_payload') {
@@ -215,7 +216,7 @@ exports.main = async (event = {}) => {
     return ok(buildTransportProbeResult(handlerStartedAt));
   }
   const recommendationDiagnostics = action === 'generate'
-    ? createRecommendationDiagnostics(event, handlerStartedAt)
+    ? createRecommendationDiagnostics(event, handlerStartedAt, requestMonotonicOriginAt)
     : null;
   try {
     if (action === 'detailV2') {
@@ -501,10 +502,11 @@ function buildTransportPayloadProbeResult(handlerStartedAt, requestedBytes) {
   };
 }
 
-function createRecommendationDiagnostics(event = {}, handlerStartAt = Date.now()) {
+function createRecommendationDiagnostics(event = {}, handlerStartAt = Date.now(), monotonicOriginAt = process.hrtime.bigint()) {
   return {
     auditId: readAuditId(event.auditId),
-    stage: 'received', startedAt: handlerStartAt,
+    stage: 'received', startedAt: handlerStartAt, monotonicOriginAt,
+    narrativePlansReadyAt: null, narrativePlansReadyMs: null, responseReadyMs: null, c4MinusC2Ms: null,
     diagnosticsRequested: event.diagnostics === true || event.performanceDiagnostics === true,
     performanceOnly: event.performanceDiagnostics === true, handlerStartAt,
     phases: [], snapshotPayloadBytes: 0, candidatePoolPayloadBytes: 0,
@@ -517,9 +519,40 @@ function createRecommendationDiagnostics(event = {}, handlerStartAt = Date.now()
   };
 }
 
+function recordNarrativePlansReady(diagnostics, recommendations, shadow) {
+  if (!diagnostics || diagnostics.diagnosticsRequested !== true || diagnostics.narrativePlansReadyMs !== null) return false;
+  const plans = Array.isArray(shadow?.plans) ? shadow.plans : [];
+  if (shadow?.diagnostics?.status !== 'completed' || plans.length !== 8 || !Array.isArray(recommendations) || recommendations.length !== 8) return false;
+  const complete = plans.every((plan, index) => {
+    const recommendation = recommendations[index];
+    const planItemIds = plan?.identity?.outfitComposition?.itemIds;
+    const recommendationItemIds = recommendation?.itemIds;
+    return typeof plan?.planId === 'string' && plan.planId
+      && plan?.identity?.outfitComposition?.key === recommendation?.outfitKey
+      && Array.isArray(planItemIds) && Array.isArray(recommendationItemIds)
+      && planItemIds.length > 0 && planItemIds.length === recommendationItemIds.length
+      && planItemIds.every((id, itemIndex) => id === recommendationItemIds[itemIndex]);
+  });
+  if (!complete) return false;
+  diagnostics.narrativePlansReadyMs = monotonicElapsedMs(diagnostics);
+  diagnostics.narrativePlansReadyAt = diagnostics.narrativePlansReadyMs;
+  diagnostics.narrativePlanCount = plans.length;
+  return true;
+}
+
+function monotonicElapsedMs(diagnostics) {
+  if (!diagnostics?.monotonicOriginAt) return null;
+  return Number(process.hrtime.bigint() - diagnostics.monotonicOriginAt) / 1e6;
+}
+
 function emitRecommendationServerDone({ diagnostics, executionMode, response } = {}) {
   if (!diagnostics || !response) return null;
-  const totalMs = Math.max(0, Date.now() - diagnostics.startedAt);
+  const responseReadyMs = monotonicElapsedMs(diagnostics);
+  diagnostics.responseReadyMs = responseReadyMs;
+  diagnostics.c4MinusC2Ms = diagnostics.narrativePlansReadyMs === null || responseReadyMs === null
+    ? null
+    : Math.max(0, responseReadyMs - diagnostics.narrativePlansReadyMs);
+  const totalMs = responseReadyMs === null ? Math.max(0, Date.now() - diagnostics.startedAt) : responseReadyMs;
   const serializationStartedAt = Date.now();
   const responseBytes = serializedBytes(response);
   diagnostics.executionMode = executionMode || 'unknown';
@@ -528,6 +561,10 @@ function emitRecommendationServerDone({ diagnostics, executionMode, response } =
   console.log('[RecommendationServerDone]', {
     executionMode: diagnostics.executionMode,
     timings: diagnostics.timings,
+    C2_MS: diagnostics.narrativePlansReadyMs,
+    C4_MS: diagnostics.responseReadyMs,
+    C4_MINUS_C2_MS: diagnostics.c4MinusC2Ms,
+    TOTAL_SERVER_MS: totalMs,
     totalMs,
     responseBytes,
   });
@@ -695,6 +732,18 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
       candidates: recommendations.candidatePoolCandidates,
       debugCandidatePoolProjection: event.debugCandidatePoolProjection === true,
     };
+  }
+  // C2 is diagnostic-only: run the existing Narrative Plan shadow synchronously
+  // after stable selection/materialization and before persistence is scheduled.
+  if (diagnostics?.diagnosticsRequested === true) {
+    const shadow = runRecommendationStylingShadowV2Safely({
+      recommendations,
+      scene,
+      weather: weatherSnapshot,
+      recommendationInstanceSeed: diagnostics.auditId || 'diagnostic',
+      telemetrySampleRate: 0,
+    });
+    recordNarrativePlansReady(diagnostics, recommendations, shadow);
   }
   if (candidatePoolPersistenceInput) {
     candidatePoolPersistPromise = Promise.resolve().then(() => persistGeneratedCandidatePool({
@@ -5065,6 +5114,7 @@ if (process.env.NODE_ENV === 'test') {
     canonicalizeAiCommentSource,
     createRecommendationSceneContract,
     createRecommendationDiagnostics,
+    recordNarrativePlansReady,
     emitRecommendationServerDone,
     recordServerPhase,
     measureCanonicalBatchInput,

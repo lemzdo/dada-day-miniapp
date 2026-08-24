@@ -228,12 +228,14 @@ test('Shadow fails open without changing the recommendation path', () => {
   assert.equal(shadow.plans.length, 0);
 });
 
-test('generateOutfit shadow branch is before and independent from Legacy Presentation', () => {
+test('generateOutfit diagnostic Narrative Plans are ready before candidate-pool persistence', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'index.js'), 'utf8');
-  const shadowIndex = source.indexOf('runRecommendationStylingShadowV2Safely({');
-  const legacyIndex = source.indexOf('compileRecommendationsForResponse({');
-  assert.ok(shadowIndex > 0);
-  assert.ok(legacyIndex > shadowIndex);
+  const recommendationIndex = source.indexOf('recommendations = generateRuleRecommendations({');
+  const shadowIndex = source.indexOf('const shadow = runRecommendationStylingShadowV2Safely({');
+  const persistenceIndex = source.indexOf('candidatePoolPersistPromise = Promise.resolve()', shadowIndex);
+  assert.ok(recommendationIndex > 0);
+  assert.ok(shadowIndex > recommendationIndex);
+  assert.ok(persistenceIndex > shadowIndex);
   assert.doesNotMatch(
     fs.readFileSync(path.join(__dirname, 'stylingInsightCandidateV2.js'), 'utf8'),
     /recommendationLanguageV3|recommendationPresentation|presentationFactModel|xiaodaStyleInsight|todayReason|detailExplanation/,
