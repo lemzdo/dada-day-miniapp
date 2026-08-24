@@ -5,10 +5,13 @@ const test = require('node:test');
 const {
   GENERATION_PARAMETERS,
   MODEL_ALLOWLIST,
+  buildCompressedPayload,
+  buildCompressedSystemPrompt,
   buildRendererInput,
   buildRequestBody,
   findForbiddenKeys,
   parseRendererOutputs,
+  parseCompressedRendererOutputs,
   validateRendererOutput,
 } = require('./core');
 const { buildGoldPlans } = require('./gold-plans');
@@ -29,6 +32,39 @@ test('Gold plans cover required Primary, baseline, and Competing cases', () => {
     'sparse_none',
   ]);
   assert.equal(plans.find((plan) => plan.competing).goldSource.selectedSecondaryPresent, true);
+});
+
+test('compressed prompt removes repeated transport metadata but keeps the authorized meaning and garments', () => {
+  const inputs = buildGoldPlans().map(buildRendererInput);
+  const current = buildRequestBody('max', inputs);
+  const compressed = buildRequestBody('max', inputs, { promptVariant: 'compressed' });
+  const payload = buildCompressedPayload(inputs);
+  assert.equal(buildCompressedSystemPrompt(), compressed.messages[0].content);
+  assert.equal(compressed.response_format.type, 'json_object');
+  assert.equal(payload.length, inputs.length);
+  assert.deepEqual(Object.keys(payload[0]).sort(), ['g', 'id', 'm']);
+  assert.equal(payload[0].m, inputs[0].primary.meaning);
+  assert.deepEqual(payload[0].g, inputs[0].garments);
+  assert.equal(payload.find((entry) => entry.m === null) !== undefined, true);
+  assert.doesNotMatch(compressed.messages[1].content, /inputVersion|personaVersion|allowedClaims|insightId|planId/);
+  const currentChars = current.messages.reduce((sum, message) => sum + message.content.length, 0);
+  const compressedChars = compressed.messages.reduce((sum, message) => sum + message.content.length, 0);
+  assert.ok(compressedChars / currentChars < 0.15);
+});
+
+test('compressed output parser restores authoritative plan and insight bindings server-side', () => {
+  const inputs = buildGoldPlans().map(buildRendererInput).slice(0, 2);
+  const raw = JSON.stringify({ copies: [
+    { id: '1', text: inputs[0].primary.meaning },
+    { id: '2', text: inputs[1].primary.meaning },
+  ] });
+  assert.deepEqual(parseCompressedRendererOutputs(raw, inputs), inputs.map((input) => ({
+    planId: input.planId,
+    insightId: input.primary.insightId,
+    text: input.primary.meaning,
+  })));
+  assert.throws(() => parseCompressedRendererOutputs(JSON.stringify({ copies: [{ id: '1', text: 'x' }, { id: '1', text: 'y' }] }), inputs), /OUTPUT_PLAN_BINDING/);
+  assert.throws(() => parseCompressedRendererOutputs(JSON.stringify({ copies: [{ id: '1', text: 'x', extra: true }, { id: '2', text: 'y' }] }), inputs), /OUTPUT_KEYS/);
 });
 
 test('Renderer input is minimal and strips candidates, secondary, scores, and raw context', () => {

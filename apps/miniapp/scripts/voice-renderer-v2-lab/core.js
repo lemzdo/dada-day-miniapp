@@ -5,6 +5,7 @@ const crypto = require('node:crypto');
 const LAB_VERSION = 'voice-renderer-v2-lab-v1';
 const INPUT_VERSION = 'voice-renderer-input-v2.0';
 const PROMPT_VERSION = 'voice-contract-v2.0-lab1';
+const COMPRESSED_PROMPT_VERSION = 'voice-contract-v2.0-compressed-lab1';
 const PERSONA_VERSION = 'xiaoda-friend-stylist-v2';
 const MODEL_ALLOWLIST = Object.freeze({
   max: 'qwen3.7-max',
@@ -120,19 +121,72 @@ function buildSystemPrompt() {
   ].join('\n');
 }
 
-function buildRequestBody(modelAlias, inputs) {
+function buildCompressedSystemPrompt() {
+  return [
+    '你是小搭，像熟悉用户衣橱的朋友，表达自然、克制、有判断。穿搭和语义已由 Narrative Plan 决定，你只负责改写，不能重新搭配。',
+    '每项 m 是唯一获准表达的意思；m=null 时只诚实说这套简单日常。g 是可用衣物名。不得增加第二个分析点、理由、事实、效果或衣物。',
+    '禁止推断身体效果、体感、材质、天气、偏好或便利性；禁止算法腔、报告腔、杂志腔、营销流行语。通常一句，最多两句短句。',
+    '只返回 JSON 对象：{"copies":[{"id":"原样复制输入id","text":"中文文案"}]}。不得增加字段、Markdown 或解释。',
+  ].join('\n');
+}
+
+function buildCompressedPayload(inputs) {
+  if (!Array.isArray(inputs) || inputs.length === 0) throw new Error('INPUTS_REQUIRED');
+  inputs.forEach(assertRendererInput);
+  return inputs.map((input, index) => ({
+    id: String(index + 1),
+    m: input.primary?.meaning || null,
+    g: input.garments.slice(),
+  }));
+}
+
+function buildRequestBody(modelAlias, inputs, { promptVariant = 'current' } = {}) {
   const model = MODEL_ALLOWLIST[modelAlias];
   if (!model) throw new Error(`MODEL_NOT_ALLOWED:${modelAlias}`);
   if (!Array.isArray(inputs) || inputs.length === 0) throw new Error('INPUTS_REQUIRED');
   inputs.forEach(assertRendererInput);
+  if (!['current', 'compressed'].includes(promptVariant)) throw new Error(`PROMPT_VARIANT_NOT_ALLOWED:${promptVariant}`);
+  const compressed = promptVariant === 'compressed';
   return {
     model,
     ...GENERATION_PARAMETERS,
     messages: [
-      { role: 'system', content: buildSystemPrompt() },
-      { role: 'user', content: JSON.stringify(inputs) },
+      { role: 'system', content: compressed ? buildCompressedSystemPrompt() : buildSystemPrompt() },
+      { role: 'user', content: JSON.stringify(compressed ? buildCompressedPayload(inputs) : inputs) },
     ],
+    ...(compressed ? { response_format: { type: 'json_object' } } : {}),
   };
+}
+
+function parseCompressedRendererOutputs(rawText, expectedInputs) {
+  const source = readText(rawText).replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  let parsed;
+  try {
+    parsed = JSON.parse(source);
+  } catch (error) {
+    throw Object.assign(new Error('OUTPUT_PARSE'), { cause: error });
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('OUTPUT_OBJECT_REQUIRED');
+  if (JSON.stringify(Object.keys(parsed).sort()) !== JSON.stringify(['copies'])) throw new Error('OUTPUT_ROOT_KEYS');
+  if (!Array.isArray(parsed.copies) || parsed.copies.length !== expectedInputs.length) throw new Error('OUTPUT_COMPLETENESS');
+  const seen = new Set();
+  return parsed.copies.map((entry) => {
+    if (JSON.stringify(Object.keys(entry || {}).sort()) !== JSON.stringify(['id', 'text'])) throw new Error('OUTPUT_KEYS');
+    const id = readText(entry.id);
+    const index = Number(id) - 1;
+    if (!/^\d+$/.test(id) || index < 0 || index >= expectedInputs.length || seen.has(id)) throw new Error('OUTPUT_PLAN_BINDING');
+    seen.add(id);
+    const input = expectedInputs[index];
+    const text = readText(entry.text);
+    if (!text) throw new Error('OUTPUT_TEXT_REQUIRED');
+    return { planId: input.planId, insightId: input.primary?.insightId || null, text };
+  });
+}
+
+function parseRequestOutputs(rawText, expectedInputs, promptVariant = 'current') {
+  if (promptVariant === 'compressed') return parseCompressedRendererOutputs(rawText, expectedInputs);
+  if (promptVariant === 'current') return parseRendererOutputs(rawText, expectedInputs);
+  throw new Error(`PROMPT_VARIANT_NOT_ALLOWED:${promptVariant}`);
 }
 
 function parseRendererOutputs(rawText, expectedInputs) {
@@ -208,6 +262,7 @@ function readText(value) {
 
 module.exports = {
   GENERATION_PARAMETERS,
+  COMPRESSED_PROMPT_VERSION,
   INPUT_VERSION,
   LAB_VERSION,
   MODEL_ALLOWLIST,
@@ -215,10 +270,14 @@ module.exports = {
   PROMPT_VERSION,
   assertRendererInput,
   buildRendererInput,
+  buildCompressedPayload,
+  buildCompressedSystemPrompt,
   buildRequestBody,
   buildSystemPrompt,
   findForbiddenKeys,
   hash,
   parseRendererOutputs,
+  parseCompressedRendererOutputs,
+  parseRequestOutputs,
   validateRendererOutput,
 };
