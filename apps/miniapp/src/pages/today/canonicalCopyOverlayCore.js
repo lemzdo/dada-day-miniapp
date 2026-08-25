@@ -31,19 +31,32 @@ async function runBoundedCanonicalCopyRefresh({
   isCurrent,
   apply,
   onAvailable = () => {},
+  onAttempt = () => {},
   offsetsMs = CANONICAL_COPY_REFRESH_OFFSETS_MS,
   sleep = (delay) => new Promise((resolve) => setTimeout(resolve, delay)),
   now = () => Date.now(),
 } = {}) {
   const startedAt = now();
   let observedCopyKeys = new Set();
-  for (const offset of offsetsMs) {
+  for (const [offsetIndex, offset] of offsetsMs.entries()) {
     const remaining = Math.max(0, offset - (now() - startedAt));
     if (remaining > 0) await sleep(remaining);
-    if (!isCurrent()) return { status: 'stale', attempts: offsetsMs.indexOf(offset) };
+    if (!isCurrent()) return { status: 'stale', attempts: offsetIndex };
     let overlay;
-    try { overlay = await read(batchId); } catch { continue; }
-    if (!isCurrent() || overlay?.batchId !== batchId) return { status: 'stale', attempts: offsetsMs.indexOf(offset) + 1 };
+    try {
+      overlay = await read(batchId);
+    } catch {
+      onAttempt({ attempt: offsetIndex + 1, delayMs: offset, batchId, canonicalFound: false, jobStage: 'overlay_read_failed' });
+      continue;
+    }
+    if (!isCurrent() || overlay?.batchId !== batchId) return { status: 'stale', attempts: offsetIndex + 1 };
+    onAttempt({
+      attempt: offsetIndex + 1,
+      delayMs: offset,
+      batchId,
+      canonicalFound: Array.isArray(overlay.copies) && overlay.copies.length > 0,
+      jobStage: overlay.jobStage || overlay.status || 'unknown',
+    });
     const fresh = (Array.isArray(overlay.copies) ? overlay.copies : []).filter((copy) => {
       const key = `${copy.outfitKey}|${copy.rendererVersion}|${copy.text}`;
       if (observedCopyKeys.has(key)) return false;
@@ -55,7 +68,7 @@ async function runBoundedCanonicalCopyRefresh({
       apply(overlay);
     }
     if (overlay.status === 'ready') {
-      return { status: 'ready', attempts: offsetsMs.indexOf(offset) + 1, observedCount: observedCopyKeys.size };
+      return { status: 'ready', attempts: offsetIndex + 1, observedCount: observedCopyKeys.size };
     }
   }
   return { status: 'bounded_complete', attempts: offsetsMs.length, observedCount: observedCopyKeys.size };

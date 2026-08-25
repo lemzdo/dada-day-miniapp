@@ -28,6 +28,7 @@ test('bounded refresh polls fixed offsets, applies partial copies, and stops at 
   let clock = 0;
   let reads = 0;
   const applied = [];
+  const attempts = [];
   const result = await runBoundedCanonicalCopyRefresh({
     batchId: 'batch-1',
     isCurrent: () => true,
@@ -40,11 +41,35 @@ test('bounded refresh polls fixed offsets, applies partial copies, and stops at 
       return { batchId: 'batch-1', status: 'ready', copies: [{ outfitKey: 'outfit-1', rendererVersion: 'v', text: 'ai-1' }, { outfitKey: 'outfit-2', rendererVersion: 'v', text: 'ai-2' }] };
     },
     apply: (overlay) => applied.push(overlay.copies.map((copy) => copy.outfitKey)),
+    onAttempt: (diagnostic) => attempts.push(diagnostic),
   });
   assert.deepEqual(CANONICAL_COPY_REFRESH_OFFSETS_MS, [0, 150, 350, 700, 1200]);
   assert.equal(result.status, 'ready');
   assert.equal(reads, 3);
   assert.deepEqual(applied, [['outfit-1'], ['outfit-1', 'outfit-2']]);
+  assert.deepEqual(attempts.map(({ attempt, delayMs, canonicalFound, jobStage }) => ({ attempt, delayMs, canonicalFound, jobStage })), [
+    { attempt: 1, delayMs: 0, canonicalFound: false, jobStage: 'pending' },
+    { attempt: 2, delayMs: 150, canonicalFound: true, jobStage: 'partial' },
+    { attempt: 3, delayMs: 350, canonicalFound: true, jobStage: 'ready' },
+  ]);
+});
+
+test('bounded refresh reports read failures without extending the offsets', async () => {
+  const attempts = [];
+  const result = await runBoundedCanonicalCopyRefresh({
+    batchId: 'batch-1',
+    offsetsMs: [0, 150],
+    sleep: async () => {},
+    read: async () => { throw new Error('offline'); },
+    isCurrent: () => true,
+    apply: () => {},
+    onAttempt: (diagnostic) => attempts.push(diagnostic),
+  });
+  assert.equal(result.status, 'bounded_complete');
+  assert.deepEqual(attempts.map(({ attempt, delayMs, jobStage }) => ({ attempt, delayMs, jobStage })), [
+    { attempt: 1, delayMs: 0, jobStage: 'overlay_read_failed' },
+    { attempt: 2, delayMs: 150, jobStage: 'overlay_read_failed' },
+  ]);
 });
 
 test('bounded refresh stops without applying when generation becomes stale', async () => {

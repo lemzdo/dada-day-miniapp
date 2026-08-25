@@ -52,4 +52,5 @@ test('Today late-arrival consumer is bounded and patches canonical text only', (
   assert.match(todaySource, /applyCanonicalCopyOverlay\(current, overlay\)/);
   assert.match(todaySource, /ai:firstCanonicalAvailable/);
   assert.match(todaySource, /ai:firstCanonicalApplied/);
+  assert.match(todaySource, /ai:refreshAttempt/);
 });

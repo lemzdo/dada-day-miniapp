@@ -44,6 +44,7 @@ export interface RecommendationCanonicalOverlayV2 {
   status: 'not_found' | 'pending' | 'partial' | 'ready';
   expectedCount?: number;
   readyCount?: number;
+  jobStage?: string;
   copies: RecommendationCanonicalOverlayCopyV2[];
 }
 

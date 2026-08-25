@@ -22,6 +22,7 @@ const {
   acquireRecommendationCopyJob,
   ensureRecommendationCopyCollections,
   finishRecommendationCopyJob,
+  markRecommendationCopyJobProgress,
   persistValidatedCanonicalCopy,
   publishCachedCanonicalCopies,
   prepareRecommendationCopyJob,
@@ -984,35 +985,55 @@ async function runRecommendationCopyJobV2(event, {
   let readyCount = Math.max(0, cachedNow.length - (Number(job.cacheHitCount) || 0));
   let invalidCount = 0;
   let providerRequestCount = 0;
+  let failedStage = '';
   let failureCode = '';
   try {
     if (misses.length > 0) {
+      try {
+        await markRecommendationCopyJobProgress(database, job, leaseToken, 'providerStartedAt');
+      } catch { /* Diagnostics must not block the fail-open provider path. */ }
       const summary = await consumeStream({
         preparedEntries: misses.map((entry) => entry.preparedEntry),
         onValidated: async (copy) => {
+          try {
+            await markRecommendationCopyJobProgress(database, job, leaseToken, 'firstValidatedAt');
+          } catch { /* Diagnostics must not block canonical persistence. */ }
           const entry = misses.find((candidate) => candidate.preparedEntry?.plan?.planId === copy.planId);
           if (!entry || copy.renderInputFingerprint !== entry.renderInputFingerprint) {
             invalidCount += 1;
+            failedStage ||= 'validation';
+            failureCode ||= 'VOICE_RENDERER_OUTPUT_PLAN_BINDING';
             return;
           }
           try {
             await persistValidatedCanonicalCopy(database, job, entry, copy);
             readyCount += 1;
-          } catch {
+          } catch (error) {
             invalidCount += 1;
+            failedStage ||= 'canonical_write';
+            failureCode ||= getRecommendationErrorCode(error);
           }
         },
-        onInvalid: async () => { invalidCount += 1; },
+        onInvalid: async (issue) => {
+          invalidCount += 1;
+          failedStage ||= 'validation';
+          failureCode ||= readString(issue?.error)
+            || readString(issue?.failures?.[0])
+            || 'VOICE_RENDERER_VALIDATION_FAILED';
+        },
       });
       providerRequestCount = Number(summary?.requestCount ?? summary?.providerCalls) || 0;
-      failureCode = readString(summary?.failureCode);
+      if (!failureCode) failureCode = readString(summary?.failureCode);
+      if (failureCode && !failedStage) failedStage = 'provider';
     }
   } catch (error) {
+    failedStage = 'provider';
     failureCode = getRecommendationErrorCode(error);
   }
   const finished = await finishRecommendationCopyJob(database, job, leaseToken, {
     readyCount,
     invalidCount,
+    failedStage,
     failureCode,
   });
   return {

@@ -477,6 +477,15 @@ export default function TodayPage() {
           alreadyPresentAtRender: false,
         });
       },
+      onAttempt: ({ attempt, delayMs, canonicalFound, jobStage }) => {
+        traceTodayRuntime('ai:refreshAttempt', generation, batchId, {
+          attempt,
+          delayMs,
+          batchId,
+          canonicalFound,
+          jobStage,
+        });
+      },
       apply: (overlay) => {
         const current = v2SnapshotRef.current;
         const patched = applyCanonicalCopyOverlay(current, overlay);

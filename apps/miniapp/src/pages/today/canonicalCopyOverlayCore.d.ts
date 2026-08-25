@@ -20,6 +20,13 @@ export function runBoundedCanonicalCopyRefresh(options: {
   isCurrent: () => boolean;
   apply: (overlay: RecommendationCanonicalOverlayV2) => void;
   onAvailable?: (overlay: RecommendationCanonicalOverlayV2) => void;
+  onAttempt?: (diagnostic: {
+    attempt: number;
+    delayMs: number;
+    batchId: string;
+    canonicalFound: boolean;
+    jobStage: string;
+  }) => void;
   offsetsMs?: readonly number[];
   sleep?: (delayMs: number) => Promise<void>;
   now?: () => number;

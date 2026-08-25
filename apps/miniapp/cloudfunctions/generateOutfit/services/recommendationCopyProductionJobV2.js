@@ -157,6 +157,7 @@ async function acquireDispatchReservation(database, jobId, now = new Date()) {
     await reference.update({ data: {
       status: 'dispatching',
       dispatchToken,
+      dispatchRequestedAt: job.dispatchRequestedAt || now.toISOString(),
       dispatchLeaseUntil: new Date(now.getTime() + DISPATCH_LEASE_MS).toISOString(),
       updatedAt: now.toISOString(),
     } });
@@ -236,6 +237,7 @@ async function acquireRecommendationCopyJob(database, jobId, dispatchToken, now 
       leaseToken,
       leaseUntil: new Date(now.getTime() + LEASE_MS).toISOString(),
       startedAt: job.startedAt || now.toISOString(),
+      workerStartedAt: job.workerStartedAt || now.toISOString(),
       updatedAt: now.toISOString(),
     };
     await reference.set({ data: next });
@@ -286,7 +288,11 @@ async function persistValidatedCanonicalCopy(database, job, entry, copy, now = n
         throw new Error('COPY_JOB_IDENTITY_CONFLICT');
       }
       const readyCopies = mergeReadyCopies(currentJob.readyCopies, [toOverlayCopy(entry, persisted)]);
-      await jobReference.update({ data: { readyCopies, updatedAt: now.toISOString() } });
+      await jobReference.update({ data: {
+        readyCopies,
+        firstCanonicalWrittenAt: currentJob.firstCanonicalWrittenAt || now.toISOString(),
+        updatedAt: now.toISOString(),
+      } });
     }
   });
   return persisted;
@@ -325,16 +331,43 @@ async function finishRecommendationCopyJob(database, job, leaseToken, summary, n
   const status = readyCount === expectedCount
     ? 'completed'
     : readyCount > 0 ? 'partially_completed' : 'failed_open';
+  const failedStage = status === 'completed' ? '' : readText(summary?.failedStage);
+  const failureCode = status === 'completed' ? '' : readText(summary?.failureCode);
   await reference.update({ data: {
     status,
     readyCount,
     invalidCount,
-    failureCode: readText(summary?.failureCode),
+    failedStage,
+    failureCode,
     completedAt: now.toISOString(),
     updatedAt: now.toISOString(),
     leaseUntil: '',
   } });
   return { updated: true, stale: false, status, readyCount, invalidCount };
+}
+
+async function markRecommendationCopyJobProgress(database, job, leaseToken, field, now = new Date()) {
+  if (!['providerStartedAt', 'firstValidatedAt'].includes(field)) {
+    throw new Error('COPY_JOB_PROGRESS_FIELD_INVALID');
+  }
+  let updated = false;
+  await database.runTransaction(async (transaction) => {
+    const reference = transaction.collection(JOB_COLLECTION).doc(job.jobId);
+    const current = await readDocument(reference);
+    if (!current || current._openid !== job._openid
+      || current.rendererVersion !== job.rendererVersion
+      || current.leaseToken !== leaseToken) return;
+    if (readText(current[field])) {
+      updated = true;
+      return;
+    }
+    await reference.update({ data: {
+      [field]: now.toISOString(),
+      updatedAt: now.toISOString(),
+    } });
+    updated = true;
+  });
+  return updated;
 }
 
 async function readRecommendationCopyOverlay(database, openid, batchId, rendererVersion) {
@@ -354,6 +387,7 @@ async function readRecommendationCopyOverlay(database, openid, batchId, renderer
     status: overlay.length === job.entries.length ? 'ready' : overlay.length > 0 ? 'partial' : 'pending',
     expectedCount: job.entries.length,
     readyCount: overlay.length,
+    jobStage: deriveJobStage(job),
     copies: overlay,
   };
 }
@@ -383,11 +417,25 @@ async function markDispatchFailure(database, jobId, dispatchToken, error, now = 
       await reference.update({ data: {
         status: 'dispatch_failed',
         dispatchFailureCode: readErrorCode(error),
+        failedStage: 'dispatch',
+        failureCode: readErrorCode(error),
         dispatchLeaseUntil: '',
         updatedAt: now.toISOString(),
       } });
     });
   } catch { /* Recommendation remains fail-open even if diagnostics cannot be updated. */ }
+}
+
+function deriveJobStage(job) {
+  if (readText(job?.failedStage)) return `failed:${readText(job.failedStage)}`;
+  if (readText(job?.completedAt)) return 'completed';
+  if (readText(job?.firstCanonicalWrittenAt)) return 'first_canonical_written';
+  if (readText(job?.firstValidatedAt)) return 'first_validated';
+  if (readText(job?.providerStartedAt)) return 'provider_started';
+  if (readText(job?.workerStartedAt || job?.startedAt)) return 'worker_started';
+  if (readText(job?.dispatchAcceptedAt)) return 'dispatch_accepted';
+  if (readText(job?.dispatchRequestedAt)) return 'dispatch_requested';
+  return readText(job?.status) || 'created';
 }
 
 async function readDocument(reference) {
@@ -441,6 +489,7 @@ module.exports = {
   buildJobIdentity,
   finishRecommendationCopyJob,
   ensureRecommendationCopyCollections,
+  markRecommendationCopyJobProgress,
   normalizeJobEntries,
   persistValidatedCanonicalCopy,
   publishCachedCanonicalCopies,

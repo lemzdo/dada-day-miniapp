@@ -5,6 +5,7 @@ const test = require('node:test');
 const {
   buildCacheIdentity,
   finishRecommendationCopyJob,
+  markRecommendationCopyJobProgress,
   ensureRecommendationCopyCollections,
   normalizeJobEntries,
   persistValidatedCanonicalCopy,
@@ -94,6 +95,15 @@ test('dispatch token authorizes worker lease', async () => {
   assert.equal((await acquireRecommendationCopyJob(database, result.jobId, 'wrong-token', now)).status, 'unauthorized');
   const job = database._all('recommendation_copy_jobs_v2')[0]; const acquired = await acquireRecommendationCopyJob(database, result.jobId, job.dispatchToken, now);
   assert.equal(acquired.acquired, true);
+  assert.equal(job.dispatchRequestedAt, now.toISOString());
+  assert.ok(Number.isFinite(Date.parse(job.dispatchAcceptedAt)));
+  assert.equal(job.dispatchRequestId, 'request-token');
+  assert.equal(acquired.job.workerStartedAt, now.toISOString());
+  assert.equal(await markRecommendationCopyJobProgress(database, acquired.job, acquired.leaseToken, 'providerStartedAt', now), true);
+  assert.equal(await markRecommendationCopyJobProgress(database, acquired.job, acquired.leaseToken, 'firstValidatedAt', now), true);
+  const progress = database._all('recommendation_copy_jobs_v2')[0];
+  assert.equal(progress.providerStartedAt, now.toISOString());
+  assert.equal(progress.firstValidatedAt, now.toISOString());
 });
 
 test('worker lease with same token allows only one concurrent acquire', async () => {
@@ -105,7 +115,8 @@ test('worker lease with same token allows only one concurrent acquire', async ()
 test('incremental cache writes produce partial then ready overlay', async () => {
   const database = fakeDatabase(); const input = entries(3); const prepared = await prepareRecommendationCopyJob({ database, openid: 'openid-a', batchId: 'batch-overlay', rendererVersion: 'renderer-v2', entries: input, dispatch: async () => ({ requestId: 'request-overlay' }), now });
   const normalized = normalizeJobEntries(input, { openid: 'openid-a', rendererVersion: 'renderer-v2' }); const job = database._all('recommendation_copy_jobs_v2')[0];
-  await persistValidatedCanonicalCopy(database, job, normalized[0], { text: 'first' }, now); assert.equal((await readRecommendationCopyOverlay(database, 'openid-a', 'batch-overlay', 'renderer-v2')).status, 'partial');
+  await persistValidatedCanonicalCopy(database, job, normalized[0], { text: 'first' }, now); const partial = await readRecommendationCopyOverlay(database, 'openid-a', 'batch-overlay', 'renderer-v2'); assert.equal(partial.status, 'partial'); assert.equal(partial.jobStage, 'first_canonical_written');
+  assert.equal(database._all('recommendation_copy_jobs_v2')[0].firstCanonicalWrittenAt, now.toISOString());
   await persistValidatedCanonicalCopy(database, job, normalized[1], { text: 'second' }, now); await persistValidatedCanonicalCopy(database, job, normalized[2], { text: 'third' }, now);
   const overlay = await readRecommendationCopyOverlay(database, 'openid-a', 'batch-overlay', 'renderer-v2'); assert.equal(overlay.status, 'ready'); assert.equal(overlay.readyCount, 3); assert.equal(prepared.jobId, job.jobId);
 });
@@ -125,4 +136,27 @@ test('stale lease finish does not overwrite current worker', async () => {
   const database = fakeDatabase(); const result = await prepareRecommendationCopyJob({ database, openid: 'openid-a', batchId: 'batch-stale', rendererVersion: 'renderer-v2', entries: entries(1), dispatch: async () => ({ requestId: 'request-stale' }), now }); const job = database._all('recommendation_copy_jobs_v2')[0];
   const acquired = await acquireRecommendationCopyJob(database, result.jobId, job.dispatchToken, now); const stale = await finishRecommendationCopyJob(database, acquired.job, 'stale-token', { readyCount: 1 }, now);
   assert.equal(stale.updated, false); assert.equal(database._all('recommendation_copy_jobs_v2')[0].status, 'running');
+});
+
+test('worker failure persists its stage and code for the overlay diagnostic', async () => {
+  const database = fakeDatabase();
+  const result = await prepareRecommendationCopyJob({ database, openid: 'openid-a', batchId: 'batch-worker-failed', rendererVersion: 'renderer-v2', entries: entries(1), dispatch: async () => ({ requestId: 'request-worker-failed' }), now });
+  const job = database._all('recommendation_copy_jobs_v2')[0];
+  const acquired = await acquireRecommendationCopyJob(database, result.jobId, job.dispatchToken, now);
+  await finishRecommendationCopyJob(database, acquired.job, acquired.leaseToken, { readyCount: 0, invalidCount: 1, failedStage: 'validation', failureCode: 'GARMENT_GROUNDING' }, now);
+  const finished = database._all('recommendation_copy_jobs_v2')[0];
+  assert.equal(finished.failedStage, 'validation');
+  assert.equal(finished.failureCode, 'GARMENT_GROUNDING');
+  assert.equal(finished.completedAt, now.toISOString());
+  assert.equal((await readRecommendationCopyOverlay(database, 'openid-a', 'batch-worker-failed', 'renderer-v2')).jobStage, 'failed:validation');
+});
+
+test('dispatch failure persists the visible failed stage and failure code', async () => {
+  const database = fakeDatabase();
+  await prepareRecommendationCopyJob({ database, openid: 'openid-a', batchId: 'batch-dispatch-failed', rendererVersion: 'renderer-v2', entries: entries(1), dispatch: async () => { throw new Error('SCF_ASYNC_CREDENTIALS_MISSING'); }, now });
+  const job = database._all('recommendation_copy_jobs_v2')[0];
+  assert.equal(job.failedStage, 'dispatch');
+  assert.equal(job.failureCode, 'SCF_ASYNC_CREDENTIALS_MISSING');
+  const overlay = await readRecommendationCopyOverlay(database, 'openid-a', 'batch-dispatch-failed', 'renderer-v2');
+  assert.equal(overlay.jobStage, 'failed:dispatch');
 });
