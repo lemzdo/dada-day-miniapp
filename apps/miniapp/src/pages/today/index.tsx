@@ -515,11 +515,11 @@ export default function TodayPage() {
         });
       },
       onFailure: ({ phase, error, fallback }) => {
-        traceTodayRuntime('sse:failed', generation, readyBatchId || undefined, {
+        traceTodayRuntime('sse:error', generation, readyBatchId || undefined, {
           phase,
-          fallback,
           error: String(error),
         });
+        traceTodayRuntime('sse:fallback', generation, readyBatchId || undefined, { phase, fallback });
         if (phase !== 'after_ready' || !readyBatchId
           || sseFallbackRefreshStartedRef.current.has(readyBatchId)) return;
         sseFallbackRefreshStartedRef.current.add(readyBatchId);
@@ -789,14 +789,7 @@ export default function TodayPage() {
     if (!authContext) return;
     markTodayPerformanceStage('localIdentityReady');
     if (hasTodayRecommendationHardInvalid({ authContext })) {
-      if (!currentWeatherRef.current && currentWeatherModeRef.current === 'disabled') {
-        recommendationInputCoordinatorRef.current.report({
-          inputIdentity: getCurrentRecommendationInputIdentity(authContext),
-          readiness: 'deferred',
-        });
-      } else {
-        void refreshHardInvalidRecommendation(authContext, consumeHardInvalidAcceptanceRequest(authContext));
-      }
+      void refreshHardInvalidRecommendation(authContext, consumeHardInvalidAcceptanceRequest(authContext));
       return;
     }
     // A resumed Today tab is a normal restore entry, not only a return from
@@ -831,14 +824,7 @@ export default function TodayPage() {
     if (authContext && hasTodayRecommendationHardInvalid({ authContext })) {
       const acceptanceDiagnostics = consumeHardInvalidAcceptanceRequest(authContext);
       markAcceptanceClientMilestone(acceptanceDiagnostics, 'hardInvalidDetectedAt');
-      if (!currentWeatherRef.current && currentWeatherModeRef.current === 'disabled') {
-        recommendationInputCoordinatorRef.current.report({
-          inputIdentity: getCurrentRecommendationInputIdentity(authContext),
-          readiness: 'deferred',
-        });
-      } else {
-        void refreshHardInvalidRecommendation(authContext, acceptanceDiagnostics);
-      }
+      void refreshHardInvalidRecommendation(authContext, acceptanceDiagnostics);
       return;
     }
     if (currentWeatherRef.current) {

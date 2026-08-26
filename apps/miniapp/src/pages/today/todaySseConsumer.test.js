@@ -33,3 +33,26 @@ test('post-ready SSE failure permits one delayed canonical read only', () => {
   assert.match(lifecycle, /}, 1200\)/);
   assert.doesNotMatch(lifecycle, /runBoundedCanonicalCopyRefresh/);
 });
+
+test('SSE failure emits explicit error and fallback diagnostics', () => {
+  const lifecycle = source.slice(
+    source.indexOf('function createInteractiveLifecycle'),
+    source.indexOf('useEffect(() =>', source.indexOf('function createInteractiveLifecycle')),
+  );
+  assert.match(lifecycle, /traceTodayRuntime\('sse:error'/);
+  assert.match(lifecycle, /traceTodayRuntime\('sse:fallback'/);
+});
+
+test('scene change enters the interactive acquisition path without a legacy request call', () => {
+  const sceneHandler = source.slice(
+    source.indexOf('function handleSceneSelect'),
+    source.indexOf('async function handleV2Favorite'),
+  );
+  const fetchPath = source.slice(
+    source.indexOf('async function fetchRecommendations'),
+    source.indexOf('async function handleV2Refresh'),
+  );
+  assert.match(sceneHandler, /trigger: 'scene-change'/);
+  assert.match(fetchPath, /interactiveLifecycle: createInteractiveLifecycle/);
+  assert.doesNotMatch(fetchPath, /generateCloudOutfitV2|callCloudFunction/);
+});

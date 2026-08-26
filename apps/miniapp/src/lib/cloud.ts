@@ -46,6 +46,7 @@ import {
   createRecommendationStreamConsumer,
   createSseParser,
 } from './recommendationSseCore';
+import { resolveRecommendationHttpTransport } from './recommendationHttpTransport';
 
 type CloudResult<T> = {
   code: number;
@@ -939,8 +940,9 @@ export function generateCloudOutfitStreamV2(
 ): Promise<RecommendationHomeLightResponseV2> {
   const generation = String(lifecycle.generation);
   const isCurrent = lifecycle.isCurrent ?? (() => true);
-  const callHTTPFunction = taroCloud?.callHTTPFunction;
-  if (!callHTTPFunction) {
+  const nativeCloud = (globalThis as typeof globalThis & { wx?: { cloud?: CloudApi } }).wx?.cloud;
+  const httpTransport = resolveRecommendationHttpTransport({ nativeCloud, frameworkCloud: taroCloud });
+  if (!httpTransport) {
     lifecycle.onFailure?.({
       generation,
       phase: 'before_ready',
@@ -1009,7 +1011,7 @@ export function generateCloudOutfitStreamV2(
     };
 
     try {
-      callHTTPFunction({
+      httpTransport.call({
         name: 'recommendationStream',
         path: '/recommendations',
         method: 'POST',
