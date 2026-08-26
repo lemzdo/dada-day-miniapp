@@ -160,3 +160,27 @@ test('dispatch failure persists the visible failed stage and failure code', asyn
   const overlay = await readRecommendationCopyOverlay(database, 'openid-a', 'batch-dispatch-failed', 'renderer-v2');
   assert.equal(overlay.jobStage, 'failed:dispatch');
 });
+
+test('interactive preparation reuses shared job and cache identities without Event dispatch', async () => {
+  const database = fakeDatabase();
+  const input = entries(3);
+  const result = await prepareRecommendationCopyJob({
+    database,
+    openid: 'openid-interactive',
+    batchId: 'batch-interactive',
+    rendererVersion: 'renderer-v2',
+    entries: input,
+    executionMode: 'interactive',
+    now,
+  });
+  assert.equal(result.status, 'interactive');
+  assert.equal(result.dispatch.accepted, false);
+  assert.equal(result.entries.length, 3);
+  assert.equal(result.missEntries.length, 3);
+  assert.equal(database._all('recommendation_copy_jobs_v2')[0].status, 'interactive');
+  assert.deepEqual(result.entries.map((entry) => entry.cacheId), input.map((entry) => buildCacheIdentity({
+    openid: 'openid-interactive',
+    rendererVersion: 'renderer-v2',
+    renderInputFingerprint: entry.renderInputFingerprint,
+  })));
+});

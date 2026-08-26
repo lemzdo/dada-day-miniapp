@@ -48,6 +48,33 @@ export interface RecommendationCanonicalOverlayV2 {
   copies: RecommendationCanonicalOverlayCopyV2[];
 }
 
+export type RecommendationStreamEventV1 =
+  | {
+      type: 'recommendation.ready';
+      generation: string;
+      batchId: string;
+      response: RecommendationHomeLightResponseV2;
+    }
+  | {
+      type: 'canonical.copy';
+      generation: string;
+      batchId: string;
+      copy: RecommendationCanonicalOverlayCopyV2;
+    }
+  | {
+      type: 'diagnostic';
+      generation: string;
+      batchId?: string;
+      stage: string;
+      fields?: Record<string, unknown>;
+    }
+  | {
+      type: 'complete';
+      generation: string;
+      batchId?: string;
+      reason: 'completed' | 'deadline' | 'failed_open' | 'disconnected';
+    };
+
 export interface HomeLightPayloadV2 {
   runtimeVersion: typeof RECOMMENDATION_V2_RUNTIME_VERSION;
   schemaVersion: typeof RECOMMENDATION_V2_SCHEMA_VERSION;

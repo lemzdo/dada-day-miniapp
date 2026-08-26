@@ -65,9 +65,12 @@ async function prepareRecommendationCopyJob({
   rendererVersion,
   entries,
   dispatch,
+  executionMode = 'event',
   now = new Date(),
 } = {}) {
-  if (!database || !openid || !batchId || !rendererVersion || typeof dispatch !== 'function') {
+  const interactive = executionMode === 'interactive';
+  if (!database || !openid || !batchId || !rendererVersion
+    || (!interactive && typeof dispatch !== 'function')) {
     throw new Error('COPY_JOB_PREPARE_INPUT');
   }
   const normalizedEntries = normalizeJobEntries(entries, { openid, rendererVersion });
@@ -85,7 +88,7 @@ async function prepareRecommendationCopyJob({
     inputIdentityHash: readText(inputIdentityHash),
     order: normalizedEntries.map((entry) => entry.outfitKey),
     entries: normalizedEntries,
-    status: misses.length === 0 ? 'ready_cache_hit' : 'queued',
+    status: misses.length === 0 ? 'ready_cache_hit' : interactive ? 'interactive' : 'queued',
     cacheHitCount: cached.length,
     missCount: misses.length,
     readyCopies: normalizedEntries.flatMap((entry) => {
@@ -97,7 +100,7 @@ async function prepareRecommendationCopyJob({
   };
   const reservation = await reserveJob(database, draft);
   const job = reservation.job;
-  const dispatchReservation = job.missCount > 0
+  const dispatchReservation = !interactive && job.missCount > 0
     ? await acquireDispatchReservation(database, jobId, now)
     : { acquired: false, status: job.status };
   let dispatchResult = { accepted: false, joined: reservation.created === false };
@@ -127,12 +130,16 @@ async function prepareRecommendationCopyJob({
     batchId,
     status: misses.length === 0
       ? 'ready_cache_hit'
-      : dispatchResult.accepted ? 'dispatched' : dispatchReservation.status,
+      : interactive ? 'interactive' : dispatchResult.accepted ? 'dispatched' : dispatchReservation.status,
     initialCopies: normalizedEntries.flatMap((entry) => {
       const copy = cachedById.get(entry.cacheId);
       return copy ? [toOverlayCopy(entry, copy)] : [];
     }),
     dispatch: dispatchResult,
+    // Exposed for the interactive transport to use the same canonical writer;
+    // this is the normalized job snapshot, not a second cache contract.
+    entries: normalizedEntries,
+    missEntries: normalizedEntries.filter((entry) => !cachedById.has(entry.cacheId)),
   };
 }
 

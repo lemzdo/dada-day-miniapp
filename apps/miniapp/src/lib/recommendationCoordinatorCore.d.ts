@@ -11,7 +11,13 @@ export interface RecommendationNextRun<T> extends Omit<RecommendationCoordinator
 }
 
 export interface RecommendationCoordinatorCore<TRequest, TResult> {
-  acquire(input: { identity: string; requestKey?: string; request: TRequest; mode?: 'today' | 'prebuild' }): RecommendationCoordinatorRun<TResult>;
+  acquire(input: {
+    identity: string;
+    requestKey?: string;
+    request: TRequest;
+    mode?: 'today' | 'prebuild';
+    execute?: (request: TRequest, context: { identity: string; mode: 'today' | 'prebuild' }) => TResult | Promise<TResult>;
+  }): RecommendationCoordinatorRun<TResult>;
   getLatestIdentity(): string | null;
   invalidateAndPrebuild(input: { identity: string; requestKey?: string; request: TRequest }): RecommendationCoordinatorRun<TResult>;
   prepareNext(input: { identity: string; requestKey?: string; request: TRequest }): RecommendationNextRun<TResult>;

@@ -21,7 +21,7 @@ function createRecommendationCoordinatorCore({ execute }) {
     return normalized;
   }
 
-  function acquire({ identity, requestKey = identity, request, mode = 'today' }) {
+  function acquire({ identity, requestKey = identity, request, mode = 'today', execute: executeOverride }) {
     const normalized = setLatestIdentity(identity);
     const normalizedRequestKey = String(requestKey || normalized);
     const ready = readyByIdentity.get(normalizedRequestKey);
@@ -43,7 +43,8 @@ function createRecommendationCoordinatorCore({ execute }) {
 
     let promise;
     try {
-      promise = Promise.resolve(execute(request, { identity: normalized, mode }));
+      const run = typeof executeOverride === 'function' ? executeOverride : execute;
+      promise = Promise.resolve(run(request, { identity: normalized, mode }));
     } catch (error) {
       promise = Promise.reject(error);
     }

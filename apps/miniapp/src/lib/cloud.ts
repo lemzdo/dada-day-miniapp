@@ -22,7 +22,9 @@ import type {
   WardrobeCapacity,
   RecommendationDetailResponseV2,
   RecommendationCanonicalOverlayV2,
+  RecommendationCanonicalOverlayCopyV2,
   RecommendationHomeLightResponseV2,
+  RecommendationStreamEventV1,
   RecommendationV2Response,
 } from '@starter-template/types';
 import {
@@ -40,6 +42,10 @@ import {
   createRecommendationAuditId,
   isRecommendationLifecycleLoggingEnabled,
 } from './recommendationDiagnostics';
+import {
+  createRecommendationStreamConsumer,
+  createSseParser,
+} from './recommendationSseCore';
 
 type CloudResult<T> = {
   code: number;
@@ -71,6 +77,18 @@ export class CloudFunctionError extends Error {
 type CloudApi = {
   init: (options: { env: string; traceUser?: boolean }) => void;
   callFunction: <T = unknown>(options: { name: string; data?: Record<string, unknown> }) => Promise<{ result: T }>;
+  callHTTPFunction?: (options: {
+    name: string;
+    path: string;
+    method: 'POST';
+    data: Record<string, unknown>;
+    enableChunked: true;
+    onHeadersReceived?: (response: unknown) => void;
+    onChunkedReceived?: (response: { data: ArrayBuffer }) => void;
+    success?: (response: unknown) => void;
+    fail?: (error: unknown) => void;
+    complete?: (response: unknown) => void;
+  }) => { abort?: () => void } | void;
   uploadFile: (options: { cloudPath: string; filePath: string }) => Promise<{ fileID: string }>;
 };
 
@@ -771,6 +789,25 @@ export interface RecommendationV2Request {
   clientMilestones?: Record<string, number>;
 }
 
+export interface RecommendationStreamLifecycle {
+  generation: string | number;
+  isCurrent?: () => boolean;
+  onConnected?: (diagnostic: { generation: string; connectedAt: number }) => void;
+  onRecommendationReady?: (diagnostic: { generation: string; batchId: string; readyAt: number }) => void;
+  onCanonicalCopy?: (
+    copy: RecommendationCanonicalOverlayCopyV2,
+    event: Extract<RecommendationStreamEventV1, { type: 'canonical.copy' }>,
+  ) => void;
+  onComplete?: (event: Extract<RecommendationStreamEventV1, { type: 'complete' }>) => void;
+  onDiagnostic?: (event: Extract<RecommendationStreamEventV1, { type: 'diagnostic' }>) => void;
+  onFailure?: (diagnostic: {
+    generation: string;
+    phase: 'before_ready' | 'after_ready';
+    error: unknown;
+    fallback: 'callFunction' | 'canonical_once';
+  }) => void;
+}
+
 function createPassiveV2ColdAcceptance(params: RecommendationV2Request) {
   if (!isDevelopV2ColdTelemetryEnvironment()
     || params.performanceDiagnostics !== true
@@ -894,6 +931,116 @@ export async function generateCloudOutfitV2(params: RecommendationV2Request = {}
     }
   }
   return assertHomeLightV2(result);
+}
+
+export function generateCloudOutfitStreamV2(
+  params: RecommendationV2Request = {},
+  lifecycle: RecommendationStreamLifecycle,
+): Promise<RecommendationHomeLightResponseV2> {
+  const generation = String(lifecycle.generation);
+  const isCurrent = lifecycle.isCurrent ?? (() => true);
+  const callHTTPFunction = taroCloud?.callHTTPFunction;
+  if (!callHTTPFunction) {
+    lifecycle.onFailure?.({
+      generation,
+      phase: 'before_ready',
+      error: new Error('wx.cloud.callHTTPFunction is not available'),
+      fallback: 'callFunction',
+    });
+    return generateCloudOutfitV2(params);
+  }
+
+  return new Promise((resolve, reject) => {
+    let ready = false;
+    let fallbackStarted = false;
+    let parserFinished = false;
+    let terminalObserved = false;
+
+    const fallbackBeforeReady = (error: unknown) => {
+      if (ready || fallbackStarted || terminalObserved) return;
+      if (!isCurrent()) {
+        terminalObserved = true;
+        reject(new Error('recommendation SSE generation is stale'));
+        return;
+      }
+      fallbackStarted = true;
+      lifecycle.onFailure?.({ generation, phase: 'before_ready', error, fallback: 'callFunction' });
+      void generateCloudOutfitV2(params).then(resolve, reject);
+    };
+
+    const consumer = createRecommendationStreamConsumer({
+      generation,
+      isCurrent,
+      onRecommendationReady: (response) => {
+        try {
+          const validated = assertHomeLightV2(response);
+          ready = true;
+          lifecycle.onRecommendationReady?.({
+            generation,
+            batchId: validated.batch.batchId,
+            readyAt: Date.now(),
+          });
+          resolve(validated);
+        } catch (error) {
+          fallbackBeforeReady(error);
+        }
+      },
+      onCanonicalCopy: (copy, event) => lifecycle.onCanonicalCopy?.(copy, event),
+      onDiagnostic: (event) => lifecycle.onDiagnostic?.(event),
+      onComplete: (event) => {
+        lifecycle.onComplete?.(event);
+        if (!ready) {
+          fallbackBeforeReady(new Error(`recommendation SSE completed before ready: ${event.reason}`));
+          return;
+        }
+        terminalObserved = true;
+      },
+    });
+    const parser = createSseParser({ onEvent: (frame) => { consumer.handle(frame); } });
+    const finishParser = () => {
+      if (parserFinished) return;
+      parserFinished = true;
+      parser.finish();
+    };
+    const reportAfterReadyFailure = (error: unknown) => {
+      if (!ready || terminalObserved) return;
+      terminalObserved = true;
+      lifecycle.onFailure?.({ generation, phase: 'after_ready', error, fallback: 'canonical_once' });
+    };
+
+    try {
+      callHTTPFunction({
+        name: 'recommendationStream',
+        path: '/recommendations',
+        method: 'POST',
+        data: {
+          ...params,
+          runtimeVersion: RECOMMENDATION_V2_RUNTIME_VERSION,
+          streamGeneration: generation,
+        },
+        enableChunked: true,
+        onHeadersReceived: () => lifecycle.onConnected?.({ generation, connectedAt: Date.now() }),
+        onChunkedReceived: (response) => parser.push(response.data),
+        success: () => {
+          finishParser();
+          if (!ready && !terminalObserved) fallbackBeforeReady(new Error('recommendation SSE ended before ready'));
+        },
+        fail: (error) => {
+          finishParser();
+          if (ready) reportAfterReadyFailure(error);
+          else fallbackBeforeReady(error);
+        },
+        complete: () => {
+          finishParser();
+          if (!ready && !fallbackStarted && !terminalObserved) {
+            fallbackBeforeReady(new Error('recommendation SSE completed before ready'));
+          }
+        },
+      });
+    } catch (error) {
+      fallbackBeforeReady(error);
+    }
+  });
 }
 
 export async function getCloudOutfitDetailV2(input: { batchId: string; outfitKey: string; referenceId: string }) {

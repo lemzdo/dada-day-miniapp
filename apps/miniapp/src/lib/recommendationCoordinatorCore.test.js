@@ -25,6 +25,24 @@ test('mutation prebuild starts without awaiting completion', async () => {
   assert.equal(await run.promise, 'ready');
 });
 
+test('Today may select an interactive executor without changing background execution', async () => {
+  const calls = [];
+  const coordinator = createRecommendationCoordinatorCore({
+    execute: async () => { calls.push('background'); return 'background'; },
+  });
+  const run = coordinator.acquire({
+    identity: 'interactive-v1',
+    request: {},
+    execute: async () => { calls.push('interactive'); return 'interactive'; },
+  });
+  assert.equal(await run.promise, 'interactive');
+  assert.deepEqual(calls, ['interactive']);
+
+  const prebuild = coordinator.invalidateAndPrebuild({ identity: 'background-v2', request: {} });
+  assert.equal(await prebuild.promise, 'background');
+  assert.deepEqual(calls, ['interactive', 'background']);
+});
+
 test('Today joins the same identity prebuild once', async () => {
   const pending = deferred();
   let calls = 0;

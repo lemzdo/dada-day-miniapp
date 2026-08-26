@@ -4,7 +4,12 @@ import type {
   WeatherMode,
   WeatherSnapshot,
 } from '@starter-template/types';
-import { generateCloudOutfitV2, type RecommendationV2Request } from './cloud';
+import {
+  generateCloudOutfitStreamV2,
+  generateCloudOutfitV2,
+  type RecommendationStreamLifecycle,
+  type RecommendationV2Request,
+} from './cloud';
 import { createRecommendationCoordinatorCore } from './recommendationCoordinatorCore';
 import { buildRecommendationInputIdentity } from './recommendationIdentity';
 import {
@@ -57,6 +62,7 @@ interface AcquireOptions {
   input: EffectiveRecommendationInput;
   trigger: string;
   requestOverrides?: Partial<RecommendationV2Request>;
+  interactiveLifecycle?: RecommendationStreamLifecycle;
 }
 
 export interface NextBatchOptions {
@@ -183,6 +189,12 @@ export function acquireRecommendationForInput(options: AcquireOptions) {
     requestKey: input.requestIdentity,
     request,
     mode: 'today',
+    ...(options.interactiveLifecycle ? {
+      execute: (interactiveRequest: RecommendationV2Request) => generateCloudOutfitStreamV2(
+        interactiveRequest,
+        options.interactiveLifecycle as RecommendationStreamLifecycle,
+      ),
+    } : {}),
   });
   if (run.source !== 'prebuild-in-flight') return run;
   return {
@@ -194,6 +206,12 @@ export function acquireRecommendationForInput(options: AcquireOptions) {
         requestKey: input.requestIdentity,
         request,
         mode: 'today',
+        ...(options.interactiveLifecycle ? {
+          execute: (interactiveRequest: RecommendationV2Request) => generateCloudOutfitStreamV2(
+            interactiveRequest,
+            options.interactiveLifecycle as RecommendationStreamLifecycle,
+          ),
+        } : {}),
       }).promise;
     }),
   };

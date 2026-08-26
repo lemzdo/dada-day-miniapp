@@ -188,6 +188,7 @@ const {
   canPersistAiReviewAsReady,
   resolveAiReviewFailureSettlement,
 } = require('./services/aiReviewSettlement');
+const { runRecommendationRuntime: runRecommendationRuntimeCore } = require('./runtime/recommendationRuntime');
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
@@ -275,7 +276,12 @@ exports.main = async (event = {}, context = {}) => {
       return ok(await materializeRecommendationCanonicalCopyV2(event));
     }
 
-    const data = await generate(event, recommendationDiagnostics, context);
+    const runtimeResult = await runProductionRecommendationRuntime(event, {
+      ...context,
+      lifecycleHooks: context.lifecycleHooks,
+      diagnostics: recommendationDiagnostics,
+    });
+    const data = runtimeResult.response;
     const response = ok(data);
     emitRecommendationServerDone({
       diagnostics: recommendationDiagnostics,
@@ -636,12 +642,56 @@ function measureCanonicalBatchInput(records = []) {
   return { totalBytes, structuralBytes: 0, measuredBytes: totalBytes, cardBytes: records.map(serializedBytes), topLevelFields, primaryCategories: [], unclassifiedFields: topLevelFields.map((item) => item.field), classificationMethod: 'native_light_observation_v1', nestedHotspots: [], nestedHotspotsAreNonAdditive: true };
 }
 
+// Single production Runtime seam used by callFunction and HTTP/SSE. The
+// transport supplies identity; the existing generate core remains unchanged.
+async function runProductionRecommendationRuntime(input, context = {}, lifecycleHooks = context.lifecycleHooks || {}) {
+  const diagnostics = context.diagnostics || createRecommendationDiagnostics(input);
+  let completionPromise = Promise.resolve();
+  const runtimeHooks = {
+    ...lifecycleHooks,
+    onNarrativePlansReady: (payload) => {
+      let result;
+      try { result = lifecycleHooks.onNarrativePlansReady?.(payload); } catch { result = undefined; }
+      completionPromise = Promise.resolve(result).catch(() => undefined);
+      return completionPromise;
+    },
+  };
+  const runtime = await runRecommendationRuntimeCore(input, {
+    ...context,
+    userIdentity: context.userIdentity || (() => {
+      try { return { openid: cloud.getWXContext().OPENID }; } catch { return {}; }
+    })(),
+    recommendationCore: async (normalized, runtimeContext) => {
+      const response = await generate(normalized, diagnostics, {
+        ...context,
+        ...runtimeContext,
+        lifecycleHooks: runtimeHooks,
+      });
+      return {
+        response,
+        batchId: response?.batch?.batchId,
+        countContract: response?.batch?.countContract,
+      };
+    },
+  }, runtimeHooks);
+  runtime.completionPromise = completionPromise;
+  runtime.aiPromise = completionPromise;
+  let completionDeadline;
+  runtime.aiDone = Promise.race([
+    completionPromise,
+    new Promise((resolve) => {
+      completionDeadline = setTimeout(() => resolve({ status: 'window_expired' }), 6000);
+    }),
+  ]).finally(() => { if (completionDeadline) clearTimeout(completionDeadline); });
+  return runtime;
+}
+
 async function generate(event, diagnostics = createRecommendationDiagnostics(event), scfContext = {}) {
   const requestParseStartedAt = diagnostics.startedAt;
   diagnostics.stage = 'loadWardrobe';
   recordServerPhase(diagnostics, 'requestParse', requestParseStartedAt);
   const authStartedAt = Date.now();
-  const { OPENID } = cloud.getWXContext();
+  const OPENID = readString(scfContext?.userIdentity?.openid) || cloud.getWXContext().OPENID;
   recordServerPhase(diagnostics, 'authContext', authStartedAt);
   const inputScene = typeof event.scene === 'string' ? event.scene.trim() : '';
   const scene = inputScene || undefined;
@@ -798,15 +848,39 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
         position,
         recommendations[position]?.outfitKey,
       ));
-      copyJob = await prepareRecommendationCopyJob({
+      const copyJobPromise = prepareRecommendationCopyJob({
         database: db,
         openid: OPENID,
         batchId: v2BatchId,
         inputIdentityHash: candidatePoolIdentity.identityHash,
         rendererVersion: PRODUCTION_RENDERER_VERSION,
         entries,
+        // Interactive HTTP owns the renderer lifecycle; Event dispatch remains
+        // the background transport for callFunction/P2/P3.
         dispatch: (payload) => dispatchScfEvent({ event: payload, context: scfContext }),
+        executionMode: scfContext?.interactive ? 'interactive' : 'event',
       });
+      if (typeof scfContext?.lifecycleHooks?.onNarrativePlansReady === 'function') {
+        try {
+          void Promise.resolve(scfContext.lifecycleHooks.onNarrativePlansReady({
+            plans: stylingPlans.plans,
+            entries,
+            batchId: v2BatchId,
+            recommendations,
+            copyJobPromise,
+            persistCanonicalCopy: async (copy) => {
+              const preparedCopyJob = await copyJobPromise;
+              const entry = preparedCopyJob?.entries?.find((candidate) => candidate.preparedEntry?.plan?.planId === copy?.planId);
+              if (!entry) throw new Error('VOICE_RENDERER_OUTPUT_PLAN_BINDING');
+              return persistValidatedCanonicalCopy(db, {
+                ...preparedCopyJob,
+                _openid: OPENID,
+              }, entry, copy);
+            },
+          })).catch(() => undefined);
+        } catch { /* direct interactive rendering is fail-open */ }
+      }
+      copyJob = await copyJobPromise;
     } catch (error) {
       console.warn('[RecommendationCopyDispatchFailOpen]', {
         auditId: diagnostics.auditId,
@@ -1081,6 +1155,10 @@ async function persistCanonicalCopyMaterialization(database, record, update) {
 function replaceDocumentField(database, value) {
   return typeof database?.command?.set === 'function' ? database.command.set(value) : value;
 }
+
+// Public adapter for the production HTTP function; callFunction continues to
+// enter through exports.main and therefore retains its Event/P1/P2/P3 shape.
+exports.runProductionRecommendationRuntime = runProductionRecommendationRuntime;
 
 function createRecommendationSceneContract(inputScene) {
   const normalizedSceneKey = normalizeScene(inputScene || 'home');
@@ -5338,6 +5416,7 @@ if (process.env.NODE_ENV === 'test') {
     generateRecommendationV2,
     resolveHomeLightDisplayImage,
     recordStatusQueryDiagnostic,
+    runProductionRecommendationRuntime,
   };
 }
 

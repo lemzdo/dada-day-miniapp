@@ -6,7 +6,6 @@ const test = require('node:test');
 
 const DEPLOYED_SHARED_PATH = './shared/sceneEligibilityFacts';
 const DEPLOYED_WEARABILITY_PATH = './services/itemWearabilityFacts';
-const { PRESENTATION_FACT_MODEL_BUILD } = require('./services/presentationFactModel');
 
 const CLOUD_FUNCTION_ROOT = __dirname;
 
@@ -108,6 +107,7 @@ function inspectCloudFunctionEntryModules(entryFile) {
 }
 
 function createDatabase(wardrobe, candidatePoolRecords) {
+  const stores = new Map();
   function query(readData) {
     let filters = {};
     let offset = 0;
@@ -129,8 +129,9 @@ function createDatabase(wardrobe, candidatePoolRecords) {
     };
   }
 
-  return {
-    command: { in: (values) => values },
+  const database = {
+    command: { in: (values) => values, set: (value) => value },
+    async runTransaction(callback) { return callback(database); },
     collection(name) {
       if (name === 'clothes') return query(wardrobe);
       if (name === 'users') return query([]);
@@ -157,9 +158,32 @@ function createDatabase(wardrobe, candidatePoolRecords) {
           },
         };
       }
-      throw new Error(`unexpected collection: ${name}`);
+      if (!stores.has(name)) stores.set(name, new Map());
+      const store = stores.get(name);
+      const collectionQuery = query(() => [...store.values()]);
+      return {
+        ...collectionQuery,
+        doc(id) {
+          return {
+            async get() { return { data: store.get(id) || null }; },
+            async set({ data }) { store.set(id, { ...data, _id: id }); return { _id: id }; },
+            async update({ data }) {
+              const current = store.get(id) || { _id: id };
+              store.set(id, { ...current, ...data, _id: id });
+              return { updated: 1 };
+            },
+            async remove() { store.delete(id); },
+          };
+        },
+        async add({ data }) {
+          const id = data?._id || `${name}-${store.size + 1}`;
+          store.set(id, { ...data, _id: id });
+          return { _id: id };
+        },
+      };
     },
   };
+  return database;
 }
 
 function loadDeployedEntry(wardrobe, candidatePoolRecords) {
@@ -213,7 +237,7 @@ function wardrobeItem() {
   };
 }
 
-test('deployed generateOutfit entry loads the shared runtime contract and serves home and work without normalizeType errors', async () => {
+test('deployed generateOutfit entry loads the shared runtime contract and serves home and work', async () => {
   const shared = require(DEPLOYED_SHARED_PATH);
   const wearability = require(DEPLOYED_WEARABILITY_PATH);
 
@@ -237,20 +261,12 @@ test('deployed generateOutfit entry loads the shared runtime contract and serves
     });
     assert.equal(response.code, 0, response.message);
     assert.notEqual(response.message.includes('normalizeType is not a function'), true);
-    assert.equal(response.data.debug.PRESENTATION_FACT_MODEL_BUILD, PRESENTATION_FACT_MODEL_BUILD);
-    assert.equal(response.data.meta.PRESENTATION_FACT_MODEL_BUILD, PRESENTATION_FACT_MODEL_BUILD);
-    assert.equal(response.data.qaBatchAudit, undefined);
-    const poolHitResponse = await entry.main({
-      action: 'generate',
-      scene,
-      weatherMode: 'disabled',
-      maxResults: 1,
-      recommendationBatchId: response.data.recommendationBatchId,
-    });
-    assert.equal(poolHitResponse.code, 0, poolHitResponse.message);
-    assert.equal(poolHitResponse.data.debug.executionMode, 'candidate_pool_hit');
-    assert.equal(poolHitResponse.data.debug.PRESENTATION_FACT_MODEL_BUILD, PRESENTATION_FACT_MODEL_BUILD);
-    assert.equal(poolHitResponse.data.meta.PRESENTATION_FACT_MODEL_BUILD, PRESENTATION_FACT_MODEL_BUILD);
+    assert.equal(response.data.runtimeVersion, 'today-runtime-v2');
+    assert.equal(response.data.schemaVersion, 'today-v2');
+    assert.equal(response.data.batch.batchId, response.data.light.batchId);
+    assert.equal(response.data.batch.cardCount, response.data.light.cards.length);
+    assert.ok(response.data.batch.cardCount >= 0 && response.data.batch.cardCount <= 1);
+    assert.equal(response.data.batch.countContract.returnedCardCount, response.data.batch.cardCount);
   }
   assert.ok(candidatePoolRecords.some((record) => record.recordType === 'manifest'));
   assert.ok(candidatePoolRecords.some((record) => record.recordType === 'chunk'));

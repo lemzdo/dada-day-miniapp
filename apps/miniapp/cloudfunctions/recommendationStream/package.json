@@ -1,0 +1,10 @@
+{
+  "name": "recommendationStream",
+  "version": "1.0.0",
+  "main": "index.js",
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "node-fetch": "2.7.0",
+    "wx-server-sdk": "3.0.4"
+  }
+}

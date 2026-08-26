@@ -15,6 +15,7 @@ import {
   getCloudRecommendationCanonicalOverlayV2,
   isDevelopV2ColdTelemetryEnvironment,
   isRecommendationDiagnosticEnvironment,
+  type RecommendationStreamLifecycle,
   updateCloudOutfitFavoriteV2,
   updateCloudOutfitWearV2,
 } from '@/lib/cloud';
@@ -102,7 +103,15 @@ import {
   type RecommendationIntentRegistry,
 } from './recommendationIntent';
 import { validateRecommendationCountContract } from './sceneResponseValidation';
-import type { RecommendationCountContract, RecommendationMissingFact, RecommendationMissingRole, SceneTag, WeatherMode, WeatherSnapshot } from '@starter-template/types';
+import type {
+  RecommendationCanonicalOverlayCopyV2,
+  RecommendationCountContract,
+  RecommendationMissingFact,
+  RecommendationMissingRole,
+  SceneTag,
+  WeatherMode,
+  WeatherSnapshot,
+} from '@starter-template/types';
 import './index.scss';
 import { HomeLightCardV2 } from './HomeLightCardV2';
 import { commitCanonicalSnapshotForRender as commitRenderBoundary } from './todayRenderCommit';
@@ -302,9 +311,14 @@ export default function TodayPage() {
   const renderTraceContextRef = useRef<{ generation: string | number; batchId?: string } | null>(null);
   const canonicalRefreshStartedRef = useRef<Set<string>>(new Set());
   const canonicalRefreshEpochRef = useRef(0);
+  const interactiveSseBatchIdsRef = useRef<Set<string>>(new Set());
+  const sseFallbackRefreshStartedRef = useRef<Set<string>>(new Set());
+  const pendingStreamCopiesRef = useRef<Map<string, RecommendationCanonicalOverlayCopyV2[]>>(new Map());
   const initialRenderTracedRef = useRef<Set<string>>(new Set());
   const firstCanonicalAvailableRef = useRef<Set<string>>(new Set());
   const firstCanonicalAppliedRef = useRef<Set<string>>(new Set());
+  const recommendationStartedAtRef = useRef<Map<string, number>>(new Map());
+  const recommendationRenderedAtRef = useRef<Map<string, number>>(new Map());
   const pendingCanonicalAppliedRef = useRef<{ batchId: string; outfitKey: string; cardIndex: number } | null>(null);
   const [selectedSceneKey, setSelectedSceneKey] = useState<SceneKey>('home');
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -395,6 +409,7 @@ export default function TodayPage() {
       throw error;
     }
     if (result) {
+      v2SnapshotRef.current = result;
       renderTraceContextRef.current = { generation: context.generation, batchId: result.batchId };
       traceTodayRuntime('commit:done', context.generation, result.batchId);
     } else {
@@ -403,15 +418,151 @@ export default function TodayPage() {
     return result;
   };
 
+  function applyInteractiveCanonicalCopy(
+    copy: RecommendationCanonicalOverlayCopyV2,
+    batchId: string,
+    generation: string | number,
+    authContext: ActiveAuthContext,
+  ) {
+    if (!firstCanonicalAvailableRef.current.has(batchId)) {
+      firstCanonicalAvailableRef.current.add(batchId);
+      traceTodayRuntime('ai:firstCanonicalAvailable', generation, batchId, {
+        outfitKey: copy.outfitKey,
+        cardIndex: copy.cardIndex,
+        availableAt: copy.availableAt,
+        observedAt: Date.now(),
+        alreadyPresentAtRender: false,
+      });
+    }
+    const current = v2SnapshotRef.current;
+    if (!current || current.batchId !== batchId) {
+      const pending = pendingStreamCopiesRef.current.get(batchId) || [];
+      const identity = `${copy.cardIndex}|${copy.outfitKey}|${copy.rendererVersion}|${copy.text}`;
+      if (!pending.some((entry) => `${entry.cardIndex}|${entry.outfitKey}|${entry.rendererVersion}|${entry.text}` === identity)) {
+        pendingStreamCopiesRef.current.set(batchId, [...pending, copy]);
+      }
+      return;
+    }
+    const patched = applyCanonicalCopyOverlay(current, {
+      version: 'recommendation-copy-job-v2.0',
+      rendererVersion: copy.rendererVersion,
+      batchId,
+      status: 'partial',
+      expectedCount: current.cards.length,
+      readyCount: 1,
+      jobStage: 'sse_canonical_copy',
+      copies: [copy],
+    });
+    if (!patched.snapshot || patched.snapshot === current || patched.applied.length === 0) return;
+    if (!firstCanonicalAppliedRef.current.has(batchId) && !pendingCanonicalAppliedRef.current) {
+      pendingCanonicalAppliedRef.current = {
+        batchId,
+        outfitKey: copy.outfitKey,
+        cardIndex: copy.cardIndex,
+      };
+    }
+    const nextSnapshot = patched.snapshot as TodayV2Snapshot;
+    canonicalSnapshotRef.current = nextSnapshot;
+    v2SnapshotRef.current = nextSnapshot;
+    setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, nextSnapshot, { authContext });
+    setV2Snapshot(nextSnapshot);
+  }
+
+  function flushPendingInteractiveCopies(
+    batchId: string,
+    generation: string | number,
+    authContext: ActiveAuthContext,
+  ) {
+    const copies = pendingStreamCopiesRef.current.get(batchId) || [];
+    pendingStreamCopiesRef.current.delete(batchId);
+    copies
+      .sort((left, right) => left.cardIndex - right.cardIndex)
+      .forEach((copy) => applyInteractiveCanonicalCopy(copy, batchId, generation, authContext));
+  }
+
+  function createInteractiveLifecycle(options: {
+    generation: string | number;
+    authContext: ActiveAuthContext;
+    isOwner: () => boolean;
+  }): RecommendationStreamLifecycle {
+    const { generation, authContext, isOwner } = options;
+    let readyBatchId = '';
+    return {
+      generation,
+      isCurrent: isOwner,
+      onConnected: ({ connectedAt }) => {
+        traceTodayRuntime('sse:connected', generation, undefined, { connectedAt });
+      },
+      onRecommendationReady: ({ batchId, readyAt }) => {
+        readyBatchId = batchId;
+        interactiveSseBatchIdsRef.current.add(batchId);
+        canonicalRefreshStartedRef.current.add(batchId);
+        traceTodayRuntime('recommendation:ready', generation, batchId, { readyAt });
+      },
+      onCanonicalCopy: (copy, event) => {
+        if (!isOwner() || event.batchId !== readyBatchId) return;
+        applyInteractiveCanonicalCopy(copy, event.batchId, generation, authContext);
+      },
+      onDiagnostic: (event) => {
+        traceTodayRuntime('sse:diagnostic', generation, event.batchId, {
+          stage: event.stage,
+          ...(event.fields || {}),
+        });
+      },
+      onComplete: (event) => {
+        traceTodayRuntime('sse:complete', generation, event.batchId || readyBatchId || undefined, {
+          reason: event.reason,
+        });
+      },
+      onFailure: ({ phase, error, fallback }) => {
+        traceTodayRuntime('sse:failed', generation, readyBatchId || undefined, {
+          phase,
+          fallback,
+          error: String(error),
+        });
+        if (phase !== 'after_ready' || !readyBatchId
+          || sseFallbackRefreshStartedRef.current.has(readyBatchId)) return;
+        sseFallbackRefreshStartedRef.current.add(readyBatchId);
+        setTimeout(() => {
+          if (!isOwner() || v2SnapshotRef.current?.batchId !== readyBatchId) return;
+          void getCloudRecommendationCanonicalOverlayV2(readyBatchId).then((overlay) => {
+            if (!isOwner() || overlay.batchId !== readyBatchId) return;
+            traceTodayRuntime('ai:fallbackRefresh', generation, readyBatchId, {
+              canonicalFound: overlay.copies.length > 0,
+              jobStage: overlay.jobStage || overlay.status,
+            });
+            overlay.copies.forEach((copy) => applyInteractiveCanonicalCopy(
+              copy,
+              readyBatchId,
+              generation,
+              authContext,
+            ));
+          }).catch((refreshError) => {
+            traceTodayRuntime('ai:fallbackRefresh', generation, readyBatchId, {
+              canonicalFound: false,
+              jobStage: 'overlay_read_failed',
+              error: String(refreshError),
+            });
+          });
+        }, 1200);
+      },
+    };
+  }
+
   useEffect(() => {
     if (!v2Snapshot) return;
     if (initialRenderTracedRef.current.has(v2Snapshot.batchId)) return;
     initialRenderTracedRef.current.add(v2Snapshot.batchId);
     const renderedAt = Date.now();
+    const renderGeneration = String(renderTraceContextRef.current?.generation || 'pending');
+    recommendationRenderedAtRef.current.set(v2Snapshot.batchId, renderedAt);
     traceTodayRuntime('render', renderTraceContextRef.current?.generation || 'pending', v2Snapshot.batchId, {
       itemCount: v2Snapshot.cards.reduce((sum, card) => sum + card.items.length, 0),
       firstSrc: v2Snapshot.cards[0]?.items[0]?.displayImageUrl,
       renderedAt,
+      RECOMMENDATION_RENDER_MS: recommendationStartedAtRef.current.has(renderGeneration)
+        ? renderedAt - (recommendationStartedAtRef.current.get(renderGeneration) as number)
+        : undefined,
     });
     const firstAiCard = v2Snapshot.cards.find((card) => card.copySource === 'ai_cache' && card.aiState === 'ready');
     if (firstAiCard) {
@@ -430,6 +581,7 @@ export default function TodayPage() {
         cardIndex,
         appliedAt: renderedAt,
         alreadyPresentAtRender: true,
+        FIRST_AI_APPLIED_MINUS_RENDER: 0,
       });
     }
   }, [v2Snapshot]);
@@ -442,16 +594,21 @@ export default function TodayPage() {
     if (!card || card.outfitKey !== pending.outfitKey || card.copySource !== 'ai_cache') return;
     firstCanonicalAppliedRef.current.add(pending.batchId);
     pendingCanonicalAppliedRef.current = null;
+    const appliedAt = Date.now();
+    const renderedAt = recommendationRenderedAtRef.current.get(pending.batchId);
     traceTodayRuntime('ai:firstCanonicalApplied', renderTraceContextRef.current?.generation || 'pending', pending.batchId, {
       outfitKey: pending.outfitKey,
       cardIndex: pending.cardIndex,
-      appliedAt: Date.now(),
+      appliedAt,
       alreadyPresentAtRender: false,
+      FIRST_AI_APPLIED_MINUS_RENDER: renderedAt === undefined ? undefined : appliedAt - renderedAt,
     });
   }, [v2Snapshot]);
 
   useEffect(() => {
-    if (!v2Snapshot || !isAuthenticated || canonicalRefreshStartedRef.current.has(v2Snapshot.batchId)) return;
+    if (!v2Snapshot || !isAuthenticated
+      || interactiveSseBatchIdsRef.current.has(v2Snapshot.batchId)
+      || canonicalRefreshStartedRef.current.has(v2Snapshot.batchId)) return;
     const authContext = captureAuthContext();
     if (!authContext) return;
     const batchId = v2Snapshot.batchId;
@@ -571,9 +728,14 @@ export default function TodayPage() {
     behaviorTrackerRef.current = createOutfitBehaviorExposureTracker();
     canonicalRefreshEpochRef.current += 1;
     canonicalRefreshStartedRef.current.clear();
+    interactiveSseBatchIdsRef.current.clear();
+    sseFallbackRefreshStartedRef.current.clear();
+    pendingStreamCopiesRef.current.clear();
     initialRenderTracedRef.current.clear();
     firstCanonicalAvailableRef.current.clear();
     firstCanonicalAppliedRef.current.clear();
+    recommendationStartedAtRef.current.clear();
+    recommendationRenderedAtRef.current.clear();
     pendingCanonicalAppliedRef.current = null;
     setCurrentIndex(0);
     setLoading(false);
@@ -876,10 +1038,18 @@ export default function TodayPage() {
         if (passiveColdTelemetry) todayV2EntryColdEligibleRef.current = false;
         let rawResponse;
         try {
+          recommendationStartedAtRef.current.set(String(traceGeneration), Date.now());
           traceTodayRuntime('recommendation:start', traceGeneration, undefined, { requestKind, trigger });
           const acquisition = acquireRecommendationForInput({
             input: effectiveInput,
             trigger,
+            interactiveLifecycle: createInteractiveLifecycle({
+              generation: traceGeneration,
+              authContext,
+              isOwner: () => isRecommendationIntentCurrent(intent)
+                && isAuthContextCurrent(authContext)
+                && isRecommendationInputIdentityCurrent(effectiveInput.identity, authContext),
+            }),
             requestOverrides: {
               requestKind: passiveColdTelemetry ? 'cold' : requestKind,
               ...(telemetryCorrelationId ? { telemetryCorrelationId } : {}),
@@ -944,6 +1114,7 @@ export default function TodayPage() {
           return false;
         }
         const nextSnapshot = committed;
+        flushPendingInteractiveCopies(nextSnapshot.batchId, traceGeneration, authContext);
         setLoading(false);
         setError('');
         setHasRecommendations(true);
@@ -1012,6 +1183,7 @@ export default function TodayPage() {
     try {
       let response;
       try {
+        recommendationStartedAtRef.current.set(String(traceGeneration), Date.now());
         traceTodayRuntime('recommendation:start', traceGeneration, undefined, { requestKind: 'refresh', trigger: 'refresh' });
         const nextOptions = {
           currentBatchId: previous?.batchId || '',
@@ -1023,6 +1195,13 @@ export default function TodayPage() {
         const fallbackRefresh = () => acquireRecommendationForInput({
           input: effectiveInput,
           trigger: 'refresh',
+          interactiveLifecycle: createInteractiveLifecycle({
+            generation: traceGeneration,
+            authContext,
+            isOwner: () => isAuthContextCurrent(authContext)
+              && activeRequestSeqRef.current === refreshSeq
+              && isRecommendationInputIdentityCurrent(effectiveInput.identity, authContext),
+          }),
           requestOverrides: acceptanceDiagnostics ? {
             performanceDiagnostics: true,
             acceptanceRunId: acceptanceDiagnostics.acceptanceRunId,
@@ -1067,6 +1246,7 @@ export default function TodayPage() {
         { generation: traceGeneration, batchId: canonicalSnapshot.batchId });
       if (!committed) return false;
       const next = committed;
+      flushPendingInteractiveCopies(next.batchId, traceGeneration, authContext);
       next.cards.forEach((card) => seenOutfitKeysRef.current.add(card.outfitKey));
       setRecommendationBatchId(next.batchId);
       prefetchNextBatch(effectiveInput, next);
