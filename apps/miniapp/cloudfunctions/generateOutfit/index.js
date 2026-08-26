@@ -373,13 +373,15 @@ async function generateRecommendationV2({
   const cardCompilationStartedAt = Date.now();
   const initialCopiesByOutfitKey = new Map((Array.isArray(copyJob?.initialCopies) ? copyJob.initialCopies : [])
     .map((copy) => [copy.outfitKey, copy]));
+  const copyMaterializing = copyJob?.dispatch?.accepted === true
+    || ['pending', 'interactive', 'queued', 'dispatching', 'dispatched'].includes(copyJob?.status);
   const light = projectHomeLightV2(recommendations.map((recommendation, index) => ({
     ...(() => {
       const canonical = initialCopiesByOutfitKey.get(order[index]);
       return {
         todayReason: canonical?.text || buildRecommendationV2TodayReason(recommendation, safeReasons[index].reason),
         copySource: canonical ? 'ai_cache' : 'safe',
-        aiState: canonical ? 'ready' : copyJob?.dispatch?.accepted ? 'materializing' : 'failed',
+        aiState: canonical ? 'ready' : copyMaterializing ? 'materializing' : 'failed',
         ...(canonical?.availableAt ? { canonicalAvailableAt: canonical.availableAt } : {}),
       };
     })(),
@@ -684,6 +686,7 @@ function measureCanonicalBatchInput(records = []) {
 async function runProductionRecommendationRuntime(input, context = {}, lifecycleHooks = context.lifecycleHooks || {}) {
   const diagnostics = context.diagnostics || createRecommendationDiagnostics(input);
   let completionPromise = Promise.resolve();
+  let backgroundPromise = Promise.resolve([]);
   const runtimeHooks = {
     ...lifecycleHooks,
     onNarrativePlansReady: (payload) => {
@@ -691,6 +694,13 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
       try { result = lifecycleHooks.onNarrativePlansReady?.(payload); } catch { result = undefined; }
       completionPromise = Promise.resolve(result).catch(() => undefined);
       return completionPromise;
+    },
+    onPostC2TasksScheduled: ({ tasks = [] } = {}) => {
+      backgroundPromise = Promise.allSettled(
+        (Array.isArray(tasks) ? tasks : []).map((task) => Promise.resolve(task)),
+      );
+      try { lifecycleHooks.onPostC2TasksScheduled?.({ tasks, done: backgroundPromise }); } catch { /* fail-open */ }
+      return backgroundPromise;
     },
   };
   const runtime = await runRecommendationRuntimeCore(input, {
@@ -713,6 +723,8 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
   }, runtimeHooks);
   runtime.completionPromise = completionPromise;
   runtime.aiPromise = completionPromise;
+  runtime.backgroundDone = backgroundPromise;
+  if (!context.interactive) await backgroundPromise;
   let completionDeadline;
   runtime.aiDone = Promise.race([
     completionPromise,
@@ -893,59 +905,6 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
   diagnostics.batchId = v2BatchId;
   recordNarrativePlansReady(diagnostics, recommendations, stylingPlans);
   recordRecommendationStage(diagnostics, 'runtime:c2', { batchId: v2BatchId });
-  let copyJob = null;
-  if (recommendations.length > 0
-    && stylingPlans?.diagnostics?.status === 'completed'
-    && stylingPlans.plans.length === recommendations.length) {
-    try {
-      const entries = stylingPlans.plans.map((plan, position) => buildProductionRendererEntry(
-        plan,
-        recommendations[position],
-        position,
-        recommendations[position]?.outfitKey,
-      ));
-      const copyJobPromise = prepareRecommendationCopyJob({
-        database: db,
-        openid: OPENID,
-        batchId: v2BatchId,
-        inputIdentityHash: candidatePoolIdentity.identityHash,
-        rendererVersion: PRODUCTION_RENDERER_VERSION,
-        entries,
-        // Interactive HTTP owns the renderer lifecycle; Event dispatch remains
-        // the background transport for callFunction/P2/P3.
-        dispatch: (payload) => dispatchScfEvent({ event: payload, context: scfContext }),
-        executionMode: scfContext?.interactive ? 'interactive' : 'event',
-      });
-      diagnostics.workCounts.batchAdmission += 1;
-      if (typeof scfContext?.lifecycleHooks?.onNarrativePlansReady === 'function') {
-        try {
-          void Promise.resolve(scfContext.lifecycleHooks.onNarrativePlansReady({
-            plans: stylingPlans.plans,
-            entries,
-            batchId: v2BatchId,
-            recommendations,
-            copyJobPromise,
-            persistCanonicalCopy: async (copy) => {
-              const preparedCopyJob = await copyJobPromise;
-              const entry = preparedCopyJob?.entries?.find((candidate) => candidate.preparedEntry?.plan?.planId === copy?.planId);
-              if (!entry) throw new Error('VOICE_RENDERER_OUTPUT_PLAN_BINDING');
-              return persistValidatedCanonicalCopy(db, {
-                ...preparedCopyJob,
-                _openid: OPENID,
-              }, entry, copy);
-            },
-          })).catch(() => undefined);
-        } catch { /* direct interactive rendering is fail-open */ }
-      }
-      copyJob = await copyJobPromise;
-    } catch (error) {
-      console.warn('[RecommendationCopyDispatchFailOpen]', {
-        auditId: diagnostics.auditId,
-        batchId: v2BatchId,
-        failureCode: getRecommendationErrorCode(error),
-      });
-    }
-  }
   if (candidatePoolPersistenceInput) {
     diagnostics.workCounts.candidatePoolPersistence += 1;
     candidatePoolPersistPromise = Promise.resolve().then(() => persistGeneratedCandidatePool({
@@ -955,32 +914,112 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
       candidates: candidatePoolPersistenceInput.candidates,
       debugRecommendationAudit,
       debugCandidatePoolProjection: candidatePoolPersistenceInput.debugCandidatePoolProjection,
-    }));
+    })).catch((error) => {
+      console.warn('[RecommendationCandidatePoolPersistFailOpen]', {
+        auditId: diagnostics.auditId,
+        batchId: v2BatchId,
+        failureCode: getRecommendationErrorCode(error),
+      });
+      return { status: 'failed_open' };
+    });
   }
-  // Candidate-pool persistence remains part of FULL_COMPUTE/fallback semantics.
-  // It is independent from, and awaited before, the native Home Light commit.
-  if (candidatePoolPersistenceInput) {
-    await candidatePoolPersistPromise;
-  }
-  if (copyJob?.jobId) {
-    try {
-      const latestCopyOverlay = await readRecommendationCopyOverlay(
-        db,
-        OPENID,
-        v2BatchId,
-        PRODUCTION_RENDERER_VERSION,
-      );
-      if (latestCopyOverlay.copies.length > 0) {
-        copyJob = { ...copyJob, initialCopies: latestCopyOverlay.copies };
+  const responseCopyJob = {
+    status: 'pending',
+    initialCopies: [],
+    dispatch: { accepted: false },
+  };
+  let copyJobPromise = Promise.resolve(null);
+  let copyOverlayPromise = Promise.resolve(null);
+  if (recommendations.length > 0
+    && stylingPlans?.diagnostics?.status === 'completed'
+    && stylingPlans.plans.length === recommendations.length) {
+    const entries = stylingPlans.plans.map((plan, position) => buildProductionRendererEntry(
+      plan,
+      recommendations[position],
+      position,
+      recommendations[position]?.outfitKey,
+    ));
+    copyJobPromise = prepareRecommendationCopyJob({
+      database: db,
+      openid: OPENID,
+      batchId: v2BatchId,
+      inputIdentityHash: candidatePoolIdentity.identityHash,
+      rendererVersion: PRODUCTION_RENDERER_VERSION,
+      entries,
+      // Interactive HTTP owns the renderer lifecycle; Event dispatch remains
+      // the background transport for callFunction/P2/P3.
+      dispatch: (payload) => dispatchScfEvent({ event: payload, context: scfContext }),
+      executionMode: scfContext?.interactive ? 'interactive' : 'event',
+    }).then((preparedCopyJob) => {
+      Object.assign(responseCopyJob, preparedCopyJob || {});
+      return preparedCopyJob;
+    }).catch((error) => {
+      responseCopyJob.status = 'failed_open';
+      responseCopyJob.dispatch = { accepted: false };
+      console.warn('[RecommendationCopyDispatchFailOpen]', {
+        auditId: diagnostics.auditId,
+        batchId: v2BatchId,
+        failureCode: getRecommendationErrorCode(error),
+      });
+      return null;
+    });
+    diagnostics.workCounts.batchAdmission += 1;
+    copyOverlayPromise = copyJobPromise.then(async (preparedCopyJob) => {
+      if (!preparedCopyJob?.jobId) return null;
+      try {
+        const latestCopyOverlay = await readRecommendationCopyOverlay(
+          db,
+          OPENID,
+          v2BatchId,
+          PRODUCTION_RENDERER_VERSION,
+        );
+        if (latestCopyOverlay.copies.length > 0) {
+          responseCopyJob.initialCopies = latestCopyOverlay.copies;
+        }
+        return latestCopyOverlay;
+      } catch {
+        return null;
       }
-    } catch { /* A late cache read is optional; Safe Copy remains the response fallback. */ }
+    });
+    if (typeof scfContext?.lifecycleHooks?.onNarrativePlansReady === 'function') {
+      try {
+        void Promise.resolve(scfContext.lifecycleHooks.onNarrativePlansReady({
+          plans: stylingPlans.plans,
+          entries,
+          batchId: v2BatchId,
+          recommendations,
+          copyJobPromise,
+          persistCanonicalCopy: async (copy) => {
+            const preparedCopyJob = await copyJobPromise;
+            const entry = preparedCopyJob?.entries?.find((candidate) => candidate.preparedEntry?.plan?.planId === copy?.planId);
+            if (!entry) throw new Error('VOICE_RENDERER_OUTPUT_PLAN_BINDING');
+            return persistValidatedCanonicalCopy(db, {
+              ...preparedCopyJob,
+              _openid: OPENID,
+            }, entry, copy);
+          },
+        })).catch(() => undefined);
+      } catch { /* direct interactive rendering is fail-open */ }
+    }
+  } else {
+    responseCopyJob.status = 'noop';
+  }
+  if (typeof scfContext?.lifecycleHooks?.onPostC2TasksScheduled === 'function') {
+    try {
+      void Promise.resolve(scfContext.lifecycleHooks.onPostC2TasksScheduled({
+        tasks: [copyJobPromise, candidatePoolPersistPromise, copyOverlayPromise],
+        batchId: v2BatchId,
+      })).catch(() => undefined);
+    } catch {
+      /* Post-C2 settlement tracking is fail-open for the recommendation. */
+    }
   }
   diagnostics.executionMode = executionMode;
   return generateRecommendationV2({
     event,
     recommendations,
     batchId: v2BatchId,
-    copyJob,
+    copyJob: responseCopyJob,
     openid: OPENID,
     sceneContract,
     scene,

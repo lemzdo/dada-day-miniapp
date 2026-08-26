@@ -47,6 +47,7 @@ import {
   createSseParser,
 } from './recommendationSseCore';
 import { resolveRecommendationHttpTransport } from './recommendationHttpTransport';
+import { buildRecommendationStreamTransportInput } from './recommendationStreamTransportCore';
 
 type CloudResult<T> = {
   code: number;
@@ -1015,11 +1016,11 @@ export function generateCloudOutfitStreamV2(
         name: 'recommendationStream',
         path: '/recommendations',
         method: 'POST',
-        data: {
-          ...params,
-          runtimeVersion: RECOMMENDATION_V2_RUNTIME_VERSION,
-          streamGeneration: generation,
-        },
+        data: buildRecommendationStreamTransportInput(
+          params,
+          generation,
+          RECOMMENDATION_V2_RUNTIME_VERSION,
+        ),
         enableChunked: true,
         onHeadersReceived: () => lifecycle.onConnected?.({ generation, connectedAt: Date.now() }),
         onChunkedReceived: (response) => parser.push(response.data),

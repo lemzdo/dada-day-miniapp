@@ -107,6 +107,41 @@ test('Qwen or validator failure completes fail-open after recommendation.ready',
   assert.equal(output[1].data.reason, 'failed_open');
 });
 
+test('a canonical cache hit discovered after ready is still delivered through SSE', async () => {
+  let releaseAdmission;
+  const copyJobPromise = new Promise((resolve) => { releaseAdmission = resolve; });
+  const handler = stream.createRecommendationStreamHandler({
+    runRuntime: async (_input, _context, hooks) => {
+      const aiDone = hooks.onNarrativePlansReady({
+        batchId: 'batch-cache',
+        entries: [],
+        copyJobPromise,
+        persistCanonicalCopy: async () => undefined,
+      });
+      await hooks.onRecommendationReady({
+        batchId: 'batch-cache',
+        response: { batch: { batchId: 'batch-cache' } },
+      });
+      return { batchId: 'batch-cache', aiDone };
+    },
+  });
+  const res = response();
+  const running = handler(request({ streamGeneration: 'generation-cache' }), res);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events(res).map((event) => event.name), ['recommendation.ready']);
+  releaseAdmission({
+    initialCopies: [{
+      outfitKey: 'look-cache', cardIndex: 0, text: '缓存文案。', source: 'ai_cache',
+      availableAt: '2026-08-26T00:00:00.000Z', rendererVersion: 'recommendation-voice-renderer-production-v2.1',
+    }],
+    missEntries: [],
+  });
+  await running;
+  assert.deepEqual(events(res).map((event) => event.name), [
+    'recommendation.ready', 'canonical.copy', 'complete',
+  ]);
+});
+
 test('partial 1/3/7 and exhausted 0 keep their exact recommendation counts', async () => {
   for (const count of [1, 3, 7, 0]) {
     let rendererCalls = 0;
@@ -211,6 +246,7 @@ test('stage diagnostics preserve SSE behavior and use one invocation identity', 
     },
     runRuntime: async (_input, context, hooks) => {
       assert.equal(context.diagnostics, diagnostics);
+      await hooks.onInputNormalized?.();
       await hooks.onRecommendationReady({
         batchId: 'batch-stage-1',
         response: { batch: { batchId: 'batch-stage-1' } },
@@ -227,14 +263,78 @@ test('stage diagnostics preserve SSE behavior and use one invocation identity', 
   await handler(request({ auditId: 'audit-stage-1', streamGeneration: 'generation-stage' }), res);
   assert.deepEqual(events(res).map((event) => event.name), ['recommendation.ready', 'complete']);
   assert.deepEqual(stageEntries.map((entry) => entry.stage), [
-    'stream:handlerStart',
+    'request:received',
+    'body:done',
+    'json:done',
+    'handler:start',
     'auth:start',
     'auth:done',
     'runtime:start',
-    'runtime:recommendationReady',
-    'stream:firstWrite',
-    'stream:complete',
+    'normalization:done',
+    'recommendationReady',
+    'firstWrite',
+    'complete',
   ]);
   assert.ok(stageEntries.every((entry) => entry.auditId === 'audit-stage-1'));
   assert.ok(stageEntries.every((entry) => typeof entry.elapsedMs === 'number'));
+});
+
+test('request entry, body completion, and handler start share one monotonic origin and record UTF-8 bytes', async () => {
+  const body = { scene: '约会', streamGeneration: 'generation-body' };
+  const serialized = JSON.stringify(body);
+  const req = Readable.from((async function* delayedBody() {
+    yield Buffer.from(serialized.slice(0, 8), 'utf8');
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    yield Buffer.from(serialized.slice(8), 'utf8');
+  }()));
+  req.method = 'POST';
+  req.url = '/recommendations';
+  req.headers = { 'x-wx-openid': 'openid-body' };
+  const stages = [];
+  const diagnostics = { auditId: 'audit-body', workCounts: { inputRead: 0 } };
+  const handler = stream.createRecommendationStreamHandler({
+    createDiagnostics: () => diagnostics,
+    recordStage: (_shared, stage, options) => stages.push({ stage, ...options }),
+    runRuntime: async (_input, _context, hooks) => {
+      await hooks.onRecommendationReady({ batchId: 'batch-body', response: { batch: { batchId: 'batch-body' } } });
+      return { batchId: 'batch-body', aiDone: Promise.resolve({ status: 'completed' }) };
+    },
+  });
+  const res = response();
+  await handler(req, res);
+
+  const requestReceived = stages.find((entry) => entry.stage === 'request:received');
+  const bodyDone = stages.find((entry) => entry.stage === 'body:done');
+  const handlerStart = stages.find((entry) => entry.stage === 'handler:start');
+  assert.equal(requestReceived.elapsedMs, 0);
+  assert.ok(bodyDone.elapsedMs >= 10);
+  assert.ok(handlerStart.elapsedMs >= bodyDone.elapsedMs);
+  assert.equal(bodyDone.fields.requestBodyBytes, Buffer.byteLength(serialized));
+  assert.equal(diagnostics.requestBodyBytes, Buffer.byteLength(serialized));
+});
+
+test('ready is emitted before noncritical post-C2 settlement, while complete safely waits', async () => {
+  let releaseBackground;
+  const backgroundDone = new Promise((resolve) => { releaseBackground = resolve; });
+  const handler = stream.createRecommendationStreamHandler({
+    runRuntime: async (_input, _context, hooks) => {
+      await hooks.onRecommendationReady({
+        batchId: 'batch-background',
+        response: { batch: { batchId: 'batch-background' } },
+      });
+      return {
+        batchId: 'batch-background',
+        aiDone: Promise.resolve({ status: 'completed' }),
+        backgroundDone,
+      };
+    },
+  });
+  const res = response();
+  const running = handler(request({ streamGeneration: 'generation-background' }), res);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events(res).map((event) => event.name), ['recommendation.ready']);
+  assert.equal(res.writableEnded, false);
+  releaseBackground();
+  await running;
+  assert.deepEqual(events(res).map((event) => event.name), ['recommendation.ready', 'complete']);
 });

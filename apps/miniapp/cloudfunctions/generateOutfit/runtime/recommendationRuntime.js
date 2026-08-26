@@ -41,6 +41,7 @@ function getEntries(result) {
  */
 async function runRecommendationRuntime(input = {}, context = {}, lifecycleHooks = {}) {
   const normalized = normalizeInput(input);
+  void safeCall(lifecycleHooks.onInputNormalized, { input: normalized });
   const core = context.recommendationCore || context.core;
   if (typeof core !== 'function') throw new Error('RECOMMENDATION_CORE_REQUIRED');
   const startedAt = Date.now();

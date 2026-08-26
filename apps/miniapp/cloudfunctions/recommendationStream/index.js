@@ -56,12 +56,36 @@ function writeSse(res, event, data) {
   } catch { return false; }
 }
 
-async function readBody(req) {
-  if (!req || typeof req.on !== 'function') return undefined;
-  let body = '';
-  for await (const chunk of req) body += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
-  if (!body.trim()) return undefined;
-  try { return JSON.parse(body); } catch { return undefined; }
+async function readBody(req, monotonicOriginAt = process.hrtime.bigint()) {
+  if (!req || typeof req.on !== 'function') {
+    return { value: undefined, bytes: 0, bodyDoneMs: 0, jsonDoneMs: 0 };
+  }
+  const chunks = [];
+  let bytes = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8');
+    chunks.push(buffer);
+    bytes += buffer.byteLength;
+  }
+  const bodyDoneMs = Number(process.hrtime.bigint() - monotonicOriginAt) / 1e6;
+  const body = Buffer.concat(chunks, bytes).toString('utf8');
+  if (!body.trim()) return { value: undefined, bytes, bodyDoneMs, jsonDoneMs: bodyDoneMs };
+  try {
+    const value = JSON.parse(body);
+    return {
+      value,
+      bytes,
+      bodyDoneMs,
+      jsonDoneMs: Number(process.hrtime.bigint() - monotonicOriginAt) / 1e6,
+    };
+  } catch {
+    return {
+      value: undefined,
+      bytes,
+      bodyDoneMs,
+      jsonDoneMs: Number(process.hrtime.bigint() - monotonicOriginAt) / 1e6,
+    };
+  }
 }
 
 function createRecommendationStreamHandler({
@@ -94,8 +118,11 @@ function createRecommendationStreamHandler({
       res.end?.(JSON.stringify({ code: 1, message: 'x-wx-openid is required' }));
       return;
     }
-    const body = req?.method === 'GET' ? undefined : await readBody(req);
-    const input = parseInput(req, body);
+    const bodyResult = req?.method === 'GET'
+      ? { value: undefined, bytes: 0, bodyDoneMs: 0, jsonDoneMs: 0 }
+      : await readBody(req, handlerMonotonicOriginAt);
+    const input = parseInput(req, bodyResult.value);
+    const handlerReadyMs = Number(process.hrtime.bigint() - handlerMonotonicOriginAt) / 1e6;
     const productionDiagnostics = !runRuntime && (!createDiagnostics || !recordStage)
       ? loadProductionDiagnostics()
       : null;
@@ -104,12 +131,16 @@ function createRecommendationStreamHandler({
     const diagnostics = typeof diagnosticsFactory === 'function'
       ? diagnosticsFactory(input, handlerStartedAt, handlerMonotonicOriginAt)
       : null;
+    if (diagnostics) diagnostics.requestBodyBytes = bodyResult.bytes;
     if (diagnostics?.workCounts) diagnostics.workCounts.inputRead += 1;
     const stage = (name, options = {}) => {
       if (typeof stageRecorder !== 'function') return;
       try { stageRecorder(diagnostics, name, options); } catch { /* Diagnostics are fail-open. */ }
     };
-    stage('stream:handlerStart', { elapsedMs: 0 });
+    stage('request:received', { elapsedMs: 0, fields: { requestBodyBytes: bodyResult.bytes } });
+    stage('body:done', { elapsedMs: bodyResult.bodyDoneMs, fields: { requestBodyBytes: bodyResult.bytes } });
+    stage('json:done', { elapsedMs: bodyResult.jsonDoneMs, fields: { requestBodyBytes: bodyResult.bytes } });
+    stage('handler:start', { elapsedMs: handlerReadyMs, fields: { requestBodyBytes: bodyResult.bytes } });
     stage('auth:start', { elapsedMs: authStartedMs });
     stage('auth:done', { elapsedMs: authDoneMs });
     const streamGeneration = typeof input.streamGeneration === 'string' && input.streamGeneration.trim()
@@ -137,7 +168,7 @@ function createRecommendationStreamHandler({
       const wrote = writeSse(res, event, data);
       if (wrote && !firstWriteRecorded) {
         firstWriteRecorded = true;
-        stage('stream:firstWrite', { batchId: data?.batchId });
+        stage('firstWrite', { batchId: data?.batchId });
       }
       return wrote;
     };
@@ -158,6 +189,9 @@ function createRecommendationStreamHandler({
           // Start the existing production Qwen renderer at C2. This promise is
           // intentionally detached from recommendation.ready.
           const copyJob = await copyJobPromise;
+          if (!copyJob) return { status: 'failed_open', validatedCount: 0 };
+          const initialCopies = Array.isArray(copyJob.initialCopies) ? copyJob.initialCopies : [];
+          initialCopies.forEach((copy) => emitCanonicalCopy(batchId, copy));
           const misses = Array.isArray(copyJob?.missEntries) ? copyJob.missEntries : [];
           if (misses.length === 0) return { status: 'ready_cache_hit', validatedCount: 0 };
           stage('ai:providerStart', { batchId });
@@ -184,9 +218,10 @@ function createRecommendationStreamHandler({
             onInvalid: () => undefined,
           });
         },
+        onInputNormalized: () => stage('normalization:done'),
         onRecommendationReady: ({ batchId, response, countContract }) => {
           readyBatchId = response?.batch?.batchId || batchId;
-          stage('runtime:recommendationReady', {
+          stage('recommendationReady', {
             batchId: readyBatchId,
             fields: diagnostics?.workCounts ? { workCounts: { ...diagnostics.workCounts } } : undefined,
           });
@@ -214,12 +249,15 @@ function createRecommendationStreamHandler({
       const aiSummary = runtime?.aiDone && typeof runtime.aiDone.then === 'function'
         ? await runtime.aiDone
         : { status: 'completed' };
+      if (runtime?.backgroundDone && typeof runtime.backgroundDone.then === 'function') {
+        await runtime.backgroundDone;
+      }
       const batchId = runtime?.response?.batch?.batchId || runtime?.batchId || readyBatchId;
       const reason = aiSummary?.status === 'window_expired'
         ? 'deadline'
         : aiSummary?.status === 'failed_open' ? 'failed_open' : 'completed';
       emit('complete', { type: 'complete', generation: streamGeneration, batchId, reason });
-      stage('stream:complete', { batchId });
+      stage('complete', { batchId });
     } catch (error) {
       // Recommendation failures remain a normal HTTP error; provider failures
       // are swallowed by the runtime and still produce recommendation.ready.
@@ -232,7 +270,7 @@ function createRecommendationStreamHandler({
           reason: 'failed_open',
           errorCode: error?.code || 'RECOMMENDATION_FAILED',
         });
-        stage('stream:complete', { batchId: readyBatchId || undefined });
+        stage('complete', { batchId: readyBatchId || undefined });
       }
     } finally {
       if (!res.writableEnded) res.end?.();
