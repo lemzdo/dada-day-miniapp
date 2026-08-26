@@ -1,0 +1,5 @@
+{
+  "name": "recommendation-transport-lab",
+  "private": true,
+  "main": "index.js"
+}
