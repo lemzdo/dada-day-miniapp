@@ -12,6 +12,7 @@ const root = path.resolve(__dirname, '..');
 const source = path.join(root, 'cloudfunctions', 'generateOutfit');
 const destination = path.resolve(process.argv[2] || path.join(root, '.staging', 'recommendationStream'));
 const environmentFile = process.argv[3] ? path.resolve(process.argv[3]) : null;
+const environmentId = String(process.argv[4] || process.env.CLOUDBASE_ENV_ID || '').trim();
 
 function assertSafeDisposableDirectory(directory) {
   const parsed = path.parse(directory);
@@ -59,10 +60,14 @@ fs.cpSync(path.join(root, 'cloudfunctions', 'recommendationStream', 'package.jso
 fs.cpSync(path.join(root, 'cloudfunctions', 'recommendationStream', 'scf_bootstrap'), path.join(destination, 'scf_bootstrap'));
 if (environmentFile) {
   const envVariables = parseEnvironmentFile(environmentFile);
+  if (!environmentId) {
+    throw new Error('CloudBase environment id is required for deployment staging');
+  }
   if (!envVariables.BAILIAN_API_KEY) {
     throw new Error('BAILIAN_API_KEY is required for the direct recommendation renderer');
   }
   fs.writeFileSync(path.join(destination, 'cloudbaserc.json'), `${JSON.stringify({
+    envId: environmentId,
     functions: [{
       name: 'recommendationStream',
       runtime: 'Nodejs20.19',

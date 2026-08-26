@@ -42,9 +42,15 @@ test('HTTP staging creates a private Node 20 deployment config from an environme
   const environmentFile = path.join(parent, 'generateOutfit.env');
   try {
     fs.writeFileSync(environmentFile, 'BAILIAN_API_KEY="test-only-key"\nBAILIAN_MODEL=qwen-test\n');
-    execFileSync(process.execPath, [path.join(__dirname, 'stage-recommendation-stream.js'), stage, environmentFile], { stdio: 'pipe' });
+    execFileSync(process.execPath, [
+      path.join(__dirname, 'stage-recommendation-stream.js'),
+      stage,
+      environmentFile,
+      'cloud-test-environment',
+    ], { stdio: 'pipe' });
     const configPath = path.join(stage, 'cloudbaserc.json');
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    assert.equal(config.envId, 'cloud-test-environment');
     assert.equal(config.functions[0].runtime, 'Nodejs20.19');
     assert.equal(config.functions[0].timeout, 10);
     assert.equal(config.functions[0].envVariables.BAILIAN_API_KEY, 'test-only-key');
