@@ -139,3 +139,48 @@ test('HTTP adapter rejects missing identity and unsupported route', async () => 
   await stream(missing, notFound);
   assert.equal(notFound.statusCode, 404);
 });
+
+test('SSE disconnect after ready stops client writes while canonical persistence finishes fail-open', async () => {
+  let releaseRenderer;
+  const rendererGate = new Promise((resolve) => { releaseRenderer = resolve; });
+  let persisted = false;
+  const handler = stream.createRecommendationStreamHandler({
+    consumeRenderer: async ({ onValidated }) => {
+      await rendererGate;
+      await onValidated({ planId: 'plan-1', text: '断连后仍完成共享缓存写入。' });
+      return { status: 'completed', validatedCount: 1 };
+    },
+    runRuntime: async (_input, _context, hooks) => {
+      const aiDone = hooks.onNarrativePlansReady({
+        batchId: 'batch-disconnect',
+        entries: [{ position: 0, outfitKey: 'look-1', preparedEntry: { plan: { planId: 'plan-1' } } }],
+        copyJobPromise: Promise.resolve({ missEntries: [{ preparedEntry: { plan: { planId: 'plan-1' } } }] }),
+        persistCanonicalCopy: async () => {
+          persisted = true;
+          return {
+            availableAt: '2026-08-26T00:00:00.000Z',
+            rendererVersion: 'recommendation-voice-renderer-production-v2.1',
+          };
+        },
+      });
+      await hooks.onRecommendationReady({
+        batchId: 'batch-disconnect',
+        response: { batch: { batchId: 'batch-disconnect' } },
+      });
+      return {
+        batchId: 'batch-disconnect',
+        response: { batch: { batchId: 'batch-disconnect' } },
+        aiDone,
+      };
+    },
+  });
+  const res = response();
+  const running = handler(request({ streamGeneration: 'generation-disconnect' }), res);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events(res).map((event) => event.name), ['recommendation.ready']);
+  res.emit('close');
+  releaseRenderer();
+  await running;
+  assert.equal(persisted, true);
+  assert.deepEqual(events(res).map((event) => event.name), ['recommendation.ready']);
+});
