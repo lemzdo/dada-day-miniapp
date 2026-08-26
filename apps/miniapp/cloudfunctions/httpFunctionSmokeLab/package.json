@@ -1,0 +1,5 @@
+{
+  "name": "http-function-smoke-lab",
+  "private": true,
+  "main": "index.js"
+}
