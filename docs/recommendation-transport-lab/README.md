@@ -38,6 +38,7 @@ Function** 部署，函数名建议固定为 `recommendationTransportLab`。
 ```js
 const requestStartedAt = Date.now();
 const marks = { requestStartedAt };
+console.log('requestStartedAt', requestStartedAt);
 let buffer = '';
 const decoder = typeof TextDecoder === 'function' ? new TextDecoder('utf-8') : null;
 
@@ -77,6 +78,9 @@ wx.cloud.callHTTPFunction({
   },
   success() {
     console.log('success', { marks, elapsed: Date.now() - requestStartedAt });
+  },
+  complete(res) {
+    console.log('complete', { res, marks, elapsed: Date.now() - requestStartedAt });
   },
   fail(error) {
     console.error('fail', { marks, error, elapsed: Date.now() - requestStartedAt });
