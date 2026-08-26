@@ -19,6 +19,7 @@ export function runBoundedCanonicalCopyRefresh(options: {
   read: (batchId: string) => Promise<RecommendationCanonicalOverlayV2>;
   isCurrent: () => boolean;
   apply: (overlay: RecommendationCanonicalOverlayV2) => void;
+  hasAuthoritativeCanonical?: () => boolean;
   onAvailable?: (overlay: RecommendationCanonicalOverlayV2) => void;
   onAttempt?: (diagnostic: {
     attempt: number;

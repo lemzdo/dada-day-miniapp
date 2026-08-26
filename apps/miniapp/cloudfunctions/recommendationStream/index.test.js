@@ -184,3 +184,57 @@ test('SSE disconnect after ready stops client writes while canonical persistence
   assert.equal(persisted, true);
   assert.deepEqual(events(res).map((event) => event.name), ['recommendation.ready']);
 });
+
+test('stage diagnostics preserve SSE behavior and use one invocation identity', async () => {
+  const stageEntries = [];
+  const diagnostics = {
+    auditId: 'audit-stage-1',
+    batchId: null,
+    executionMode: 'full_compute',
+    workCounts: { inputRead: 0 },
+  };
+  const handler = stream.createRecommendationStreamHandler({
+    createDiagnostics: (_input, handlerStartedAt, monotonicOriginAt) => {
+      assert.equal(typeof handlerStartedAt, 'number');
+      assert.equal(typeof monotonicOriginAt, 'bigint');
+      return diagnostics;
+    },
+    recordStage: (shared, stage, options = {}) => {
+      assert.equal(shared, diagnostics);
+      stageEntries.push({
+        stage,
+        elapsedMs: options.elapsedMs ?? stageEntries.length,
+        auditId: shared.auditId,
+        batchId: options.batchId || shared.batchId,
+        executionState: shared.executionMode,
+      });
+    },
+    runRuntime: async (_input, context, hooks) => {
+      assert.equal(context.diagnostics, diagnostics);
+      await hooks.onRecommendationReady({
+        batchId: 'batch-stage-1',
+        response: { batch: { batchId: 'batch-stage-1' } },
+        countContract: {},
+      });
+      return {
+        batchId: 'batch-stage-1',
+        response: { batch: { batchId: 'batch-stage-1' } },
+        aiDone: Promise.resolve({ status: 'completed' }),
+      };
+    },
+  });
+  const res = response();
+  await handler(request({ auditId: 'audit-stage-1', streamGeneration: 'generation-stage' }), res);
+  assert.deepEqual(events(res).map((event) => event.name), ['recommendation.ready', 'complete']);
+  assert.deepEqual(stageEntries.map((entry) => entry.stage), [
+    'stream:handlerStart',
+    'auth:start',
+    'auth:done',
+    'runtime:start',
+    'runtime:recommendationReady',
+    'stream:firstWrite',
+    'stream:complete',
+  ]);
+  assert.ok(stageEntries.every((entry) => entry.auditId === 'audit-stage-1'));
+  assert.ok(stageEntries.every((entry) => typeof entry.elapsedMs === 'number'));
+});

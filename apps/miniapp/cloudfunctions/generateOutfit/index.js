@@ -432,6 +432,8 @@ async function generateRecommendationV2({
   const batch = projectBatchCoreV2({ ...coreInput, contentHash, commitToken });
   const batchPersistenceStartedAt = Date.now();
   const batchPersistenceTiming = {};
+  diagnostics.workCounts.batchPersistence += 1;
+  recordRecommendationStage(diagnostics, 'runtime:batchPersistenceStart', { batchId });
   const persisted = await persistRecommendationBatchV2({
     database: db,
     openid,
@@ -447,6 +449,7 @@ async function generateRecommendationV2({
   });
   diagnostics.timings.batchPersistenceMs = Date.now() - batchPersistenceStartedAt;
   diagnostics.timings.batchPersistence = persisted.timing;
+  recordRecommendationStage(diagnostics, 'runtime:batchPersistenceDone', { batchId });
   const finalizationStartedAt = Date.now();
   const response = {
     runtimeVersion: RECOMMENDATION_V2_RUNTIME_VERSION,
@@ -564,7 +567,41 @@ function createRecommendationDiagnostics(event = {}, handlerStartAt = Date.now()
       cardPreparation: {}, cardCompilationMs: 0, reasonPreparationMs: 0,
       batchPersistenceMs: 0, finalizationMs: 0, serializationMs: 0,
       qaAuditMs: 0, totalMs: 0 }, databaseOps: { reads: 0, writes: 0 },
+    workCounts: {
+      inputRead: 0,
+      wardrobeRead: 0,
+      preferenceRead: 0,
+      weatherRead: 0,
+      candidateLoad: 0,
+      batchAdmission: 0,
+      batchPersistence: 0,
+      candidatePoolPersistence: 0,
+    },
   };
+}
+
+function recordRecommendationStage(diagnostics, stage, {
+  elapsedMs,
+  batchId,
+  executionState,
+  fields,
+} = {}) {
+  if (!diagnostics || typeof stage !== 'string' || !stage) return null;
+  const measuredElapsedMs = Number.isFinite(elapsedMs) ? Number(elapsedMs) : monotonicElapsedMs(diagnostics);
+  const entry = {
+    ...(fields && typeof fields === 'object' ? fields : {}),
+    stage,
+    elapsedMs: measuredElapsedMs === null ? null : Math.max(0, Math.round(measuredElapsedMs * 1000) / 1000),
+    auditId: diagnostics.auditId,
+    batchId: readString(batchId) || readString(diagnostics.batchId) || null,
+    executionState: readString(executionState) || readString(diagnostics.executionMode) || 'pending',
+  };
+  diagnostics.stageDiagnostics = Array.isArray(diagnostics.stageDiagnostics)
+    ? [...diagnostics.stageDiagnostics, entry]
+    : [entry];
+  const logger = typeof diagnostics.stageLogger === 'function' ? diagnostics.stageLogger : console.log;
+  try { logger('[RecommendationStage]', entry); } catch { /* Diagnostics must never change Runtime behavior. */ }
+  return entry;
 }
 
 function recordNarrativePlansReady(diagnostics, recommendations, shadow) {
@@ -719,6 +756,8 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
   recordServerPhase(diagnostics, 'userAndWardrobeRead', dataLoadStartedAt);
   diagnostics.databaseOps.reads += wardrobeReadCount + 1;
   const recommendationProfile = normalizeRecommendationProfile(userRes.data?.[0]?.styleProfile);
+  diagnostics.workCounts.wardrobeRead += wardrobeReadCount;
+  diagnostics.workCounts.preferenceRead += 1;
   const exclude = Array.isArray(event.excludeClothingIdSets) ? event.excludeClothingIdSets : [];
   const excludedOutfitKeys = readStringArray(event.excludedOutfitKeys);
   const requestTrigger = readString(event.trigger);
@@ -727,8 +766,10 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
     || exclude.length > 0
     || Boolean(requestedCandidatePoolId);
   const weather = normalizeRecommendationWeather(event.weather, event.weatherMode);
+  diagnostics.workCounts.weatherRead += 1;
   const weatherMode = weather.mode;
   const weatherSnapshot = toWeatherSnapshot(weather);
+  recordRecommendationStage(diagnostics, 'runtime:inputReady');
   const presentationEvidenceEnabled = isPresentationEvidenceMode(event.presentationEvidenceMode);
   const debugRecommendationAudit = isRecommendationQaAuditEnabled(
     event.debugRecommendationAudit,
@@ -756,8 +797,15 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
     requestedCandidatePoolId,
   });
   let baseRecommendationBatchId = undefined;
+  recordRecommendationStage(diagnostics, 'runtime:cacheAdmissionDone', {
+    fields: {
+      refreshRequest: isRefreshRequest,
+      requestedCandidatePool: Boolean(requestedCandidatePoolId),
+    },
+  });
 
   if (requestedCandidatePoolId) {
+    diagnostics.workCounts.candidateLoad += 1;
     const candidatePoolLoadStartedAt = Date.now();
     const poolResult = await loadCandidatePool({
       database: db,
@@ -799,6 +847,10 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
       executionMode = 'fallback_recompute';
     }
   }
+  recordRecommendationStage(diagnostics, 'runtime:candidateLoadDone', {
+    executionState: executionMode,
+    fields: { attempted: Boolean(requestedCandidatePoolId), cacheHit },
+  });
 
   let candidatePoolPersistPromise = Promise.resolve(null);
   let candidatePoolPersistenceInput = null;
@@ -825,6 +877,8 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
       debugCandidatePoolProjection: event.debugCandidatePoolProjection === true,
     };
   }
+  diagnostics.executionMode = executionMode;
+  recordRecommendationStage(diagnostics, 'runtime:selectionDone');
   // C2: selection/materialization and card order are frozen. Narrative Plans are
   // complete and bound before persistence is scheduled, so only async dispatch
   // acceptance—not provider completion—may delay the recommendation response.
@@ -836,7 +890,9 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
     recommendationInstanceSeed: diagnostics.auditId || v2BatchId,
     telemetrySampleRate: 0,
   });
+  diagnostics.batchId = v2BatchId;
   recordNarrativePlansReady(diagnostics, recommendations, stylingPlans);
+  recordRecommendationStage(diagnostics, 'runtime:c2', { batchId: v2BatchId });
   let copyJob = null;
   if (recommendations.length > 0
     && stylingPlans?.diagnostics?.status === 'completed'
@@ -860,6 +916,7 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
         dispatch: (payload) => dispatchScfEvent({ event: payload, context: scfContext }),
         executionMode: scfContext?.interactive ? 'interactive' : 'event',
       });
+      diagnostics.workCounts.batchAdmission += 1;
       if (typeof scfContext?.lifecycleHooks?.onNarrativePlansReady === 'function') {
         try {
           void Promise.resolve(scfContext.lifecycleHooks.onNarrativePlansReady({
@@ -890,6 +947,7 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
     }
   }
   if (candidatePoolPersistenceInput) {
+    diagnostics.workCounts.candidatePoolPersistence += 1;
     candidatePoolPersistPromise = Promise.resolve().then(() => persistGeneratedCandidatePool({
       diagnostics,
       candidatePoolId: candidatePoolPersistenceInput.candidatePoolId,
@@ -1159,6 +1217,8 @@ function replaceDocumentField(database, value) {
 // Public adapter for the production HTTP function; callFunction continues to
 // enter through exports.main and therefore retains its Event/P1/P2/P3 shape.
 exports.runProductionRecommendationRuntime = runProductionRecommendationRuntime;
+exports.createRecommendationDiagnostics = createRecommendationDiagnostics;
+exports.recordRecommendationStage = recordRecommendationStage;
 
 function createRecommendationSceneContract(inputScene) {
   const normalizedSceneKey = normalizeScene(inputScene || 'home');
@@ -1180,6 +1240,7 @@ async function persistGeneratedCandidatePool({
   debugCandidatePoolProjection = false,
 }) {
   const startedAt = Date.now();
+  recordRecommendationStage(diagnostics, 'runtime:candidatePoolPersistenceStart');
   const poolPersist = await tryPersistCandidatePool({
     database: db,
     candidatePoolId,
@@ -1227,6 +1288,9 @@ async function persistGeneratedCandidatePool({
         ),
       }
     : null;
+  recordRecommendationStage(diagnostics, 'runtime:candidatePoolPersistenceDone', {
+    fields: { status: poolPersist.status || 'unknown' },
+  });
   return poolPersist;
 }
 
@@ -5383,6 +5447,7 @@ if (process.env.NODE_ENV === 'test') {
     canonicalizeAiCommentSource,
     createRecommendationSceneContract,
     createRecommendationDiagnostics,
+    recordRecommendationStage,
     recordNarrativePlansReady,
     emitRecommendationServerDone,
     recordServerPhase,

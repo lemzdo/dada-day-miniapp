@@ -12,6 +12,14 @@ function loadProductionRunner() {
   return loadGenerateOutfitModule().runProductionRecommendationRuntime;
 }
 
+function loadProductionDiagnostics() {
+  const module = loadGenerateOutfitModule();
+  return {
+    createDiagnostics: module.createRecommendationDiagnostics,
+    recordStage: module.recordRecommendationStage,
+  };
+}
+
 function loadProductionRenderer() {
   try {
     return require('./generateOutfit/services/recommendationVoiceRendererProductionV2').consumeProductionRendererStream;
@@ -56,8 +64,16 @@ async function readBody(req) {
   try { return JSON.parse(body); } catch { return undefined; }
 }
 
-function createRecommendationStreamHandler({ runRuntime = null, resolveContext, consumeRenderer = null } = {}) {
+function createRecommendationStreamHandler({
+  runRuntime = null,
+  resolveContext,
+  consumeRenderer = null,
+  createDiagnostics = null,
+  recordStage = null,
+} = {}) {
   return async function recommendationStream(req, res) {
+    const handlerStartedAt = Date.now();
+    const handlerMonotonicOriginAt = process.hrtime.bigint();
     const url = new URL(req?.url || '/', 'http://localhost');
     if (url.pathname !== '/recommendations' && url.pathname !== '/recommendations/') {
       res.statusCode = 404;
@@ -69,7 +85,9 @@ function createRecommendationStreamHandler({ runRuntime = null, resolveContext, 
       res.end?.('METHOD_NOT_ALLOWED');
       return;
     }
+    const authStartedMs = Number(process.hrtime.bigint() - handlerMonotonicOriginAt) / 1e6;
     const openid = readOpenId(req);
+    const authDoneMs = Number(process.hrtime.bigint() - handlerMonotonicOriginAt) / 1e6;
     if (!openid) {
       res.statusCode = 401;
       res.setHeader?.('Content-Type', 'application/json; charset=utf-8');
@@ -78,6 +96,22 @@ function createRecommendationStreamHandler({ runRuntime = null, resolveContext, 
     }
     const body = req?.method === 'GET' ? undefined : await readBody(req);
     const input = parseInput(req, body);
+    const productionDiagnostics = !runRuntime && (!createDiagnostics || !recordStage)
+      ? loadProductionDiagnostics()
+      : null;
+    const diagnosticsFactory = createDiagnostics || productionDiagnostics?.createDiagnostics;
+    const stageRecorder = recordStage || productionDiagnostics?.recordStage;
+    const diagnostics = typeof diagnosticsFactory === 'function'
+      ? diagnosticsFactory(input, handlerStartedAt, handlerMonotonicOriginAt)
+      : null;
+    if (diagnostics?.workCounts) diagnostics.workCounts.inputRead += 1;
+    const stage = (name, options = {}) => {
+      if (typeof stageRecorder !== 'function') return;
+      try { stageRecorder(diagnostics, name, options); } catch { /* Diagnostics are fail-open. */ }
+    };
+    stage('stream:handlerStart', { elapsedMs: 0 });
+    stage('auth:start', { elapsedMs: authStartedMs });
+    stage('auth:done', { elapsedMs: authDoneMs });
     const streamGeneration = typeof input.streamGeneration === 'string' && input.streamGeneration.trim()
       ? input.streamGeneration.trim()
       : `http-${Date.now().toString(36)}`;
@@ -85,6 +119,7 @@ function createRecommendationStreamHandler({ runRuntime = null, resolveContext, 
       ...(typeof resolveContext === 'function' ? (resolveContext({ req, openid }) || {}) : {}),
       userIdentity: { openid },
       interactive: true,
+      ...(diagnostics ? { diagnostics } : {}),
     };
     res.statusCode = 200;
     res.setHeader?.('Content-Type', 'text/event-stream; charset=utf-8');
@@ -96,7 +131,16 @@ function createRecommendationStreamHandler({ runRuntime = null, resolveContext, 
     const pendingCanonicalCopies = [];
     req?.on?.('aborted', () => { disconnected = true; });
     res?.on?.('close', () => { if (!res.writableEnded) disconnected = true; });
-    const emit = (event, data) => { if (!disconnected) writeSse(res, event, data); };
+    let firstWriteRecorded = false;
+    const emit = (event, data) => {
+      if (disconnected) return false;
+      const wrote = writeSse(res, event, data);
+      if (wrote && !firstWriteRecorded) {
+        firstWriteRecorded = true;
+        stage('stream:firstWrite', { batchId: data?.batchId });
+      }
+      return wrote;
+    };
     const emitCanonicalCopy = (batchId, copy) => {
       const payload = {
         type: 'canonical.copy',
@@ -108,6 +152,7 @@ function createRecommendationStreamHandler({ runRuntime = null, resolveContext, 
       else if (readyBatchId === batchId) emit('canonical.copy', payload);
     };
     try {
+      stage('runtime:start');
       const runtime = await (runRuntime || runtimeRunner || loadProductionRunner())(input, context, {
         onNarrativePlansReady: async ({ entries, batchId, copyJobPromise, persistCanonicalCopy }) => {
           // Start the existing production Qwen renderer at C2. This promise is
@@ -115,9 +160,15 @@ function createRecommendationStreamHandler({ runRuntime = null, resolveContext, 
           const copyJob = await copyJobPromise;
           const misses = Array.isArray(copyJob?.missEntries) ? copyJob.missEntries : [];
           if (misses.length === 0) return { status: 'ready_cache_hit', validatedCount: 0 };
+          stage('ai:providerStart', { batchId });
+          let firstValidatedRecorded = false;
           return (consumeRenderer || loadProductionRenderer())({
             preparedEntries: misses.map((entry) => entry.preparedEntry),
             onValidated: async (copy) => {
+              if (!firstValidatedRecorded) {
+                firstValidatedRecorded = true;
+                stage('ai:firstValidated', { batchId });
+              }
               const stored = await persistCanonicalCopy(copy);
               const entry = (entries || []).find((item) => item?.preparedEntry?.plan?.planId === copy?.planId);
               if (!stored || !entry) return;
@@ -135,6 +186,10 @@ function createRecommendationStreamHandler({ runRuntime = null, resolveContext, 
         },
         onRecommendationReady: ({ batchId, response, countContract }) => {
           readyBatchId = response?.batch?.batchId || batchId;
+          stage('runtime:recommendationReady', {
+            batchId: readyBatchId,
+            fields: diagnostics?.workCounts ? { workCounts: { ...diagnostics.workCounts } } : undefined,
+          });
           emit('recommendation.ready', {
             type: 'recommendation.ready',
             generation: streamGeneration,
@@ -164,6 +219,7 @@ function createRecommendationStreamHandler({ runRuntime = null, resolveContext, 
         ? 'deadline'
         : aiSummary?.status === 'failed_open' ? 'failed_open' : 'completed';
       emit('complete', { type: 'complete', generation: streamGeneration, batchId, reason });
+      stage('stream:complete', { batchId });
     } catch (error) {
       // Recommendation failures remain a normal HTTP error; provider failures
       // are swallowed by the runtime and still produce recommendation.ready.
@@ -176,6 +232,7 @@ function createRecommendationStreamHandler({ runRuntime = null, resolveContext, 
           reason: 'failed_open',
           errorCode: error?.code || 'RECOMMENDATION_FAILED',
         });
+        stage('stream:complete', { batchId: readyBatchId || undefined });
       }
     } finally {
       if (!res.writableEnded) res.end?.();

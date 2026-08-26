@@ -30,17 +30,22 @@ async function runBoundedCanonicalCopyRefresh({
   read,
   isCurrent,
   apply,
+  hasAuthoritativeCanonical = () => false,
   onAvailable = () => {},
   onAttempt = () => {},
   offsetsMs = CANONICAL_COPY_REFRESH_OFFSETS_MS,
   sleep = (delay) => new Promise((resolve) => setTimeout(resolve, delay)),
   now = () => Date.now(),
 } = {}) {
+  if (hasAuthoritativeCanonical()) return { status: 'ready', attempts: 0, observedCount: 0 };
   const startedAt = now();
   let observedCopyKeys = new Set();
   for (const [offsetIndex, offset] of offsetsMs.entries()) {
     const remaining = Math.max(0, offset - (now() - startedAt));
     if (remaining > 0) await sleep(remaining);
+    if (hasAuthoritativeCanonical()) {
+      return { status: 'ready', attempts: offsetIndex, observedCount: observedCopyKeys.size };
+    }
     if (!isCurrent()) return { status: 'stale', attempts: offsetIndex };
     let overlay;
     try {

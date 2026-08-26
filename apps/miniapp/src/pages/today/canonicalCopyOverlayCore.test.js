@@ -86,3 +86,16 @@ test('bounded refresh stops without applying when generation becomes stale', asy
   assert.equal(result.status, 'stale');
   assert.equal(applied, false);
 });
+
+test('authoritative canonical already present skips polling entirely', async () => {
+  let reads = 0;
+  const result = await runBoundedCanonicalCopyRefresh({
+    batchId: 'batch-1',
+    hasAuthoritativeCanonical: () => true,
+    read: async () => { reads += 1; return { batchId: 'batch-1', status: 'ready', copies: [] }; },
+    isCurrent: () => true,
+    apply: () => {},
+  });
+  assert.deepEqual(result, { status: 'ready', attempts: 0, observedCount: 0 });
+  assert.equal(reads, 0);
+});

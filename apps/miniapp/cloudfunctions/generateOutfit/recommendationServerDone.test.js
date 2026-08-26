@@ -96,3 +96,26 @@ test('diagnostic C2 is recorded only for eight complete materialized plans and C
   assert.equal(internals.recordNarrativePlansReady(mismatch, recommendations, mismatchedShadow), false);
   assert.equal(mismatch.narrativePlansReadyMs, null);
 });
+
+test('stage diagnostics reuse the request monotonic origin and required identity fields', () => {
+  const internals = loadInternals();
+  const entries = [];
+  const diagnostics = internals.createRecommendationDiagnostics({ auditId: 'stage-test' });
+  diagnostics.batchId = 'batch-stage';
+  diagnostics.executionMode = 'full_compute';
+  diagnostics.stageLogger = (_label, entry) => entries.push(entry);
+  const first = internals.recordRecommendationStage(diagnostics, 'runtime:inputReady', {
+    elapsedMs: 12.34567,
+    fields: { auditId: 'must-not-override', safeCount: 1 },
+  });
+  const second = internals.recordRecommendationStage(diagnostics, 'runtime:selectionDone');
+  assert.equal(first.elapsedMs, 12.346);
+  assert.equal(first.auditId, 'stage-test');
+  assert.equal(first.batchId, 'batch-stage');
+  assert.equal(first.executionState, 'full_compute');
+  assert.equal(first.safeCount, 1);
+  assert.equal(second.elapsedMs >= 0, true);
+  assert.deepEqual(entries, diagnostics.stageDiagnostics);
+  diagnostics.stageLogger = () => { throw new Error('logger unavailable'); };
+  assert.doesNotThrow(() => internals.recordRecommendationStage(diagnostics, 'runtime:c2'));
+});

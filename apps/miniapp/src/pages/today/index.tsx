@@ -621,6 +621,8 @@ export default function TodayPage() {
       isCurrent: () => epoch === canonicalRefreshEpochRef.current
         && isAuthContextCurrent(authContext)
         && v2SnapshotRef.current?.batchId === batchId,
+      hasAuthoritativeCanonical: () => v2SnapshotRef.current?.batchId === batchId
+        && v2SnapshotRef.current.cards.some((card) => card.copySource === 'ai_cache' && card.aiState === 'ready'),
       onAvailable: (overlay) => {
         if (firstCanonicalAvailableRef.current.has(batchId)) return;
         const first = [...overlay.copies].sort((left, right) => left.cardIndex - right.cardIndex)[0];
