@@ -304,9 +304,9 @@ If ordinary Cloud Functions cannot meet the production P0 cold SLA, move the sma
 |---:|---|---|
 | 0 | Clean up failed card0 experiment | Completed: feature baseline restored to `5d14696`; archive preserved locally |
 | 1 | Backend / Cloud Function Architecture Audit | This document committed; no business logic changed |
-| 2 | SSM Latency Spike | Cold/warm/cache/dedupe/early-prefetch evidence from real `recommendationStream`; no architecture implementation hidden in spike |
-| 3 | Backend + AI Core + Secret target freeze | Deployment boundaries, task registry contracts, SecretProvider, telemetry and rollback contract approved |
-| 4 | Formal Recommendation Core / Orchestrator refactor | Core emits `outfits`, `narrativePlans`, `identity`, `evidence`; no experimental context booleans/hooks |
+| 2 | SSM Latency Spike | Stopped and archived; DB Secret latency lab was removed from the formal feature history |
+| 3 | Recommendation target freeze | Completed for Recommendation Core, Orchestrator, transport, background and logical deployment boundaries; AI Core and SecretProvider remain deferred |
+| 4 | Formal Recommendation Core / Orchestrator refactor | Slice 1 completed: Core emits the formal six-field result and both current transports enter one Orchestrator; physical deployment consolidation remains deferred |
 | 5 | Recommendation + card0 AI bounded concurrency | First-card AI shares interactive unit, bounded and fail-open to deterministic result |
 | 6 | Cold / warm / AI / mutation / P3 real-user E2E | Measured acceptance across Today and mutations; no synthetic-only sign-off |
 | 7 | Gradual migration of other AI tasks | Task-by-task adoption of AI Core; no Big Bang migration |
@@ -318,7 +318,79 @@ If ordinary Cloud Functions cannot meet the production P0 cold SLA, move the sma
 | 13 | Clothing relationship graph / knowledge graph / personalization learning | Start only after Phase 12; not current critical path |
 | 14 | Virtual try-on MVP | Start only after Phase 13 readiness; not current critical path |
 
-`NEXT_PHASE=SSM_LATENCY_SPIKE`. This audit must stop before executing Phase 2.
+`NEXT_PHASE=Recommendation + first-card AI bounded concurrency`. That phase may connect `@d1d/ai-core`, SecretProvider and card0 AI to the Orchestrator; this refactor does not start that work.
+
+## L. Recommendation Architecture Freeze
+
+### CURRENT
+
+`recommendationStream` and callable `generateOutfit` remain two physical transport adapters. Both enter the same process-local production seam, `runProductionRecommendationRuntime`, and no synchronous Function-to-Function RPC is introduced.
+
+The former implicit Runtime lifecycle has been split at C2. Selection and deterministic narrative planning finish before candidate-pool writes, copy admission, required Batch Core persistence or Home Light response assembly begin.
+
+### TARGET
+
+```text
+recommendationStream HTTP/SSE adapter ─┐
+                                      ├─> runProductionRecommendationRuntime
+generateOutfit callFunction adapter ──┘       -> Recommendation Orchestrator
+                                                -> Recommendation Core
+                                                -> CORE_RESULT_AVAILABLE
+                                                -> parallel fail-open work admission
+                                                -> required Batch Core persistence
+                                                -> Light Response assembly
+                                                -> recommendation.ready
+```
+
+This is one logical Recommendation Service with one Core and one Orchestrator. Physical deployment consolidation is deliberately deferred; Runtime, transport, deployment and AI are not changed in one step.
+
+### Core responsibility
+
+Recommendation Core owns normalized recommendation input, deterministic candidate-pool identity, current Exact/Refresh/Full Compute admission semantics, candidate/ranking and outfit selection order, evidence, deterministic narrative plans and execution state.
+
+Its formal result reuses the current runtime models and has these required top-level fields:
+
+```js
+{
+  identity,
+  executionState,
+  outfits,
+  narrativePlans,
+  evidence,
+  metadata,
+}
+```
+
+`identity` is the current candidate-pool identity; `outfits` is the existing ordered recommendations collection; `narrativePlans` is the existing deterministic styling-plan output; `executionState` preserves `full_compute`, `candidate_pool_hit` and `fallback_recompute` plus cache and availability/count state. The Core does not emit a wire response and does not own HTTP/SSE, wx transport, provider calls, first-card waiting, Event policy, UI staging or persistence.
+
+### Orchestrator responsibility
+
+Recommendation Orchestrator owns the single lifecycle used by both adapters:
+
+1. Normalize input through the Core contract and execute the Core.
+2. Publish `CORE_RESULT_AVAILABLE` through `onCoreResultAvailable`.
+3. Admit the existing candidate-pool/copy/overlay work and preserve fail-open settlement.
+4. Run the required atomic Batch Core persistence barrier.
+5. Assemble the unchanged Home Light response and publish recommendation ready.
+
+The existing `onNarrativePlansReady` notification remains only as a compatibility lifecycle notification for current SSE canonical-copy delivery. It is not an experiment boolean, capability patch or C2 feature switch. No first-card AI provider is connected in this slice.
+
+### Transport responsibility
+
+The HTTP/SSE adapter continues to own route/auth parsing, SSE headers, disconnect handling and event serialization. The callable adapter continues to own Cloud Function action dispatch and the `{ code, data, message }` envelope. Neither adapter owns candidate selection, ranking, Core result construction, required persistence ordering or duplicate recommendation flow.
+
+### Background responsibility
+
+Candidate-pool persistence, canonical-copy work and overlay reads remain post-Core fail-open work. Candidate Pool atomic visibility, Batch Core atomic persistence, P2 Event scheduling, P3 `TARGET_8`, partial `1..7`, `seenOutfitKeys`, diversity exhaustion and stale next-batch prevention retain their existing contracts. Remaining canonical copy and future P2/P3 work stay outside the Light Response durability barrier unless their current contract explicitly requires otherwise.
+
+Freeze invariants for this slice:
+
+- `SINGLE_CORE=true`
+- `SINGLE_ORCHESTRATOR=true`
+- `LIGHT_RESPONSE_PRESERVED=true`
+- `SCREENSHOT_VISIBLE_CHANGE=false`
+- `FIRST_CARD_AI_CONNECTED=false`
+- `PHYSICAL_DEPLOYMENT_MERGED=false`
 
 ## Top 10 architecture findings
 

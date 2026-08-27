@@ -15,7 +15,9 @@ test('HTTP staging contains one deploy-local copy of the canonical generateOutfi
     execFileSync(process.execPath, [path.join(__dirname, 'stage-recommendation-stream.js'), stage], { stdio: 'pipe' });
     assert.ok(fs.existsSync(path.join(stage, 'index.js')));
     assert.ok(fs.existsSync(path.join(stage, 'scf_bootstrap')));
-    assert.ok(fs.existsSync(path.join(stage, 'generateOutfit', 'runtime', 'recommendationRuntime.js')));
+    assert.ok(fs.existsSync(path.join(stage, 'generateOutfit', 'runtime', 'recommendationCore.js')));
+    assert.ok(fs.existsSync(path.join(stage, 'generateOutfit', 'runtime', 'recommendationOrchestrator.js')));
+    assert.equal(fs.existsSync(path.join(stage, 'generateOutfit', 'runtime', 'recommendationRuntime.js')), false);
     assert.doesNotMatch(fs.readFileSync(path.join(stage, 'index.js'), 'utf8'), /recommendationTransportLab|httpFunctionSmokeLab/);
     const stagedFiles = [];
     const walk = (directory) => fs.readdirSync(directory, { withFileTypes: true }).forEach((entry) => {

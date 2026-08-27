@@ -8,11 +8,12 @@ const source = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
 test('Today has one Recommendation Runtime entry and no V1/V2 selector', () => {
   assert.doesNotMatch(source, /RECOMMENDATION_V2_ENABLED/);
   assert.doesNotMatch(source, /shouldUseRecommendationV2/);
-  assert.match(source, /return generateRecommendationV2\(\{/);
+  assert.match(source, /runRecommendationOrchestrator\(input/);
+  assert.match(source, /persistAndAssembleProductionRecommendation/);
 });
 
 test('normal generation uses minimal atomic batch persistence before legacy helpers', () => {
-  const entry = source.indexOf('return generateRecommendationV2({');
+  const entry = source.indexOf('async function persistAndAssembleProductionRecommendation');
   assert.ok(entry >= 0);
   const runtime = source.slice(source.indexOf('async function generateRecommendationV2'), source.indexOf('function validateCandidatePoolAvailability'));
   assert.match(runtime, /persistRecommendationBatchV2/);
@@ -27,15 +28,25 @@ test('FULL_COMPUTE schedules existing candidate-pool persistence while cache hit
 });
 
 test('C2 launches noncritical copy, candidate-pool and overlay work without putting it on ready path', () => {
-  const c2Start = source.indexOf("recordRecommendationStage(diagnostics, 'runtime:c2'");
-  const readyInput = source.indexOf('return generateRecommendationV2({', c2Start);
+  const c2Start = source.indexOf('async function prepareProductionRecommendationWork');
+  const readyInput = source.indexOf('async function persistAndAssembleProductionRecommendation', c2Start);
   const postC2 = source.slice(c2Start, readyInput);
   assert.ok(c2Start >= 0 && readyInput > c2Start);
   assert.match(postC2, /candidatePoolPersistPromise = Promise\.resolve\(\)\.then/);
   assert.match(postC2, /copyJobPromise = prepareRecommendationCopyJob/);
   assert.match(postC2, /copyOverlayPromise = copyJobPromise\.then/);
-  assert.match(postC2, /onPostC2TasksScheduled/);
+  assert.match(postC2, /tasks: \[copyJobPromise, candidatePoolPersistPromise, copyOverlayPromise\]/);
   assert.doesNotMatch(postC2, /copyJob\s*=\s*await copyJobPromise|await candidatePoolPersistPromise|await copyOverlayPromise/);
+});
+
+test('Core result is available before persistence and response assembly', () => {
+  const start = source.indexOf('async function computeProductionRecommendationCore');
+  const end = source.indexOf('async function prepareProductionRecommendationWork', start);
+  const core = source.slice(start, end);
+  assert.match(core, /identity: candidatePoolIdentity/);
+  assert.match(core, /outfits: recommendations/);
+  assert.match(core, /narrativePlans: stylingPlans\?\.plans/);
+  assert.doesNotMatch(core, /persistGeneratedCandidatePool|prepareRecommendationCopyJob|persistRecommendationBatchV2|generateRecommendationV2/);
 });
 
 test('required batch persistence remains the only post-C2 durability barrier before ready', () => {
@@ -48,7 +59,7 @@ test('required batch persistence remains the only post-C2 durability barrier bef
 
 test('event parity and HTTP lifecycle both settle post-C2 persistence safely', () => {
   const start = source.indexOf('async function runProductionRecommendationRuntime');
-  const end = source.indexOf('async function generate(', start);
+  const end = source.indexOf('async function computeProductionRecommendationCore', start);
   const runtime = source.slice(start, end);
   assert.match(runtime, /runtime\.backgroundDone = backgroundPromise/);
   assert.match(runtime, /if \(!context\.interactive\) await backgroundPromise/);

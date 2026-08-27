@@ -188,7 +188,7 @@ const {
   canPersistAiReviewAsReady,
   resolveAiReviewFailureSettlement,
 } = require('./services/aiReviewSettlement');
-const { runRecommendationRuntime: runRecommendationRuntimeCore } = require('./runtime/recommendationRuntime');
+const { runRecommendationOrchestrator } = require('./runtime/recommendationOrchestrator');
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
@@ -681,8 +681,8 @@ function measureCanonicalBatchInput(records = []) {
   return { totalBytes, structuralBytes: 0, measuredBytes: totalBytes, cardBytes: records.map(serializedBytes), topLevelFields, primaryCategories: [], unclassifiedFields: topLevelFields.map((item) => item.field), classificationMethod: 'native_light_observation_v1', nestedHotspots: [], nestedHotspotsAreNonAdditive: true };
 }
 
-// Single production Runtime seam used by callFunction and HTTP/SSE. The
-// transport supplies identity; the existing generate core remains unchanged.
+// Single production Runtime seam used by callFunction and HTTP/SSE. Core
+// planning completes before Orchestrator-owned background and response stages.
 async function runProductionRecommendationRuntime(input, context = {}, lifecycleHooks = context.lifecycleHooks || {}) {
   const diagnostics = context.diagnostics || createRecommendationDiagnostics(input);
   let completionPromise = Promise.resolve();
@@ -703,23 +703,22 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
       return backgroundPromise;
     },
   };
-  const runtime = await runRecommendationRuntimeCore(input, {
+  const runtime = await runRecommendationOrchestrator(input, {
     ...context,
     userIdentity: context.userIdentity || (() => {
       try { return { openid: cloud.getWXContext().OPENID }; } catch { return {}; }
     })(),
-    recommendationCore: async (normalized, runtimeContext) => {
-      const response = await generate(normalized, diagnostics, {
+    loadCandidatePoolForIdentity: context.loadCandidatePoolForIdentity
+      || ((request) => loadCandidatePool({ database: db, ...request })),
+    computeRecommendation: async (normalized, runtimeContext) => {
+      return computeProductionRecommendationCore(normalized, diagnostics, {
         ...context,
         ...runtimeContext,
         lifecycleHooks: runtimeHooks,
       });
-      return {
-        response,
-        batchId: response?.batch?.batchId,
-        countContract: response?.batch?.countContract,
-      };
     },
+    prepareRecommendationWork: async (core) => prepareProductionRecommendationWork(core, diagnostics, context),
+    persistAndAssembleRecommendation: async (core, prepared) => persistAndAssembleProductionRecommendation(core, prepared, diagnostics),
   }, runtimeHooks);
   runtime.completionPromise = completionPromise;
   runtime.aiPromise = completionPromise;
@@ -735,7 +734,7 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
   return runtime;
 }
 
-async function generate(event, diagnostics = createRecommendationDiagnostics(event), scfContext = {}) {
+async function computeProductionRecommendationCore(event, diagnostics = createRecommendationDiagnostics(event), scfContext = {}) {
   const requestParseStartedAt = diagnostics.startedAt;
   diagnostics.stage = 'loadWardrobe';
   recordServerPhase(diagnostics, 'requestParse', requestParseStartedAt);
@@ -782,7 +781,6 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
   const weatherMode = weather.mode;
   const weatherSnapshot = toWeatherSnapshot(weather);
   recordRecommendationStage(diagnostics, 'runtime:inputReady');
-  const presentationEvidenceEnabled = isPresentationEvidenceMode(event.presentationEvidenceMode);
   const debugRecommendationAudit = isRecommendationQaAuditEnabled(
     event.debugRecommendationAudit,
     process.env.RECOMMENDATION_QA_AUDIT_ENABLED,
@@ -808,7 +806,6 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
     isRefreshRequest,
     requestedCandidatePoolId,
   });
-  let baseRecommendationBatchId = undefined;
   recordRecommendationStage(diagnostics, 'runtime:cacheAdmissionDone', {
     fields: {
       refreshRequest: isRefreshRequest,
@@ -819,8 +816,11 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
   if (requestedCandidatePoolId) {
     diagnostics.workCounts.candidateLoad += 1;
     const candidatePoolLoadStartedAt = Date.now();
-    const poolResult = await loadCandidatePool({
-      database: db,
+    const loadCandidatePoolForIdentity = scfContext.loadCandidatePoolForIdentity;
+    if (typeof loadCandidatePoolForIdentity !== 'function') {
+      throw new Error('RECOMMENDATION_CACHE_ADAPTER_REQUIRED');
+    }
+    const poolResult = await loadCandidatePoolForIdentity({
       candidatePoolId: requestedCandidatePoolId,
       identity: candidatePoolIdentity,
       now: Date.now(),
@@ -864,7 +864,6 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
     fields: { attempted: Boolean(requestedCandidatePoolId), cacheHit },
   });
 
-  let candidatePoolPersistPromise = Promise.resolve(null);
   let candidatePoolPersistenceInput = null;
   if (!recommendations) {
     const candidateGenerationStartedAt = Date.now();
@@ -882,7 +881,6 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
       diagnostics,
     });
     recordServerPhase(diagnostics, 'candidateGeneration', candidateGenerationStartedAt);
-    baseRecommendationBatchId = recommendationBatchId;
     candidatePoolPersistenceInput = {
       candidatePoolId: recommendationBatchId,
       candidates: recommendations.candidatePoolCandidates,
@@ -905,130 +903,145 @@ async function generate(event, diagnostics = createRecommendationDiagnostics(eve
   diagnostics.batchId = v2BatchId;
   recordNarrativePlansReady(diagnostics, recommendations, stylingPlans);
   recordRecommendationStage(diagnostics, 'runtime:c2', { batchId: v2BatchId });
-  if (candidatePoolPersistenceInput) {
+  return {
+    identity: candidatePoolIdentity,
+    executionState: {
+      executionMode,
+      cacheHit,
+      cacheMissReason,
+      candidatePoolAgeMs,
+      countContract: recommendations.countContract,
+      limited: recommendations.limited === true,
+      exhausted: recommendations.exhausted === true,
+    },
+    outfits: recommendations,
+    narrativePlans: stylingPlans?.plans || [],
+    evidence: {
+      sceneContract,
+      weatherSnapshot,
+      availability: recommendations.countContract,
+      diagnostics,
+    },
+    metadata: {
+      event,
+      openid: OPENID,
+      scene,
+      sceneContract,
+      targetDate,
+      timeOfDay: event.timeOfDay || 'all_day',
+      weatherMode,
+      weatherSnapshot,
+      now,
+      batchId: v2BatchId,
+      candidatePoolPersistenceInput,
+      debugRecommendationAudit,
+      narrativePlanStatus: stylingPlans?.diagnostics?.status,
+    },
+  };
+}
+
+async function prepareProductionRecommendationWork(core, diagnostics, context = {}) {
+  const metadata = core?.metadata || {};
+  let candidatePoolPersistPromise = Promise.resolve(null);
+  const candidatePoolInput = metadata.candidatePoolPersistenceInput;
+  if (candidatePoolInput) {
     diagnostics.workCounts.candidatePoolPersistence += 1;
     candidatePoolPersistPromise = Promise.resolve().then(() => persistGeneratedCandidatePool({
-      diagnostics,
-      candidatePoolId: candidatePoolPersistenceInput.candidatePoolId,
-      identity: candidatePoolIdentity,
-      candidates: candidatePoolPersistenceInput.candidates,
-      debugRecommendationAudit,
-      debugCandidatePoolProjection: candidatePoolPersistenceInput.debugCandidatePoolProjection,
+      diagnostics, candidatePoolId: candidatePoolInput.candidatePoolId,
+      identity: core.identity, candidates: candidatePoolInput.candidates,
+      debugRecommendationAudit: metadata.debugRecommendationAudit,
+      debugCandidatePoolProjection: candidatePoolInput.debugCandidatePoolProjection,
     })).catch((error) => {
-      console.warn('[RecommendationCandidatePoolPersistFailOpen]', {
-        auditId: diagnostics.auditId,
-        batchId: v2BatchId,
-        failureCode: getRecommendationErrorCode(error),
-      });
+      console.warn('[RecommendationCandidatePoolPersistFailOpen]', { auditId: diagnostics.auditId, batchId: metadata.batchId, failureCode: getRecommendationErrorCode(error) });
       return { status: 'failed_open' };
     });
   }
-  const responseCopyJob = {
-    status: 'pending',
-    initialCopies: [],
-    dispatch: { accepted: false },
-  };
+  const responseCopyJob = { status: 'pending', initialCopies: [], dispatch: { accepted: false } };
   let copyJobPromise = Promise.resolve(null);
   let copyOverlayPromise = Promise.resolve(null);
-  if (recommendations.length > 0
-    && stylingPlans?.diagnostics?.status === 'completed'
-    && stylingPlans.plans.length === recommendations.length) {
-    const entries = stylingPlans.plans.map((plan, position) => buildProductionRendererEntry(
+  let rendererEntries = [];
+  const plans = Array.isArray(core.narrativePlans) ? core.narrativePlans : [];
+  if (core.outfits.length > 0
+    && metadata.narrativePlanStatus === 'completed'
+    && plans.length === core.outfits.length) {
+    const entries = plans.map((plan, position) => buildProductionRendererEntry(
       plan,
-      recommendations[position],
+      core.outfits[position],
       position,
-      recommendations[position]?.outfitKey,
+      core.outfits[position]?.outfitKey,
     ));
+    rendererEntries = entries;
     copyJobPromise = prepareRecommendationCopyJob({
       database: db,
-      openid: OPENID,
-      batchId: v2BatchId,
-      inputIdentityHash: candidatePoolIdentity.identityHash,
+      openid: metadata.openid,
+      batchId: metadata.batchId,
+      inputIdentityHash: core.identity.identityHash,
       rendererVersion: PRODUCTION_RENDERER_VERSION,
       entries,
-      // Interactive HTTP owns the renderer lifecycle; Event dispatch remains
-      // the background transport for callFunction/P2/P3.
-      dispatch: (payload) => dispatchScfEvent({ event: payload, context: scfContext }),
-      executionMode: scfContext?.interactive ? 'interactive' : 'event',
-    }).then((preparedCopyJob) => {
-      Object.assign(responseCopyJob, preparedCopyJob || {});
-      return preparedCopyJob;
-    }).catch((error) => {
-      responseCopyJob.status = 'failed_open';
-      responseCopyJob.dispatch = { accepted: false };
-      console.warn('[RecommendationCopyDispatchFailOpen]', {
-        auditId: diagnostics.auditId,
-        batchId: v2BatchId,
-        failureCode: getRecommendationErrorCode(error),
-      });
-      return null;
-    });
-    diagnostics.workCounts.batchAdmission += 1;
-    copyOverlayPromise = copyJobPromise.then(async (preparedCopyJob) => {
-      if (!preparedCopyJob?.jobId) return null;
-      try {
-        const latestCopyOverlay = await readRecommendationCopyOverlay(
-          db,
-          OPENID,
-          v2BatchId,
-          PRODUCTION_RENDERER_VERSION,
-        );
-        if (latestCopyOverlay.copies.length > 0) {
-          responseCopyJob.initialCopies = latestCopyOverlay.copies;
-        }
-        return latestCopyOverlay;
-      } catch {
+      dispatch: (payload) => dispatchScfEvent({ event: payload, context }),
+      executionMode: context?.interactive ? 'interactive' : 'event',
+    })
+      .then((job) => { Object.assign(responseCopyJob, job || {}); return job; })
+      .catch((error) => {
+        responseCopyJob.status = 'failed_open';
+        responseCopyJob.dispatch = { accepted: false };
+        console.warn('[RecommendationCopyDispatchFailOpen]', { auditId: diagnostics.auditId, batchId: metadata.batchId, failureCode: getRecommendationErrorCode(error) });
         return null;
-      }
-    });
-    if (typeof scfContext?.lifecycleHooks?.onNarrativePlansReady === 'function') {
+      });
+    diagnostics.workCounts.batchAdmission += 1;
+    copyOverlayPromise = copyJobPromise.then(async (job) => {
+      if (!job?.jobId) return null;
       try {
-        void Promise.resolve(scfContext.lifecycleHooks.onNarrativePlansReady({
-          plans: stylingPlans.plans,
-          entries,
-          batchId: v2BatchId,
-          recommendations,
-          copyJobPromise,
-          persistCanonicalCopy: async (copy) => {
-            const preparedCopyJob = await copyJobPromise;
-            const entry = preparedCopyJob?.entries?.find((candidate) => candidate.preparedEntry?.plan?.planId === copy?.planId);
-            if (!entry) throw new Error('VOICE_RENDERER_OUTPUT_PLAN_BINDING');
-            return persistValidatedCanonicalCopy(db, {
-              ...preparedCopyJob,
-              _openid: OPENID,
-            }, entry, copy);
-          },
-        })).catch(() => undefined);
-      } catch { /* direct interactive rendering is fail-open */ }
-    }
+        const overlay = await readRecommendationCopyOverlay(db, metadata.openid, metadata.batchId, PRODUCTION_RENDERER_VERSION);
+        if (overlay.copies.length > 0) responseCopyJob.initialCopies = overlay.copies;
+        return overlay;
+      } catch { return null; }
+    });
   } else {
     responseCopyJob.status = 'noop';
   }
-  if (typeof scfContext?.lifecycleHooks?.onPostC2TasksScheduled === 'function') {
-    try {
-      void Promise.resolve(scfContext.lifecycleHooks.onPostC2TasksScheduled({
-        tasks: [copyJobPromise, candidatePoolPersistPromise, copyOverlayPromise],
-        batchId: v2BatchId,
-      })).catch(() => undefined);
-    } catch {
-      /* Post-C2 settlement tracking is fail-open for the recommendation. */
-    }
-  }
-  diagnostics.executionMode = executionMode;
+  const persistCanonicalCopy = async (copy) => {
+    const job = await copyJobPromise;
+    const entry = job?.entries?.find((candidate) => candidate.preparedEntry?.plan?.planId === copy?.planId);
+    if (!entry) throw new Error('VOICE_RENDERER_OUTPUT_PLAN_BINDING');
+    return persistValidatedCanonicalCopy(db, { ...job, _openid: metadata.openid }, entry, copy);
+  };
+  return {
+    batchId: metadata.batchId,
+    responseCopyJob,
+    copyJobPromise,
+    copyOverlayPromise,
+    candidatePoolPersistPromise,
+    tasks: [copyJobPromise, candidatePoolPersistPromise, copyOverlayPromise],
+    narrativePlans: plans,
+    rendererEntries,
+    narrativePayload: {
+      plans,
+      entries: rendererEntries,
+      batchId: metadata.batchId,
+      recommendations: core.outfits,
+      copyJobPromise,
+      persistCanonicalCopy,
+    },
+  };
+}
+
+async function persistAndAssembleProductionRecommendation(core, prepared, diagnostics) {
+  const metadata = core.metadata;
   return generateRecommendationV2({
-    event,
-    recommendations,
-    batchId: v2BatchId,
-    copyJob: responseCopyJob,
-    openid: OPENID,
-    sceneContract,
-    scene,
-    targetDate,
-    timeOfDay: event.timeOfDay || 'all_day',
-    weatherMode,
-    weatherSnapshot,
-    candidatePoolIdentity,
-    now,
+    event: metadata.event,
+    recommendations: core.outfits,
+    batchId: metadata.batchId,
+    copyJob: prepared.responseCopyJob,
+    openid: metadata.openid,
+    sceneContract: metadata.sceneContract,
+    scene: metadata.scene,
+    targetDate: metadata.targetDate,
+    timeOfDay: metadata.timeOfDay,
+    weatherMode: metadata.weatherMode,
+    weatherSnapshot: metadata.weatherSnapshot,
+    candidatePoolIdentity: core.identity,
+    now: metadata.now,
     diagnostics,
   });
 }
