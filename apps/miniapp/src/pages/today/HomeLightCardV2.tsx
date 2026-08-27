@@ -1,5 +1,6 @@
 import { Image, Text, View } from '@tarojs/components';
 import type { HomeLightCardV2 } from '@starter-template/types';
+import { resolveGarmentAsset } from '@/utils/garmentAssetResolution';
 
 export interface HomeLightCardV2Props {
   card: HomeLightCardV2;
@@ -21,7 +22,7 @@ export function HomeLightCardV2({ card, position, total, onDetail }: HomeLightCa
         {card.items.map((item) => (
           <View className="collage-item" key={item.clothingId}>
             <View className="image-stage">
-              <Image className="item-image" src={item.displayImageUrl} mode="aspectFit" />
+              <Image className="item-image" src={resolveGarmentAsset(item as unknown as Record<string, unknown>, 'CARD', { compatProfile: 'TODAY_CARD' }) || item.displayImageUrl} mode="aspectFit" />
             </View>
           </View>
         ))}

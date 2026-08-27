@@ -2,6 +2,7 @@ import { ScrollView, Text, View } from '@tarojs/components';
 import Taro, { useDidShow, useLoad, usePullDownRefresh } from '@tarojs/taro';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { SafeImage } from '@/components/SafeImage';
+import { resolveGarmentAsset } from '@/utils/garmentAssetResolution';
 import { useAuthRuntime } from '@/hooks/useAuthRuntime';
 import { invalidateHistoryCache } from '@/lib/cacheInvalidation';
 import { listOutfitHistory } from '@/lib/cloud';
@@ -428,7 +429,7 @@ export default function OutfitHistoryPage() {
                         <SafeImage
                           key={item.clothingId}
                           className="record-thumb"
-                          src={item.thumbnailUrl || item.imageUrl}
+                          src={resolveGarmentAsset(item as unknown as Record<string, unknown>, 'CARD', { compatProfile: 'SAVED_CARD' })}
                           cacheIdentity={item.clothingId}
                           mode="aspectFill"
                           lazyLoad

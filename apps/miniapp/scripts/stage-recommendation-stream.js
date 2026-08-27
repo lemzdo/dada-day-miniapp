@@ -11,6 +11,7 @@ const { collectRuntimeDependencies } = require('./check-generate-outfit-package'
 const root = path.resolve(__dirname, '..');
 const source = path.join(root, 'cloudfunctions', 'generateOutfit');
 const aiCoreSource = path.resolve(root, '..', '..', 'packages', 'ai-core');
+const garmentAssetsSource = path.resolve(root, '..', '..', 'packages', 'garment-assets');
 const destination = path.resolve(process.argv[2] || path.join(root, '.staging', 'recommendationStream'));
 const environmentFile = process.argv[3] ? path.resolve(process.argv[3]) : null;
 const environmentId = String(process.argv[4] || process.env.CLOUDBASE_ENV_ID || '').trim();
@@ -57,6 +58,7 @@ for (const sourceFile of collectRuntimeDependencies(source)) {
 }
 const stagedPackage = JSON.parse(fs.readFileSync(path.join(source, 'package.json'), 'utf8'));
 stagedPackage.dependencies['@d1d/ai-core'] = 'file:vendor/ai-core';
+stagedPackage.dependencies['@d1d/garment-assets'] = 'file:vendor/garment-assets';
 fs.writeFileSync(path.join(stagedRuntime, 'package.json'), `${JSON.stringify(stagedPackage, null, 2)}\n`);
 // CloudBase remote npm cannot resolve workspace:* (and ai-core is private),
 // so stage the shared package as a deploy-local file dependency. This is a
@@ -78,6 +80,12 @@ const copyAiCoreRuntime = (directory, target) => {
   }
 };
 copyAiCoreRuntime(path.join(aiCoreSource, 'src'), path.join(stagedAiCore, 'src'));
+if (!fs.existsSync(path.join(garmentAssetsSource, 'package.json'))) {
+  throw new Error(`Shared garment assets package is missing: ${garmentAssetsSource}`);
+}
+const stagedGarmentAssets = path.join(stagedRuntime, 'vendor', 'garment-assets');
+fs.mkdirSync(stagedGarmentAssets, { recursive: true });
+fs.cpSync(garmentAssetsSource, stagedGarmentAssets, { recursive: true, filter: (sourcePath) => !sourcePath.endsWith('.test.js') && !sourcePath.includes(`${path.sep}node_modules${path.sep}`) });
 fs.cpSync(path.join(root, 'cloudfunctions', 'recommendationStream', 'index.js'), path.join(destination, 'index.js'));
 fs.cpSync(path.join(root, 'cloudfunctions', 'recommendationStream', 'package.json'), path.join(destination, 'package.json'));
 fs.cpSync(path.join(root, 'cloudfunctions', 'recommendationStream', 'scf_bootstrap'), path.join(destination, 'scf_bootstrap'));

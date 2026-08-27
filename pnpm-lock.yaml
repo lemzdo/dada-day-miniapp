@@ -41,6 +41,9 @@ importers:
       '@d1d/ai-core':
         specifier: workspace:*
         version: link:../../packages/ai-core
+      '@d1d/garment-assets':
+        specifier: workspace:*
+        version: link:../../packages/garment-assets
       '@starter-template/types':
         specifier: workspace:*
         version: link:../../packages/types
@@ -235,6 +238,8 @@ importers:
       rimraf:
         specifier: ^6.0.1
         version: 6.1.3
+
+  packages/garment-assets: {}
 
   packages/hooks:
     dependencies:

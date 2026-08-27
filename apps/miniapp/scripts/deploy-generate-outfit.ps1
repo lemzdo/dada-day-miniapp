@@ -42,6 +42,7 @@ try {
   $stagedPackagePath = Join-Path $stageRoot 'package.json'
   $stagedPackage = Get-Content -LiteralPath $stagedPackagePath -Raw | ConvertFrom-Json
   $stagedPackage.dependencies.'@d1d/ai-core' = 'file:vendor/ai-core'
+  $stagedPackage.dependencies.'@d1d/garment-assets' = 'file:vendor/garment-assets'
   $stagedPackage | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $stagedPackagePath -Encoding utf8
 
   # Stage the shared AI core as a local file dependency. CloudBase remote npm
@@ -60,6 +61,17 @@ try {
     New-Item -ItemType Directory -Path (Split-Path -Parent $aiCoreTarget) -Force | Out-Null
     Copy-Item -LiteralPath $aiCoreFile.FullName -Destination $aiCoreTarget -Force
   }
+
+  # Stage garment asset semantics as a deploy-local dependency. Source keeps
+  # workspace:* for local development; only this disposable manifest is
+  # rewritten for CloudBase remote npm installation.
+  $garmentAssetsSource = Join-Path $repoRoot 'packages\garment-assets'
+  if (-not (Test-Path -LiteralPath (Join-Path $garmentAssetsSource 'package.json'))) {
+    throw "Shared garment assets package is missing: $garmentAssetsSource"
+  }
+  $garmentAssetsDestination = Join-Path $stageRoot 'vendor\garment-assets'
+  Copy-Item -LiteralPath $garmentAssetsSource -Destination $garmentAssetsDestination -Recurse -Force
+  Get-ChildItem -LiteralPath $garmentAssetsDestination -Recurse -File | Where-Object { $_.Name -match '\.test\.js$' -or $_.FullName -match '\\node_modules\\' } | Remove-Item -Force
 
   & node $checker $stageRoot
   if ($LASTEXITCODE -ne 0) { throw 'Staged generateOutfit package integrity check failed; deployment was not attempted.' }

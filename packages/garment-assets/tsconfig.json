@@ -1,0 +1,5 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "allowJs": true, "checkJs": false, "module": "CommonJS", "moduleResolution": "Node", "types": ["node"] },
+  "include": ["src/**/*.js", "src/**/*.d.ts", "tests/**/*.js"]
+}

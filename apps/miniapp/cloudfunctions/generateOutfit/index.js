@@ -46,6 +46,7 @@ const {
   resolveCanonicalCopyForStorage,
 } = require('./services/recommendationCanonicalCopyRuntimeV2');
 const { loadActiveWardrobe } = require('./services/loadActiveWardrobe');
+const { applySnapshotAsset } = require('./services/garmentAssetAdapter');
 const {
   createAiReviewServiceError,
   getAiReviewInternalErrorCode,
@@ -3617,7 +3618,7 @@ function buildDetailedSnapshotItems(clothingIds, base) {
 
   return clothingIds.map((id) => {
     const snapshot = snapshotMap.get(id);
-    return {
+    return applySnapshotAsset({
       clothingId: id,
       itemId: id,
       type: snapshot?.type || snapshot?.category || 'other',
@@ -3632,7 +3633,7 @@ function buildDetailedSnapshotItems(clothingIds, base) {
       name: snapshot?.name || snapshot?.category || '衣服',
       deletedAt: snapshot?.deletedAt || null,
       ...pickCopyEvidenceSnapshotFields(snapshot),
-    };
+    }, snapshot);
   });
 }
 
@@ -3642,7 +3643,7 @@ function normalizeDetailedSnapshotItems(value) {
         .map((item) => {
           const clothingId = item && (item.clothingId || item.itemId);
           if (!clothingId || typeof clothingId !== 'string') return null;
-          return {
+          return applySnapshotAsset({
             clothingId,
             itemId: clothingId,
             type: item.type || item.subcategory || item.name || item.category || 'other',
@@ -3657,7 +3658,7 @@ function normalizeDetailedSnapshotItems(value) {
             name: item.name || item.subcategory || item.category || '衣服',
             deletedAt: item.deletedAt || (item.isDeleted ? new Date().toISOString() : null),
             ...pickCopyEvidenceSnapshotFields(item),
-          };
+          }, item);
         })
         .filter(Boolean)
     : [];
@@ -3667,7 +3668,7 @@ function normalizeDetailedPayloadItems(value) {
   return Array.isArray(value)
     ? value
         .filter((item) => item && typeof item.clothingId === 'string')
-        .map((item) => ({
+        .map((item) => applySnapshotAsset({
           clothingId: item.clothingId,
           itemId: item.clothingId,
           type: item.subcategory || item.category || 'other',
@@ -3682,7 +3683,7 @@ function normalizeDetailedPayloadItems(value) {
           name: item.name || item.subcategory || item.category || '衣服',
           deletedAt: item.deletedAt || (item.isDeleted ? new Date().toISOString() : null),
           ...pickCopyEvidenceSnapshotFields(item),
-        }))
+        }, item))
     : [];
 }
 
@@ -3931,7 +3932,7 @@ function buildSnapshotItems(clothingIds, base, current) {
 
   return clothingIds.map((id) => {
     const snapshot = snapshotMap.get(id);
-    return {
+    return applySnapshotAsset({
       itemId: id,
       name: snapshot?.name || snapshot?.category || '衣服',
       category: snapshot?.category || 'other',
@@ -3941,7 +3942,7 @@ function buildSnapshotItems(clothingIds, base, current) {
       thumbnailUrl: snapshot?.thumbnailUrl || snapshot?.displayImageUrl || snapshot?.imageUrl || '',
       isDeleted: Boolean(snapshot?.isDeleted),
       ...pickCopyEvidenceSnapshotFields(snapshot),
-    };
+    }, snapshot);
   });
 }
 
@@ -3949,7 +3950,7 @@ function normalizeSnapshotItems(value) {
   return Array.isArray(value)
     ? value
         .filter((item) => item && typeof item.itemId === 'string')
-        .map((item) => ({
+        .map((item) => applySnapshotAsset({
           itemId: item.itemId,
           name: item.name || item.category || '衣服',
           category: item.category || 'other',
@@ -3959,7 +3960,7 @@ function normalizeSnapshotItems(value) {
           thumbnailUrl: item.thumbnailUrl || item.displayImageUrl || item.imageUrl || '',
           isDeleted: Boolean(item.isDeleted),
           ...pickCopyEvidenceSnapshotFields(item),
-        }))
+        }, item))
     : [];
 }
 
@@ -3967,7 +3968,7 @@ function normalizePayloadItems(value) {
   return Array.isArray(value)
     ? value
         .filter((item) => item && typeof item.clothingId === 'string')
-        .map((item) => ({
+        .map((item) => applySnapshotAsset({
           itemId: item.clothingId,
           name: item.subcategory || item.category || '衣服',
           category: item.category || 'other',
@@ -3977,14 +3978,14 @@ function normalizePayloadItems(value) {
           thumbnailUrl: item.thumbnailUrl || item.displayImageUrl || item.imageUrl || '',
           isDeleted: Boolean(item.isDeleted),
           ...pickCopyEvidenceSnapshotFields(item),
-        }))
+        }, item))
     : [];
 }
 
 function snapshotFromClothing(item, fallback, itemId) {
   const displayImageUrl = getDisplayImage(item) || fallback?.displayImageUrl || fallback?.imageUrl || '';
   const thumbnailUrl = getThumbnailImage(item) || fallback?.thumbnailUrl || displayImageUrl;
-  return {
+  return applySnapshotAsset({
     itemId,
     name: item?.customName || item?.subcategory || item?.subCategory || item?.category || fallback?.name || '衣服',
     category: item?.category || fallback?.category || 'other',
@@ -3994,7 +3995,7 @@ function snapshotFromClothing(item, fallback, itemId) {
     thumbnailUrl,
     isDeleted: Boolean(item?.status === DELETED_STATUS || fallback?.isDeleted),
     ...pickCopyEvidenceSnapshotFields(item, fallback),
-  };
+  }, item || fallback);
 }
 
 function pickCopyEvidenceSnapshotFields(primary, fallback) {

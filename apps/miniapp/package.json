@@ -16,6 +16,7 @@
   "dependencies": {
     "@babel/runtime": "^7.26.0",
     "@d1d/ai-core": "workspace:*",
+    "@d1d/garment-assets": "workspace:*",
     "@starter-template/types": "workspace:*",
     "@tarojs/components": "^4.0.9",
     "@tarojs/helper": "^4.0.9",

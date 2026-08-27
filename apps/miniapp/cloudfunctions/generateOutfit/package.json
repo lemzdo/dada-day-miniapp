@@ -4,6 +4,7 @@
   "main": "index.js",
   "dependencies": {
     "@d1d/ai-core": "workspace:*",
+    "@d1d/garment-assets": "workspace:*",
     "node-fetch": "2.7.0",
     "wx-server-sdk": "3.0.4"
   }

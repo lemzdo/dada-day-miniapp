@@ -6,10 +6,10 @@ const test = require('node:test');
 const cardSource = fs.readFileSync(path.join(__dirname, 'HomeLightCardV2.tsx'), 'utf8');
 const styleSource = fs.readFileSync(path.join(__dirname, 'index.scss'), 'utf8');
 
-test('HomeLightCardV2 renders the canonical display image field directly', () => {
-  assert.match(cardSource, /<View className="collage-item" key=\{item\.clothingId\}>[\s\S]*<View className="image-stage">[\s\S]*<Image className="item-image" src=\{item\.displayImageUrl\} mode="aspectFit" \/>/);
-  assert.doesNotMatch(cardSource, /imageUrl|thumbnailUrl/);
-  assert.doesNotMatch(cardSource, /mediaResolution|Full Outfit|snapshotItems|outfit\.xxx/);
+test('HomeLightCardV2 resolves card images through the shared TODAY_CARD policy', () => {
+  assert.match(cardSource, /<View className="collage-item" key=\{item\.clothingId\}>[\s\S]*<View className="image-stage">[\s\S]*<Image className="item-image" src=\{resolveGarmentAsset\([\s\S]*'CARD',[\s\S]*compatProfile: 'TODAY_CARD'[\s\S]*\} mode="aspectFit" \/>/);
+  assert.match(cardSource, /garmentAssetResolution/);
+  assert.doesNotMatch(cardSource, /Full Outfit|snapshotItems|outfit\.xxx/);
 });
 
 test('Today item images are visible without unreachable loaded state', () => {

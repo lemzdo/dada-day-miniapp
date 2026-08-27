@@ -1,0 +1,9 @@
+{
+  "name": "@d1d/garment-assets",
+  "version": "0.0.1",
+  "private": true,
+  "main": "./src/index.js",
+  "types": "./src/index.d.ts",
+  "exports": { ".": { "types": "./src/index.d.ts", "require": "./src/index.js", "default": "./src/index.js" } },
+  "scripts": { "test": "node --test tests/*.test.js", "typecheck": "tsc --noEmit", "lint": "eslint ." }
+}

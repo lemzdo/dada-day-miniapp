@@ -2,6 +2,7 @@ import { Input, Text, View } from '@tarojs/components';
 import Taro, { useDidShow, useLoad, useRouter, useUnload } from '@tarojs/taro';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { SafeImage } from '@/components/SafeImage';
+import { resolveGarmentAsset } from '@/utils/garmentAssetResolution';
 import { getAiReviewErrorCopy, USER_FACING_COPY } from '@/constants/userFacingCopy';
 import { useAuthRuntime } from '@/hooks/useAuthRuntime';
 import {
@@ -234,7 +235,7 @@ function getItemImage(item: OutfitSnapshotItem | OutfitItemSummary): string {
   const snapshotItem = item as OutfitSnapshotItem;
   const summaryItem = item as OutfitItemSummary;
   
-  return (
+  return resolveGarmentAsset(item as unknown as Record<string, unknown>, 'DETAIL', { compatProfile: 'DETAIL_THUMBNAIL' }) || (
     snapshotItem.thumbnailUrl ||
     summaryItem.thumbnailUrl ||
     snapshotItem.displayImageUrl ||
@@ -249,7 +250,7 @@ function getItemDetailImage(item: OutfitSnapshotItem | OutfitItemSummary): strin
   const snapshotItem = item as OutfitSnapshotItem;
   const summaryItem = item as OutfitItemSummary;
 
-  return (
+  return resolveGarmentAsset(item as unknown as Record<string, unknown>, 'DETAIL', { compatProfile: 'DETAIL_DISPLAY' }) || (
     snapshotItem.displayImageUrl ||
     summaryItem.displayImageUrl ||
     summaryItem.imageUrl ||
@@ -386,7 +387,7 @@ function V2OutfitDetailView({ state }: { state: OutfitDetailV2State }) {
         <View className="visual-card">
           <View className="visual-collage">
             {state.shell.items.map((item) => (
-              <SafeImage key={item.clothingId} className="visual-image" src={item.displayImageUrl} cacheIdentity={item.clothingId} mode="aspectFit" lazyLoad />
+              <SafeImage key={item.clothingId} className="visual-image" src={getItemDetailImage(item as unknown as OutfitSnapshotItem | OutfitItemSummary)} cacheIdentity={item.clothingId} mode="aspectFit" lazyLoad />
             ))}
           </View>
         </View>

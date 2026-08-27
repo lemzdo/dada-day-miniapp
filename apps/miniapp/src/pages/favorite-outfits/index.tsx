@@ -2,6 +2,7 @@ import { Input, ScrollView, Text, View } from '@tarojs/components';
 import Taro, { useDidShow, useLoad, usePullDownRefresh, useReachBottom } from '@tarojs/taro';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { SafeImage } from '@/components/SafeImage';
+import { resolveGarmentAsset } from '@/utils/garmentAssetResolution';
 import { useAuthRuntime } from '@/hooks/useAuthRuntime';
 import {
   invalidateAfterOutfitFavoriteMutation,
@@ -496,7 +497,7 @@ export default function FavoriteOutfitsPage() {
                     <View key={item.clothingId} className={`card-img-wrap ${item.isDeleted ? 'deleted' : ''}`}>
                       <SafeImage
                         className="card-img"
-                        src={item.thumbnailUrl || item.imageUrl}
+                        src={resolveGarmentAsset(item as unknown as Record<string, unknown>, 'CARD', { compatProfile: 'SAVED_CARD' })}
                         cacheIdentity={item.clothingId}
                         mode="aspectFill"
                         lazyLoad
