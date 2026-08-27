@@ -37,6 +37,30 @@ try {
     }
   }
 
+  # Rewrite only the disposable staged manifest; repository source remains
+  # workspace:* so pnpm can resolve the monorepo package during development.
+  $stagedPackagePath = Join-Path $stageRoot 'package.json'
+  $stagedPackage = Get-Content -LiteralPath $stagedPackagePath -Raw | ConvertFrom-Json
+  $stagedPackage.dependencies.'@d1d/ai-core' = 'file:vendor/ai-core'
+  $stagedPackage | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $stagedPackagePath -Encoding utf8
+
+  # Stage the shared AI core as a local file dependency. CloudBase remote npm
+  # cannot resolve workspace:* and must not reach a private registry package.
+  $aiCoreSource = Join-Path $repoRoot 'packages\ai-core'
+  if (-not (Test-Path -LiteralPath (Join-Path $aiCoreSource 'package.json'))) {
+    throw "Shared AI core package is missing: $aiCoreSource"
+  }
+  $aiCoreDestination = Join-Path $stageRoot 'vendor\ai-core'
+  New-Item -ItemType Directory -Path $aiCoreDestination -Force | Out-Null
+  Copy-Item -LiteralPath (Join-Path $aiCoreSource 'package.json') -Destination (Join-Path $aiCoreDestination 'package.json') -Force
+  $aiCoreFiles = Get-ChildItem -LiteralPath (Join-Path $aiCoreSource 'src') -Recurse -File | Where-Object { $_.Name -notmatch '\.test\.js$' }
+  foreach ($aiCoreFile in $aiCoreFiles) {
+    $relativeAiCore = $aiCoreFile.FullName.Substring((Join-Path $aiCoreSource 'src').Length).TrimStart('\', '/')
+    $aiCoreTarget = Join-Path (Join-Path $aiCoreDestination 'src') $relativeAiCore
+    New-Item -ItemType Directory -Path (Split-Path -Parent $aiCoreTarget) -Force | Out-Null
+    Copy-Item -LiteralPath $aiCoreFile.FullName -Destination $aiCoreTarget -Force
+  }
+
   & node $checker $stageRoot
   if ($LASTEXITCODE -ne 0) { throw 'Staged generateOutfit package integrity check failed; deployment was not attempted.' }
 

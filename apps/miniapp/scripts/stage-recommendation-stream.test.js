@@ -33,6 +33,9 @@ test('HTTP staging contains one deploy-local copy of the canonical generateOutfi
     const packageJson = JSON.parse(fs.readFileSync(path.join(stage, 'package.json'), 'utf8'));
     assert.equal(packageJson.dependencies['wx-server-sdk'], '3.0.4');
     assert.equal(packageJson.dependencies['node-fetch'], '2.7.0');
+    const generatePackageJson = JSON.parse(fs.readFileSync(path.join(stage, 'generateOutfit', 'package.json'), 'utf8'));
+    assert.equal(generatePackageJson.dependencies['@d1d/ai-core'], 'file:vendor/ai-core');
+    assert.ok(fs.existsSync(path.join(stage, 'generateOutfit', 'vendor', 'ai-core', 'src', 'index.js')));
   } finally {
     fs.rmSync(parent, { recursive: true, force: true });
   }

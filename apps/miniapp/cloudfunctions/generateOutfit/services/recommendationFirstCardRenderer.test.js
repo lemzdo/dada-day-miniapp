@@ -3,6 +3,7 @@
 const assert = require('assert/strict');
 const test = require('node:test');
 const { renderFirstCardCanonical } = require('./recommendationFirstCardRenderer');
+const { buildProductionRequest } = require('./recommendationVoiceRendererProductionV2');
 
 const entry = {
   preparedEntry: {
@@ -52,4 +53,36 @@ test('is side-effect-free and does not invoke caller callbacks', async () => {
   const result = await renderFirstCardCanonical({ entry, rendererConfig: config });
   assert.equal(result.status, 'success');
   assert.equal(callbackCalls, 0);
+});
+
+test('uses the shared AI core recommendation_reason entry point', async () => {
+  const calls = [];
+  let cancelled = 0;
+  const result = await renderFirstCardCanonical({
+    entry,
+    rendererConfig: {
+      xiaodaAI: {
+        execute: async (...args) => {
+          calls.push(args);
+          const payload = JSON.stringify({ copies: [{ id: '1', text: '简单日常，白衬衫穿起来很自然。' }] });
+          return {
+            status: 200,
+            body: (async function* stream() { yield `data: ${JSON.stringify({ choices: [{ delta: { content: payload } }] })}\n`; }()),
+            __cancelDeadline: () => { cancelled += 1; },
+            usage: { total_tokens: 9 },
+          };
+        },
+      },
+    },
+  });
+  assert.equal(result.status, 'success');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'recommendation_reason');
+  assert.deepEqual(calls[0][1], entry.preparedEntry.input);
+  assert.equal(calls[0][2].model, 'qwen3.7-max');
+  assert.equal(calls[0][2].promptVariant, 'compressed-v2');
+  assert.equal(calls[0][2].rawResponse, true);
+  assert.deepEqual(calls[0][2].request, buildProductionRequest([entry.preparedEntry]));
+  assert.ok(calls[0][2].signal instanceof AbortSignal);
+  assert.equal(cancelled, 1);
 });

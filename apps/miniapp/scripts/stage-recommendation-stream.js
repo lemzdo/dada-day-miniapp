@@ -10,6 +10,7 @@ const { collectRuntimeDependencies } = require('./check-generate-outfit-package'
 
 const root = path.resolve(__dirname, '..');
 const source = path.join(root, 'cloudfunctions', 'generateOutfit');
+const aiCoreSource = path.resolve(root, '..', '..', 'packages', 'ai-core');
 const destination = path.resolve(process.argv[2] || path.join(root, '.staging', 'recommendationStream'));
 const environmentFile = process.argv[3] ? path.resolve(process.argv[3]) : null;
 const environmentId = String(process.argv[4] || process.env.CLOUDBASE_ENV_ID || '').trim();
@@ -54,7 +55,29 @@ for (const sourceFile of collectRuntimeDependencies(source)) {
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.copyFileSync(sourceFile, target);
 }
-fs.copyFileSync(path.join(source, 'package.json'), path.join(stagedRuntime, 'package.json'));
+const stagedPackage = JSON.parse(fs.readFileSync(path.join(source, 'package.json'), 'utf8'));
+stagedPackage.dependencies['@d1d/ai-core'] = 'file:vendor/ai-core';
+fs.writeFileSync(path.join(stagedRuntime, 'package.json'), `${JSON.stringify(stagedPackage, null, 2)}\n`);
+// CloudBase remote npm cannot resolve workspace:* (and ai-core is private),
+// so stage the shared package as a deploy-local file dependency. This is a
+// generated copy only; source of truth remains packages/ai-core.
+if (!fs.existsSync(path.join(aiCoreSource, 'package.json'))) {
+  throw new Error(`Shared AI core package is missing: ${aiCoreSource}`);
+}
+const stagedAiCore = path.join(stagedRuntime, 'vendor', 'ai-core');
+fs.mkdirSync(stagedAiCore, { recursive: true });
+fs.copyFileSync(path.join(aiCoreSource, 'package.json'), path.join(stagedAiCore, 'package.json'));
+const copyAiCoreRuntime = (directory, target) => {
+  fs.mkdirSync(target, { recursive: true });
+  for (const item of fs.readdirSync(directory, { withFileTypes: true })) {
+    if (item.name.endsWith('.test.js')) continue;
+    const from = path.join(directory, item.name);
+    const to = path.join(target, item.name);
+    if (item.isDirectory()) copyAiCoreRuntime(from, to);
+    else if (item.isFile()) fs.copyFileSync(from, to);
+  }
+};
+copyAiCoreRuntime(path.join(aiCoreSource, 'src'), path.join(stagedAiCore, 'src'));
 fs.cpSync(path.join(root, 'cloudfunctions', 'recommendationStream', 'index.js'), path.join(destination, 'index.js'));
 fs.cpSync(path.join(root, 'cloudfunctions', 'recommendationStream', 'package.json'), path.join(destination, 'package.json'));
 fs.cpSync(path.join(root, 'cloudfunctions', 'recommendationStream', 'scf_bootstrap'), path.join(destination, 'scf_bootstrap'));

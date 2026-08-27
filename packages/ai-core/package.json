@@ -1,0 +1,9 @@
+{
+  "name": "@d1d/ai-core",
+  "version": "0.0.1",
+  "private": true,
+  "main": "./src/index.js",
+  "types": "./src/index.d.ts",
+  "scripts": { "test": "node --test src/**/*.test.js", "typecheck": "tsc --noEmit" },
+  "devDependencies": { "@types/node": "^22.10.0" }
+}
