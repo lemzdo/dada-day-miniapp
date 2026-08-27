@@ -20,14 +20,6 @@ function loadProductionDiagnostics() {
   };
 }
 
-function loadProductionRenderer() {
-  try {
-    return require('./generateOutfit/services/recommendationVoiceRendererProductionV2').consumeProductionRendererStream;
-  } catch {
-    return require('../generateOutfit/services/recommendationVoiceRendererProductionV2').consumeProductionRendererStream;
-  }
-}
-
 function setRecommendationRuntimeRunner(runner) {
   if (typeof runner !== 'function') throw new TypeError('RUNTIME_RUNNER_REQUIRED');
   runtimeRunner = runner;
@@ -91,7 +83,6 @@ async function readBody(req, monotonicOriginAt = process.hrtime.bigint()) {
 function createRecommendationStreamHandler({
   runRuntime = null,
   resolveContext,
-  consumeRenderer = null,
   createDiagnostics = null,
   recordStage = null,
 } = {}) {
@@ -151,6 +142,24 @@ function createRecommendationStreamHandler({
       userIdentity: { openid },
       interactive: true,
       ...(diagnostics ? { diagnostics } : {}),
+      onTelemetry: ({ key, value }) => {
+        if (key === 'AI_LATE_DISCARDED' && value === true) {
+          stage('firstCardAiLateDiscarded', { fields: { AI_LATE_DISCARDED: true } });
+          return;
+        }
+        if (!['requestStart', 'coreResultReady', 'firstCardAiStart', 'firstCardAiValidated',
+          'firstCardCanonicalPersisted', 'deadlineReached', 'responseReady'].includes(key)) return;
+        stage(key, {
+          elapsedMs: typeof value === 'number' ? value : undefined,
+          batchId: readyBatchId || undefined,
+          fields: key === 'responseReady' ? {
+            FIRST_CARD_AI_RESULT: diagnostics?.FIRST_CARD_AI_RESULT,
+            FIRST_CARD_AI_MS: diagnostics?.FIRST_CARD_AI_MS,
+            REQUEST_TO_RESPONSE_READY_MS: diagnostics?.REQUEST_TO_RESPONSE_READY_MS,
+            AI_LATE_DISCARDED: diagnostics?.AI_LATE_DISCARDED === true,
+          } : undefined,
+        });
+      },
     };
     res.statusCode = 200;
     res.setHeader?.('Content-Type', 'text/event-stream; charset=utf-8');
@@ -185,39 +194,7 @@ function createRecommendationStreamHandler({
     try {
       stage('runtime:start');
       const runtime = await (runRuntime || runtimeRunner || loadProductionRunner())(input, context, {
-        onNarrativePlansReady: async ({ entries, batchId, copyJobPromise, persistCanonicalCopy }) => {
-          // Start the existing production Qwen renderer at C2. This promise is
-          // intentionally detached from recommendation.ready.
-          const copyJob = await copyJobPromise;
-          if (!copyJob) return { status: 'failed_open', validatedCount: 0 };
-          const initialCopies = Array.isArray(copyJob.initialCopies) ? copyJob.initialCopies : [];
-          initialCopies.forEach((copy) => emitCanonicalCopy(batchId, copy));
-          const misses = Array.isArray(copyJob?.missEntries) ? copyJob.missEntries : [];
-          if (misses.length === 0) return { status: 'ready_cache_hit', validatedCount: 0 };
-          stage('ai:providerStart', { batchId });
-          let firstValidatedRecorded = false;
-          return (consumeRenderer || loadProductionRenderer())({
-            preparedEntries: misses.map((entry) => entry.preparedEntry),
-            onValidated: async (copy) => {
-              if (!firstValidatedRecorded) {
-                firstValidatedRecorded = true;
-                stage('ai:firstValidated', { batchId });
-              }
-              const stored = await persistCanonicalCopy(copy);
-              const entry = (entries || []).find((item) => item?.preparedEntry?.plan?.planId === copy?.planId);
-              if (!stored || !entry) return;
-              emitCanonicalCopy(batchId, {
-                outfitKey: entry.outfitKey,
-                cardIndex: entry.position,
-                text: copy.text,
-                source: 'ai_cache',
-                availableAt: stored.availableAt,
-                rendererVersion: stored.rendererVersion,
-              });
-            },
-            onInvalid: () => undefined,
-          });
-        },
+        onNarrativePlansReady: ({ batchId }) => stage('narrativePlansReady', { batchId }),
         onInputNormalized: () => stage('normalization:done'),
         onRecommendationReady: ({ batchId, response, countContract }) => {
           readyBatchId = response?.batch?.batchId || batchId;
@@ -253,9 +230,9 @@ function createRecommendationStreamHandler({
         await runtime.backgroundDone;
       }
       const batchId = runtime?.response?.batch?.batchId || runtime?.batchId || readyBatchId;
-      const reason = aiSummary?.status === 'window_expired'
+      const reason = aiSummary?.status === 'TIMEOUT' || aiSummary?.status === 'window_expired'
         ? 'deadline'
-        : aiSummary?.status === 'failed_open' ? 'failed_open' : 'completed';
+        : aiSummary?.status === 'FAIL' || aiSummary?.status === 'failed_open' ? 'failed_open' : 'completed';
       emit('complete', { type: 'complete', generation: streamGeneration, batchId, reason });
       stage('complete', { batchId });
     } catch (error) {

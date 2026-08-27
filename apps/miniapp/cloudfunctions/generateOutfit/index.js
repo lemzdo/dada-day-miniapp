@@ -19,16 +19,17 @@ const {
   consumeProductionRendererStream,
 } = require('./services/recommendationVoiceRendererProductionV2');
 const {
+  dispatchPreparedRecommendationCopyJob,
   acquireRecommendationCopyJob,
   ensureRecommendationCopyCollections,
   finishRecommendationCopyJob,
   markRecommendationCopyJobProgress,
   persistValidatedCanonicalCopy,
-  publishCachedCanonicalCopies,
   prepareRecommendationCopyJob,
-  readCachedCopies,
   readRecommendationCopyOverlay,
+  resolveRecommendationCopyJobMisses,
 } = require('./services/recommendationCopyProductionJobV2');
+const { renderFirstCardCanonical } = require('./services/recommendationFirstCardRenderer');
 const { dispatchScfEvent } = require('./services/scfAsyncEventDispatcher');
 const {
   buildRecommendationVoiceRendererExecution,
@@ -654,6 +655,18 @@ function emitRecommendationServerDone({ diagnostics, executionMode, response } =
     TOTAL_SERVER_MS: totalMs,
     totalMs,
     responseBytes,
+    requestStart: diagnostics.requestStart,
+    coreResultReady: diagnostics.coreResultReady,
+    firstCardAiStart: diagnostics.firstCardAiStart,
+    firstCardAiValidated: diagnostics.firstCardAiValidated,
+    firstCardCanonicalPersisted: diagnostics.firstCardCanonicalPersisted,
+    recommendationReady: diagnostics.recommendationReady,
+    deadlineReached: diagnostics.deadlineReached,
+    responseReady: diagnostics.responseReady,
+    FIRST_CARD_AI_RESULT: diagnostics.FIRST_CARD_AI_RESULT,
+    FIRST_CARD_AI_MS: diagnostics.FIRST_CARD_AI_MS,
+    REQUEST_TO_RESPONSE_READY_MS: diagnostics.REQUEST_TO_RESPONSE_READY_MS,
+    AI_LATE_DISCARDED: diagnostics.AI_LATE_DISCARDED === true,
   });
   return { executionMode: diagnostics.executionMode, timings: diagnostics.timings, totalMs, responseBytes };
 }
@@ -685,15 +698,11 @@ function measureCanonicalBatchInput(records = []) {
 // planning completes before Orchestrator-owned background and response stages.
 async function runProductionRecommendationRuntime(input, context = {}, lifecycleHooks = context.lifecycleHooks || {}) {
   const diagnostics = context.diagnostics || createRecommendationDiagnostics(input);
-  let completionPromise = Promise.resolve();
   let backgroundPromise = Promise.resolve([]);
   const runtimeHooks = {
     ...lifecycleHooks,
     onNarrativePlansReady: (payload) => {
-      let result;
-      try { result = lifecycleHooks.onNarrativePlansReady?.(payload); } catch { result = undefined; }
-      completionPromise = Promise.resolve(result).catch(() => undefined);
-      return completionPromise;
+      try { return lifecycleHooks.onNarrativePlansReady?.(payload); } catch { return undefined; }
     },
     onPostC2TasksScheduled: ({ tasks = [] } = {}) => {
       backgroundPromise = Promise.allSettled(
@@ -705,6 +714,21 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
   };
   const runtime = await runRecommendationOrchestrator(input, {
     ...context,
+    onTelemetry: context.onTelemetry || (({ key, value }) => {
+      const elapsedStages = new Set([
+        'requestStart', 'coreResultReady', 'firstCardAiStart', 'firstCardAiValidated',
+        'firstCardCanonicalPersisted', 'recommendationReady', 'deadlineReached', 'responseReady',
+      ]);
+      if (elapsedStages.has(key)) {
+        recordRecommendationStage(diagnostics, key, {
+          elapsedMs: typeof value === 'number' ? value : undefined,
+        });
+      } else if (key === 'AI_LATE_DISCARDED' && value === true) {
+        recordRecommendationStage(diagnostics, 'firstCardAiLateDiscarded', {
+          fields: { AI_LATE_DISCARDED: true },
+        });
+      }
+    }),
     userIdentity: context.userIdentity || (() => {
       try { return { openid: cloud.getWXContext().OPENID }; } catch { return {}; }
     })(),
@@ -719,18 +743,10 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
     },
     prepareRecommendationWork: async (core) => prepareProductionRecommendationWork(core, diagnostics, context),
     persistAndAssembleRecommendation: async (core, prepared) => persistAndAssembleProductionRecommendation(core, prepared, diagnostics),
+    renderFirstCardCanonical: context.renderFirstCardCanonical || renderFirstCardCanonical,
   }, runtimeHooks);
-  runtime.completionPromise = completionPromise;
-  runtime.aiPromise = completionPromise;
   runtime.backgroundDone = backgroundPromise;
   if (!context.interactive) await backgroundPromise;
-  let completionDeadline;
-  runtime.aiDone = Promise.race([
-    completionPromise,
-    new Promise((resolve) => {
-      completionDeadline = setTimeout(() => resolve({ status: 'window_expired' }), 6000);
-    }),
-  ]).finally(() => { if (completionDeadline) clearTimeout(completionDeadline); });
   return runtime;
 }
 
@@ -959,6 +975,8 @@ async function prepareProductionRecommendationWork(core, diagnostics, context = 
   const responseCopyJob = { status: 'pending', initialCopies: [], dispatch: { accepted: false } };
   let copyJobPromise = Promise.resolve(null);
   let copyOverlayPromise = Promise.resolve(null);
+  let backgroundMaterializationDone = Promise.resolve({ status: 'noop' });
+  let firstCardInteractive = null;
   let rendererEntries = [];
   const plans = Array.isArray(core.narrativePlans) ? core.narrativePlans : [];
   if (core.outfits.length > 0
@@ -979,7 +997,7 @@ async function prepareProductionRecommendationWork(core, diagnostics, context = 
       rendererVersion: PRODUCTION_RENDERER_VERSION,
       entries,
       dispatch: (payload) => dispatchScfEvent({ event: payload, context }),
-      executionMode: context?.interactive ? 'interactive' : 'event',
+      executionMode: 'interactive',
     })
       .then((job) => { Object.assign(responseCopyJob, job || {}); return job; })
       .catch((error) => {
@@ -997,6 +1015,72 @@ async function prepareProductionRecommendationWork(core, diagnostics, context = 
         return overlay;
       } catch { return null; }
     });
+    let resolveBackgroundMaterialization;
+    backgroundMaterializationDone = new Promise((resolve) => {
+      resolveBackgroundMaterialization = resolve;
+    });
+    let backgroundSchedulePromise = null;
+    const scheduleBackgroundMaterialization = () => {
+      if (!backgroundSchedulePromise) {
+        backgroundSchedulePromise = copyJobPromise.then(async (job) => {
+          if (!job?.jobId || !Array.isArray(job.missEntries) || job.missEntries.length === 0) {
+            return { accepted: false, status: job?.status || 'noop' };
+          }
+          const dispatch = await dispatchPreparedRecommendationCopyJob({
+            database: db,
+            jobId: job.jobId,
+            dispatch: (payload) => dispatchScfEvent({ event: payload, context }),
+          });
+          responseCopyJob.dispatch = dispatch;
+          if (dispatch.accepted) responseCopyJob.status = 'dispatched';
+          return dispatch;
+        }).catch((error) => {
+          console.warn('[RecommendationCopyDispatchFailOpen]', {
+            auditId: diagnostics.auditId,
+            batchId: metadata.batchId,
+            failureCode: getRecommendationErrorCode(error),
+          });
+          return { accepted: false, status: 'failed_open', failureCode: getRecommendationErrorCode(error) };
+        });
+        backgroundSchedulePromise.then(resolveBackgroundMaterialization);
+      }
+      return backgroundSchedulePromise;
+    };
+    firstCardInteractive = {
+      resolveAdmission: async () => {
+        const job = await copyJobPromise;
+        if (!job) return { entry: null, cachedCopy: null };
+        return {
+          entry: job.entries?.[0] || null,
+          cachedCopy: job.initialCopies?.find((copy) => copy.cardIndex === 0) || null,
+        };
+      },
+      persistCanonicalCopy: async (copy) => {
+        const job = await copyJobPromise;
+        const entry = job?.entries?.[0];
+        if (!job || !entry
+          || entry.preparedEntry?.plan?.planId !== copy?.planId
+          || entry.renderInputFingerprint !== copy?.renderInputFingerprint) {
+          throw new Error('VOICE_RENDERER_OUTPUT_PLAN_BINDING');
+        }
+        const stored = await persistValidatedCanonicalCopy(
+          db,
+          { ...job, _openid: metadata.openid },
+          entry,
+          copy,
+        );
+        return {
+          outfitKey: entry.outfitKey,
+          cardIndex: entry.position,
+          text: stored.text,
+          source: 'ai_cache',
+          availableAt: stored.availableAt,
+          rendererVersion: stored.rendererVersion,
+        };
+      },
+      applyCanonicalToResponse: applyFirstCardCanonicalToResponse,
+      scheduleBackgroundMaterialization,
+    };
   } else {
     responseCopyJob.status = 'noop';
   }
@@ -1012,9 +1096,10 @@ async function prepareProductionRecommendationWork(core, diagnostics, context = 
     copyJobPromise,
     copyOverlayPromise,
     candidatePoolPersistPromise,
-    tasks: [copyJobPromise, candidatePoolPersistPromise, copyOverlayPromise],
+    tasks: [copyJobPromise, candidatePoolPersistPromise, copyOverlayPromise, backgroundMaterializationDone],
     narrativePlans: plans,
     rendererEntries,
+    firstCardInteractive,
     narrativePayload: {
       plans,
       entries: rendererEntries,
@@ -1022,6 +1107,28 @@ async function prepareProductionRecommendationWork(core, diagnostics, context = 
       recommendations: core.outfits,
       copyJobPromise,
       persistCanonicalCopy,
+    },
+  };
+}
+
+function applyFirstCardCanonicalToResponse(response, canonicalCopy) {
+  const cards = Array.isArray(response?.light?.cards) ? response.light.cards : [];
+  const first = cards[0];
+  if (!first || !canonicalCopy || canonicalCopy.cardIndex !== 0
+    || canonicalCopy.outfitKey !== first.outfitKey || !readString(canonicalCopy.text)) {
+    return response;
+  }
+  return {
+    ...response,
+    light: {
+      ...response.light,
+      cards: [{
+        ...first,
+        todayReason: canonicalCopy.text,
+        copySource: 'ai_cache',
+        aiState: 'ready',
+        ...(canonicalCopy.availableAt ? { canonicalAvailableAt: canonicalCopy.availableAt } : {}),
+      }, ...cards.slice(1)],
     },
   };
 }
@@ -1162,10 +1269,7 @@ async function runRecommendationCopyJobV2(event, {
     };
   }
   const { job, leaseToken } = acquired;
-  const cachedNow = await readCachedCopies(database, job._openid, job.rendererVersion, job.entries);
-  await publishCachedCanonicalCopies(database, job, cachedNow);
-  const cachedIds = new Set(cachedNow.map((copy) => copy.cacheId));
-  const misses = job.entries.filter((entry) => !cachedIds.has(entry.cacheId));
+  const { cachedCopies: cachedNow, misses } = await resolveRecommendationCopyJobMisses(database, job);
   let readyCount = Math.max(0, cachedNow.length - (Number(job.cacheHitCount) || 0));
   let invalidCount = 0;
   let providerRequestCount = 0;

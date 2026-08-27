@@ -100,29 +100,9 @@ async function prepareRecommendationCopyJob({
   };
   const reservation = await reserveJob(database, draft);
   const job = reservation.job;
-  const dispatchReservation = !interactive && job.missCount > 0
-    ? await acquireDispatchReservation(database, jobId, now)
-    : { acquired: false, status: job.status };
-  let dispatchResult = { accepted: false, joined: reservation.created === false };
-  if (dispatchReservation.acquired) {
-    let accepted;
-    try {
-      accepted = await dispatch({
-        action: 'materializeRecommendationCopyJobV2',
-        jobId,
-        dispatchToken: dispatchReservation.dispatchToken,
-      });
-    } catch (error) {
-      await markDispatchFailure(database, jobId, dispatchReservation.dispatchToken, error);
-      dispatchResult = { accepted: false, joined: reservation.created === false, failureCode: readErrorCode(error) };
-    }
-    if (accepted) {
-      try {
-        await markDispatchAccepted(database, jobId, dispatchReservation.dispatchToken, accepted.requestId);
-      } catch { /* Event was accepted; bookkeeping failure must not cause a duplicate dispatch. */ }
-      dispatchResult = { accepted: true, requestId: accepted.requestId, joined: reservation.created === false };
-    }
-  }
+  const dispatchResult = !interactive && job.missCount > 0
+    ? await dispatchPreparedRecommendationCopyJob({ database, jobId, dispatch, now })
+    : { accepted: false, joined: reservation.created === false, status: job.status };
   return {
     version: JOB_VERSION,
     rendererVersion,
@@ -130,7 +110,7 @@ async function prepareRecommendationCopyJob({
     batchId,
     status: misses.length === 0
       ? 'ready_cache_hit'
-      : interactive ? 'interactive' : dispatchResult.accepted ? 'dispatched' : dispatchReservation.status,
+      : interactive ? 'interactive' : dispatchResult.accepted ? 'dispatched' : dispatchResult.status,
     initialCopies: normalizedEntries.flatMap((entry) => {
       const copy = cachedById.get(entry.cacheId);
       return copy ? [toOverlayCopy(entry, copy)] : [];
@@ -141,6 +121,41 @@ async function prepareRecommendationCopyJob({
     entries: normalizedEntries,
     missEntries: normalizedEntries.filter((entry) => !cachedById.has(entry.cacheId)),
   };
+}
+
+async function dispatchPreparedRecommendationCopyJob({
+  database,
+  jobId,
+  dispatch,
+  now = new Date(),
+} = {}) {
+  if (!database || !readText(jobId) || typeof dispatch !== 'function') {
+    throw new Error('COPY_JOB_DISPATCH_INPUT');
+  }
+  const dispatchReservation = await acquireDispatchReservation(database, jobId, now);
+  if (!dispatchReservation.acquired) {
+    return { accepted: false, joined: dispatchReservation.status === 'joined', status: dispatchReservation.status };
+  }
+  let accepted;
+  try {
+    accepted = await dispatch({
+      action: 'materializeRecommendationCopyJobV2',
+      jobId,
+      dispatchToken: dispatchReservation.dispatchToken,
+    });
+  } catch (error) {
+    await markDispatchFailure(database, jobId, dispatchReservation.dispatchToken, error);
+    return { accepted: false, joined: false, status: 'dispatch_failed', failureCode: readErrorCode(error) };
+  }
+  if (!accepted) {
+    const error = new Error('COPY_JOB_DISPATCH_NOT_ACCEPTED');
+    await markDispatchFailure(database, jobId, dispatchReservation.dispatchToken, error);
+    return { accepted: false, joined: false, status: 'dispatch_failed', failureCode: error.message };
+  }
+  try {
+    await markDispatchAccepted(database, jobId, dispatchReservation.dispatchToken, accepted.requestId);
+  } catch { /* Event was accepted; bookkeeping failure must not cause a duplicate dispatch. */ }
+  return { accepted: true, requestId: accepted.requestId, joined: false, status: 'dispatched' };
 }
 
 async function acquireDispatchReservation(database, jobId, now = new Date()) {
@@ -156,7 +171,7 @@ async function acquireDispatchReservation(database, jobId, now = new Date()) {
     const leaseActive = job.status === 'dispatching'
       && Number.isFinite(leaseUntil)
       && leaseUntil > now.getTime();
-    if (leaseActive || !['queued', 'dispatch_failed', 'dispatching'].includes(job.status)) {
+    if (leaseActive || !['interactive', 'queued', 'dispatch_failed', 'dispatching'].includes(job.status)) {
       result = { acquired: false, status: leaseActive ? 'joined' : job.status };
       return;
     }
@@ -324,6 +339,24 @@ async function publishCachedCanonicalCopies(database, job, copies, now = new Dat
     } });
   });
   return ready;
+}
+
+async function resolveRecommendationCopyJobMisses(database, job, now = new Date()) {
+  if (!database || !job?._openid || !job?.rendererVersion || !Array.isArray(job?.entries)) {
+    throw new Error('COPY_JOB_MISS_RESOLUTION_INPUT');
+  }
+  const cachedCopies = await readCachedCopies(
+    database,
+    job._openid,
+    job.rendererVersion,
+    job.entries,
+  );
+  await publishCachedCanonicalCopies(database, job, cachedCopies, now);
+  const cachedIds = new Set(cachedCopies.map((copy) => copy.cacheId));
+  return {
+    cachedCopies,
+    misses: job.entries.filter((entry) => !cachedIds.has(entry.cacheId)),
+  };
 }
 
 async function finishRecommendationCopyJob(database, job, leaseToken, summary, now = new Date()) {
@@ -494,6 +527,7 @@ module.exports = {
   acquireRecommendationCopyJob,
   buildCacheIdentity,
   buildJobIdentity,
+  dispatchPreparedRecommendationCopyJob,
   finishRecommendationCopyJob,
   ensureRecommendationCopyCollections,
   markRecommendationCopyJobProgress,
@@ -503,4 +537,5 @@ module.exports = {
   prepareRecommendationCopyJob,
   readCachedCopies,
   readRecommendationCopyOverlay,
+  resolveRecommendationCopyJobMisses,
 };

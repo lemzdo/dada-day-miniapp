@@ -6,6 +6,14 @@ const path = require('node:path');
 const test = require('node:test');
 
 const indexSource = fs.readFileSync(path.join(__dirname, '..', 'index.js'), 'utf8');
+const orchestratorSource = fs.readFileSync(
+  path.join(__dirname, '..', 'runtime', 'recommendationOrchestrator.js'),
+  'utf8',
+);
+const streamSource = fs.readFileSync(
+  path.join(__dirname, '..', '..', 'recommendationStream', 'index.js'),
+  'utf8',
+);
 const todaySource = fs.readFileSync(
   path.join(__dirname, '..', '..', '..', 'src', 'pages', 'today', 'index.tsx'),
   'utf8',
@@ -15,18 +23,24 @@ function bodyBetween(start, end) {
   return indexSource.slice(indexSource.indexOf(start), indexSource.indexOf(end));
 }
 
-test('C2 dispatch is accepted before persistence and never awaits the provider worker', () => {
-  const generateBody = bodyBetween('async function generate(event,', 'async function materializeRecommendationCanonicalCopyV2');
-  assert.ok(generateBody.indexOf('runRecommendationStylingShadowV2Safely')
-    < generateBody.indexOf('prepareRecommendationCopyJob'));
-  assert.ok(generateBody.indexOf('prepareRecommendationCopyJob')
-    < generateBody.indexOf('persistGeneratedCandidatePool'));
-  assert.doesNotMatch(generateBody, /consumeProductionRendererStream|runRecommendationCopyJobV2\(/);
-  assert.match(generateBody, /recommendations\.length > 0/);
-  assert.match(generateBody, /latestCopyOverlay = await readRecommendationCopyOverlay/);
+test('C2 starts pure card0 rendering while the orchestrator owns deadline and persistence', () => {
+  const prepareBody = bodyBetween(
+    'async function prepareProductionRecommendationWork',
+    'async function persistAndAssembleProductionRecommendation',
+  );
+  assert.match(indexSource, /runRecommendationStylingShadowV2Safely/);
+  assert.match(prepareBody, /prepareRecommendationCopyJob/);
+  assert.match(prepareBody, /executionMode: 'interactive'/);
+  assert.match(prepareBody, /firstCardInteractive = \{/);
+  assert.match(prepareBody, /persistValidatedCanonicalCopy/);
+  assert.match(prepareBody, /dispatchPreparedRecommendationCopyJob/);
+  assert.match(orchestratorSource, /SERVER_RESPONSE_DEADLINE_MS = 2300/);
+  assert.match(orchestratorSource, /renderFirstCardCanonical/);
+  assert.match(orchestratorSource, /persistCanonicalCopy/);
+  assert.doesNotMatch(streamSource, /consumeProductionRendererStream|persistCanonicalCopy\(copy\)/);
 });
 
-test('provider streaming is owned by the separately dispatched worker action', () => {
+test('background provider streaming remains owned by the existing worker action', () => {
   const mainBody = bodyBetween('exports.main = async', 'function buildRecommendationV2TodayReason');
   assert.match(mainBody, /action === 'bootstrapRecommendationCopyStorageV2'/);
   assert.match(mainBody, /confirmRendererVersion !== PRODUCTION_RENDERER_VERSION/);

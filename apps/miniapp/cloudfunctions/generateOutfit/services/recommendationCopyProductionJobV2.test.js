@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
   buildCacheIdentity,
+  dispatchPreparedRecommendationCopyJob,
   finishRecommendationCopyJob,
   markRecommendationCopyJobProgress,
   ensureRecommendationCopyCollections,
@@ -12,6 +13,7 @@ const {
   prepareRecommendationCopyJob,
   acquireRecommendationCopyJob,
   readRecommendationCopyOverlay,
+  resolveRecommendationCopyJobMisses,
 } = require('./recommendationCopyProductionJobV2');
 
 function fakeDatabase() {
@@ -183,4 +185,68 @@ test('interactive preparation reuses shared job and cache identities without Eve
     rendererVersion: 'renderer-v2',
     renderInputFingerprint: entry.renderInputFingerprint,
   })));
+});
+
+test('interactive job dispatches through the existing Event contract after the response barrier', async () => {
+  const database = fakeDatabase();
+  const prepared = await prepareRecommendationCopyJob({
+    database,
+    openid: 'openid-deferred',
+    batchId: 'batch-deferred',
+    rendererVersion: 'renderer-v2',
+    entries: entries(3),
+    executionMode: 'interactive',
+    now,
+  });
+  const payloads = [];
+  const dispatched = await dispatchPreparedRecommendationCopyJob({
+    database,
+    jobId: prepared.jobId,
+    dispatch: async (payload) => {
+      payloads.push(payload);
+      return { requestId: 'request-deferred' };
+    },
+    now,
+  });
+  assert.equal(dispatched.accepted, true);
+  assert.equal(payloads.length, 1);
+  assert.deepEqual(Object.keys(payloads[0]).sort(), ['action', 'dispatchToken', 'jobId']);
+  assert.equal(payloads[0].action, 'materializeRecommendationCopyJobV2');
+  assert.equal(payloads[0].jobId, prepared.jobId);
+  assert.equal(database._all('recommendation_copy_jobs_v2')[0].status, 'dispatched');
+});
+
+test('background worker skips card0 after interactive canonical success', async () => {
+  const database = fakeDatabase();
+  const prepared = await prepareRecommendationCopyJob({
+    database,
+    openid: 'openid-success',
+    batchId: 'batch-success',
+    rendererVersion: 'renderer-v2',
+    entries: entries(3),
+    executionMode: 'interactive',
+    now,
+  });
+  const job = database._all('recommendation_copy_jobs_v2')[0];
+  await persistValidatedCanonicalCopy(database, job, prepared.entries[0], { text: 'interactive card0' }, now);
+  const resolved = await resolveRecommendationCopyJobMisses(database, job, now);
+  assert.deepEqual(resolved.misses.map((entry) => entry.position), [1, 2]);
+  assert.equal(resolved.cachedCopies.length, 1);
+});
+
+test('background worker includes card0 after interactive timeout or failure', async () => {
+  const database = fakeDatabase();
+  await prepareRecommendationCopyJob({
+    database,
+    openid: 'openid-timeout',
+    batchId: 'batch-timeout',
+    rendererVersion: 'renderer-v2',
+    entries: entries(3),
+    executionMode: 'interactive',
+    now,
+  });
+  const job = database._all('recommendation_copy_jobs_v2')[0];
+  const resolved = await resolveRecommendationCopyJobMisses(database, job, now);
+  assert.deepEqual(resolved.misses.map((entry) => entry.position), [0, 1, 2]);
+  assert.equal(resolved.cachedCopies.length, 0);
 });

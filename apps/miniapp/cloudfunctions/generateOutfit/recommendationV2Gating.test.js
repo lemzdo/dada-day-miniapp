@@ -12,6 +12,24 @@ test('Today has one Recommendation Runtime entry and no V1/V2 selector', () => {
   assert.match(source, /persistAndAssembleProductionRecommendation/);
 });
 
+test('generateOutfit non-recommendation actions return before bounded card0 AI', () => {
+  const main = source.slice(
+    source.indexOf('exports.main = async'),
+    source.indexOf('function buildRecommendationV2TodayReason'),
+  );
+  const runtimeEntry = main.indexOf('runProductionRecommendationRuntime(event');
+  assert.ok(runtimeEntry > 0);
+  for (const action of [
+    'detailV2', 'favoriteV2', 'wearV2', 'detail', 'renameOutfit', 'favorite', 'wear',
+    'list', 'saveFavoriteOutfit', 'removeFavoriteOutfit', 'listFavoriteOutfits',
+    'addOutfitHistory', 'listOutfitHistory', 'getAiComment', 'aiComment',
+  ]) {
+    const branch = main.indexOf(`action === '${action}'`);
+    assert.ok(branch >= 0 && branch < runtimeEntry, `${action} must return before recommendation runtime`);
+  }
+  assert.doesNotMatch(main.slice(0, runtimeEntry), /renderFirstCardCanonical\(/);
+});
+
 test('normal generation uses minimal atomic batch persistence before legacy helpers', () => {
   const entry = source.indexOf('async function persistAndAssembleProductionRecommendation');
   assert.ok(entry >= 0);
@@ -27,7 +45,7 @@ test('FULL_COMPUTE schedules existing candidate-pool persistence while cache hit
   assert.doesNotMatch(source, /upsertRecommendationOutfitsBatch|projectRecommendationResponseOutfits/);
 });
 
-test('C2 launches noncritical copy, candidate-pool and overlay work without putting it on ready path', () => {
+test('C2 launches bounded card0 and noncritical background work without putting worker completion on ready path', () => {
   const c2Start = source.indexOf('async function prepareProductionRecommendationWork');
   const readyInput = source.indexOf('async function persistAndAssembleProductionRecommendation', c2Start);
   const postC2 = source.slice(c2Start, readyInput);
@@ -35,7 +53,10 @@ test('C2 launches noncritical copy, candidate-pool and overlay work without putt
   assert.match(postC2, /candidatePoolPersistPromise = Promise\.resolve\(\)\.then/);
   assert.match(postC2, /copyJobPromise = prepareRecommendationCopyJob/);
   assert.match(postC2, /copyOverlayPromise = copyJobPromise\.then/);
-  assert.match(postC2, /tasks: \[copyJobPromise, candidatePoolPersistPromise, copyOverlayPromise\]/);
+  assert.match(postC2, /firstCardInteractive = \{/);
+  assert.match(postC2, /executionMode: 'interactive'/);
+  assert.match(postC2, /scheduleBackgroundMaterialization/);
+  assert.match(postC2, /tasks: \[copyJobPromise, candidatePoolPersistPromise, copyOverlayPromise, backgroundMaterializationDone\]/);
   assert.doesNotMatch(postC2, /copyJob\s*=\s*await copyJobPromise|await candidatePoolPersistPromise|await copyOverlayPromise/);
 });
 

@@ -49,55 +49,30 @@ test('HTTP auth and client generation map to the existing user and batch identit
   assert.deepEqual(output[0].data.identity, { userIdentityVerified: true });
 });
 
-test('C2 starts renderer before ready and emits the first persisted copy incrementally', async () => {
-  let releaseRenderer;
-  const rendererGate = new Promise((resolve) => { releaseRenderer = resolve; });
-  let rendererStarted = false;
+test('HTTP adapter forwards the orchestrator authoritative first-card response without owning rendering', async () => {
   const handler = stream.createRecommendationStreamHandler({
-    consumeRenderer: async ({ onValidated }) => {
-      rendererStarted = true;
-      await rendererGate;
-      await onValidated({ planId: 'plan-1', text: '针织衫和长裤接得很自然。' });
-      return { status: 'completed', validatedCount: 1 };
-    },
     runRuntime: async (_input, _context, hooks) => {
-      const aiDone = hooks.onNarrativePlansReady({
-        batchId: 'batch-1',
-        entries: [{ position: 0, outfitKey: 'look-1', preparedEntry: { plan: { planId: 'plan-1' } } }],
-        copyJobPromise: Promise.resolve({ missEntries: [{ preparedEntry: { plan: { planId: 'plan-1' } } }] }),
-        persistCanonicalCopy: async () => ({ availableAt: '2026-08-26T00:00:00.000Z', rendererVersion: 'recommendation-voice-renderer-production-v2.1' }),
-      });
-      await hooks.onRecommendationReady({ batchId: 'batch-1', response: { batch: { batchId: 'batch-1' } } });
-      return { batchId: 'batch-1', response: { batch: { batchId: 'batch-1' } }, aiDone };
+      const responseValue = {
+        batch: { batchId: 'batch-1' },
+        light: { cards: [{ outfitKey: 'look-1', todayReason: '针织衫和长裤接得很自然。', copySource: 'ai_cache' }] },
+      };
+      await hooks.onRecommendationReady({ batchId: 'batch-1', response: responseValue });
+      return { batchId: 'batch-1', response: responseValue, aiDone: Promise.resolve({ status: 'SUCCESS' }) };
     },
   });
   const res = response();
-  const running = handler(request({ streamGeneration: 'generation-1' }), res);
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(rendererStarted, true);
-  assert.deepEqual(events(res).map((event) => event.name), ['recommendation.ready']);
-  releaseRenderer();
-  await running;
+  await handler(request({ streamGeneration: 'generation-1' }), res);
   const output = events(res);
-  assert.deepEqual(output.map((event) => event.name), ['recommendation.ready', 'canonical.copy', 'complete']);
-  assert.deepEqual(output[1].data.copy, {
-    outfitKey: 'look-1', cardIndex: 0, text: '针织衫和长裤接得很自然。', source: 'ai_cache',
-    availableAt: '2026-08-26T00:00:00.000Z', rendererVersion: 'recommendation-voice-renderer-production-v2.1',
-  });
+  assert.deepEqual(output.map((event) => event.name), ['recommendation.ready', 'complete']);
+  assert.equal(output[0].data.response.light.cards[0].copySource, 'ai_cache');
+  assert.equal(output[0].data.response.light.cards[0].todayReason, '针织衫和长裤接得很自然。');
 });
 
-test('Qwen or validator failure completes fail-open after recommendation.ready', async () => {
+test('orchestrator provider or validator failure completes fail-open after recommendation.ready', async () => {
   const handler = stream.createRecommendationStreamHandler({
-    consumeRenderer: async () => ({ status: 'failed_open', validatedCount: 0 }),
     runRuntime: async (_input, _context, hooks) => {
-      const aiDone = hooks.onNarrativePlansReady({
-        batchId: 'batch-fail',
-        entries: [{ position: 0, outfitKey: 'look-1', preparedEntry: { plan: { planId: 'plan-1' } } }],
-        copyJobPromise: Promise.resolve({ missEntries: [{ preparedEntry: { plan: { planId: 'plan-1' } } }] }),
-        persistCanonicalCopy: async () => { throw new Error('must not write'); },
-      });
       await hooks.onRecommendationReady({ batchId: 'batch-fail', response: { batch: { batchId: 'batch-fail' } } });
-      return { batchId: 'batch-fail', response: { batch: { batchId: 'batch-fail' } }, aiDone };
+      return { batchId: 'batch-fail', response: { batch: { batchId: 'batch-fail' } }, aiDone: Promise.resolve({ status: 'FAIL', reason: 'VALIDATOR_FAIL' }) };
     },
   });
   const res = response();
@@ -107,39 +82,25 @@ test('Qwen or validator failure completes fail-open after recommendation.ready',
   assert.equal(output[1].data.reason, 'failed_open');
 });
 
-test('a canonical cache hit discovered after ready is still delivered through SSE', async () => {
-  let releaseAdmission;
-  const copyJobPromise = new Promise((resolve) => { releaseAdmission = resolve; });
+test('orchestrator cache hit is authoritative in recommendation.ready without a second UI event', async () => {
   const handler = stream.createRecommendationStreamHandler({
     runRuntime: async (_input, _context, hooks) => {
-      const aiDone = hooks.onNarrativePlansReady({
-        batchId: 'batch-cache',
-        entries: [],
-        copyJobPromise,
-        persistCanonicalCopy: async () => undefined,
-      });
+      const responseValue = {
+        batch: { batchId: 'batch-cache' },
+        light: { cards: [{ outfitKey: 'look-cache', todayReason: '缓存文案。', copySource: 'ai_cache' }] },
+      };
       await hooks.onRecommendationReady({
         batchId: 'batch-cache',
-        response: { batch: { batchId: 'batch-cache' } },
+        response: responseValue,
       });
-      return { batchId: 'batch-cache', aiDone };
+      return { batchId: 'batch-cache', response: responseValue, aiDone: Promise.resolve({ status: 'CACHE_HIT' }) };
     },
   });
   const res = response();
-  const running = handler(request({ streamGeneration: 'generation-cache' }), res);
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(events(res).map((event) => event.name), ['recommendation.ready']);
-  releaseAdmission({
-    initialCopies: [{
-      outfitKey: 'look-cache', cardIndex: 0, text: '缓存文案。', source: 'ai_cache',
-      availableAt: '2026-08-26T00:00:00.000Z', rendererVersion: 'recommendation-voice-renderer-production-v2.1',
-    }],
-    missEntries: [],
-  });
-  await running;
-  assert.deepEqual(events(res).map((event) => event.name), [
-    'recommendation.ready', 'canonical.copy', 'complete',
-  ]);
+  await handler(request({ streamGeneration: 'generation-cache' }), res);
+  const output = events(res);
+  assert.deepEqual(output.map((event) => event.name), ['recommendation.ready', 'complete']);
+  assert.equal(output[0].data.response.light.cards[0].todayReason, '缓存文案。');
 });
 
 test('partial 1/3/7 and exhausted 0 keep their exact recommendation counts', async () => {
@@ -175,29 +136,11 @@ test('HTTP adapter rejects missing identity and unsupported route', async () => 
   assert.equal(notFound.statusCode, 404);
 });
 
-test('SSE disconnect after ready stops client writes while canonical persistence finishes fail-open', async () => {
-  let releaseRenderer;
-  const rendererGate = new Promise((resolve) => { releaseRenderer = resolve; });
-  let persisted = false;
+test('SSE disconnect after ready stops transport writes while orchestrator background settles', async () => {
+  let releaseBackground;
+  const backgroundDone = new Promise((resolve) => { releaseBackground = resolve; });
   const handler = stream.createRecommendationStreamHandler({
-    consumeRenderer: async ({ onValidated }) => {
-      await rendererGate;
-      await onValidated({ planId: 'plan-1', text: '断连后仍完成共享缓存写入。' });
-      return { status: 'completed', validatedCount: 1 };
-    },
     runRuntime: async (_input, _context, hooks) => {
-      const aiDone = hooks.onNarrativePlansReady({
-        batchId: 'batch-disconnect',
-        entries: [{ position: 0, outfitKey: 'look-1', preparedEntry: { plan: { planId: 'plan-1' } } }],
-        copyJobPromise: Promise.resolve({ missEntries: [{ preparedEntry: { plan: { planId: 'plan-1' } } }] }),
-        persistCanonicalCopy: async () => {
-          persisted = true;
-          return {
-            availableAt: '2026-08-26T00:00:00.000Z',
-            rendererVersion: 'recommendation-voice-renderer-production-v2.1',
-          };
-        },
-      });
       await hooks.onRecommendationReady({
         batchId: 'batch-disconnect',
         response: { batch: { batchId: 'batch-disconnect' } },
@@ -205,7 +148,8 @@ test('SSE disconnect after ready stops client writes while canonical persistence
       return {
         batchId: 'batch-disconnect',
         response: { batch: { batchId: 'batch-disconnect' } },
-        aiDone,
+        aiDone: Promise.resolve({ status: 'SUCCESS' }),
+        backgroundDone,
       };
     },
   });
@@ -214,9 +158,8 @@ test('SSE disconnect after ready stops client writes while canonical persistence
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(events(res).map((event) => event.name), ['recommendation.ready']);
   res.emit('close');
-  releaseRenderer();
+  releaseBackground();
   await running;
-  assert.equal(persisted, true);
   assert.deepEqual(events(res).map((event) => event.name), ['recommendation.ready']);
 });
 
