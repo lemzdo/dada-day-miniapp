@@ -19,6 +19,34 @@ The main architectural risks are instead:
 5. Image Asset Pipeline V2 fields exist, but current behavior remains a V1/V2 compatibility model with inconsistent display fallback, incomplete segmentation quality validation, and Today-only cloud URL hydration (`database/migrations/003_wardrobe_asset_pipeline_v2.sql:13`, `apps/miniapp/src/utils/mediaResolution.js:44`).
 6. P2 closed important recommendation cache isolation and invalidation gaps, but Today favorite/wear mutations, saved snapshots, canonical-copy lifecycle, and CloudBase control-plane state still have gaps (`apps/miniapp/src/lib/cacheInvalidation.ts:66`, `apps/miniapp/src/pages/today/index.tsx:1277`).
 
+## Autonomous mainline acceptance update (2026-08-27)
+
+### M1 Recommendation real-cloud acceptance
+
+- `DEPLOYED_COMMIT=64fbf21eb71621087c4b58180f35b298151cd330`.
+- Local recommendation gates passed for the first-card renderer, Orchestrator, Runtime, both transport adapters, P2/P3 targeted regressions, miniapp typecheck and diff-check.
+- `generateOutfit` and `recommendationStream` were updated successfully in CloudBase environment `cloud1-d8gl3k1vkdf0b7f05`; function info reported both units active after deployment.
+- Feature-branch push was blocked by invalid local GitHub credentials. No token was requested or changed.
+- The existing client runner stopped at `PRECONDITION_NOT_CLEAN` before a production request and remained blocked after its single allowed Today tab-round-trip repair. No stable unattended production sampler exists for the required six fresh plus five warm calls, and no safe production P2 mutation entry was found.
+- Therefore fresh/warm latency, first-exposure AI quality and confirmed cold-start evidence are not claimed. `RECOMMENDATION_ARCHITECTURE=REMOTE_ACCEPTANCE_BLOCKED`; this is not a recommendation business regression or a warm-latency failure.
+
+### M2 AI Core foundation
+
+- Commit `f54de27` introduced the deployable shared CommonJS package `@d1d/ai-core` and migrated Recommendation first-card rendering to `xiaodaAI.execute('recommendation_reason', input, options)`.
+- The task registry freezes `qwen3.7-max`, `compressed-v2`, the existing production prompt version, the production validator mapping, streaming mode and the current timeout/retry policy. The existing production request, parser, validator, copy and Orchestrator deadline behavior remain in place.
+- Bailian/DashScope transport now has one provider primitive for endpoint/auth lookup, streaming/non-streaming calls, normalized errors, usage metadata, abort/deadline injection and fail-open telemetry.
+- `SecretProvider` currently activates `LegacyEnvSecretSource` with `BAILIAN_API_KEY -> DASHSCOPE_API_KEY` compatibility. `EncryptedDbSecretSource` is implemented and locally verified for AES-256-GCM, tamper/wrong-key failures, instance cache, 2/5/10-way in-flight dedupe and clear/refresh, but remains inactive and contains no production secret migration.
+- AI Core, SecretSource, Recommendation, P2/P3, deployment-staging, miniapp and full-workspace typecheck gates passed.
+
+### M3 Wardrobe Image Asset Pipeline V2 foundation
+
+- Commit `bb47afe` introduced the zero-runtime-dependency shared package `@d1d/garment-assets` with canonical `ORIGINAL`, `CROP`, `CLEAN`, `NORMALIZED`, `DISPLAY` and `THUMBNAIL` semantics, plus `LIST`, `CARD`, `DETAIL` and `SNAPSHOT` usage contracts.
+- Durable original references are distinct from other fact references. Signed temporary HTTPS URLs and presentation aliases cannot be promoted to original/fact fields. Existing `assetStatus`, `qualityScore` and review flags map to `VALID`, `NEEDS_REVIEW` and `INVALID` without a database migration.
+- Today, Outfit Detail, Favorite and History now enter the same resolver. Explicit compatibility profiles preserve each surface's previous visible URL priority, so `UI_VISIBLE_CHANGE=false` for this foundation slice.
+- Outfit snapshot builders/readers retain legacy `imageUrl`, `displayImageUrl` and `thumbnailUrl` while adding durable original/fact references, asset version and canonical asset metadata. CloudBase deployment staging vendors the shared package without changing source `workspace:*` dependencies.
+- Thumbnail generation is not connected to the primary upload pipeline, and P3 media prewarm remains an opt-in callable boundary: `THUMBNAIL_PIPELINE_NEXT=true`, `MEDIA_PREWARM_NEXT=true`.
+- Resolver matrix, legacy compatibility, signed-URL rejection, quality mapping, snapshot roundtrip, four-surface targeted tests, media resolution, deployment staging, recommendation regressions and full-workspace typecheck passed.
+
 ## A. Cloud Function inventory
 
 `U` means the repository does not declare the value and the CloudBase console was not queried. The count includes direct children of `apps/miniapp/cloudfunctions/` that contain `index.js`; `shared/`, service modules, tests, and scripts are not functions.
