@@ -69,6 +69,7 @@ import {
   recordImageSessionMount,
   subscribeImageSession,
 } from '@/utils/imageSessionCache';
+import { prewarmGarmentAssets } from '@/utils/garmentAssetResolution';
 import { getRecommendationWeatherFingerprint, type RecommendationWeatherFingerprint } from '@/utils/weather';
 import {
   buildSceneIdentityKey,
@@ -931,7 +932,27 @@ export default function TodayPage() {
       excludedOutfitKeys: [...seenOutfitKeysRef.current],
       refreshSemantics: 'refresh',
     });
-    void run.promise.catch(() => undefined);
+    void run.promise
+      .then((response) => {
+        void prewarmNextBatchMedia(response);
+      })
+      .catch(() => undefined);
+  }
+
+  async function prewarmNextBatchMedia(response: unknown): Promise<void> {
+    try {
+      const light = (response as { light?: { cards?: unknown[] } } | null)?.light;
+      if (!light || !Array.isArray(light.cards) || light.cards.length === 0) return;
+      // Resolve cloud IDs through the existing media boundary before asking the
+      // image session cache to preload. A failed resolution simply falls back
+      // to the original item sources; this work never gates P3 promotion.
+      const resolvedLight = await hydrateHomeLightForRender({ cards: light.cards });
+      const cards = (resolvedLight?.cards || light.cards).slice(0, 8) as Array<{ items?: unknown[] }>;
+      const garments = cards.flatMap((card) => Array.isArray(card.items) ? card.items : []);
+      await prewarmGarmentAssets(garments as Array<Record<string, unknown>>, 'CARD');
+    } catch {
+      // Media prewarm is strictly best-effort and must not affect P3 state.
+    }
   }
 
   async function refreshHardInvalidRecommendation(

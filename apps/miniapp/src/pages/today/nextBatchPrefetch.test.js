@@ -25,6 +25,16 @@ test('prefetch request uses refresh trigger and accumulated seen exclusions', ()
   assert.match(source, /trigger: 'refresh'/);
 });
 
+test('next READY batch starts best-effort media prewarm without gating promotion', () => {
+  const prefetchBody = source.slice(source.indexOf('function prefetchNextBatch'), source.indexOf('async function refreshHardInvalidRecommendation'));
+  assert.match(prefetchBody, /void run\.promise[\s\S]*?\.then\(\(response\) => \{[\s\S]*?void prewarmNextBatchMedia\(response\)/);
+  assert.match(source, /async function prewarmNextBatchMedia\(response: unknown\)/);
+  assert.match(source, /hydrateHomeLightForRender\(\{ cards: light\.cards \}\)/);
+  assert.match(source, /prewarmGarmentAssets\(garments as Array<Record<string, unknown>>, 'CARD'\)/);
+  assert.match(source, /\.slice\(0, 8\)/);
+  assert.match(source, /catch \{[\s\S]*?Media prewarm is strictly best-effort/);
+});
+
 test('next identity and request contract bind effective input, current batch, hash, semantics, and exclusions', () => {
   const identityBody = coordinatorSource.slice(
     coordinatorSource.indexOf('export function buildNextBatchIdentity'),

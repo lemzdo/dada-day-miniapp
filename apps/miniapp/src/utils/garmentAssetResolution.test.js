@@ -20,11 +20,11 @@ test('outfit image surfaces use the shared resolver with stable usage policies',
   }
 });
 
-test('prewarm boundary is present without page-level invocation', () => {
+test('P3 prewarm boundary reuses canonical resolution and image-session preload', () => {
   const source = fs.readFileSync(path.join(__dirname, 'garmentAssetResolution.ts'), 'utf8');
   assert.match(source, /export async function prewarmGarmentAssets/);
   assert.match(source, /preloadImageSession/);
-  assert.match(source, /MEDIA_PREWARM_NEXT = true/);
+  assert.match(source, /prewarmResolvedGarments\(/);
 });
 
 test('compat fixture preserves the prior visible source choices', () => {

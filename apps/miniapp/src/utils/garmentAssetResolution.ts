@@ -1,5 +1,6 @@
 import { resolveGarmentAsset as resolveCanonicalGarmentAsset } from '@d1d/garment-assets';
 import { preloadImageSession } from './imageSessionCache';
+import { prewarmResolvedGarments } from './mediaPrewarmCore';
 
 export type GarmentAssetUsage = 'LIST' | 'CARD' | 'DETAIL' | 'SNAPSHOT';
 export type GarmentAssetCompatProfile = 'TODAY_CARD' | 'SAVED_CARD' | 'DETAIL_THUMBNAIL' | 'DETAIL_DISPLAY';
@@ -52,15 +53,14 @@ export function resolveGarmentAsset(
   }
 }
 
-/** Callable prewarm boundary for future P3 integration. Intentionally opt-in. */
+/** Shared P3 prewarm boundary; canonical resolution and the image-session cache stay centralized here. */
 export async function prewarmGarmentAssets(
   garments: Array<UnknownGarment | null | undefined>,
   usage: GarmentAssetUsage = 'CARD',
 ): Promise<{ requested: number; warmed: number }> {
-  const sources = garments.map((garment) => resolveGarmentAsset(garment, usage)).filter(Boolean);
-  const results = await Promise.all(sources.map((source) => preloadImageSession(source)));
-  return { requested: sources.length, warmed: results.filter(Boolean).length };
+  return prewarmResolvedGarments(
+    garments,
+    (garment) => resolveGarmentAsset(garment, usage),
+    (source) => preloadImageSession(source),
+  );
 }
-
-export const MEDIA_PREWARM_NEXT = true as const;
-export const THUMBNAIL_PIPELINE_NEXT = true as const;
