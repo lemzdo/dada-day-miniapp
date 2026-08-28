@@ -85,8 +85,10 @@ function createRecommendationStreamHandler({
   resolveContext,
   createDiagnostics = null,
   recordStage = null,
+  readBody: readBodyFn = readBody,
+  loadDiagnostics: loadDiagnosticsFn = loadProductionDiagnostics,
 } = {}) {
-  return async function recommendationStream(req, res) {
+  const recommendationStream = async function recommendationStream(req, res) {
     const handlerStartedAt = Date.now();
     const handlerMonotonicOriginAt = process.hrtime.bigint();
     const url = new URL(req?.url || '/', 'http://localhost');
@@ -111,11 +113,11 @@ function createRecommendationStreamHandler({
     }
     const bodyResult = req?.method === 'GET'
       ? { value: undefined, bytes: 0, bodyDoneMs: 0, jsonDoneMs: 0 }
-      : await readBody(req, handlerMonotonicOriginAt);
+      : await readBodyFn(req, handlerMonotonicOriginAt);
     const input = parseInput(req, bodyResult.value);
     const handlerReadyMs = Number(process.hrtime.bigint() - handlerMonotonicOriginAt) / 1e6;
     const productionDiagnostics = !runRuntime && (!createDiagnostics || !recordStage)
-      ? loadProductionDiagnostics()
+      ? loadDiagnosticsFn()
       : null;
     const diagnosticsFactory = createDiagnostics || productionDiagnostics?.createDiagnostics;
     const stageRecorder = recordStage || productionDiagnostics?.recordStage;
@@ -251,6 +253,43 @@ function createRecommendationStreamHandler({
       }
     } finally {
       if (!res.writableEnded) res.end?.();
+    }
+  };
+
+  return async function guardedRecommendationStream(req, res) {
+    try {
+      await recommendationStream(req, res);
+    } catch (error) {
+      const contentType = typeof res?.getHeader === 'function'
+        ? res.getHeader('Content-Type')
+        : res?.headers?.['Content-Type'];
+      const sseStarted = res?.headersSent === true
+        || (typeof contentType === 'string' && contentType.toLowerCase().startsWith('text/event-stream'));
+      if (sseStarted) {
+        if (!res?.writableEnded) {
+          try {
+            writeSse(res, 'complete', {
+              type: 'complete',
+              reason: 'failed_open',
+              errorCode: error?.code || 'RECOMMENDATION_FAILED',
+            });
+          } catch { /* Response cleanup is fail-safe. */ }
+          try { res.end?.(); } catch { /* Response cleanup is fail-safe. */ }
+        }
+        return;
+      }
+      if (!res?.writableEnded) {
+        try {
+          res.statusCode = error?.statusCode || 500;
+          res.setHeader?.('Content-Type', 'application/json; charset=utf-8');
+          res.end?.(JSON.stringify({
+            code: error?.code || 'RECOMMENDATION_BOOTSTRAP_FAILED',
+            message: error?.message || 'Recommendation stream bootstrap failed',
+          }));
+        } catch {
+          try { res.end?.(); } catch { /* Response cleanup is fail-safe. */ }
+        }
+      }
     }
   };
 }

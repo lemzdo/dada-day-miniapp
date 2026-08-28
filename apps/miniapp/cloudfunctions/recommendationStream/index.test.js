@@ -281,3 +281,52 @@ test('ready is emitted before noncritical post-C2 settlement, while complete saf
   await running;
   assert.deepEqual(events(res).map((event) => event.name), ['recommendation.ready', 'complete']);
 });
+
+test('bootstrap readBody failure returns an HTTP error without rejecting the handler', async () => {
+  const handler = stream.createRecommendationStreamHandler({
+    readBody: async () => { throw Object.assign(new Error('BODY_READ_FAILED'), { code: 'BODY_READ_FAILED' }); },
+    runRuntime: async () => { throw new Error('runtime should not start'); },
+  });
+  const res = response();
+  await assert.doesNotReject(() => handler(request(), res));
+  assert.equal(res.statusCode, 500);
+  assert.equal(res.writableEnded, true);
+  assert.deepEqual(JSON.parse(res.chunks[0]), {
+    code: 'BODY_READ_FAILED',
+    message: 'BODY_READ_FAILED',
+  });
+});
+
+test('bootstrap diagnostics and context failures return HTTP errors without rejecting the handler', async () => {
+  const diagnosticsRes = response();
+  const diagnosticsHandler = stream.createRecommendationStreamHandler({
+    loadDiagnostics: () => { throw Object.assign(new Error('DIAGNOSTICS_FAILED'), { statusCode: 503 }); },
+  });
+  await assert.doesNotReject(() => diagnosticsHandler(request(), diagnosticsRes));
+  assert.equal(diagnosticsRes.statusCode, 503);
+  assert.equal(diagnosticsRes.writableEnded, true);
+
+  const contextRes = response();
+  const contextHandler = stream.createRecommendationStreamHandler({
+    resolveContext: () => { throw Object.assign(new Error('CONTEXT_FAILED'), { code: 'CONTEXT_FAILED' }); },
+  });
+  await assert.doesNotReject(() => contextHandler(request(), contextRes));
+  assert.equal(contextRes.statusCode, 500);
+  assert.equal(contextRes.writableEnded, true);
+});
+
+test('failure after SSE headers emits a safe complete event and ends the response', async () => {
+  const req = request();
+  const res = response();
+  const originalOn = res.on.bind(res);
+  res.on = (event, listener) => {
+    if (event === 'close') throw Object.assign(new Error('SSE_BOOTSTRAP_FAILED'), { code: 'SSE_BOOTSTRAP_FAILED' });
+    return originalOn(event, listener);
+  };
+  const handler = stream.createRecommendationStreamHandler({ runRuntime: async () => ({}) });
+  await assert.doesNotReject(() => handler(req, res));
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.writableEnded, true);
+  assert.deepEqual(events(res).map((event) => event.name), ['complete']);
+  assert.equal(events(res)[0].data.errorCode, 'SSE_BOOTSTRAP_FAILED');
+});
