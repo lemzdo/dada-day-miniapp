@@ -3,7 +3,7 @@
 let runtimeRunner = null;
 
 function loadGenerateOutfitModule() {
-  try { return require('./generateOutfit'); } catch { return require('../generateOutfit'); }
+  return require('./generateOutfit');
 }
 
 function loadProductionRunner() {
