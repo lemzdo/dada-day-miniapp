@@ -1,5 +1,6 @@
 const cloud = require('wx-server-sdk');
 const crypto = require('crypto');
+const { checkSegmentationIntegrity } = require('./shared/segmentationIntegrity');
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
@@ -646,6 +647,10 @@ async function saveRemoteImage({ remoteUrl, cloudPath }) {
   const response = await fetch(remoteUrl, { timeout: SEGMENT_TIMEOUT_MS });
   if (!response.ok) throw new Error(`download_segment_result_failed_${response.status}`);
   const buffer = await response.buffer();
+  const integrity = await checkSegmentationIntegrity(buffer);
+  if (!integrity.valid) {
+    throw new Error(`segmentation_integrity_${integrity.status.toLowerCase()}:${integrity.reasons.join(',')}`);
+  }
   const uploadRes = await cloud.uploadFile({ cloudPath, fileContent: buffer });
   console.log('[segmentClothImage] upload VIAPI result to wechat cloud success', {
     remoteUrlType: getImageUrlType(remoteUrl),

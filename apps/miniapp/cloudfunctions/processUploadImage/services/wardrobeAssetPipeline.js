@@ -15,6 +15,7 @@ const {
   normalizeColorPaletteV1,
   AESTHETIC_PROMPT_VERSION,
 } = require('./aestheticFeatures');
+const { checkSegmentationIntegrity } = require('../shared/segmentationIntegrity');
 
 const DEFAULT_STAGE_STATUS = {
   router: 'skipped',
@@ -523,6 +524,7 @@ async function segmentGarment({ cloud, openid, sourceFileID, batchId, sourceImag
         cloud,
         remoteUrl: resultUrl,
         cloudPath: `wardrobe_uploads/clean/${batchId}/${sourceImageId}-${itemIndex}.png`,
+        validateIntegrity: true,
       });
       return {
         cleanImageUrl: fileID,
@@ -968,6 +970,7 @@ async function persistAitryonImages({ cloud, batchId, sourceImageId, itemIndex, 
         cloud,
         remoteUrl: parsingImgUrl,
         cloudPath: `wardrobe_uploads/aitryon/parsing/${batchId}/${sourceImageId}-${itemIndex}-${clothesType}.png`,
+        validateIntegrity: true,
       });
     } catch (error) {
       result.errors.push(`parsing_img_url:${getErrorMessage(error)}`);
@@ -2199,11 +2202,17 @@ async function callViapiSegment(imageUrl, actionName) {
   return resultUrl;
 }
 
-async function saveRemoteImage({ cloud, remoteUrl, cloudPath }) {
+async function saveRemoteImage({ cloud, remoteUrl, cloudPath, validateIntegrity = false }) {
   const fetch = require('node-fetch');
   const response = await fetch(remoteUrl, { timeout: getSegmentTimeoutMs() });
   if (!response.ok) throw new Error(`download_segment_result_failed_${response.status}`);
   const buffer = await response.buffer();
+  if (validateIntegrity) {
+    const integrity = await checkSegmentationIntegrity(buffer);
+    if (!integrity.valid) {
+      throw new Error(`segmentation_integrity_${integrity.status.toLowerCase()}:${integrity.reasons.join(',')}`);
+    }
+  }
   const uploadRes = await cloud.uploadFile({ cloudPath, fileContent: buffer });
   return uploadRes.fileID;
 }

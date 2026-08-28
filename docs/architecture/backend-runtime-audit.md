@@ -47,6 +47,13 @@ The main architectural risks are instead:
 - Thumbnail generation is not connected to the primary upload pipeline, and P3 media prewarm remains an opt-in callable boundary: `THUMBNAIL_PIPELINE_NEXT=true`, `MEDIA_PREWARM_NEXT=true`.
 - Resolver matrix, legacy compatibility, signed-URL rejection, quality mapping, snapshot roundtrip, four-surface targeted tests, media resolution, deployment staging, recommendation regressions and full-workspace typecheck passed.
 
+### M4 Wardrobe Image Asset Pipeline V2 media completion
+
+- `THUMBNAIL_PRIMARY_PIPELINE=PASS`: primary upload processing creates each draft thumbnail from the canonical durable clean/display/crop/original source boundary, reuses an existing durable thumbnail idempotently, and fails open. Confirmation only propagates `thumbnailUrl`, so no image processing was added to its critical path and no signed temporary URL becomes a durable fact.
+- `MEDIA_PREWARM=PASS`: after a P3 successor reaches ready, only its returned cards (bounded by the existing target of eight) enter the canonical card resolver, existing media resolution boundary and image-session cache. Sources are deduplicated; resolution or preload failure is fire-and-forget and cannot change successor availability, promotion or count/exhaustion contracts.
+- `DETERMINISTIC_INTEGRITY_GATE=PASS`: primary VIAPI/AITRYON segmentation and manual reprocessing share one Jimp-based deterministic gate for decode, dimensions, non-empty pixels, transparency/visible coverage, content bounds, blank output and tiny-subject output. Invalid output is not published as clean; durable crop/original or the existing clothing asset remains available. Semantic completeness and candidate consistency remain deferred.
+- Compatibility profiles, snapshot durability and recommendation P2/P3 behavior are unchanged; `UI_VISIBLE_CHANGE=false`. Actual normalized generation, semantic/visual quality checks and general media-cache governance remain deferred.
+
 ## A. Cloud Function inventory
 
 `U` means the repository does not declare the value and the CloudBase console was not queried. The count includes direct children of `apps/miniapp/cloudfunctions/` that contain `index.js`; `shared/`, service modules, tests, and scripts are not functions.

@@ -13,8 +13,11 @@ const {
 } = require('./syncCloudfunctionShared');
 
 const FUNCTION_ROOTS = Object.freeze({
+  backfillClothesThumbnails: path.join(CLOUD_FUNCTIONS_DIR, 'backfillClothesThumbnails'),
   generateOutfit: path.join(CLOUD_FUNCTIONS_DIR, 'generateOutfit'),
   confirmClothesDrafts: path.join(CLOUD_FUNCTIONS_DIR, 'confirmClothesDrafts'),
+  processUploadImage: path.join(CLOUD_FUNCTIONS_DIR, 'processUploadImage'),
+  segmentClothImage: path.join(CLOUD_FUNCTIONS_DIR, 'segmentClothImage'),
 });
 
 function resolveLocalModule(fromFile, specifier) {
@@ -90,4 +93,11 @@ test('scene eligibility local dependency graphs remain within each cloud functio
     FUNCTION_ROOTS.confirmClothesDrafts,
     path.join(FUNCTION_ROOTS.confirmClothesDrafts, 'index.js'),
   );
+});
+
+test('media shared copies stay inside each deployable cloud function root', () => {
+  for (const name of ['backfillClothesThumbnails', 'processUploadImage', 'segmentClothImage']) {
+    const functionRoot = FUNCTION_ROOTS[name];
+    assertDependencyGraphStaysInside(functionRoot, path.join(functionRoot, 'index.js'));
+  }
 });
