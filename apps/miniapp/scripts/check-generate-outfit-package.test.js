@@ -8,6 +8,7 @@ const test = require('node:test');
 const { DEFAULT_ROOT, analyzePackage, assertPackageIntegrity } = require('./check-generate-outfit-package');
 
 const DEPLOY_SCRIPT = path.join(__dirname, 'deploy-generate-outfit.ps1');
+const RECOMMENDATION_DEPLOY_SCRIPT = path.join(__dirname, 'deploy-recommendation-functions.ps1');
 
 test('current generateOutfit package includes recursive runtime dependencies and required directories', () => {
   const report = assertPackageIntegrity(DEFAULT_ROOT);
@@ -38,12 +39,16 @@ test('integrity check rejects runtime files excluded from the deployable source 
   assert.deepEqual(report.missingRuntimeFiles, ['services/runtime.test.js']);
 });
 
-test('deployment wrapper uses an explicit single-function source path', () => {
-  const source = fs.readFileSync(DEPLOY_SCRIPT, 'utf8');
+test('deployment wrappers use the shared two-artifact owner and manifest-driven refresh', () => {
+  const legacySource = fs.readFileSync(DEPLOY_SCRIPT, 'utf8');
+  const source = fs.readFileSync(RECOMMENDATION_DEPLOY_SCRIPT, 'utf8');
+  assert.match(legacySource, /deploy-recommendation-functions\.ps1/);
+  assert.match(legacySource, /generateOutfit/);
   assert.match(source, /cloud functions deploy/);
-  assert.match(source, /--paths \$stageRoot/);
-  assert.match(source, /node_modules/);
-  assert.match(source, /Copy-Item/);
-  assert.match(source, /deploymentMarker/);
-  assert.doesNotMatch(source, /--names\s+generateOutfit/);
+  assert.match(source, /--paths \$StageRoot/);
+  assert.match(source, /stage-recommendation-artifacts\.js/);
+  assert.match(source, /check-recommendation-artifacts\.js/);
+  assert.match(source, /manifest\.refreshRoots/);
+  assert.match(source, /cloud functions inc-deploy/);
+  assert.doesNotMatch(source, /aestheticCompatibility/);
 });
