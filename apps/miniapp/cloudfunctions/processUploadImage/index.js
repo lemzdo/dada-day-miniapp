@@ -6,6 +6,11 @@ const {
   toDraftResponse,
 } = require('./services/wardrobeAssetPipeline');
 const crypto = require('crypto');
+const {
+  ensureThumbnail,
+  resolveThumbnailSource,
+  isDurableReference,
+} = require('./services/thumbnail');
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
@@ -63,7 +68,7 @@ exports.main = async (event = {}) => {
           success: true,
           status: 'reused',
           imageId,
-          drafts: reusableDrafts.map(toDraftResponse),
+          drafts: reusableDrafts.map(toDraftResponseWithThumbnail),
           reused: true,
         });
       }
@@ -83,7 +88,7 @@ exports.main = async (event = {}) => {
         success: true,
         status: 'reused',
         imageId,
-        drafts: reusableDrafts.map(toDraftResponse),
+        drafts: reusableDrafts.map(toDraftResponseWithThumbnail),
         reused: true,
       });
     }
@@ -328,6 +333,10 @@ async function getReusableDrafts(imageId, openid) {
   return (res.data || []).filter((draft) => REUSABLE_DRAFT_STATUSES.has(draft.status || 'pending'));
 }
 
+function toDraftResponseWithThumbnail(draft) {
+  return { ...toDraftResponse(draft), thumbnailUrl: draft.thumbnailUrl || '' };
+}
+
 async function touchProcessingHeartbeat(context) {
   return updateImageWithToken(context, {
     processingHeartbeatAt: nowIso(),
@@ -398,10 +407,29 @@ async function upsertDraftForAsset(asset, openid, context) {
     return { ...toDraftResponse(existing), locked: existing.status === 'confirming' };
   }
 
+  let thumbnailUrl = [existing && existing.thumbnailUrl, asset.thumbnailUrl].find(isDurableReference) || '';
+  if (!thumbnailUrl && resolveThumbnailSource(asset)) {
+    try {
+      thumbnailUrl = await ensureThumbnail({
+        cloud,
+        item: asset,
+        existingThumbnail: thumbnailUrl,
+        cloudPath: `wardrobe_uploads/thumbnails/primary/${openid}/${context.batchId}/${sourceAssetKey}.jpg`,
+      });
+    } catch (error) {
+      console.warn('[processUploadImage] create thumbnail failed', {
+        imageId: context.imageId,
+        sourceAssetKey,
+        message: getErrorMessage(error),
+      });
+    }
+  }
+
   const draft = toDraftData({
     ...asset,
     sourceAssetKey,
     processingToken: context.token,
+    thumbnailUrl,
   }, openid);
   const data = {
     ...draft,
@@ -409,13 +437,14 @@ async function upsertDraftForAsset(asset, openid, context) {
     sourceImageId: context.imageId,
     sourceAssetKey,
     processingToken: context.token,
+    thumbnailUrl,
     updatedAt: nowIso(),
   };
   if (!existing) data.createdAt = draft.createdAt || nowIso();
   else data.createdAt = existing.createdAt || draft.createdAt || nowIso();
 
   await ref.set({ data });
-  return toDraftResponse({ ...data, _id: draftId });
+  return { ...toDraftResponse({ ...data, _id: draftId }), thumbnailUrl };
 }
 
 function normalizeSourceAssetKey(value) {

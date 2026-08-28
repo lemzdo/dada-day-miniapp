@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "main": "index.js",
   "dependencies": {
+    "@d1d/garment-assets": "workspace:*",
     "jimp": "^0.22.12",
     "node-fetch": "^2.7.0",
     "wx-server-sdk": "latest"
