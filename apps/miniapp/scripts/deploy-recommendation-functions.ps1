@@ -2,8 +2,9 @@ param(
   [string]$EnvironmentId = 'cloud1-d8gl3k1vkdf0b7f05',
   [string]$ProjectPath = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path,
   [string]$CliPath = '',
+  [string]$AppId = '',
   [int]$Port = 52849,
-  [string[]]$Functions = @('generateOutfit', 'recommendationStream')
+  [string[]]$Functions = @('recommendationStream')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -15,6 +16,13 @@ $generateOutfitStage = Join-Path $stageParent 'generateOutfit'
 $recommendationStreamStage = Join-Path $stageParent 'recommendationStream'
 $deploymentMarker = 'recommendation-deploy-' + (Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmssfff') + '-' + [guid]::NewGuid().ToString('N')
 $allowedFunctions = @('generateOutfit', 'recommendationStream')
+$projectConfigPath = Join-Path $ProjectPath 'project.config.json'
+if ([string]::IsNullOrWhiteSpace($AppId)) {
+  if (-not (Test-Path -LiteralPath $projectConfigPath -PathType Leaf)) { throw "CloudBase project config not found: $projectConfigPath" }
+  $projectConfig = Get-Content -LiteralPath $projectConfigPath -Raw | ConvertFrom-Json
+  $AppId = [string]$projectConfig.appid
+}
+if ([string]::IsNullOrWhiteSpace($AppId)) { throw 'CloudBase appid is required for path-mode deployment.' }
 
 foreach ($functionName in $Functions) {
   if ($functionName -notin $allowedFunctions) { throw "Unsupported deployment target: $functionName" }
@@ -35,7 +43,15 @@ function Invoke-CloudFunctionDeploy {
   for ($attempt = 1; $attempt -le 5; $attempt += 1) {
     $previousErrorPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    $deploymentOutput = & $CliPath cloud functions deploy --env $EnvironmentId --paths $StageRoot --remote-npm-install --report --project $ProjectPath --port $Port 2>&1
+    # CloudBase's --paths value is the function sourceDir. It must be the
+    # disposable, complete artifact root; passing ProjectPath (or the source
+    # cloudfunctions directory) makes nested local dependencies disappear.
+    $deploymentSourceDir = [IO.Path]::GetFullPath($StageRoot)
+    if ($Name -eq 'recommendationStream' -and $deploymentSourceDir -eq [IO.Path]::GetFullPath((Join-Path $ProjectPath 'cloudfunctions\recommendationStream'))) {
+      throw 'Refusing to deploy recommendationStream from the repository source directory.'
+    }
+    Write-Host ('DEPLOY_SOURCE_DIR=' + $deploymentSourceDir)
+    $deploymentOutput = & $CliPath cloud functions deploy --env $EnvironmentId --paths $deploymentSourceDir --appid $AppId --remote-npm-install --report --port $Port 2>&1
     $deploymentExitCode = $LASTEXITCODE
     $ErrorActionPreference = $previousErrorPreference
     $deploymentOutput | ForEach-Object { Write-Host $_ }
@@ -62,7 +78,7 @@ function Invoke-CloudFunctionDeploy {
     for ($attempt = 1; $attempt -le 5; $attempt += 1) {
       $previousErrorPreference = $ErrorActionPreference
       $ErrorActionPreference = 'Continue'
-      $refreshOutput = & $CliPath cloud functions inc-deploy --env $EnvironmentId --path $StageRoot --file $runtimeRoot --project $ProjectPath --port $Port 2>&1
+      $refreshOutput = & $CliPath cloud functions inc-deploy --env $EnvironmentId --path $deploymentSourceDir --file $runtimeRoot --appid $AppId --port $Port 2>&1
       $refreshExitCode = $LASTEXITCODE
       $ErrorActionPreference = $previousErrorPreference
       $refreshOutput | ForEach-Object { Write-Host $_ }
@@ -80,12 +96,23 @@ function Invoke-CloudFunctionDeploy {
 
 New-Item -ItemType Directory -Path $stageParent -Force | Out-Null
 try {
-  & node $stager generateOutfit $generateOutfitStage $deploymentMarker
-  if ($LASTEXITCODE -ne 0) { throw 'generateOutfit artifact assembly failed.' }
-  & node $stager recommendationStream $recommendationStreamStage $deploymentMarker
-  if ($LASTEXITCODE -ne 0) { throw 'recommendationStream artifact assembly failed.' }
-  & node $checker $generateOutfitStage $recommendationStreamStage
-  if ($LASTEXITCODE -ne 0) { throw 'Recommendation artifact integrity gate failed; deployment was not attempted.' }
+  if ($Functions -contains 'generateOutfit') {
+    & node $stager generateOutfit $generateOutfitStage $deploymentMarker
+    if ($LASTEXITCODE -ne 0) { throw 'generateOutfit artifact assembly failed.' }
+  }
+  if ($Functions -contains 'recommendationStream') {
+    & node $stager recommendationStream $recommendationStreamStage $deploymentMarker
+    if ($LASTEXITCODE -ne 0) { throw 'recommendationStream artifact assembly failed.' }
+    # This is the deployment owner gate. It runs against the exact directory
+    # passed as --paths, so a sibling generateOutfit cannot mask a bad upload.
+    & node $checker --recommendationStream $recommendationStreamStage
+    if ($LASTEXITCODE -ne 0) { throw 'recommendationStream artifact integrity gate failed; deployment was not attempted.' }
+    if (-not (Test-Path -LiteralPath (Join-Path $recommendationStreamStage 'generateOutfit\index.js'))) { throw 'Staged recommendationStream artifact is missing generateOutfit/index.js.' }
+    foreach ($requiredDirectory in @('generateOutfit\runtime', 'generateOutfit\services', 'generateOutfit\vendor')) {
+      if (-not (Test-Path -LiteralPath (Join-Path $recommendationStreamStage $requiredDirectory) -PathType Container)) { throw "Staged recommendationStream artifact is missing $requiredDirectory." }
+    }
+    Write-Host 'STAGED_GENERATE_OUTFIT_INDEX=true'
+  }
 
   if ([string]::IsNullOrWhiteSpace($CliPath)) {
     $cliCandidates = @(Get-ChildItem -LiteralPath 'D:\soft\Tecent' -Recurse -Filter 'cli.bat' -File -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match '(?i)web|微信' })
