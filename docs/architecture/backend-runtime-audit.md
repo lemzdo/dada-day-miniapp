@@ -54,6 +54,15 @@ The main architectural risks are instead:
 - `DETERMINISTIC_INTEGRITY_GATE=PASS`: primary VIAPI/AITRYON segmentation and manual reprocessing share one Jimp-based deterministic gate for decode, dimensions, non-empty pixels, transparency/visible coverage, content bounds, blank output and tiny-subject output. Invalid output is not published as clean; durable crop/original or the existing clothing asset remains available. Semantic completeness and candidate consistency remain deferred.
 - Compatibility profiles, snapshot durability and recommendation P2/P3 behavior are unchanged; `UI_VISIBLE_CHANGE=false`. Actual normalized generation, semantic/visual quality checks and general media-cache governance remain deferred.
 
+## Consolidated real-user acceptance update (2026-08-28)
+
+- The acceptance baseline was `2e0979714b72102aa1fccac48f01368786e11c57`. The six required physical units (`generateOutfit`, `recommendationStream`, `processUploadImage`, `segmentClothImage`, `confirmClothesDrafts`, and `backfillClothesThumbnails`) were deployed to `cloud1-d8gl3k1vkdf0b7f05` and reported `Active`.
+- The single authorized human run stopped on Today before any preference mutation, P3 promotion, upload, or downstream image-surface checks. Initial entry and one refresh both showed a white recommendation failure with CloudBase `-504002 function execution failed`; audit IDs were `rec_1_mtcapfai_9pgwii` and `rec_2_mtcc6naw_mkn28q`.
+- `CLASSIFICATION=PRODUCT_REGRESSION`: CloudBase materialized deploy-local `file:vendor/*` workspace packages as non-loadable link placeholders. Both the HTTP/SSE path and callable fallback therefore failed while loading recommendation dependencies.
+- Minimum fix commit `e2c3c7fa7c289c14ef36e9cf697c9b9cbe2ffdf8` adds package-name-first, deploy-vendor-second loading without changing recommendation, image, mutation, or UI contracts. Only the four affected units (`generateOutfit`, `recommendationStream`, `processUploadImage`, and `backfillClothesThumbnails`) were redeployed; all four reported `Active`, downloaded source hashes matched, and deployment-artifact vendor-loading probes passed.
+- No second human run was requested or performed. Fresh/warm recommendation latency, first-exposure AI, P2 mutation, P3 promotion/prewarm, upload/integrity fallback, and Today/Detail/Favorite/History visible image continuity are therefore not accepted. `MAINLINE_ACCEPTANCE=FAIL`; the product regression is fixed and automatically verified, but remains pending a separately authorized real-user confirmation.
+- `PUSHED=NO`. GitHub credentials and the old unattended runner were not changed.
+
 ## A. Cloud Function inventory
 
 `U` means the repository does not declare the value and the CloudBase console was not queried. The count includes direct children of `apps/miniapp/cloudfunctions/` that contain `index.js`; `shared/`, service modules, tests, and scripts are not functions.
@@ -342,18 +351,18 @@ If ordinary Cloud Functions cannot meet the production P0 cold SLA, move the sma
 | 2 | SSM Latency Spike | Stopped and archived; DB Secret latency lab was removed from the formal feature history |
 | 3 | Recommendation target freeze | Completed for Recommendation Core, Orchestrator, transport, background and logical deployment boundaries; AI Core and SecretProvider remain deferred |
 | 4 | Formal Recommendation Core / Orchestrator refactor | Slice 1 completed: Core emits the formal six-field result and both current transports enter one Orchestrator; physical deployment consolidation remains deferred |
-| 5 | Recommendation + card0 AI bounded concurrency | First-card AI shares interactive unit, bounded and fail-open to deterministic result |
-| 6 | Cold / warm / AI / mutation / P3 real-user E2E | Measured acceptance across Today and mutations; no synthetic-only sign-off |
+| 5 | Recommendation + card0 AI bounded concurrency | Completed in M1/M2: first-card AI shares the interactive runtime, is bounded, and fails open to the deterministic result |
+| 6 | Cold / warm / AI / mutation / P3 real-user E2E | NOT ACCEPTED: the single 2026-08-28 real-user run stopped on a `-504002` deployment regression; fix is deployed but no second human run was authorized |
 | 7 | Gradual migration of other AI tasks | Task-by-task adoption of AI Core; no Big Bang migration |
-| 8 | Wardrobe Image Asset Pipeline V2 | Original/fact, crop, clean, display, thumbnail semantics and lifecycle frozen |
-| 9 | Image integrity/normalization/display/thumbnail/media cache/prewarm | Integrity gates, unified resolver, durable snapshots and next-batch media prewarm accepted |
+| 8 | Wardrobe Image Asset Pipeline V2 | Completed in M3: original/fact, crop, clean, display and thumbnail semantics and lifecycle frozen |
+| 9 | Image integrity/normalization/display/thumbnail/media cache/prewarm | Foundation completed in M4; real-user integrity, fallback, prewarm and four-surface visible continuity remain unaccepted under Phase 6/12 |
 | 10 | Cache isolation + mutation invalidation closure audit | Remaining Today/snapshot/canonical/media gaps closed with tests |
 | 11 | Collections/indexes/permissions/core tests/docs closure | CloudBase control plane becomes versioned/verifiable; runtime settings documented |
 | 12 | home/work/date/sport + Today/Detail/Favorite/History + Voice real-user acceptance | Full supported-scene and surface acceptance completed |
 | 13 | Clothing relationship graph / knowledge graph / personalization learning | Start only after Phase 12; not current critical path |
 | 14 | Virtual try-on MVP | Start only after Phase 13 readiness; not current critical path |
 
-`NEXT_PHASE=Recommendation + first-card AI bounded concurrency`. That phase may connect `@d1d/ai-core`, SecretProvider and card0 AI to the Orchestrator; this refactor does not start that work.
+`NEXT_PHASE=STOP — do not start Phase 10`. Consolidated mainline acceptance failed during its only authorized human run. The minimum deployment regression fix is active and automatically verified; any post-fix real-user confirmation requires a separate explicit decision before roadmap work resumes.
 
 ## L. Recommendation Architecture Freeze
 
