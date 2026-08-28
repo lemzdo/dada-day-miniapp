@@ -1,10 +1,16 @@
 'use strict';
 
+const { loadDeployPackage } = require('./deployPackageResolver');
+
 // The asset package is deliberately resolved at runtime: local cloud-function
 // tests can run before the workspace package has been staged, while deployed
 // functions receive it as a vendor dependency.
 let assetApi = null;
-try { assetApi = require('@d1d/garment-assets'); } catch (_) { assetApi = null; }
+try {
+  assetApi = loadDeployPackage('@d1d/garment-assets', ['..', 'vendor', 'garment-assets']);
+} catch (_) {
+  assetApi = null;
+}
 
 const TEMP_URL = /[?&](?:x-amz-[^=]+|expires|signature|token|sig)=/i;
 

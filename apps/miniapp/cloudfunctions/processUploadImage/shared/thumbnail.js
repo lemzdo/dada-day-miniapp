@@ -1,6 +1,19 @@
 'use strict';
 
-const { adaptLegacyGarmentAssets, isStableAssetReference } = require('@d1d/garment-assets');
+function loadGarmentAssets() {
+  try {
+    return require('@d1d/garment-assets');
+  } catch (workspaceError) {
+    try {
+      return require(['..', 'vendor', 'garment-assets'].join('/'));
+    } catch (deployError) {
+      deployError.cause = workspaceError;
+      throw deployError;
+    }
+  }
+}
+
+const { adaptLegacyGarmentAssets, isStableAssetReference } = loadGarmentAssets();
 
 const THUMBNAIL_MAX_SIZE = 360;
 const THUMBNAIL_QUALITY = 76;

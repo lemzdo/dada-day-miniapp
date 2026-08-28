@@ -5,12 +5,13 @@ const {
   buildProductionRequest,
   validateProductionCopy,
 } = require('./recommendationVoiceRendererProductionV2');
+const { loadDeployPackage } = require('./deployPackageResolver');
 
 function defaultXiaodaAI() {
   // Keep the dependency lazy so local parser/validator tests can continue to
   // inject fetch without requiring a deploy-time package installation.
   try {
-    const core = require('@d1d/ai-core');
+    const core = loadAiCore();
     const registry = core.registry || core;
     // Bind the frozen production prompt/validator once. The renderer remains
     // the source of truth for streaming validation; these bindings make the
@@ -38,6 +39,12 @@ function defaultXiaodaAI() {
     wrapped.cause = error;
     throw wrapped;
   }
+}
+
+function loadAiCore() {
+  // CloudBase may materialize file: dependencies as non-loadable link
+  // placeholders. The deployment staging always carries this vendor copy.
+  return loadDeployPackage('@d1d/ai-core', ['..', 'vendor', 'ai-core']);
 }
 
 function responseFromCoreResult(result) {
@@ -186,4 +193,4 @@ async function renderFirstCardCanonical({ entry, rendererConfig = {} } = {}) {
   };
 }
 
-module.exports = { renderFirstCardCanonical };
+module.exports = { loadAiCore, renderFirstCardCanonical };
