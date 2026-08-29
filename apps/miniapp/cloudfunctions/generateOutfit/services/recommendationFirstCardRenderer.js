@@ -79,6 +79,7 @@ function responseFromCoreResult(result) {
 
 async function invokeRecommendationReason({ entry, rendererConfig, request, signal }) {
   const xiaodaAI = rendererConfig.xiaodaAI || defaultXiaodaAI();
+  try { rendererConfig.onAuditStage?.('PROVIDER_START', 'started'); } catch { /* audit is fail-open */ }
   const options = {
     ...rendererConfig.aiOptions,
     request,
@@ -89,8 +90,14 @@ async function invokeRecommendationReason({ entry, rendererConfig, request, sign
     rawResponse: true,
     timeoutMs: Number(rendererConfig.timeoutMs || 25000),
   };
-  const result = await xiaodaAI.execute('recommendation_reason', entry.preparedEntry.input, options);
-  return responseFromCoreResult(result);
+  try {
+    const result = await xiaodaAI.execute('recommendation_reason', entry.preparedEntry.input, options);
+    try { rendererConfig.onAuditStage?.('PROVIDER_COMPLETE', 'completed'); } catch { /* audit is fail-open */ }
+    return responseFromCoreResult(result);
+  } catch (error) {
+    try { rendererConfig.onAuditStage?.('PROVIDER_COMPLETE', 'failed'); } catch { /* audit is fail-open */ }
+    throw error;
+  }
 }
 
 function now() {
@@ -171,6 +178,7 @@ async function renderFirstCardCanonical({ entry, rendererConfig = {} } = {}) {
   const metadata = metadataFrom(summary);
   const copy = Array.isArray(summary?.validated) ? summary.validated[0] : undefined;
   if (summary?.status === 'completed' && summary?.validatedCount === 1 && copy) {
+    try { rendererConfig.onAuditStage?.('VALIDATOR_COMPLETE', 'accepted'); } catch { /* audit is fail-open */ }
     return {
       status: 'success',
       validatedCopy: copy,
@@ -182,6 +190,9 @@ async function renderFirstCardCanonical({ entry, rendererConfig = {} } = {}) {
   }
 
   const validatorFailure = Number(summary?.invalidCount || 0) > 0;
+  if (validatorFailure) {
+    try { rendererConfig.onAuditStage?.('VALIDATOR_COMPLETE', 'rejected'); } catch { /* audit is fail-open */ }
+  }
   return {
     status: 'failure',
     failureType: validatorFailure ? 'VALIDATOR_FAIL' : 'PROVIDER_FAIL',

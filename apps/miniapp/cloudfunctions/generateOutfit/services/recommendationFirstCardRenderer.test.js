@@ -57,10 +57,12 @@ test('is side-effect-free and does not invoke caller callbacks', async () => {
 
 test('uses the shared AI core recommendation_reason entry point', async () => {
   const calls = [];
+  const auditStages = [];
   let cancelled = 0;
   const result = await renderFirstCardCanonical({
     entry,
     rendererConfig: {
+      onAuditStage: (stage, status) => auditStages.push({ stage, status }),
       xiaodaAI: {
         execute: async (...args) => {
           calls.push(args);
@@ -85,4 +87,26 @@ test('uses the shared AI core recommendation_reason entry point', async () => {
   assert.deepEqual(calls[0][2].request, buildProductionRequest([entry.preparedEntry]));
   assert.ok(calls[0][2].signal instanceof AbortSignal);
   assert.equal(cancelled, 1);
+  assert.deepEqual(auditStages, [
+    { stage: 'PROVIDER_START', status: 'started' },
+    { stage: 'PROVIDER_COMPLETE', status: 'completed' },
+    { stage: 'VALIDATOR_COMPLETE', status: 'accepted' },
+  ]);
+});
+
+test('provider rejection records the exact provider boundary without validator completion', async () => {
+  const auditStages = [];
+  const result = await renderFirstCardCanonical({
+    entry,
+    rendererConfig: {
+      onAuditStage: (stage, status) => auditStages.push({ stage, status }),
+      xiaodaAI: { execute: async () => { throw new Error('provider unavailable'); } },
+    },
+  });
+  assert.equal(result.status, 'failure');
+  assert.equal(result.failureType, 'PROVIDER_FAIL');
+  assert.deepEqual(auditStages, [
+    { stage: 'PROVIDER_START', status: 'started' },
+    { stage: 'PROVIDER_COMPLETE', status: 'failed' },
+  ]);
 });

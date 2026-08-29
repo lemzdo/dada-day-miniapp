@@ -120,9 +120,55 @@ test('AI success persists canonical before the authoritative first response', as
   assert.deepEqual(events, ['canonical-persisted', 'response-assembled', 'background-SUCCESS', 'ready']);
 });
 
-test('card0 canonical cache hit skips the provider and still fills first response', async () => {
+test('interactive audit records correlated first-card stages and a complete summary', async () => {
+  const audit = [];
+  const context = interactiveContext({
+    firstCardInteractive: {
+      resolveAdmission: async () => ({}),
+    },
+    context: {
+      diagnostics: {
+        auditId: 'audit-test',
+        monotonicOriginAt: process.hrtime.bigint(),
+        stageLogger: (_label, entry) => audit.push(entry),
+      },
+      renderFirstCardCanonical: async ({ rendererConfig }) => {
+        rendererConfig.onAuditStage('PROVIDER_START', 'started');
+        rendererConfig.onAuditStage('PROVIDER_COMPLETE', 'completed');
+        rendererConfig.onAuditStage('VALIDATOR_COMPLETE', 'accepted');
+        return { status: 'success', copy: { planId: 'plan-1', text: 'AI canonical' } };
+      },
+    },
+  });
+  await runRecommendationOrchestrator({}, context);
+  const stages = new Set(audit.map((entry) => entry.stage));
+  for (const stage of ['HANDLER_ENTRY', 'CORE_READY', 'NARRATIVE_PLAN_READY', 'CACHE_LOOKUP_DONE', 'BACKGROUND_DISPATCHED',
+    'FIRST_CARD_AI_ADMITTED', 'PROVIDER_START', 'PROVIDER_COMPLETE', 'VALIDATOR_COMPLETE',
+    'CANONICAL_PERSISTED']) assert.ok(stages.has(stage), stage);
+  const summary = context.diagnostics.firstCardAudit.summary;
+  assert.equal(summary.auditId, 'audit-test');
+  assert.equal(summary.firstCardAiStarted, true);
+  assert.equal(summary.providerCalled, true);
+  assert.equal(summary.validated, true);
+  assert.equal(summary.persisted, true);
+  assert.equal(summary.backgroundDispatched, true);
+  assert.equal(summary.deadlineReason, null);
+  assert.equal(summary.stageStatus.DEADLINE_REACHED, 'not_occurred');
+  const stageEntries = audit.filter((entry) => typeof entry.stage === 'string');
+  assert.ok(stageEntries.every((entry) => entry.auditId === 'audit-test'));
+  assert.ok(stageEntries.every((entry) => typeof entry.elapsedFromHandlerMs === 'number'));
+  assert.ok(stageEntries.every((entry) => typeof entry.remainingDeadlineMs === 'number'));
+  assert.ok(stageEntries.every((entry) => typeof entry.status === 'string'));
+});
+
+test('card0 canonical cache hit skips the provider and marks AI stages not occurred', async () => {
   let providerCalls = 0;
   let persistenceCalls = 0;
+  const diagnostics = {
+    auditId: 'audit-cache-hit',
+    monotonicOriginAt: process.hrtime.bigint(),
+    stageLogger: () => {},
+  };
   const context = interactiveContext({
     firstCardInteractive: {
       resolveAdmission: async () => ({
@@ -130,13 +176,18 @@ test('card0 canonical cache hit skips the provider and still fills first respons
       }),
       persistCanonicalCopy: async () => { persistenceCalls += 1; },
     },
-    context: { renderFirstCardCanonical: async () => { providerCalls += 1; } },
+    context: { diagnostics, renderFirstCardCanonical: async () => { providerCalls += 1; } },
   });
   const result = await runRecommendationOrchestrator({}, context);
   assert.equal(result.firstCardAi.status, 'CACHE_HIT');
   assert.equal(result.response.light.cards[0].todayReason, 'cached canonical');
   assert.equal(providerCalls, 0);
   assert.equal(persistenceCalls, 0);
+  assert.equal(diagnostics.firstCardAudit.summary.firstCardAiStarted, false);
+  assert.equal(diagnostics.firstCardAudit.summary.providerCalled, false);
+  assert.equal(diagnostics.firstCardAudit.summary.stageStatus.CACHE_LOOKUP_DONE, 'occurred');
+  assert.equal(diagnostics.firstCardAudit.summary.stageStatus.FIRST_CARD_AI_ADMITTED, 'not_occurred');
+  assert.equal(diagnostics.firstCardAudit.summary.stageStatus.PROVIDER_START, 'not_occurred');
 });
 
 for (const failureType of ['PROVIDER_FAIL', 'VALIDATOR_FAIL']) {
@@ -161,15 +212,19 @@ for (const failureType of ['PROVIDER_FAIL', 'VALIDATOR_FAIL']) {
 test('absolute deadline returns safe copy and discards a late validated result', async () => {
   let release;
   let persistenceCalls = 0;
-  const diagnostics = {};
+  const monotonicOriginAt = process.hrtime.bigint() - 2250n * 1000000n;
+  const diagnostics = { auditId: 'audit-provider', monotonicOriginAt, stageLogger: () => {} };
   const context = interactiveContext({
     firstCardInteractive: {
       persistCanonicalCopy: async () => { persistenceCalls += 1; },
     },
     context: {
       diagnostics,
-      requestMonotonicOriginAt: process.hrtime.bigint() - 2295n * 1000000n,
-      renderFirstCardCanonical: async () => new Promise((resolve) => { release = resolve; }),
+      requestMonotonicOriginAt: monotonicOriginAt,
+      renderFirstCardCanonical: async ({ rendererConfig }) => {
+        rendererConfig.onAuditStage('PROVIDER_START', 'started');
+        return new Promise((resolve) => { release = resolve; });
+      },
     },
   });
   const result = await runRecommendationOrchestrator({}, context);
@@ -181,4 +236,59 @@ test('absolute deadline returns safe copy and discards a late validated result',
   assert.equal(persistenceCalls, 0);
   assert.equal(diagnostics.AI_LATE_DISCARDED, true);
   assert.equal(diagnostics.FIRST_CARD_AI_RESULT, 'TIMEOUT');
+  assert.equal(diagnostics.firstCardAudit.summary.deadlineReason, 'PROVIDER_IN_FLIGHT');
+  assert.equal(diagnostics.firstCardAudit.summary.providerCalled, true);
+});
+
+test('deadline summary freezes pre-AI exhaustion at the absolute handler deadline', async () => {
+  let release;
+  const diagnostics = {
+    auditId: 'audit-pre-ai',
+    monotonicOriginAt: process.hrtime.bigint() - 2310n * 1000000n,
+    stageLogger: () => {},
+  };
+  const context = interactiveContext({
+    context: {
+      diagnostics,
+      requestMonotonicOriginAt: diagnostics.monotonicOriginAt,
+      renderFirstCardCanonical: async ({ rendererConfig }) => {
+        rendererConfig.onAuditStage('PROVIDER_START', 'started');
+        return new Promise((resolve) => { release = resolve; });
+      },
+    },
+  });
+  const result = await runRecommendationOrchestrator({}, context);
+  assert.equal(result.firstCardAi.status, 'TIMEOUT');
+  assert.equal(diagnostics.firstCardAudit.summary.deadlineReason, 'PRE_AI_EXHAUSTION');
+  assert.ok(diagnostics.firstCardAudit.summary.elapsedBeforeAiStartMs >= 2300);
+  assert.equal(diagnostics.firstCardAudit.summary.remainingAtAiStartMs, 0);
+  release({ status: 'failure', failureType: 'PROVIDER_FAIL' });
+  await new Promise((resolve) => setImmediate(resolve));
+});
+
+test('deadline summary distinguishes provider completion from validator completion', async () => {
+  let release;
+  const diagnostics = {
+    auditId: 'audit-validator',
+    monotonicOriginAt: process.hrtime.bigint() - 2250n * 1000000n,
+    stageLogger: () => {},
+  };
+  const context = interactiveContext({
+    context: {
+      diagnostics,
+      requestMonotonicOriginAt: diagnostics.monotonicOriginAt,
+      renderFirstCardCanonical: async ({ rendererConfig }) => {
+        rendererConfig.onAuditStage('PROVIDER_START', 'started');
+        rendererConfig.onAuditStage('PROVIDER_COMPLETE', 'completed');
+        return new Promise((resolve) => { release = resolve; });
+      },
+    },
+  });
+  const result = await runRecommendationOrchestrator({}, context);
+  assert.equal(result.firstCardAi.status, 'TIMEOUT');
+  assert.equal(diagnostics.firstCardAudit.summary.deadlineReason, 'VALIDATOR_IN_FLIGHT');
+  assert.equal(diagnostics.firstCardAudit.summary.providerDurationMs >= 0, true);
+  assert.equal(diagnostics.firstCardAudit.summary.validated, false);
+  release({ status: 'failure', failureType: 'VALIDATOR_FAIL' });
+  await new Promise((resolve) => setImmediate(resolve));
 });
