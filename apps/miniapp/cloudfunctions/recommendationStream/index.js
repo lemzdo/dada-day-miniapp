@@ -90,7 +90,7 @@ function createRecommendationStreamHandler({
 } = {}) {
   const recommendationStream = async function recommendationStream(req, res) {
     const handlerStartedAt = Date.now();
-    const handlerMonotonicOriginAt = process.hrtime.bigint();
+    const requestOrigin = process.hrtime.bigint();
     const url = new URL(req?.url || '/', 'http://localhost');
     if (url.pathname !== '/recommendations' && url.pathname !== '/recommendations/') {
       res.statusCode = 404;
@@ -102,9 +102,9 @@ function createRecommendationStreamHandler({
       res.end?.('METHOD_NOT_ALLOWED');
       return;
     }
-    const authStartedMs = Number(process.hrtime.bigint() - handlerMonotonicOriginAt) / 1e6;
+    const authStartedMs = Number(process.hrtime.bigint() - requestOrigin) / 1e6;
     const openid = readOpenId(req);
-    const authDoneMs = Number(process.hrtime.bigint() - handlerMonotonicOriginAt) / 1e6;
+    const authDoneMs = Number(process.hrtime.bigint() - requestOrigin) / 1e6;
     if (!openid) {
       res.statusCode = 401;
       res.setHeader?.('Content-Type', 'application/json; charset=utf-8');
@@ -113,16 +113,16 @@ function createRecommendationStreamHandler({
     }
     const bodyResult = req?.method === 'GET'
       ? { value: undefined, bytes: 0, bodyDoneMs: 0, jsonDoneMs: 0 }
-      : await readBodyFn(req, handlerMonotonicOriginAt);
+      : await readBodyFn(req, requestOrigin);
     const input = parseInput(req, bodyResult.value);
-    const handlerReadyMs = Number(process.hrtime.bigint() - handlerMonotonicOriginAt) / 1e6;
+    const handlerReadyMs = Number(process.hrtime.bigint() - requestOrigin) / 1e6;
     const productionDiagnostics = !runRuntime && (!createDiagnostics || !recordStage)
       ? loadDiagnosticsFn()
       : null;
     const diagnosticsFactory = createDiagnostics || productionDiagnostics?.createDiagnostics;
     const stageRecorder = recordStage || productionDiagnostics?.recordStage;
     const diagnostics = typeof diagnosticsFactory === 'function'
-      ? diagnosticsFactory(input, handlerStartedAt, handlerMonotonicOriginAt)
+      ? diagnosticsFactory(input, handlerStartedAt, requestOrigin)
       : null;
     if (diagnostics) diagnostics.requestBodyBytes = bodyResult.bytes;
     if (diagnostics?.workCounts) diagnostics.workCounts.inputRead += 1;
@@ -142,7 +142,6 @@ function createRecommendationStreamHandler({
     const context = {
       ...(typeof resolveContext === 'function' ? (resolveContext({ req, openid }) || {}) : {}),
       userIdentity: { openid },
-      requestMonotonicOriginAt: handlerMonotonicOriginAt,
       interactive: true,
       ...(diagnostics ? { diagnostics } : {}),
       onTelemetry: ({ key, value }) => {
@@ -195,6 +194,8 @@ function createRecommendationStreamHandler({
       else if (readyBatchId === batchId) emit('canonical.copy', payload);
     };
     try {
+      const handlerOrigin = process.hrtime.bigint();
+      context.handlerOrigin = handlerOrigin;
       stage('runtime:start');
       const runtime = await (runRuntime || runtimeRunner || loadProductionRunner())(input, context, {
         onNarrativePlansReady: ({ batchId }) => stage('narrativePlansReady', { batchId }),

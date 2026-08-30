@@ -700,9 +700,9 @@ function measureCanonicalBatchInput(records = []) {
 // planning completes before Orchestrator-owned background and response stages.
 async function runProductionRecommendationRuntime(input, context = {}, lifecycleHooks = context.lifecycleHooks || {}) {
   const diagnostics = context.diagnostics || createRecommendationDiagnostics(input);
-  const requestMonotonicOriginAt = typeof context.requestMonotonicOriginAt === 'bigint'
-    ? context.requestMonotonicOriginAt
-    : diagnostics.monotonicOriginAt;
+  const handlerOrigin = typeof context.handlerOrigin === 'bigint'
+    ? context.handlerOrigin
+    : process.hrtime.bigint();
   let backgroundPromise = Promise.resolve([]);
   const runtimeHooks = {
     ...lifecycleHooks,
@@ -719,7 +719,7 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
   };
   const runtime = await runRecommendationOrchestrator(input, {
     ...context,
-    requestMonotonicOriginAt,
+    handlerOrigin,
     onTelemetry: context.onTelemetry || (({ key, value }) => {
       const elapsedStages = new Set([
         'requestStart', 'coreResultReady', 'firstCardAiStart', 'firstCardAiValidated',

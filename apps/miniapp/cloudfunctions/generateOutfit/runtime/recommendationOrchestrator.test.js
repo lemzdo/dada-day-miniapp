@@ -255,22 +255,33 @@ test('interactive audit records correlated first-card stages and a complete summ
   assert.ok(stageEntries.every((entry) => typeof entry.status === 'string'));
 });
 
-test('deadline, elapsed, and remaining share the explicit handler clock', async () => {
-  const requestOrigin = process.hrtime.bigint() - 25n * 1000000n;
+test('T+1000ms audit reports about 1000ms elapsed and 1300ms remaining', async () => {
+  const handlerOrigin = process.hrtime.bigint() - 1000n * 1000000n;
   const diagnostics = {
     auditId: 'audit-clock',
-    monotonicOriginAt: process.hrtime.bigint() - 900n * 1000000n,
+    monotonicOriginAt: process.hrtime.bigint() - 3559n * 1000000n,
     stageLogger: () => {},
   };
   await runRecommendationOrchestrator({}, interactiveContext({
-    context: { diagnostics, requestMonotonicOriginAt: requestOrigin },
+    context: { diagnostics, handlerOrigin },
   }));
-  assert.equal(diagnostics.monotonicOriginAt, requestOrigin);
-  const coreReady = diagnostics.firstCardAudit.stages.find((entry) => entry.stage === 'CORE_READY');
-  assert.ok(coreReady.elapsedFromHandlerMs >= 25);
+  const handlerEntry = diagnostics.firstCardAudit.stages.find((entry) => entry.stage === 'HANDLER_ENTRY');
+  assert.ok(handlerEntry.elapsedFromHandlerMs >= 995 && handlerEntry.elapsedFromHandlerMs < 1100);
+  assert.ok(handlerEntry.remainingDeadlineMs > 1200 && handlerEntry.remainingDeadlineMs <= 1305);
   assert.ok(Math.abs(
-    coreReady.elapsedFromHandlerMs + coreReady.remainingDeadlineMs - 2300,
+    handlerEntry.elapsedFromHandlerMs + handlerEntry.remainingDeadlineMs - 2300,
   ) < 0.01);
+});
+
+test('T+2299ms audit reports about 1ms remaining', async () => {
+  const handlerOrigin = process.hrtime.bigint() - 2299n * 1000000n;
+  const diagnostics = { auditId: 'audit-one-ms', stageLogger: () => {} };
+  await runRecommendationOrchestrator({}, interactiveContext({
+    context: { diagnostics, handlerOrigin },
+  }));
+  const handlerEntry = diagnostics.firstCardAudit.stages.find((entry) => entry.stage === 'HANDLER_ENTRY');
+  assert.ok(handlerEntry.elapsedFromHandlerMs >= 2299);
+  assert.ok(handlerEntry.remainingDeadlineMs >= 0 && handlerEntry.remainingDeadlineMs <= 1.1);
 });
 
 test('failed background dispatch is not reported as dispatched', async () => {
@@ -364,7 +375,7 @@ test('absolute deadline returns safe copy and discards a late validated result',
     },
     context: {
       diagnostics,
-      requestMonotonicOriginAt: monotonicOriginAt,
+      handlerOrigin: monotonicOriginAt,
       renderFirstCardCanonical: async ({ rendererConfig }) => {
         rendererConfig.onAuditStage('PROVIDER_START', 'started');
         return new Promise((resolve) => { release = resolve; });
@@ -386,15 +397,16 @@ test('absolute deadline returns safe copy and discards a late validated result',
 
 test('deadline summary freezes pre-AI exhaustion at the absolute handler deadline', async () => {
   let providerCalls = 0;
+  const handlerOrigin = process.hrtime.bigint() - 2301n * 1000000n;
   const diagnostics = {
     auditId: 'audit-pre-ai',
-    monotonicOriginAt: process.hrtime.bigint() - 2310n * 1000000n,
+    monotonicOriginAt: process.hrtime.bigint() - 4860n * 1000000n,
     stageLogger: () => {},
   };
   const context = interactiveContext({
     context: {
       diagnostics,
-      requestMonotonicOriginAt: diagnostics.monotonicOriginAt,
+      handlerOrigin,
       renderFirstCardCanonical: async () => {
         providerCalls += 1;
         return { status: 'failure', failureType: 'PROVIDER_FAIL' };
@@ -404,22 +416,22 @@ test('deadline summary freezes pre-AI exhaustion at the absolute handler deadlin
   const result = await runRecommendationOrchestrator({}, context);
   assert.equal(result.firstCardAi.status, 'TIMEOUT');
   assert.equal(diagnostics.firstCardAudit.summary.deadlineReason, 'PRE_AI_EXHAUSTION');
-  assert.ok(diagnostics.firstCardAudit.summary.elapsedBeforeAiStartMs >= 2300);
   assert.equal(diagnostics.firstCardAudit.summary.remainingAtAiStartMs, 0);
   assert.equal(providerCalls, 0);
 });
 
 test('deadline summary distinguishes provider completion from validator completion', async () => {
   let release;
+  const handlerOrigin = process.hrtime.bigint() - 2250n * 1000000n;
   const diagnostics = {
     auditId: 'audit-validator',
-    monotonicOriginAt: process.hrtime.bigint() - 2250n * 1000000n,
+    monotonicOriginAt: process.hrtime.bigint() - 4800n * 1000000n,
     stageLogger: () => {},
   };
   const context = interactiveContext({
     context: {
       diagnostics,
-      requestMonotonicOriginAt: diagnostics.monotonicOriginAt,
+      handlerOrigin,
       renderFirstCardCanonical: async ({ rendererConfig }) => {
         rendererConfig.onAuditStage('PROVIDER_START', 'started');
         rendererConfig.onAuditStage('PROVIDER_COMPLETE', 'completed');

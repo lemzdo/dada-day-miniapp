@@ -256,6 +256,48 @@ test('request entry, body completion, and handler start share one monotonic orig
   assert.equal(diagnostics.requestBodyBytes, Buffer.byteLength(serialized));
 });
 
+test('a synthetic 2500ms pre-handler delay does not consume the interactive handler budget', async () => {
+  let diagnosticsOrigin;
+  const diagnostics = { auditId: 'audit-pre-handler-delay', workCounts: { inputRead: 0 } };
+  const handler = stream.createRecommendationStreamHandler({
+    readBody: async (req, requestOrigin) => {
+      diagnosticsOrigin = requestOrigin - 2500n * 1000000n;
+      return {
+        value: { streamGeneration: 'generation-pre-handler-delay' },
+        bytes: 48,
+        bodyDoneMs: 2500,
+        jsonDoneMs: 2500,
+      };
+    },
+    createDiagnostics: () => {
+      diagnostics.monotonicOriginAt = diagnosticsOrigin;
+      return diagnostics;
+    },
+    recordStage: () => {},
+    runRuntime: async (_input, context, hooks) => {
+      const enteredAt = process.hrtime.bigint();
+      const preHandlerMs = Number(context.handlerOrigin - diagnostics.monotonicOriginAt) / 1e6;
+      const elapsedAtRuntimeMs = Number(enteredAt - context.handlerOrigin) / 1e6;
+      const remainingAtRuntimeMs = 2300 - elapsedAtRuntimeMs;
+      assert.ok(preHandlerMs >= 2500);
+      assert.ok(elapsedAtRuntimeMs >= 0 && elapsedAtRuntimeMs < 50);
+      assert.ok(remainingAtRuntimeMs > 2250);
+      await hooks.onRecommendationReady({
+        batchId: 'batch-pre-handler-delay',
+        response: { batch: { batchId: 'batch-pre-handler-delay' } },
+      });
+      return {
+        batchId: 'batch-pre-handler-delay',
+        response: { batch: { batchId: 'batch-pre-handler-delay' } },
+        aiDone: Promise.resolve({ status: 'completed' }),
+      };
+    },
+  });
+  const res = response();
+  await handler(request({ streamGeneration: 'generation-pre-handler-delay' }), res);
+  assert.deepEqual(events(res).map((event) => event.name), ['recommendation.ready', 'complete']);
+});
+
 test('ready is emitted before noncritical post-C2 settlement, while complete safely waits', async () => {
   let releaseBackground;
   const backgroundDone = new Promise((resolve) => { releaseBackground = resolve; });

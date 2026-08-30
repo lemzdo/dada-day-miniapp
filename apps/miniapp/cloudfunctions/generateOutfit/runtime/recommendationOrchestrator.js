@@ -44,10 +44,12 @@ function setDiagnostic(context, key, value) {
 function auditStage(context, stage, status = 'completed', extra = {}) {
   const diagnostics = context?.diagnostics;
   if (!diagnostics) return;
-  const origin = diagnostics.monotonicOriginAt;
-  const elapsed = typeof origin === 'bigint' ? elapsedMs(origin) : null;
-  const remaining = typeof origin === 'bigint'
-    ? Math.max(0, SERVER_RESPONSE_DEADLINE_MS - elapsed)
+  const origin = context?.handlerOrigin;
+  const deadlineAt = context?.deadlineAt;
+  const now = monotonicNow();
+  const elapsed = typeof origin === 'bigint' ? Number(now - origin) / 1e6 : null;
+  const remaining = typeof deadlineAt === 'bigint'
+    ? Math.max(0, Number(deadlineAt - now) / 1e6)
     : null;
   const entry = {
     auditId: diagnostics.auditId || null,
@@ -116,18 +118,11 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
   const normalized = normalizeInput(input);
   void safeCall(lifecycleHooks.onInputNormalized, { input: normalized });
   const startedAt = Date.now();
-  const suppliedOrigin = context.requestMonotonicOriginAt ?? context.diagnostics?.monotonicOriginAt;
-  const requestOrigin = typeof suppliedOrigin === 'bigint' ? suppliedOrigin : monotonicNow();
-  // All critical-path timing, including audit output, is correlated to this
-  // one handler origin.  Do not let a stale diagnostics origin create a
-  // second deadline clock.
-  if (context?.diagnostics && typeof context.diagnostics === 'object') {
-    context.diagnostics.monotonicOriginAt = requestOrigin;
-  }
-  auditStage(context, 'HANDLER_ENTRY', 'entered', {
-    elapsedFromHandlerMs: 0,
-    remainingDeadlineMs: SERVER_RESPONSE_DEADLINE_MS,
-  });
+  const handlerOrigin = typeof context.handlerOrigin === 'bigint' ? context.handlerOrigin : monotonicNow();
+  context.handlerOrigin = handlerOrigin;
+  const deadlineAt = handlerOrigin + globalThis.BigInt(SERVER_RESPONSE_DEADLINE_MS) * 1000000n;
+  context.deadlineAt = deadlineAt;
+  auditStage(context, 'HANDLER_ENTRY', 'entered');
   setDiagnostic(context, 'requestStart', 0);
   setDiagnostic(context, 'AI_LATE_DISCARDED', false);
   let earlyInteractive = null;
@@ -141,7 +136,7 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
         earlyInteractive = context.prepareFirstCardInteractive(payload);
         const start = (value) => {
           winningInteractive = value;
-          return runFirstCard(value, context, requestOrigin, deadlineAt);
+          return runFirstCard(value, context, handlerOrigin, deadlineAt);
         };
         // Production preparation is synchronous, so runFirstCard reaches the
         // canonical read immediately while Core continues plans 1..N. Keep
@@ -153,13 +148,13 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
       return earlyInteractive;
     },
   };
-  const deadlineAt = requestOrigin + globalThis.BigInt(SERVER_RESPONSE_DEADLINE_MS) * 1000000n;
+  orchestrationContext.deadlineAt = deadlineAt;
   let core;
   let prepared;
   try {
     core = await runRecommendationCore(normalized, orchestrationContext);
     auditStage(context, 'CORE_READY');
-    setDiagnostic(context, 'coreResultReady', elapsedMs(requestOrigin));
+    setDiagnostic(context, 'coreResultReady', elapsedMs(handlerOrigin));
     void safeCall(lifecycleHooks.onCoreResultAvailable, { result: core, input: normalized });
     prepared = typeof context.prepareRecommendationWork === 'function'
       ? await context.prepareRecommendationWork(core, normalized)
@@ -188,13 +183,13 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
     const interactive = prepared.firstCardInteractive;
     if (!interactive) {
       const response = await context.persistAndAssembleRecommendation(core, prepared, normalized);
-      return finishLegacy({ core, prepared, response, context, lifecycleHooks, startedAt, requestOrigin });
+      return finishLegacy({ core, prepared, response, context, lifecycleHooks, startedAt, handlerOrigin });
     }
     const requiredPromise = asPromise(
       context.persistAndAssembleRecommendation(core, prepared, normalized),
     );
     const cardPromise = earlyCardPromise
-      || runFirstCard(interactive, context, requestOrigin, deadlineAt);
+      || runFirstCard(interactive, context, handlerOrigin, deadlineAt);
     const activeInteractive = prepared.firstCardInteractive || interactive;
     const remainingMs = Math.max(0, Number(deadlineAt - monotonicNow()) / 1e6);
     let timer;
@@ -206,7 +201,7 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
             context.diagnostics.firstCardAudit,
           );
         }
-        setDiagnostic(context, 'deadlineReached', elapsedMs(requestOrigin));
+        setDiagnostic(context, 'deadlineReached', elapsedMs(handlerOrigin));
         setDiagnostic(context, 'FIRST_CARD_AI_RESULT', 'TIMEOUT');
         resolve({ status: 'TIMEOUT' });
       }, remainingMs);
@@ -241,7 +236,7 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
             } else {
               persisted = persistResult.value || first.copy;
               auditStage(context, 'CANONICAL_PERSISTED');
-              setDiagnostic(context, 'firstCardCanonicalPersisted', elapsedMs(requestOrigin));
+              setDiagnostic(context, 'firstCardCanonicalPersisted', elapsedMs(handlerOrigin));
             }
           }
         }
@@ -288,7 +283,7 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
       context,
       lifecycleHooks,
       startedAt,
-      requestOrigin,
+      handlerOrigin,
       outcome,
     });
     void cardPromise.then((late) => {
@@ -377,12 +372,12 @@ function buildResult({
   context,
   lifecycleHooks,
   startedAt,
-  requestOrigin,
+  handlerOrigin,
   outcome,
 }) {
   const batchId = response?.batch?.batchId || prepared.batchId || core.metadata.batchId;
   const countContract = response?.batch?.countContract || core.executionState.countContract;
-  setDiagnostic(context, 'recommendationReady', elapsedMs(requestOrigin));
+  setDiagnostic(context, 'recommendationReady', elapsedMs(handlerOrigin));
   void safeCall(lifecycleHooks.onRecommendationReady, {
     batchId,
     response,
@@ -390,8 +385,8 @@ function buildResult({
     identity: core.identity,
     elapsedMs: Date.now() - startedAt,
   });
-  setDiagnostic(context, 'REQUEST_TO_RESPONSE_READY_MS', elapsedMs(requestOrigin));
-  setDiagnostic(context, 'responseReady', elapsedMs(requestOrigin));
+  setDiagnostic(context, 'REQUEST_TO_RESPONSE_READY_MS', elapsedMs(handlerOrigin));
+  setDiagnostic(context, 'responseReady', elapsedMs(handlerOrigin));
   return {
     ...core,
     response,
@@ -402,7 +397,7 @@ function buildResult({
     aiDone: Promise.resolve(outcome),
     aiPromise: Promise.resolve(outcome),
     startedAt,
-    requestMonotonicOriginAt: requestOrigin,
+    handlerOrigin,
   };
 }
 
@@ -413,7 +408,7 @@ async function finishLegacy({
   context,
   lifecycleHooks,
   startedAt,
-  requestOrigin,
+  handlerOrigin,
 }) {
   const entries = getEntries(prepared);
   const batchId = response?.batch?.batchId || prepared.batchId || core.metadata.batchId;
@@ -455,7 +450,7 @@ async function finishLegacy({
     aiDone,
     aiPromise,
     startedAt,
-    requestMonotonicOriginAt: requestOrigin,
+    handlerOrigin,
   };
 }
 
