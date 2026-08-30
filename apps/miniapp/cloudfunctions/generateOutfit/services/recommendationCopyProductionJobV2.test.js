@@ -250,3 +250,61 @@ test('background worker includes card0 after interactive timeout or failure', as
   assert.deepEqual(resolved.misses.map((entry) => entry.position), [0, 1, 2]);
   assert.equal(resolved.cachedCopies.length, 0);
 });
+
+test('timeout durable Event worker eventually writes card0 canonical once', async () => {
+  const database = fakeDatabase();
+  const prepared = await prepareRecommendationCopyJob({
+    database,
+    openid: 'openid-timeout-fill',
+    batchId: 'batch-timeout-fill',
+    rendererVersion: 'renderer-v2',
+    entries: entries(1),
+    executionMode: 'interactive',
+    now,
+  });
+  const dispatched = await dispatchPreparedRecommendationCopyJob({
+    database,
+    jobId: prepared.jobId,
+    dispatch: async () => ({ requestId: 'request-timeout-fill' }),
+    now,
+  });
+  assert.equal(dispatched.accepted, true);
+  const dispatchedJob = database._all('recommendation_copy_jobs_v2')[0];
+  const acquired = await acquireRecommendationCopyJob(
+    database,
+    prepared.jobId,
+    dispatchedJob.dispatchToken,
+    now,
+  );
+  assert.equal(acquired.acquired, true);
+  const pending = await resolveRecommendationCopyJobMisses(database, acquired.job, now);
+  assert.deepEqual(pending.misses.map((entry) => entry.position), [0]);
+  const first = await persistValidatedCanonicalCopy(
+    database,
+    acquired.job,
+    pending.misses[0],
+    { text: 'background card0 canonical' },
+    now,
+  );
+  const repeated = await persistValidatedCanonicalCopy(
+    database,
+    acquired.job,
+    pending.misses[0],
+    { text: 'must not overwrite' },
+    now,
+  );
+  assert.deepEqual(repeated, first);
+  assert.equal(database._all('recommendation_canonical_copy_cache_v2').length, 1);
+  await finishRecommendationCopyJob(database, acquired.job, acquired.leaseToken, {
+    readyCount: 1,
+    invalidCount: 0,
+  }, now);
+  const overlay = await readRecommendationCopyOverlay(
+    database,
+    'openid-timeout-fill',
+    'batch-timeout-fill',
+    'renderer-v2',
+  );
+  assert.equal(overlay.status, 'ready');
+  assert.equal(overlay.copies[0].text, 'background card0 canonical');
+});

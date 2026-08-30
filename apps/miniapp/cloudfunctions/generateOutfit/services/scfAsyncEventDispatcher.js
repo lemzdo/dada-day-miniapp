@@ -5,23 +5,30 @@ const fetch = require('node-fetch');
 
 const SCF_API_HOST = 'scf.tencentcloudapi.com';
 const SCF_API_VERSION = '2018-04-16';
+// Background copy materialization is handled by the generateOutfit worker
+// action.  Do not infer this from SCF_FUNCTIONNAME: that value identifies the
+// currently running HTTP function (often recommendationStream).
+const DEFAULT_RECOMMENDATION_COPY_WORKER_FUNCTION = 'generateOutfit';
 
 async function dispatchScfEvent({
   event,
   context = {},
-  functionName = readRuntimeValue(context, 'SCF_FUNCTIONNAME', 'function_name'),
+  functionName,
   namespace = readRuntimeValue(context, 'SCF_NAMESPACE', 'namespace'),
   region = readRuntimeValue(context, 'TENCENTCLOUD_REGION', 'tencentcloud_region'),
   credentials = readRuntimeCredentials(context),
   fetchImpl = fetch,
   now = new Date(),
 } = {}) {
-  if (!functionName || !region) throw new Error('SCF_ASYNC_TARGET_MISSING');
+  const durableTarget = readText(functionName)
+    || readRuntimeValue(context, 'RECOMMENDATION_COPY_WORKER_FUNCTION', 'recommendation_copy_worker_function')
+    || DEFAULT_RECOMMENDATION_COPY_WORKER_FUNCTION;
+  if (!durableTarget || !region) throw new Error('SCF_ASYNC_TARGET_MISSING');
   if (!credentials.secretId || !credentials.secretKey || !credentials.sessionToken) {
     throw new Error('SCF_ASYNC_CREDENTIALS_MISSING');
   }
   const body = JSON.stringify({
-    FunctionName: functionName,
+    FunctionName: durableTarget,
     InvocationType: 'Event',
     Qualifier: '$LATEST',
     ClientContext: JSON.stringify(event || {}),
@@ -113,6 +120,7 @@ function readText(value) { return typeof value === 'string' ? value.trim() : '';
 module.exports = {
   SCF_API_HOST,
   SCF_API_VERSION,
+  DEFAULT_RECOMMENDATION_COPY_WORKER_FUNCTION,
   buildSignedHeaders,
   dispatchScfEvent,
   parseContextEnvironment,

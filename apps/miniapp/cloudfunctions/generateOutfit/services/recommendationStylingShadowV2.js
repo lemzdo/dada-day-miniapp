@@ -64,6 +64,9 @@ function runRecommendationStylingShadowV2Isolated(input) {
       });
       plans.push(plan);
       planEntries.push({ plan, recommendation: recommendations[index] });
+      if (index === 0 && typeof input.onPlanReady === 'function') {
+        try { input.onPlanReady({ plan, recommendation: recommendations[index], index }); } catch { /* fail-open */ }
+      }
     } catch (error) {
       failureCodes.push(readShadowErrorCode(error));
     }

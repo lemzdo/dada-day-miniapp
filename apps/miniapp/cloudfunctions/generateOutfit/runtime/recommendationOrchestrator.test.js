@@ -97,6 +97,100 @@ function interactiveContext(overrides = {}) {
   };
 }
 
+test('one-shot first-card ready starts lookup/provider before Core releases', async () => {
+  let releaseCore;
+  const coreGate = new Promise((resolve) => { releaseCore = resolve; });
+  let lookupStarted = false;
+  let providerStarted = false;
+  const core = interactiveCore();
+  const early = {
+    entry: { preparedEntry: { plan: { planId: 'plan-1' } } },
+    resolveAdmission: async () => { lookupStarted = true; return { entry: early.entry }; },
+    persistCanonicalCopy: async (copy) => ({ outfitKey: 'look-1', cardIndex: 0, text: copy.text }),
+    applyCanonicalToResponse: (response, copy) => ({ ...response, light: { cards: [{ ...response.light.cards[0], todayReason: copy.text }] } }),
+    scheduleBackgroundMaterialization: async () => ({ accepted: true }),
+  };
+  const context = {
+    prepareFirstCardInteractive: () => early,
+    computeRecommendation: async (_input, runtimeContext) => {
+      runtimeContext.onFirstCardReady({ entry: early.entry });
+      await coreGate;
+      return core;
+    },
+    prepareRecommendationWork: async () => ({ batchId: 'batch-interactive', tasks: [], narrativePlans: core.narrativePlans, rendererEntries: [early.entry], firstCardInteractive: early }),
+    persistAndAssembleRecommendation: async () => ({ batch: { batchId: 'batch-interactive', countContract: {} }, light: { cards: [{ outfitKey: 'look-1', todayReason: 'safe' }] } }),
+    renderFirstCardCanonical: async () => { providerStarted = true; return { status: 'success', copy: { planId: 'plan-1', text: 'early AI' } }; },
+  };
+  const running = runRecommendationOrchestrator({}, context);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(lookupStarted, true);
+  assert.equal(providerStarted, true);
+  releaseCore();
+  await running;
+});
+
+test('early provider does not await unrelated candidate persistence', async () => {
+  let releaseCandidate;
+  const candidateGate = new Promise((resolve) => { releaseCandidate = resolve; });
+  let providerStarted = false;
+  const core = interactiveCore();
+  const early = {
+    entry: { preparedEntry: { plan: { planId: 'plan-1' } } },
+    resolveAdmission: async () => ({ entry: early.entry }),
+    persistCanonicalCopy: async (copy) => ({ outfitKey: 'look-1', cardIndex: 0, text: copy.text }),
+    applyCanonicalToResponse: (response, copy) => ({ ...response, light: { cards: [{ ...response.light.cards[0], todayReason: copy.text }] } }),
+    scheduleBackgroundMaterialization: async () => ({ accepted: true }),
+  };
+  const context = {
+    prepareFirstCardInteractive: () => early,
+    computeRecommendation: async (_input, runtimeContext) => { runtimeContext.onFirstCardReady({ entry: early.entry }); return core; },
+    prepareRecommendationWork: async () => ({ batchId: 'batch-interactive', tasks: [candidateGate], narrativePlans: core.narrativePlans, rendererEntries: [early.entry], firstCardInteractive: early }),
+    persistAndAssembleRecommendation: async () => ({ batch: { batchId: 'batch-interactive', countContract: {} }, light: { cards: [{ outfitKey: 'look-1', todayReason: 'safe' }] } }),
+    renderFirstCardCanonical: async () => { providerStarted = true; return { status: 'success', copy: { planId: 'plan-1', text: 'early AI' } }; },
+  };
+  const result = await runRecommendationOrchestrator({}, context);
+  assert.equal(providerStarted, true);
+  assert.equal(result.firstCardAi.status, 'SUCCESS');
+  releaseCandidate();
+});
+
+test('unrelated candidate persistence failure does not affect interactive AI', async () => {
+  const core = interactiveCore();
+  const early = {
+    entry: { preparedEntry: { plan: { planId: 'plan-1' } } },
+    resolveAdmission: async () => ({ entry: early.entry }),
+    persistCanonicalCopy: async (copy) => ({ outfitKey: 'look-1', cardIndex: 0, text: copy.text }),
+    applyCanonicalToResponse: (response, copy) => ({ ...response, light: { cards: [{ ...response.light.cards[0], todayReason: copy.text }] } }),
+    scheduleBackgroundMaterialization: async () => ({ accepted: true }),
+  };
+  const candidateFailure = Promise.reject(new Error('candidate persistence failed'));
+  const result = await runRecommendationOrchestrator({}, {
+    prepareFirstCardInteractive: () => early,
+    computeRecommendation: async (_input, runtimeContext) => {
+      runtimeContext.onFirstCardReady({ entry: early.entry });
+      return core;
+    },
+    prepareRecommendationWork: async () => ({
+      batchId: 'batch-interactive',
+      tasks: [candidateFailure],
+      narrativePlans: core.narrativePlans,
+      rendererEntries: [early.entry],
+      firstCardInteractive: early,
+    }),
+    persistAndAssembleRecommendation: async () => ({
+      batch: { batchId: 'batch-interactive', countContract: {} },
+      light: { cards: [{ outfitKey: 'look-1', todayReason: 'safe' }] },
+    }),
+    renderFirstCardCanonical: async () => ({
+      status: 'success', copy: { planId: 'plan-1', text: 'AI despite persistence failure' },
+    }),
+  }, {
+    onPostC2TasksScheduled: ({ tasks }) => Promise.allSettled(tasks),
+  });
+  assert.equal(result.firstCardAi.status, 'SUCCESS');
+  assert.equal(result.response.light.cards[0].todayReason, 'AI despite persistence failure');
+});
+
 test('AI success persists canonical before the authoritative first response', async () => {
   const events = [];
   const context = interactiveContext({
@@ -159,6 +253,56 @@ test('interactive audit records correlated first-card stages and a complete summ
   assert.ok(stageEntries.every((entry) => typeof entry.elapsedFromHandlerMs === 'number'));
   assert.ok(stageEntries.every((entry) => typeof entry.remainingDeadlineMs === 'number'));
   assert.ok(stageEntries.every((entry) => typeof entry.status === 'string'));
+});
+
+test('deadline, elapsed, and remaining share the explicit handler clock', async () => {
+  const requestOrigin = process.hrtime.bigint() - 25n * 1000000n;
+  const diagnostics = {
+    auditId: 'audit-clock',
+    monotonicOriginAt: process.hrtime.bigint() - 900n * 1000000n,
+    stageLogger: () => {},
+  };
+  await runRecommendationOrchestrator({}, interactiveContext({
+    context: { diagnostics, requestMonotonicOriginAt: requestOrigin },
+  }));
+  assert.equal(diagnostics.monotonicOriginAt, requestOrigin);
+  const coreReady = diagnostics.firstCardAudit.stages.find((entry) => entry.stage === 'CORE_READY');
+  assert.ok(coreReady.elapsedFromHandlerMs >= 25);
+  assert.ok(Math.abs(
+    coreReady.elapsedFromHandlerMs + coreReady.remainingDeadlineMs - 2300,
+  ) < 0.01);
+});
+
+test('failed background dispatch is not reported as dispatched', async () => {
+  const diagnostics = {
+    auditId: 'audit-background-failed',
+    monotonicOriginAt: process.hrtime.bigint(),
+    stageLogger: () => {},
+  };
+  const context = interactiveContext({
+    firstCardInteractive: {
+      scheduleBackgroundMaterialization: async () => ({ accepted: false, status: 'dispatch_failed' }),
+    },
+    context: { diagnostics },
+  });
+  await runRecommendationOrchestrator({}, context);
+  assert.equal(diagnostics.firstCardAudit.summary.backgroundDispatched, false);
+});
+
+test('joined durable background dispatch is reported as dispatched', async () => {
+  const diagnostics = {
+    auditId: 'audit-background-joined',
+    monotonicOriginAt: process.hrtime.bigint(),
+    stageLogger: () => {},
+  };
+  const context = interactiveContext({
+    firstCardInteractive: {
+      scheduleBackgroundMaterialization: async () => ({ accepted: false, joined: true, status: 'joined' }),
+    },
+    context: { diagnostics },
+  });
+  await runRecommendationOrchestrator({}, context);
+  assert.equal(diagnostics.firstCardAudit.summary.backgroundDispatched, true);
 });
 
 test('card0 canonical cache hit skips the provider and marks AI stages not occurred', async () => {
@@ -241,7 +385,7 @@ test('absolute deadline returns safe copy and discards a late validated result',
 });
 
 test('deadline summary freezes pre-AI exhaustion at the absolute handler deadline', async () => {
-  let release;
+  let providerCalls = 0;
   const diagnostics = {
     auditId: 'audit-pre-ai',
     monotonicOriginAt: process.hrtime.bigint() - 2310n * 1000000n,
@@ -251,9 +395,9 @@ test('deadline summary freezes pre-AI exhaustion at the absolute handler deadlin
     context: {
       diagnostics,
       requestMonotonicOriginAt: diagnostics.monotonicOriginAt,
-      renderFirstCardCanonical: async ({ rendererConfig }) => {
-        rendererConfig.onAuditStage('PROVIDER_START', 'started');
-        return new Promise((resolve) => { release = resolve; });
+      renderFirstCardCanonical: async () => {
+        providerCalls += 1;
+        return { status: 'failure', failureType: 'PROVIDER_FAIL' };
       },
     },
   });
@@ -262,8 +406,7 @@ test('deadline summary freezes pre-AI exhaustion at the absolute handler deadlin
   assert.equal(diagnostics.firstCardAudit.summary.deadlineReason, 'PRE_AI_EXHAUSTION');
   assert.ok(diagnostics.firstCardAudit.summary.elapsedBeforeAiStartMs >= 2300);
   assert.equal(diagnostics.firstCardAudit.summary.remainingAtAiStartMs, 0);
-  release({ status: 'failure', failureType: 'PROVIDER_FAIL' });
-  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(providerCalls, 0);
 });
 
 test('deadline summary distinguishes provider completion from validator completion', async () => {

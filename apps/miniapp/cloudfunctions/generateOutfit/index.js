@@ -27,6 +27,7 @@ const {
   persistValidatedCanonicalCopy,
   prepareRecommendationCopyJob,
   readRecommendationCopyOverlay,
+  readCachedCopies,
   resolveRecommendationCopyJobMisses,
 } = require('./services/recommendationCopyProductionJobV2');
 const { renderFirstCardCanonical } = require('./services/recommendationFirstCardRenderer');
@@ -699,6 +700,9 @@ function measureCanonicalBatchInput(records = []) {
 // planning completes before Orchestrator-owned background and response stages.
 async function runProductionRecommendationRuntime(input, context = {}, lifecycleHooks = context.lifecycleHooks || {}) {
   const diagnostics = context.diagnostics || createRecommendationDiagnostics(input);
+  const requestMonotonicOriginAt = typeof context.requestMonotonicOriginAt === 'bigint'
+    ? context.requestMonotonicOriginAt
+    : diagnostics.monotonicOriginAt;
   let backgroundPromise = Promise.resolve([]);
   const runtimeHooks = {
     ...lifecycleHooks,
@@ -715,6 +719,7 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
   };
   const runtime = await runRecommendationOrchestrator(input, {
     ...context,
+    requestMonotonicOriginAt,
     onTelemetry: context.onTelemetry || (({ key, value }) => {
       const elapsedStages = new Set([
         'requestStart', 'coreResultReady', 'firstCardAiStart', 'firstCardAiValidated',
@@ -745,6 +750,24 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
     prepareRecommendationWork: async (core) => prepareProductionRecommendationWork(core, diagnostics, context),
     persistAndAssembleRecommendation: async (core, prepared) => persistAndAssembleProductionRecommendation(core, prepared, diagnostics),
     renderFirstCardCanonical: context.renderFirstCardCanonical || renderFirstCardCanonical,
+    prepareFirstCardInteractive: context.prepareFirstCardInteractive || (({ entry }) => ({
+      entry,
+      resolveAdmission: async () => {
+        const cached = await readCachedCopies(db, diagnostics.openid || context.userIdentity?.openid, PRODUCTION_RENDERER_VERSION, [entry]);
+        return { entry, cachedCopy: cached[0] ? {
+          outfitKey: entry.outfitKey, cardIndex: entry.position, text: cached[0].text, source: 'ai_cache',
+        } : null };
+      },
+      persistCanonicalCopy: async (copy) => {
+        const stored = await persistValidatedCanonicalCopy(db, {
+          _openid: diagnostics.openid || context.userIdentity?.openid,
+          rendererVersion: PRODUCTION_RENDERER_VERSION,
+        }, entry, copy);
+        return { outfitKey: entry.outfitKey, cardIndex: entry.position, text: stored.text, source: 'ai_cache', availableAt: stored.availableAt, rendererVersion: stored.rendererVersion };
+      },
+      applyCanonicalToResponse: applyFirstCardCanonicalToResponse,
+      scheduleBackgroundMaterialization: async () => ({ accepted: false, status: 'deferred' }),
+    })),
   }, runtimeHooks);
   runtime.backgroundDone = backgroundPromise;
   if (!context.interactive) await backgroundPromise;
@@ -757,6 +780,7 @@ async function computeProductionRecommendationCore(event, diagnostics = createRe
   recordServerPhase(diagnostics, 'requestParse', requestParseStartedAt);
   const authStartedAt = Date.now();
   const OPENID = readString(scfContext?.userIdentity?.openid) || cloud.getWXContext().OPENID;
+  diagnostics.openid = OPENID;
   recordServerPhase(diagnostics, 'authContext', authStartedAt);
   const inputScene = typeof event.scene === 'string' ? event.scene.trim() : '';
   const scene = inputScene || undefined;
@@ -916,6 +940,11 @@ async function computeProductionRecommendationCore(event, diagnostics = createRe
     weather: weatherSnapshot,
     recommendationInstanceSeed: diagnostics.auditId || v2BatchId,
     telemetrySampleRate: 0,
+    onPlanReady: ({ plan, recommendation, index }) => {
+      if (index !== 0 || typeof scfContext.onFirstCardReady !== 'function') return;
+      const entry = buildProductionRendererEntry(plan, recommendation, 0, recommendation?.outfitKey);
+      void Promise.resolve(scfContext.onFirstCardReady({ entry, recommendation, plan, batchId: v2BatchId }));
+    },
   });
   diagnostics.batchId = v2BatchId;
   recordNarrativePlansReady(diagnostics, recommendations, stylingPlans);

@@ -32,6 +32,49 @@ test('SCF async dispatcher sends Event invocation and waits only for accepted re
   assert.equal(request.options.headers['X-TC-Token'], 'session-token');
 });
 
+test('SCF async dispatcher targets the durable generateOutfit worker, not the caller function', async () => {
+  let request;
+  const result = await dispatchScfEvent({
+    event: { action: 'materializeRecommendationCopyJobV2', jobId: 'job-2' },
+    context: {
+      function_name: 'recommendationStream',
+      tencentcloud_region: 'ap-shanghai',
+      environment: JSON.stringify({
+        TENCENTCLOUD_SECRETID: 'secret-id',
+        TENCENTCLOUD_SECRETKEY: 'secret-key',
+        TENCENTCLOUD_SESSIONTOKEN: 'session-token',
+      }),
+    },
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return { ok: true, status: 200, text: async () => JSON.stringify({ Response: { RequestId: 'request-2' } }) };
+    },
+  });
+  assert.equal(result.accepted, true);
+  assert.equal(JSON.parse(request.options.body).FunctionName, 'generateOutfit');
+});
+
+test('SCF async dispatcher accepts an explicitly configured durable worker target', async () => {
+  let body;
+  await dispatchScfEvent({
+    functionName: 'generateOutfit-copy-worker',
+    context: {
+      function_name: 'recommendationStream',
+      tencentcloud_region: 'ap-shanghai',
+      environment: JSON.stringify({
+        TENCENTCLOUD_SECRETID: 'secret-id',
+        TENCENTCLOUD_SECRETKEY: 'secret-key',
+        TENCENTCLOUD_SESSIONTOKEN: 'session-token',
+      }),
+    },
+    fetchImpl: async (_url, options) => {
+      body = JSON.parse(options.body);
+      return { ok: true, status: 200, text: async () => JSON.stringify({ Response: { RequestId: 'request-3' } }) };
+    },
+  });
+  assert.equal(body.FunctionName, 'generateOutfit-copy-worker');
+});
+
 test('SCF async dispatcher fails closed before dispatch without runtime credentials', async () => {
   await assert.rejects(
     dispatchScfEvent({ event: {}, context: { function_name: 'generateOutfit', tencentcloud_region: 'ap-shanghai' } }),

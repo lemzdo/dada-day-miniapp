@@ -142,6 +142,7 @@ function createRecommendationStreamHandler({
     const context = {
       ...(typeof resolveContext === 'function' ? (resolveContext({ req, openid }) || {}) : {}),
       userIdentity: { openid },
+      requestMonotonicOriginAt: handlerMonotonicOriginAt,
       interactive: true,
       ...(diagnostics ? { diagnostics } : {}),
       onTelemetry: ({ key, value }) => {

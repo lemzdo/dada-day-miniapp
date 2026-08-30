@@ -83,13 +83,15 @@ function auditSummary(context, extra = {}) {
   const ai = audit.stages.find((entry) => entry.stage === 'FIRST_CARD_AI_ADMITTED');
   const providerStart = audit.stages.find((entry) => entry.stage === 'PROVIDER_START');
   const providerComplete = audit.stages.find((entry) => entry.stage === 'PROVIDER_COMPLETE');
+  const backgroundAccepted = audit.stages.some((entry) => entry.stage === 'BACKGROUND_DISPATCHED'
+    && ['dispatched', 'joined'].includes(entry.status));
   const summary = {
     auditId: diagnostics.auditId || null,
     firstCardAiStarted: has('FIRST_CARD_AI_ADMITTED'),
     providerCalled: has('PROVIDER_START'),
     validated: has('VALIDATOR_COMPLETE') && audit.stages.some((entry) => entry.stage === 'VALIDATOR_COMPLETE' && entry.status === 'accepted'),
     persisted: has('CANONICAL_PERSISTED'),
-    backgroundDispatched: has('BACKGROUND_DISPATCHED'),
+    backgroundDispatched: backgroundAccepted,
     elapsedBeforeAiStartMs: ai?.elapsedFromHandlerMs ?? null,
     providerDurationMs: providerStart && providerComplete ? Math.max(0, providerComplete.elapsedFromHandlerMs - providerStart.elapsedFromHandlerMs) : null,
     remainingAtAiStartMs: ai?.remainingDeadlineMs ?? null,
@@ -116,17 +118,46 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
   const startedAt = Date.now();
   const suppliedOrigin = context.requestMonotonicOriginAt ?? context.diagnostics?.monotonicOriginAt;
   const requestOrigin = typeof suppliedOrigin === 'bigint' ? suppliedOrigin : monotonicNow();
+  // All critical-path timing, including audit output, is correlated to this
+  // one handler origin.  Do not let a stale diagnostics origin create a
+  // second deadline clock.
+  if (context?.diagnostics && typeof context.diagnostics === 'object') {
+    context.diagnostics.monotonicOriginAt = requestOrigin;
+  }
   auditStage(context, 'HANDLER_ENTRY', 'entered', {
     elapsedFromHandlerMs: 0,
     remainingDeadlineMs: SERVER_RESPONSE_DEADLINE_MS,
   });
   setDiagnostic(context, 'requestStart', 0);
   setDiagnostic(context, 'AI_LATE_DISCARDED', false);
+  let earlyInteractive = null;
+  let earlyCardPromise = null;
+  let winningInteractive = null;
+  const orchestrationContext = {
+    ...context,
+    onFirstCardReady: (payload) => {
+      if (earlyInteractive || typeof context.prepareFirstCardInteractive !== 'function') return;
+      try {
+        earlyInteractive = context.prepareFirstCardInteractive(payload);
+        const start = (value) => {
+          winningInteractive = value;
+          return runFirstCard(value, context, requestOrigin, deadlineAt);
+        };
+        // Production preparation is synchronous, so runFirstCard reaches the
+        // canonical read immediately while Core continues plans 1..N. Keep
+        // Promise support for injected adapters without duplicating the path.
+        earlyCardPromise = earlyInteractive && typeof earlyInteractive.then === 'function'
+          ? asPromise(earlyInteractive).then(start)
+          : start(earlyInteractive);
+      } catch { earlyInteractive = null; earlyCardPromise = null; }
+      return earlyInteractive;
+    },
+  };
   const deadlineAt = requestOrigin + globalThis.BigInt(SERVER_RESPONSE_DEADLINE_MS) * 1000000n;
   let core;
   let prepared;
   try {
-    core = await runRecommendationCore(normalized, context);
+    core = await runRecommendationCore(normalized, orchestrationContext);
     auditStage(context, 'CORE_READY');
     setDiagnostic(context, 'coreResultReady', elapsedMs(requestOrigin));
     void safeCall(lifecycleHooks.onCoreResultAvailable, { result: core, input: normalized });
@@ -162,7 +193,9 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
     const requiredPromise = asPromise(
       context.persistAndAssembleRecommendation(core, prepared, normalized),
     );
-    const cardPromise = runFirstCard(interactive, context, requestOrigin);
+    const cardPromise = earlyCardPromise
+      || runFirstCard(interactive, context, requestOrigin, deadlineAt);
+    const activeInteractive = prepared.firstCardInteractive || interactive;
     const remainingMs = Math.max(0, Number(deadlineAt - monotonicNow()) / 1e6);
     let timer;
     const deadlinePromise = new Promise((resolve) => {
@@ -185,15 +218,35 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
     let outcome = first;
     if (first.status === 'SUCCESS' || first.status === 'CACHE_HIT') {
       try {
-        const persisted = first.status === 'CACHE_HIT'
-          ? first.copy
-          : await asPromise(interactive.persistCanonicalCopy(first.copy));
+        let persisted = first.copy;
         if (first.status !== 'CACHE_HIT') {
-          auditStage(context, 'CANONICAL_PERSISTED');
-          setDiagnostic(context, 'firstCardCanonicalPersisted', elapsedMs(requestOrigin));
+          // Canonical persistence is part of the interactive AI budget.  A
+          // late write must never turn a safe first response into a late AI
+          // response; the durable worker can settle it afterwards.
+          const persistRemainingMs = Math.max(0, Number(deadlineAt - monotonicNow()) / 1e6);
+          if (persistRemainingMs <= 0) {
+            outcome = { status: 'TIMEOUT', reason: 'POST_VALIDATION' };
+          } else {
+            let persistTimer;
+            const persistDeadline = new Promise((resolve) => {
+              persistTimer = setTimeout(() => resolve({ timedOut: true }), persistRemainingMs);
+            });
+            const persistResult = await Promise.race([
+              asPromise((winningInteractive || interactive).persistCanonicalCopy(first.copy)).then((value) => ({ value })),
+              persistDeadline,
+            ]);
+            if (persistTimer) clearTimeout(persistTimer);
+            if (persistResult?.timedOut) {
+              outcome = { status: 'TIMEOUT', reason: 'POST_VALIDATION' };
+            } else {
+              persisted = persistResult.value || first.copy;
+              auditStage(context, 'CANONICAL_PERSISTED');
+              setDiagnostic(context, 'firstCardCanonicalPersisted', elapsedMs(requestOrigin));
+            }
+          }
         }
-        if (typeof interactive.applyCanonicalToResponse === 'function') {
-          finalResponse = await interactive.applyCanonicalToResponse(
+        if (outcome.status !== 'TIMEOUT' && typeof (winningInteractive || interactive).applyCanonicalToResponse === 'function') {
+          finalResponse = await (winningInteractive || interactive).applyCanonicalToResponse(
             response,
             persisted || first.copy,
           );
@@ -204,12 +257,29 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
     }
     // The existing worker is also responsible for card1..N after success;
     // it recognizes a persisted card0 and skips regenerating that card.
-    void safeCall(interactive.scheduleBackgroundMaterialization, outcome);
-    auditStage(
-      context,
-      'BACKGROUND_DISPATCHED',
-      typeof interactive.scheduleBackgroundMaterialization === 'function' ? 'dispatched' : 'not_reached',
-    );
+    const backgroundDispatch = safeCall(activeInteractive.scheduleBackgroundMaterialization, outcome);
+    if (typeof activeInteractive.scheduleBackgroundMaterialization !== 'function') {
+      auditStage(context, 'BACKGROUND_DISPATCHED', 'not_reached');
+    } else {
+      // Dispatch is deliberately fire-and-forget for recommendation.ready,
+      // but audit only records it after the durable dispatcher accepts it.
+      void backgroundDispatch.then((result) => {
+        if (result?.accepted === true) auditStage(context, 'BACKGROUND_DISPATCHED', 'dispatched');
+        else if (result?.joined === true || ['joined', 'dispatched', 'running', 'completed'].includes(result?.status)) {
+          auditStage(context, 'BACKGROUND_DISPATCHED', 'joined', { dispatchStatus: result?.status || 'joined' });
+        }
+        else auditStage(context, 'BACKGROUND_DISPATCHED', 'failed', { dispatchStatus: result?.status || 'rejected' });
+      });
+    }
+    // Let an already-resolved dispatch acceptance settle for diagnostics;
+    // never await a pending dispatcher here.
+    await Promise.resolve();
+    await Promise.resolve();
+    if (outcome.status === 'TIMEOUT' && context?.diagnostics?.firstCardAudit) {
+      context.diagnostics.firstCardAudit.deadlineReason = outcome.reason || deadlineReasonAt(
+        context.diagnostics.firstCardAudit,
+      );
+    }
     auditSummary(context);
     const result = buildResult({
       core,
@@ -225,7 +295,7 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
       if (first.status !== 'TIMEOUT') return;
       setDiagnostic(context, 'AI_LATE_DISCARDED', true);
       setDiagnostic(context, 'FIRST_CARD_AI_RESULT', 'TIMEOUT');
-      void safeCall(interactive.scheduleBackgroundMaterialization, late);
+      void safeCall(activeInteractive.scheduleBackgroundMaterialization, late);
     });
     return result;
   } catch (error) {
@@ -234,7 +304,7 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
   }
 }
 
-async function runFirstCard(interactive, context, origin) {
+async function runFirstCard(interactive, context, origin, deadlineAt) {
   let admission = interactive;
   if (typeof interactive.resolveAdmission === 'function') {
     try {
@@ -254,14 +324,23 @@ async function runFirstCard(interactive, context, origin) {
     setDiagnostic(context, 'FIRST_CARD_AI_RESULT', 'PROVIDER_FAIL');
     return { status: 'FAIL', reason: 'NO_INTERACTIVE_RENDERER' };
   }
+  // Admission (including the canonical lookup) may itself be asynchronous.
+  // Never start a provider once the absolute handler deadline has elapsed.
+  if (Number(deadlineAt - monotonicNow()) <= 0) {
+    auditStage(context, 'FIRST_CARD_AI_ADMITTED', 'not_admitted');
+    setDiagnostic(context, 'FIRST_CARD_AI_RESULT', 'TIMEOUT');
+    return { status: 'TIMEOUT', reason: 'PRE_AI_EXHAUSTION' };
+  }
   const aiStartedAt = monotonicNow();
   auditStage(context, 'FIRST_CARD_AI_ADMITTED', 'admitted');
   setDiagnostic(context, 'firstCardAiStart', elapsedMs(origin));
   try {
+    const providerRemainingMs = Math.max(0, Number(deadlineAt - monotonicNow()) / 1e6);
     const result = await context.renderFirstCardCanonical({
       entry: admission.entry,
       rendererConfig: {
         ...(admission.rendererConfig || {}),
+        timeoutMs: Math.floor(providerRemainingMs),
         onAuditStage: (stage, status) => auditStage(context, stage, status),
       },
     });
