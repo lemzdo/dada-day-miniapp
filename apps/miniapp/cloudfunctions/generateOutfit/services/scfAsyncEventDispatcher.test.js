@@ -28,6 +28,7 @@ test('SCF async dispatcher sends Event invocation and waits only for accepted re
   assert.equal(request.url, 'https://scf.tencentcloudapi.com');
   assert.equal(JSON.parse(request.options.body).InvocationType, 'Event');
   assert.equal(JSON.parse(JSON.parse(request.options.body).ClientContext).jobId, 'job-1');
+  assert.equal(Object.hasOwn(JSON.parse(request.options.body), 'Payload'), false);
   assert.match(request.options.headers.Authorization, /^TC3-HMAC-SHA256 Credential=secret-id\//);
   assert.equal(request.options.headers['X-TC-Token'], 'session-token');
 });

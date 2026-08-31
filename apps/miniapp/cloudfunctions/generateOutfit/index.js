@@ -227,9 +227,52 @@ const RECOMMENDATION_SCENE_LABELS = Object.freeze({
   sport: '运动',
 });
 
+const KNOWN_ACTIONS = new Set([
+  'transport_probe', 'transport_probe_small', 'transport_probe_payload',
+  'bootstrapRecommendationCopyStorageV2', 'materializeRecommendationCopyJobV2',
+  'canonicalCopyOverlayV2', 'detailV2', 'favoriteV2', 'wearV2', 'detail',
+  'renameOutfit', 'favorite', 'wear', 'list', 'saveFavoriteOutfit',
+  'removeFavoriteOutfit', 'listFavoriteOutfits', 'addOutfitHistory',
+  'listOutfitHistory', 'getAiComment', 'aiComment', 'materializeRecommendationCopyV2',
+  'generate',
+]);
+
+function normalizeGenerateOutfitEvent(rawEvent) {
+  if (!rawEvent || typeof rawEvent !== 'object') return { action: '__invalid_event_payload__' };
+  const source = parseEventObject(rawEvent);
+  if (!source) return { action: '__invalid_event_payload__' };
+  if (source && typeof source.action === 'string') return source;
+  // Some runtimes expose the SCF envelope instead of passing ClientContext
+  // directly as the event. Accept these wrappers for compatibility.
+  for (const candidate of [source?.ClientContext, source?.clientContext, source?.Payload, source?.payload, source?.body]) {
+    if (candidate !== undefined && candidate !== null && !parseEventObject(candidate)) {
+      return { action: '__invalid_event_payload__' };
+    }
+    const parsed = parseEventObject(candidate);
+    if (parsed) return Object.hasOwn(parsed, 'action') ? parsed : { action: '__invalid_event_payload__' };
+  }
+  return source || {};
+}
+
+function parseEventObject(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  if (typeof value !== 'string' || !value.trim()) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 exports.main = async (event = {}, context = {}) => {
+  event = normalizeGenerateOutfitEvent(event);
   const requestMonotonicOriginAt = process.hrtime.bigint();
-  const action = event.action || 'generate';
+  const hasExplicitAction = Object.hasOwn(event, 'action');
+  const action = hasExplicitAction ? event.action : 'generate';
+  if (hasExplicitAction && (typeof action !== 'string' || !action.trim() || !KNOWN_ACTIONS.has(action))) {
+    return fail(createBusinessError('GENERATE_OUTFIT_ACTION_UNKNOWN', `unknown action: ${event.action}`));
+  }
   const handlerStartedAt = Date.now();
   if (action === 'transport_probe' || action === 'transport_probe_small' || action === 'transport_probe_payload') {
     if (event.diagnostic !== true) return fail(createBusinessError('TRANSPORT_PROBE_DIAGNOSTIC_ONLY', 'transport_probe requires diagnostic=true'));
@@ -1026,6 +1069,7 @@ async function prepareProductionRecommendationWork(core, diagnostics, context = 
       inputIdentityHash: core.identity.identityHash,
       rendererVersion: PRODUCTION_RENDERER_VERSION,
       entries,
+      auditId: diagnostics.auditId,
       dispatch: (payload) => dispatchScfEvent({ event: payload, context }),
       executionMode: 'interactive',
     })
@@ -5666,6 +5710,7 @@ if (process.env.NODE_ENV === 'test') {
     buildRecommendationV2TodayReason,
     generateRecommendationV2,
     resolveHomeLightDisplayImage,
+    normalizeGenerateOutfitEvent,
     recordStatusQueryDiagnostic,
     runProductionRecommendationRuntime,
   };

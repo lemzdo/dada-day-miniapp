@@ -194,6 +194,7 @@ test('interactive job dispatches through the existing Event contract after the r
     openid: 'openid-deferred',
     batchId: 'batch-deferred',
     rendererVersion: 'renderer-v2',
+    auditId: 'audit-deferred',
     entries: entries(3),
     executionMode: 'interactive',
     now,
@@ -210,9 +211,10 @@ test('interactive job dispatches through the existing Event contract after the r
   });
   assert.equal(dispatched.accepted, true);
   assert.equal(payloads.length, 1);
-  assert.deepEqual(Object.keys(payloads[0]).sort(), ['action', 'dispatchToken', 'jobId']);
+  assert.deepEqual(Object.keys(payloads[0]).sort(), ['action', 'auditId', 'cacheIds', 'dispatchToken', 'jobId']);
   assert.equal(payloads[0].action, 'materializeRecommendationCopyJobV2');
   assert.equal(payloads[0].jobId, prepared.jobId);
+  assert.equal(payloads[0].auditId, 'audit-deferred');
   assert.equal(database._all('recommendation_copy_jobs_v2')[0].status, 'dispatched');
 });
 

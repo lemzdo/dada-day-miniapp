@@ -64,6 +64,7 @@ async function prepareRecommendationCopyJob({
   inputIdentityHash,
   rendererVersion,
   entries,
+  auditId,
   dispatch,
   executionMode = 'event',
   now = new Date(),
@@ -86,6 +87,7 @@ async function prepareRecommendationCopyJob({
     _openid: openid,
     batchId,
     inputIdentityHash: readText(inputIdentityHash),
+    auditId: readText(auditId),
     order: normalizedEntries.map((entry) => entry.outfitKey),
     entries: normalizedEntries,
     status: misses.length === 0 ? 'ready_cache_hit' : interactive ? 'interactive' : 'queued',
@@ -142,6 +144,8 @@ async function dispatchPreparedRecommendationCopyJob({
       action: 'materializeRecommendationCopyJobV2',
       jobId,
       dispatchToken: dispatchReservation.dispatchToken,
+      ...(dispatchReservation.cacheIds ? { cacheIds: dispatchReservation.cacheIds } : {}),
+      ...(dispatchReservation.auditId ? { auditId: dispatchReservation.auditId } : {}),
     });
   } catch (error) {
     await markDispatchFailure(database, jobId, dispatchReservation.dispatchToken, error);
@@ -183,7 +187,13 @@ async function acquireDispatchReservation(database, jobId, now = new Date()) {
       dispatchLeaseUntil: new Date(now.getTime() + DISPATCH_LEASE_MS).toISOString(),
       updatedAt: now.toISOString(),
     } });
-    result = { acquired: true, status: 'dispatching', dispatchToken };
+    result = {
+      acquired: true,
+      status: 'dispatching',
+      dispatchToken,
+      auditId: readText(job.auditId),
+      cacheIds: (job.entries || []).map((entry) => readText(entry.cacheId)).filter(Boolean),
+    };
   });
   return result;
 }

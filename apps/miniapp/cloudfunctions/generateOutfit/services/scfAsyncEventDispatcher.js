@@ -27,11 +27,14 @@ async function dispatchScfEvent({
   if (!credentials.secretId || !credentials.secretKey || !credentials.sessionToken) {
     throw new Error('SCF_ASYNC_CREDENTIALS_MISSING');
   }
+  const businessPayload = event && typeof event === 'object' ? event : {};
   const body = JSON.stringify({
     FunctionName: durableTarget,
     InvocationType: 'Event',
     Qualifier: '$LATEST',
-    ClientContext: JSON.stringify(event || {}),
+    // SCF maps ClientContext directly to the function event for this Event
+    // invocation contract.
+    ClientContext: JSON.stringify(businessPayload),
     ...(namespace ? { Namespace: namespace } : {}),
   });
   const timestamp = Math.floor(now.getTime() / 1000);
