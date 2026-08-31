@@ -31,16 +31,36 @@ test('C2 starts pure card0 rendering while the orchestrator owns deadline and pe
   assert.match(indexSource, /runRecommendationStylingShadowV2Safely/);
   assert.match(prepareBody, /prepareRecommendationCopyJob/);
   assert.match(prepareBody, /executionMode: 'interactive'/);
+  assert.match(prepareBody, /const firstCardEntries = entries\.slice\(0, 1\)/);
   assert.match(prepareBody, /firstCardInteractive = \{/);
   assert.match(prepareBody, /persistValidatedCanonicalCopy/);
-  assert.match(prepareBody, /dispatchPreparedRecommendationCopyJob/);
+  assert.match(prepareBody, /materializeFirstCard/);
+  assert.match(prepareBody, /settleInteractiveRecommendationCopyJob/);
+  assert.doesNotMatch(prepareBody, /dispatchPreparedRecommendationCopyJob|dispatchScfEvent/);
   assert.match(orchestratorSource, /SERVER_RESPONSE_DEADLINE_MS = 2300/);
   assert.match(orchestratorSource, /renderFirstCardCanonical/);
   assert.match(orchestratorSource, /persistCanonicalCopy/);
   assert.doesNotMatch(streamSource, /consumeProductionRendererStream|persistCanonicalCopy\(copy\)/);
 });
 
-test('background provider streaming remains owned by the existing worker action', () => {
+test('first-card provider admission waits for the durable card0 job reservation', () => {
+  const runtimeBody = bodyBetween(
+    'async function runProductionRecommendationRuntime',
+    'async function computeProductionRecommendationCore',
+  );
+  assert.match(runtimeBody, /firstCardCopyJobPromise \|\|= prepareRecommendationCopyJob/);
+  assert.match(runtimeBody, /resolveAdmission: async \(\) => \{[\s\S]*await firstCardCopyJobPromise/);
+  const firstCardBody = orchestratorSource.slice(
+    orchestratorSource.indexOf('async function runFirstCard'),
+    orchestratorSource.indexOf('function buildResult'),
+  );
+  assert.ok(
+    firstCardBody.indexOf('await interactive.resolveAdmission()')
+      < firstCardBody.indexOf('await context.renderFirstCardCanonical'),
+  );
+});
+
+test('SCF Event worker remains available only as a recovery action', () => {
   const mainBody = bodyBetween('exports.main = async', 'function buildRecommendationV2TodayReason');
   assert.match(mainBody, /action === 'bootstrapRecommendationCopyStorageV2'/);
   assert.match(mainBody, /confirmRendererVersion !== PRODUCTION_RENDERER_VERSION/);

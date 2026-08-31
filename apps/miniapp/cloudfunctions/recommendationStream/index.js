@@ -230,15 +230,19 @@ function createRecommendationStreamHandler({
       const aiSummary = runtime?.aiDone && typeof runtime.aiDone.then === 'function'
         ? await runtime.aiDone
         : { status: 'completed' };
-      if (runtime?.backgroundDone && typeof runtime.backgroundDone.then === 'function') {
-        await runtime.backgroundDone;
-      }
       const batchId = runtime?.response?.batch?.batchId || runtime?.batchId || readyBatchId;
       const reason = aiSummary?.status === 'TIMEOUT' || aiSummary?.status === 'window_expired'
         ? 'deadline'
         : aiSummary?.status === 'FAIL' || aiSummary?.status === 'failed_open' ? 'failed_open' : 'completed';
       emit('complete', { type: 'complete', generation: streamGeneration, batchId, reason });
       stage('complete', { batchId });
+      // The user-visible stream closes at the bounded response barrier. The
+      // same invocation then remains alive only to settle durable tail work;
+      // no later canonical frame can reach this response.
+      if (!res.writableEnded) res.end?.();
+      const tailTasks = [runtime?.tailDone, runtime?.backgroundDone]
+        .filter((task) => task && typeof task.then === 'function');
+      if (tailTasks.length > 0) await Promise.allSettled(tailTasks);
     } catch (error) {
       // Recommendation failures remain a normal HTTP error; provider failures
       // are swallowed by the runtime and still produce recommendation.ready.

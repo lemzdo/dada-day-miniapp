@@ -45,18 +45,20 @@ test('FULL_COMPUTE schedules existing candidate-pool persistence while cache hit
   assert.doesNotMatch(source, /upsertRecommendationOutfitsBatch|projectRecommendationResponseOutfits/);
 });
 
-test('C2 launches bounded card0 and noncritical background work without putting worker completion on ready path', () => {
+test('C2 launches bounded card0 and noncritical persistence without SCF dispatch', () => {
   const c2Start = source.indexOf('async function prepareProductionRecommendationWork');
   const readyInput = source.indexOf('async function persistAndAssembleProductionRecommendation', c2Start);
   const postC2 = source.slice(c2Start, readyInput);
   assert.ok(c2Start >= 0 && readyInput > c2Start);
   assert.match(postC2, /candidatePoolPersistPromise = Promise\.resolve\(\)\.then/);
-  assert.match(postC2, /copyJobPromise = prepareRecommendationCopyJob/);
+  assert.match(postC2, /copyJobPromise = context\.firstCardCopyJobPromise \|\| prepareRecommendationCopyJob/);
   assert.match(postC2, /copyOverlayPromise = copyJobPromise\.then/);
   assert.match(postC2, /firstCardInteractive = \{/);
   assert.match(postC2, /executionMode: 'interactive'/);
-  assert.match(postC2, /scheduleBackgroundMaterialization/);
-  assert.match(postC2, /tasks: \[copyJobPromise, candidatePoolPersistPromise, copyOverlayPromise, backgroundMaterializationDone\]/);
+  assert.match(postC2, /materializeFirstCard/);
+  assert.match(postC2, /completeCopyJob/);
+  assert.match(postC2, /tasks: \[copyJobPromise, candidatePoolPersistPromise, copyOverlayPromise\]/);
+  assert.doesNotMatch(postC2, /scheduleBackgroundMaterialization|dispatchPreparedRecommendationCopyJob|dispatchScfEvent/);
   assert.doesNotMatch(postC2, /copyJob\s*=\s*await copyJobPromise|await candidatePoolPersistPromise|await copyOverlayPromise/);
 });
 

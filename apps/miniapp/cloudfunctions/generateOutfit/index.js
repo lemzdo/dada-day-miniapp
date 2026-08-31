@@ -19,7 +19,6 @@ const {
   consumeProductionRendererStream,
 } = require('./services/recommendationVoiceRendererProductionV2');
 const {
-  dispatchPreparedRecommendationCopyJob,
   acquireRecommendationCopyJob,
   ensureRecommendationCopyCollections,
   finishRecommendationCopyJob,
@@ -27,11 +26,10 @@ const {
   persistValidatedCanonicalCopy,
   prepareRecommendationCopyJob,
   readRecommendationCopyOverlay,
-  readCachedCopies,
   resolveRecommendationCopyJobMisses,
+  settleInteractiveRecommendationCopyJob,
 } = require('./services/recommendationCopyProductionJobV2');
 const { renderFirstCardCanonical } = require('./services/recommendationFirstCardRenderer');
-const { dispatchScfEvent } = require('./services/scfAsyncEventDispatcher');
 const {
   buildRecommendationVoiceRendererExecution,
   runRecommendationVoiceRendererShadowV2Safely,
@@ -747,6 +745,7 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
     ? context.handlerOrigin
     : process.hrtime.bigint();
   let backgroundPromise = Promise.resolve([]);
+  let firstCardCopyJobPromise = null;
   const runtimeHooks = {
     ...lifecycleHooks,
     onNarrativePlansReady: (payload) => {
@@ -790,27 +789,44 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
         lifecycleHooks: runtimeHooks,
       });
     },
-    prepareRecommendationWork: async (core) => prepareProductionRecommendationWork(core, diagnostics, context),
+    prepareRecommendationWork: async (core) => prepareProductionRecommendationWork(core, diagnostics, {
+      ...context,
+      firstCardCopyJobPromise,
+    }),
     persistAndAssembleRecommendation: async (core, prepared) => persistAndAssembleProductionRecommendation(core, prepared, diagnostics),
     renderFirstCardCanonical: context.renderFirstCardCanonical || renderFirstCardCanonical,
-    prepareFirstCardInteractive: context.prepareFirstCardInteractive || (({ entry }) => ({
+    prepareFirstCardInteractive: context.prepareFirstCardInteractive || (({
       entry,
-      resolveAdmission: async () => {
-        const cached = await readCachedCopies(db, diagnostics.openid || context.userIdentity?.openid, PRODUCTION_RENDERER_VERSION, [entry]);
-        return { entry, cachedCopy: cached[0] ? {
-          outfitKey: entry.outfitKey, cardIndex: entry.position, text: cached[0].text, source: 'ai_cache',
-        } : null };
-      },
-      persistCanonicalCopy: async (copy) => {
-        const stored = await persistValidatedCanonicalCopy(db, {
-          _openid: diagnostics.openid || context.userIdentity?.openid,
-          rendererVersion: PRODUCTION_RENDERER_VERSION,
-        }, entry, copy);
-        return { outfitKey: entry.outfitKey, cardIndex: entry.position, text: stored.text, source: 'ai_cache', availableAt: stored.availableAt, rendererVersion: stored.rendererVersion };
-      },
-      applyCanonicalToResponse: applyFirstCardCanonicalToResponse,
-      scheduleBackgroundMaterialization: async () => ({ accepted: false, status: 'deferred' }),
-    })),
+      batchId,
+      inputIdentityHash,
+    }) => {
+      // Admission begins by durably reserving the card0 Copy Job. The provider
+      // cannot start until this promise resolves.
+      firstCardCopyJobPromise ||= prepareRecommendationCopyJob({
+        database: db,
+        openid: diagnostics.openid || context.userIdentity?.openid,
+        batchId,
+        inputIdentityHash,
+        rendererVersion: PRODUCTION_RENDERER_VERSION,
+        entries: [entry],
+        auditId: diagnostics.auditId,
+        executionMode: 'interactive',
+      });
+      return {
+        entry,
+        resolveAdmission: async () => {
+          const job = await firstCardCopyJobPromise;
+          const jobEntry = job?.entries?.[0] || entry;
+          const cachedCopy = job?.initialCopies?.find((copy) => copy.cardIndex === 0);
+          return { entry: jobEntry, cachedCopy: cachedCopy ? {
+            ...cachedCopy,
+            outfitKey: jobEntry.outfitKey,
+            cardIndex: jobEntry.position,
+          } : null };
+        },
+        applyCanonicalToResponse: applyFirstCardCanonicalToResponse,
+      };
+    }),
   }, runtimeHooks);
   runtime.backgroundDone = backgroundPromise;
   if (!context.interactive) await backgroundPromise;
@@ -986,7 +1002,13 @@ async function computeProductionRecommendationCore(event, diagnostics = createRe
     onPlanReady: ({ plan, recommendation, index }) => {
       if (index !== 0 || typeof scfContext.onFirstCardReady !== 'function') return;
       const entry = buildProductionRendererEntry(plan, recommendation, 0, recommendation?.outfitKey);
-      void Promise.resolve(scfContext.onFirstCardReady({ entry, recommendation, plan, batchId: v2BatchId }));
+      void Promise.resolve(scfContext.onFirstCardReady({
+        entry,
+        recommendation,
+        plan,
+        batchId: v2BatchId,
+        inputIdentityHash: candidatePoolIdentity.identityHash,
+      }));
     },
   });
   diagnostics.batchId = v2BatchId;
@@ -1048,7 +1070,6 @@ async function prepareProductionRecommendationWork(core, diagnostics, context = 
   const responseCopyJob = { status: 'pending', initialCopies: [], dispatch: { accepted: false } };
   let copyJobPromise = Promise.resolve(null);
   let copyOverlayPromise = Promise.resolve(null);
-  let backgroundMaterializationDone = Promise.resolve({ status: 'noop' });
   let firstCardInteractive = null;
   let rendererEntries = [];
   const plans = Array.isArray(core.narrativePlans) ? core.narrativePlans : [];
@@ -1062,15 +1083,17 @@ async function prepareProductionRecommendationWork(core, diagnostics, context = 
       core.outfits[position]?.outfitKey,
     ));
     rendererEntries = entries;
-    copyJobPromise = prepareRecommendationCopyJob({
+    // The bounded milestone owns one durable card0 job. Remaining cards keep
+    // their deterministic safe copy and are not part of first-card completion.
+    const firstCardEntries = entries.slice(0, 1);
+    copyJobPromise = context.firstCardCopyJobPromise || prepareRecommendationCopyJob({
       database: db,
       openid: metadata.openid,
       batchId: metadata.batchId,
       inputIdentityHash: core.identity.identityHash,
       rendererVersion: PRODUCTION_RENDERER_VERSION,
-      entries,
+      entries: firstCardEntries,
       auditId: diagnostics.auditId,
-      dispatch: (payload) => dispatchScfEvent({ event: payload, context }),
       executionMode: 'interactive',
     })
       .then((job) => { Object.assign(responseCopyJob, job || {}); return job; })
@@ -1089,37 +1112,6 @@ async function prepareProductionRecommendationWork(core, diagnostics, context = 
         return overlay;
       } catch { return null; }
     });
-    let resolveBackgroundMaterialization;
-    backgroundMaterializationDone = new Promise((resolve) => {
-      resolveBackgroundMaterialization = resolve;
-    });
-    let backgroundSchedulePromise = null;
-    const scheduleBackgroundMaterialization = () => {
-      if (!backgroundSchedulePromise) {
-        backgroundSchedulePromise = copyJobPromise.then(async (job) => {
-          if (!job?.jobId || !Array.isArray(job.missEntries) || job.missEntries.length === 0) {
-            return { accepted: false, status: job?.status || 'noop' };
-          }
-          const dispatch = await dispatchPreparedRecommendationCopyJob({
-            database: db,
-            jobId: job.jobId,
-            dispatch: (payload) => dispatchScfEvent({ event: payload, context }),
-          });
-          responseCopyJob.dispatch = dispatch;
-          if (dispatch.accepted) responseCopyJob.status = 'dispatched';
-          return dispatch;
-        }).catch((error) => {
-          console.warn('[RecommendationCopyDispatchFailOpen]', {
-            auditId: diagnostics.auditId,
-            batchId: metadata.batchId,
-            failureCode: getRecommendationErrorCode(error),
-          });
-          return { accepted: false, status: 'failed_open', failureCode: getRecommendationErrorCode(error) };
-        });
-        backgroundSchedulePromise.then(resolveBackgroundMaterialization);
-      }
-      return backgroundSchedulePromise;
-    };
     firstCardInteractive = {
       resolveAdmission: async () => {
         const job = await copyJobPromise;
@@ -1152,8 +1144,48 @@ async function prepareProductionRecommendationWork(core, diagnostics, context = 
           rendererVersion: stored.rendererVersion,
         };
       },
+      // If admission itself missed the interactive deadline, the orchestrator
+      // invokes this only after the safe response. It remains in-process and
+      // uses the same canonical renderer/validator contract as the first-card
+      // path; no SCF event is needed for the normal request.
+      materializeFirstCard: async ({ timeoutMs, onAuditStage } = {}) => {
+        const job = await copyJobPromise;
+        const entry = job?.entries?.[0];
+        if (!job || !entry) return { status: 'FAIL', reason: 'NO_INTERACTIVE_RENDERER' };
+        const renderer = context.renderFirstCardCanonical || renderFirstCardCanonical;
+        const rendered = await renderer({
+          entry,
+          rendererConfig: {
+            timeoutMs: Math.max(1, Math.floor(Number(timeoutMs) || 6000)),
+            onAuditStage,
+          },
+        });
+        const status = String(rendered?.status || '').toUpperCase();
+        if (status !== 'SUCCESS') {
+          return { status: 'FAIL', reason: rendered?.failureType || 'PROVIDER_FAIL', result: rendered };
+        }
+        return { status: 'SUCCESS', copy: rendered.copy || rendered.canonicalCopy };
+      },
+      completeCopyJob: async () => {
+        const job = await copyJobPromise;
+        if (!job?.jobId) throw new Error('COPY_JOB_ID_REQUIRED');
+        return settleInteractiveRecommendationCopyJob(db, job.jobId, { status: 'SUCCESS' });
+      },
+      markCopyJobRetryable: async ({ reason, error, result } = {}) => {
+        const job = await copyJobPromise;
+        if (!job?.jobId) return { updated: false, status: 'not_found' };
+        const normalizedReason = readString(reason) || 'PROVIDER_FAIL';
+        const failedStage = normalizedReason === 'VALIDATOR_FAIL'
+          ? 'validation'
+          : normalizedReason === 'PERSIST_FAIL' ? 'canonical_write' : 'provider';
+        return settleInteractiveRecommendationCopyJob(db, job.jobId, {
+          status: 'FAIL',
+          failedStage,
+          failureCode: readString(result?.failureCode)
+            || (error ? getRecommendationErrorCode(error) : normalizedReason),
+        });
+      },
       applyCanonicalToResponse: applyFirstCardCanonicalToResponse,
-      scheduleBackgroundMaterialization,
     };
   } else {
     responseCopyJob.status = 'noop';
@@ -1170,7 +1202,7 @@ async function prepareProductionRecommendationWork(core, diagnostics, context = 
     copyJobPromise,
     copyOverlayPromise,
     candidatePoolPersistPromise,
-    tasks: [copyJobPromise, candidatePoolPersistPromise, copyOverlayPromise, backgroundMaterializationDone],
+    tasks: [copyJobPromise, candidatePoolPersistPromise, copyOverlayPromise],
     narrativePlans: plans,
     rendererEntries,
     firstCardInteractive,

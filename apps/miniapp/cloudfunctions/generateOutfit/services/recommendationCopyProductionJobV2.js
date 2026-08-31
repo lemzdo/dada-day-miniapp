@@ -396,6 +396,55 @@ async function finishRecommendationCopyJob(database, job, leaseToken, summary, n
   return { updated: true, stale: false, status, readyCount, invalidCount };
 }
 
+async function settleInteractiveRecommendationCopyJob(database, jobId, outcome = {}, now = new Date()) {
+  if (!database || !readText(jobId)) throw new Error('COPY_JOB_INTERACTIVE_SETTLEMENT_INPUT');
+  let result;
+  await database.runTransaction(async (transaction) => {
+    const reference = transaction.collection(JOB_COLLECTION).doc(jobId);
+    const current = await readDocument(reference);
+    if (!current || current.version !== JOB_VERSION) {
+      result = { updated: false, status: 'not_found' };
+      return;
+    }
+    if (current.status === 'completed' || current.status === 'ready_cache_hit') {
+      result = { updated: false, status: current.status };
+      return;
+    }
+    if (current.status !== 'interactive') {
+      result = { updated: false, status: current.status };
+      return;
+    }
+    const readyCount = mergeReadyCopies([], current.readyCopies).length;
+    const expectedCount = Array.isArray(current.entries) ? current.entries.length : 0;
+    if (outcome.status === 'SUCCESS' && expectedCount > 0 && readyCount === expectedCount) {
+      await reference.update({ data: {
+        status: 'completed',
+        readyCount,
+        invalidCount: 0,
+        failedStage: '',
+        failureCode: '',
+        completedAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+      } });
+      result = { updated: true, status: 'completed', readyCount };
+      return;
+    }
+    const failedStage = readText(outcome.failedStage || 'provider');
+    const failureCode = readText(outcome.failureCode || 'FIRST_CARD_MATERIALIZATION_FAILED');
+    await reference.update({ data: {
+      // `interactive` is the recovery-admissible state. Do not claim that a
+      // provider/validator/write failure completed or dispatched this job.
+      status: 'interactive',
+      readyCount,
+      failedStage,
+      failureCode,
+      updatedAt: now.toISOString(),
+    } });
+    result = { updated: true, status: 'interactive', readyCount, failedStage, failureCode };
+  });
+  return result;
+}
+
 async function markRecommendationCopyJobProgress(database, job, leaseToken, field, now = new Date()) {
   if (!['providerStartedAt', 'firstValidatedAt'].includes(field)) {
     throw new Error('COPY_JOB_PROGRESS_FIELD_INVALID');
@@ -548,4 +597,5 @@ module.exports = {
   readCachedCopies,
   readRecommendationCopyOverlay,
   resolveRecommendationCopyJobMisses,
+  settleInteractiveRecommendationCopyJob,
 };

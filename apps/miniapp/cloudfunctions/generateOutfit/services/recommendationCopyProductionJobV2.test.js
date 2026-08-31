@@ -14,6 +14,7 @@ const {
   acquireRecommendationCopyJob,
   readRecommendationCopyOverlay,
   resolveRecommendationCopyJobMisses,
+  settleInteractiveRecommendationCopyJob,
 } = require('./recommendationCopyProductionJobV2');
 
 function fakeDatabase() {
@@ -186,6 +187,65 @@ test('interactive preparation reuses shared job and cache identities without Eve
     renderInputFingerprint: entry.renderInputFingerprint,
   })));
 });
+
+test('interactive card0 success completes its durable job without dispatch state', async () => {
+  const database = fakeDatabase();
+  const prepared = await prepareRecommendationCopyJob({
+    database,
+    openid: 'openid-tail-success',
+    batchId: 'batch-tail-success',
+    rendererVersion: 'renderer-v2',
+    entries: entries(1),
+    executionMode: 'interactive',
+    now,
+  });
+  const job = database._all('recommendation_copy_jobs_v2')[0];
+  await persistValidatedCanonicalCopy(database, job, prepared.entries[0], { text: 'tail canonical' }, now);
+  const settled = await settleInteractiveRecommendationCopyJob(
+    database,
+    prepared.jobId,
+    { status: 'SUCCESS' },
+    now,
+  );
+  const stored = database._all('recommendation_copy_jobs_v2')[0];
+  assert.equal(settled.status, 'completed');
+  assert.equal(stored.status, 'completed');
+  assert.equal(stored.completedAt, now.toISOString());
+  assert.equal(stored.dispatchAcceptedAt, undefined);
+  assert.equal(stored.dispatchRequestId, undefined);
+});
+
+for (const [failedStage, failureCode] of [
+  ['provider', 'PROVIDER_FAIL'],
+  ['validation', 'VALIDATOR_FAIL'],
+  ['canonical_write', 'CANONICAL_WRITE_FAILED'],
+]) {
+  test(`${failedStage} failure leaves the interactive job retryable`, async () => {
+    const database = fakeDatabase();
+    const prepared = await prepareRecommendationCopyJob({
+      database,
+      openid: `openid-${failedStage}`,
+      batchId: `batch-${failedStage}`,
+      rendererVersion: 'renderer-v2',
+      entries: entries(1),
+      executionMode: 'interactive',
+      now,
+    });
+    const settled = await settleInteractiveRecommendationCopyJob(
+      database,
+      prepared.jobId,
+      { status: 'FAIL', failedStage, failureCode },
+      now,
+    );
+    const stored = database._all('recommendation_copy_jobs_v2')[0];
+    assert.equal(settled.status, 'interactive');
+    assert.equal(stored.status, 'interactive');
+    assert.equal(stored.failedStage, failedStage);
+    assert.equal(stored.failureCode, failureCode);
+    assert.equal(stored.completedAt, undefined);
+    assert.equal(stored.dispatchAcceptedAt, undefined);
+  });
+}
 
 test('interactive job dispatches through the existing Event contract after the response barrier', async () => {
   const database = fakeDatabase();

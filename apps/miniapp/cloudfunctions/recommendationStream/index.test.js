@@ -156,11 +156,12 @@ test('SSE disconnect after ready stops transport writes while orchestrator backg
   const res = response();
   const running = handler(request({ streamGeneration: 'generation-disconnect' }), res);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(events(res).map((event) => event.name), ['recommendation.ready']);
+  assert.deepEqual(events(res).map((event) => event.name), ['recommendation.ready', 'complete']);
+  assert.equal(res.writableEnded, true);
   res.emit('close');
   releaseBackground();
   await running;
-  assert.deepEqual(events(res).map((event) => event.name), ['recommendation.ready']);
+  assert.deepEqual(events(res).map((event) => event.name), ['recommendation.ready', 'complete']);
 });
 
 test('stage diagnostics preserve SSE behavior and use one invocation identity', async () => {
@@ -298,7 +299,7 @@ test('a synthetic 2500ms pre-handler delay does not consume the interactive hand
   assert.deepEqual(events(res).map((event) => event.name), ['recommendation.ready', 'complete']);
 });
 
-test('ready is emitted before noncritical post-C2 settlement, while complete safely waits', async () => {
+test('ready and complete end the response before noncritical post-C2 settlement', async () => {
   let releaseBackground;
   const backgroundDone = new Promise((resolve) => { releaseBackground = resolve; });
   const handler = stream.createRecommendationStreamHandler({
@@ -316,10 +317,40 @@ test('ready is emitted before noncritical post-C2 settlement, while complete saf
   });
   const res = response();
   const running = handler(request({ streamGeneration: 'generation-background' }), res);
+  let handlerSettled = false;
+  void running.then(() => { handlerSettled = true; });
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(events(res).map((event) => event.name), ['recommendation.ready']);
-  assert.equal(res.writableEnded, false);
+  assert.deepEqual(events(res).map((event) => event.name), ['recommendation.ready', 'complete']);
+  assert.equal(res.writableEnded, true);
+  assert.equal(handlerSettled, false);
   releaseBackground();
+  await running;
+  assert.deepEqual(events(res).map((event) => event.name), ['recommendation.ready', 'complete']);
+});
+
+test('response ends before first-card tail settles and tail cannot write a second canonical event', async () => {
+  let releaseTail;
+  const tailDone = new Promise((resolve) => { releaseTail = resolve; });
+  const handler = stream.createRecommendationStreamHandler({
+    runRuntime: async (_input, _context, hooks) => {
+      await hooks.onRecommendationReady({
+        batchId: 'batch-tail',
+        response: { batch: { batchId: 'batch-tail' }, light: { cards: [{ todayReason: 'safe' }] } },
+      });
+      return {
+        batchId: 'batch-tail',
+        response: { batch: { batchId: 'batch-tail' } },
+        aiDone: Promise.resolve({ status: 'TIMEOUT' }),
+        tailDone,
+      };
+    },
+  });
+  const res = response();
+  const running = handler(request({ streamGeneration: 'generation-tail' }), res);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(res.writableEnded, true);
+  assert.deepEqual(events(res).map((event) => event.name), ['recommendation.ready', 'complete']);
+  releaseTail({ status: 'SUCCESS_TAIL' });
   await running;
   assert.deepEqual(events(res).map((event) => event.name), ['recommendation.ready', 'complete']);
 });

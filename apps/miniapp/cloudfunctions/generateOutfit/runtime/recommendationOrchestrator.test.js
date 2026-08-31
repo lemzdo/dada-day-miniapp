@@ -84,7 +84,8 @@ function interactiveContext(overrides = {}) {
           ...response,
           light: { cards: [{ ...response.light.cards[0], todayReason: copy.text, copySource: 'ai_cache' }] },
         }),
-        scheduleBackgroundMaterialization: async () => ({ accepted: true }),
+        completeCopyJob: async () => ({ status: 'completed' }),
+        markCopyJobRetryable: async () => ({ status: 'interactive' }),
         ...overrides.firstCardInteractive,
       },
     }),
@@ -203,7 +204,7 @@ test('AI success persists canonical before the authoritative first response', as
         events.push('response-assembled');
         return { ...response, light: { cards: [{ ...response.light.cards[0], todayReason: copy.text, copySource: 'ai_cache' }] } };
       },
-      scheduleBackgroundMaterialization: async (outcome) => { events.push(`background-${outcome.status}`); },
+      completeCopyJob: async () => { events.push('job-completed'); },
     },
   });
   const result = await runRecommendationOrchestrator({}, context, {
@@ -211,7 +212,7 @@ test('AI success persists canonical before the authoritative first response', as
   });
   assert.equal(result.response.light.cards[0].todayReason, 'AI canonical');
   assert.equal(result.firstCardAi.status, 'SUCCESS');
-  assert.deepEqual(events, ['canonical-persisted', 'response-assembled', 'background-SUCCESS', 'ready']);
+  assert.deepEqual(events, ['canonical-persisted', 'job-completed', 'response-assembled', 'ready']);
 });
 
 test('interactive audit records correlated first-card stages and a complete summary', async () => {
@@ -245,7 +246,7 @@ test('interactive audit records correlated first-card stages and a complete summ
   assert.equal(summary.providerCalled, true);
   assert.equal(summary.validated, true);
   assert.equal(summary.persisted, true);
-  assert.equal(summary.backgroundDispatched, true);
+  assert.equal(summary.backgroundDispatched, false);
   assert.equal(summary.deadlineReason, null);
   assert.equal(summary.stageStatus.DEADLINE_REACHED, 'not_occurred');
   const stageEntries = audit.filter((entry) => typeof entry.stage === 'string');
@@ -300,20 +301,22 @@ test('failed background dispatch is not reported as dispatched', async () => {
   assert.equal(diagnostics.firstCardAudit.summary.backgroundDispatched, false);
 });
 
-test('joined durable background dispatch is reported as dispatched', async () => {
+test('normal first-card miss never invokes an injected SCF dispatcher', async () => {
   const diagnostics = {
     auditId: 'audit-background-joined',
     monotonicOriginAt: process.hrtime.bigint(),
     stageLogger: () => {},
   };
+  let dispatchCalls = 0;
   const context = interactiveContext({
     firstCardInteractive: {
-      scheduleBackgroundMaterialization: async () => ({ accepted: false, joined: true, status: 'joined' }),
+      scheduleBackgroundMaterialization: async () => { dispatchCalls += 1; return { accepted: true }; },
     },
     context: { diagnostics },
   });
   await runRecommendationOrchestrator({}, context);
-  assert.equal(diagnostics.firstCardAudit.summary.backgroundDispatched, true);
+  assert.equal(dispatchCalls, 0);
+  assert.equal(diagnostics.firstCardAudit.summary.backgroundDispatched, false);
 });
 
 test('card0 canonical cache hit skips the provider and marks AI stages not occurred', async () => {
@@ -346,11 +349,11 @@ test('card0 canonical cache hit skips the provider and marks AI stages not occur
 });
 
 for (const failureType of ['PROVIDER_FAIL', 'VALIDATOR_FAIL']) {
-  test(`${failureType} preserves safe recommendation and starts background materialization`, async () => {
+  test(`${failureType} preserves safe recommendation and leaves the job retryable`, async () => {
     const outcomes = [];
     const context = interactiveContext({
       firstCardInteractive: {
-        scheduleBackgroundMaterialization: async (outcome) => { outcomes.push(outcome); },
+        markCopyJobRetryable: async (outcome) => { outcomes.push(outcome); },
       },
       context: {
         renderFirstCardCanonical: async () => ({ status: 'failure', failureType }),
@@ -360,12 +363,15 @@ for (const failureType of ['PROVIDER_FAIL', 'VALIDATOR_FAIL']) {
     assert.equal(result.firstCardAi.status, 'FAIL');
     assert.equal(result.firstCardAi.reason, failureType);
     assert.equal(result.response.light.cards[0].todayReason, 'safe');
+    await result.tailDone;
     assert.equal(outcomes.length, 1);
+    assert.equal(outcomes[0].reason, failureType);
   });
 }
 
-test('absolute deadline returns safe copy and discards a late validated result', async () => {
+test('absolute deadline returns safe copy then persists the same late provider result once', async () => {
   let release;
+  let providerCalls = 0;
   let persistenceCalls = 0;
   const monotonicOriginAt = process.hrtime.bigint() - 2250n * 1000000n;
   const diagnostics = { auditId: 'audit-provider', monotonicOriginAt, stageLogger: () => {} };
@@ -377,6 +383,8 @@ test('absolute deadline returns safe copy and discards a late validated result',
       diagnostics,
       handlerOrigin: monotonicOriginAt,
       renderFirstCardCanonical: async ({ rendererConfig }) => {
+        providerCalls += 1;
+        assert.ok(rendererConfig.timeoutMs >= 6000);
         rendererConfig.onAuditStage('PROVIDER_START', 'started');
         return new Promise((resolve) => { release = resolve; });
       },
@@ -387,16 +395,35 @@ test('absolute deadline returns safe copy and discards a late validated result',
   assert.equal(result.response.light.cards[0].todayReason, 'safe');
   assert.equal(persistenceCalls, 0);
   release({ status: 'success', copy: { planId: 'plan-1', text: 'late canonical' } });
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(persistenceCalls, 0);
-  assert.equal(diagnostics.AI_LATE_DISCARDED, true);
-  assert.equal(diagnostics.FIRST_CARD_AI_RESULT, 'TIMEOUT');
+  await result.tailDone;
+  assert.equal(providerCalls, 1);
+  assert.equal(persistenceCalls, 1);
+  assert.equal(diagnostics.AI_LATE_DISCARDED, false);
+  assert.equal(diagnostics.FIRST_CARD_AI_RESULT, 'SUCCESS_TAIL');
   assert.equal(diagnostics.firstCardAudit.summary.deadlineReason, 'PROVIDER_IN_FLIGHT');
   assert.equal(diagnostics.firstCardAudit.summary.providerCalled, true);
 });
 
+test('canonical persistence failure keeps safe copy and marks the job retryable', async () => {
+  const outcomes = [];
+  const context = interactiveContext({
+    firstCardInteractive: {
+      persistCanonicalCopy: async () => { throw new Error('CANONICAL_WRITE_FAILED'); },
+      markCopyJobRetryable: async (outcome) => { outcomes.push(outcome); },
+    },
+  });
+  const result = await runRecommendationOrchestrator({}, context);
+  assert.equal(result.firstCardAi.status, 'FAIL');
+  assert.equal(result.firstCardAi.reason, 'PERSIST_FAIL');
+  assert.equal(result.response.light.cards[0].todayReason, 'safe');
+  await result.tailDone;
+  assert.equal(outcomes.length, 1);
+  assert.equal(outcomes[0].reason, 'PERSIST_FAIL');
+});
+
 test('deadline summary freezes pre-AI exhaustion at the absolute handler deadline', async () => {
   let providerCalls = 0;
+  let persistenceCalls = 0;
   const handlerOrigin = process.hrtime.bigint() - 2301n * 1000000n;
   const diagnostics = {
     auditId: 'audit-pre-ai',
@@ -404,6 +431,16 @@ test('deadline summary freezes pre-AI exhaustion at the absolute handler deadlin
     stageLogger: () => {},
   };
   const context = interactiveContext({
+    firstCardInteractive: {
+      materializeFirstCard: async () => {
+        providerCalls += 1;
+        return { status: 'SUCCESS', copy: { planId: 'plan-1', text: 'tail materialized' } };
+      },
+      persistCanonicalCopy: async (copy) => {
+        persistenceCalls += 1;
+        return { outfitKey: 'look-1', cardIndex: 0, text: copy.text };
+      },
+    },
     context: {
       diagnostics,
       handlerOrigin,
@@ -417,7 +454,9 @@ test('deadline summary freezes pre-AI exhaustion at the absolute handler deadlin
   assert.equal(result.firstCardAi.status, 'TIMEOUT');
   assert.equal(diagnostics.firstCardAudit.summary.deadlineReason, 'PRE_AI_EXHAUSTION');
   assert.equal(diagnostics.firstCardAudit.summary.remainingAtAiStartMs, 0);
-  assert.equal(providerCalls, 0);
+  await result.tailDone;
+  assert.equal(providerCalls, 1);
+  assert.equal(persistenceCalls, 1);
 });
 
 test('deadline summary distinguishes provider completion from validator completion', async () => {

@@ -2,6 +2,7 @@
 
 const DEFAULT_AI_WINDOW_MS = 6000;
 const SERVER_RESPONSE_DEADLINE_MS = 2300;
+const SERVER_TAIL_TIMEOUT_MS = 6000;
 const { normalizeInput, runRecommendationCore } = require('./recommendationCore');
 
 function asPromise(value) {
@@ -127,17 +128,13 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
   setDiagnostic(context, 'AI_LATE_DISCARDED', false);
   let earlyInteractive = null;
   let earlyCardPromise = null;
-  let winningInteractive = null;
   const orchestrationContext = {
     ...context,
     onFirstCardReady: (payload) => {
       if (earlyInteractive || typeof context.prepareFirstCardInteractive !== 'function') return;
       try {
         earlyInteractive = context.prepareFirstCardInteractive(payload);
-        const start = (value) => {
-          winningInteractive = value;
-          return runFirstCard(value, context, handlerOrigin, deadlineAt);
-        };
+        const start = (value) => runFirstCard(value, context, handlerOrigin, deadlineAt);
         // Production preparation is synchronous, so runFirstCard reaches the
         // canonical read immediately while Core continues plans 1..N. Keep
         // Promise support for injected adapters without duplicating the path.
@@ -211,13 +208,14 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
     const response = await requiredPromise;
     let finalResponse = response;
     let outcome = first;
+    let firstCardPersistPromise = null;
     if (first.status === 'SUCCESS' || first.status === 'CACHE_HIT') {
       try {
         let persisted = first.copy;
         if (first.status !== 'CACHE_HIT') {
-          // Canonical persistence is part of the interactive AI budget.  A
-          // late write must never turn a safe first response into a late AI
-          // response; the durable worker can settle it afterwards.
+          // Persistence and job completion share one promise across the UI
+          // race and server tail. Never issue a second canonical write.
+          firstCardPersistPromise = persistAndCompleteFirstCard(activeInteractive, first.copy);
           const persistRemainingMs = Math.max(0, Number(deadlineAt - monotonicNow()) / 1e6);
           if (persistRemainingMs <= 0) {
             outcome = { status: 'TIMEOUT', reason: 'POST_VALIDATION' };
@@ -227,7 +225,7 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
               persistTimer = setTimeout(() => resolve({ timedOut: true }), persistRemainingMs);
             });
             const persistResult = await Promise.race([
-              asPromise((winningInteractive || interactive).persistCanonicalCopy(first.copy)).then((value) => ({ value })),
+              firstCardPersistPromise.then((value) => ({ value })),
               persistDeadline,
             ]);
             if (persistTimer) clearTimeout(persistTimer);
@@ -240,8 +238,8 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
             }
           }
         }
-        if (outcome.status !== 'TIMEOUT' && typeof (winningInteractive || interactive).applyCanonicalToResponse === 'function') {
-          finalResponse = await (winningInteractive || interactive).applyCanonicalToResponse(
+        if (outcome.status !== 'TIMEOUT' && typeof activeInteractive.applyCanonicalToResponse === 'function') {
+          finalResponse = await activeInteractive.applyCanonicalToResponse(
             response,
             persisted || first.copy,
           );
@@ -250,32 +248,30 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
         outcome = { status: 'FAIL', reason: 'PERSIST_FAIL', error };
       }
     }
-    // The existing worker is also responsible for card1..N after success;
-    // it recognizes a persisted card0 and skips regenerating that card.
-    const backgroundDispatch = safeCall(activeInteractive.scheduleBackgroundMaterialization, outcome);
-    if (typeof activeInteractive.scheduleBackgroundMaterialization !== 'function') {
-      auditStage(context, 'BACKGROUND_DISPATCHED', 'not_reached');
-    } else {
-      // Dispatch is deliberately fire-and-forget for recommendation.ready,
-      // but audit only records it after the durable dispatcher accepts it.
-      void backgroundDispatch.then((result) => {
-        if (result?.accepted === true) auditStage(context, 'BACKGROUND_DISPATCHED', 'dispatched');
-        else if (result?.joined === true || ['joined', 'dispatched', 'running', 'completed'].includes(result?.status)) {
-          auditStage(context, 'BACKGROUND_DISPATCHED', 'joined', { dispatchStatus: result?.status || 'joined' });
-        }
-        else auditStage(context, 'BACKGROUND_DISPATCHED', 'failed', { dispatchStatus: result?.status || 'rejected' });
-      });
-    }
-    // Let an already-resolved dispatch acceptance settle for diagnostics;
-    // never await a pending dispatcher here.
-    await Promise.resolve();
-    await Promise.resolve();
+    // A first-card timeout is a response barrier, not an AI cancellation point.
+    // Keep the already-admitted provider promise alive and settle it server-side
+    // after returning the safe response.  This deliberately does not dispatch
+    // an SCF event (or write another SSE frame).
+    // Interactive first-card misses are completed in this invocation. Never
+    // dispatch the recovery worker from the normal request path.
+    auditStage(context, 'BACKGROUND_DISPATCHED', 'not_reached');
     if (outcome.status === 'TIMEOUT' && context?.diagnostics?.firstCardAudit) {
       context.diagnostics.firstCardAudit.deadlineReason = outcome.reason || deadlineReasonAt(
         context.diagnostics.firstCardAudit,
       );
     }
     auditSummary(context);
+    let tailDone = Promise.resolve(outcome);
+    if (outcome.status === 'TIMEOUT') {
+      tailDone = settleFirstCardTail({
+        cardPromise,
+        persistPromise: firstCardPersistPromise,
+        interactive: activeInteractive,
+        context,
+      });
+    } else if (outcome.status === 'FAIL') {
+      tailDone = markFirstCardRetryable(activeInteractive, outcome).then(() => outcome);
+    }
     const result = buildResult({
       core,
       prepared,
@@ -285,17 +281,85 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
       startedAt,
       handlerOrigin,
       outcome,
-    });
-    void cardPromise.then((late) => {
-      if (first.status !== 'TIMEOUT') return;
-      setDiagnostic(context, 'AI_LATE_DISCARDED', true);
-      setDiagnostic(context, 'FIRST_CARD_AI_RESULT', 'TIMEOUT');
-      void safeCall(activeInteractive.scheduleBackgroundMaterialization, late);
+      tailDone,
     });
     return result;
   } catch (error) {
     await safeCall(lifecycleHooks.onRuntimeFailure, { error, input: normalized });
     throw error;
+  }
+}
+
+async function persistAndCompleteFirstCard(interactive, copy) {
+  if (typeof interactive.persistCanonicalCopy !== 'function') {
+    throw new Error('CANONICAL_PERSISTENCE_REQUIRED');
+  }
+  const persisted = await interactive.persistCanonicalCopy(copy);
+  if (typeof interactive.completeCopyJob === 'function') {
+    await interactive.completeCopyJob({ copy: persisted || copy });
+  }
+  return persisted || copy;
+}
+
+async function markFirstCardRetryable(interactive, outcome) {
+  if (typeof interactive.markCopyJobRetryable !== 'function') return;
+  try { await interactive.markCopyJobRetryable(outcome); } catch { /* recovery state is fail-open */ }
+}
+
+async function settleFirstCardTail({ cardPromise, persistPromise, interactive, context }) {
+  const tailTimeoutMs = Math.max(1, Number(context.firstCardTailTimeoutMs) || SERVER_TAIL_TIMEOUT_MS);
+  let tailOpen = true;
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      tailOpen = false;
+      resolve({ status: 'TAIL_TIMEOUT', reason: 'TAIL_TIMEOUT' });
+    }, tailTimeoutMs);
+    timer.unref?.();
+  });
+  const work = (async () => {
+    let late = await cardPromise;
+    if (!tailOpen) return { status: 'TAIL_TIMEOUT', reason: 'TAIL_TIMEOUT' };
+    // A provider that was already admitted must never be started a second
+    // time. Materialization is only valid for the explicit pre-admission case.
+    if (late?.status === 'TIMEOUT'
+      && late.reason === 'PRE_AI_EXHAUSTION'
+      && typeof interactive.materializeFirstCard === 'function') {
+      late = await interactive.materializeFirstCard({
+        timeoutMs: tailTimeoutMs,
+        onAuditStage: (stage, status) => auditStage(context, stage, status),
+      });
+    }
+    if (!tailOpen) return { status: 'TAIL_TIMEOUT', reason: 'TAIL_TIMEOUT' };
+    if (late?.status === 'SUCCESS') {
+      const persisted = await (persistPromise || persistAndCompleteFirstCard(interactive, late.copy));
+      if (!tailOpen) return { status: 'TAIL_TIMEOUT', reason: 'TAIL_TIMEOUT' };
+      auditStage(context, 'CANONICAL_PERSISTED', 'tail');
+      setDiagnostic(context, 'firstCardCanonicalPersisted', elapsedMs(context.handlerOrigin));
+      setDiagnostic(context, 'FIRST_CARD_AI_RESULT', 'SUCCESS_TAIL');
+      return { ...late, copy: persisted || late.copy, status: 'SUCCESS_TAIL' };
+    }
+    return late;
+  })();
+  try {
+    const late = await Promise.race([work, timeout]);
+    if (late?.status !== 'SUCCESS_TAIL') {
+      await markFirstCardRetryable(interactive, late || { status: 'FAIL', reason: 'TAIL_FAIL' });
+      setDiagnostic(context, 'FIRST_CARD_AI_RESULT', late?.reason || 'TAIL_FAIL');
+    }
+    // This flag now means an AI result was intentionally thrown away. A late
+    // result is retained by the server tail, so it must remain false.
+    setDiagnostic(context, 'AI_LATE_DISCARDED', false);
+    return late;
+  } catch (error) {
+    // Keep the durable job retryable; the tail is fail-open for the response.
+    setDiagnostic(context, 'AI_LATE_DISCARDED', false);
+    setDiagnostic(context, 'FIRST_CARD_AI_RESULT', 'TAIL_FAIL');
+    await markFirstCardRetryable(interactive, { status: 'FAIL', reason: 'PERSIST_FAIL', error });
+    try { (context?.diagnostics?.stageLogger || console.warn)('[RecommendationFirstCardTailFailOpen]', error); } catch { /* fail-open */ }
+    return { status: 'FAIL', reason: 'PERSIST_FAIL', error };
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -331,11 +395,18 @@ async function runFirstCard(interactive, context, origin, deadlineAt) {
   setDiagnostic(context, 'firstCardAiStart', elapsedMs(origin));
   try {
     const providerRemainingMs = Math.max(0, Number(deadlineAt - monotonicNow()) / 1e6);
+    // The UI deadline only gates the race. Once admitted, the provider
+    // promise must remain alive for the server tail; use the existing bounded
+    // provider timeout rather than aborting it at 2300ms.
+    const providerTimeoutMs = Math.max(
+      providerRemainingMs,
+      Number(context.firstCardProviderTimeoutMs) || SERVER_TAIL_TIMEOUT_MS,
+    );
     const result = await context.renderFirstCardCanonical({
       entry: admission.entry,
       rendererConfig: {
         ...(admission.rendererConfig || {}),
-        timeoutMs: Math.floor(providerRemainingMs),
+        timeoutMs: Math.floor(providerTimeoutMs),
         onAuditStage: (stage, status) => auditStage(context, stage, status),
       },
     });
@@ -374,6 +445,7 @@ function buildResult({
   startedAt,
   handlerOrigin,
   outcome,
+  tailDone,
 }) {
   const batchId = response?.batch?.batchId || prepared.batchId || core.metadata.batchId;
   const countContract = response?.batch?.countContract || core.executionState.countContract;
@@ -396,6 +468,7 @@ function buildResult({
     firstCardAi: outcome,
     aiDone: Promise.resolve(outcome),
     aiPromise: Promise.resolve(outcome),
+    tailDone,
     startedAt,
     handlerOrigin,
   };
@@ -454,4 +527,4 @@ async function finishLegacy({
   };
 }
 
-module.exports = { DEFAULT_AI_WINDOW_MS, SERVER_RESPONSE_DEADLINE_MS, runRecommendationOrchestrator };
+module.exports = { DEFAULT_AI_WINDOW_MS, SERVER_RESPONSE_DEADLINE_MS, SERVER_TAIL_TIMEOUT_MS, runRecommendationOrchestrator };
