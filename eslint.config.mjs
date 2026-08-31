@@ -21,4 +21,18 @@ export default tseslint.config(
       'no-console': 'warn',
     },
   },
+  {
+    files: ['packages/garment-assets/**/*.js'],
+    languageOptions: {
+      sourceType: 'commonjs',
+      globals: {
+        URL: 'readonly',
+        module: 'readonly',
+        require: 'readonly',
+      },
+    },
+    rules: {
+      '@typescript-eslint/no-require-imports': 'off',
+    },
+  },
 );

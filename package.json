@@ -10,11 +10,14 @@
     "format": "prettier --write .",
     "typecheck": "turbo typecheck",
     "clean": "turbo clean",
+    "cloud:deploy": "node apps/miniapp/scripts/cloud-deploy.js",
+    "cloud:deploy:test": "node --test apps/miniapp/scripts/cloud-deploy.test.js apps/miniapp/scripts/check-recommendation-artifacts.test.js apps/miniapp/scripts/check-generate-outfit-package.test.js",
     "devtools:health": "node apps/miniapp/scripts/devtools-acceptance.js health",
     "today:hot:accept": "node apps/miniapp/scripts/devtools-acceptance.js today-hot",
     "devtools:acceptance:test": "node --test apps/miniapp/scripts/devtools-acceptance.test.js"
   },
   "devDependencies": {
+    "@cloudbase/cli": "3.8.1",
     "@eslint/js": "^9.15.0",
     "@typescript-eslint/eslint-plugin": "^8.18.0",
     "@typescript-eslint/parser": "^8.18.0",

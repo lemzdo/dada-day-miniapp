@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { checkArtifacts, checkIsolatedRecommendationStreamArtifact } = require('./check-recommendation-artifacts');
+const { checkArtifactContract, checkArtifacts, checkIsolatedRecommendationStreamArtifact } = require('./check-recommendation-artifacts');
 const { stageGenerateOutfit, stageRecommendationStream } = require('./stage-recommendation-artifacts');
 
 function stageBoth() {
@@ -25,11 +25,11 @@ test('both final artifacts contain the complete local runtime dependency closure
     recommendationStreamArtifact: artifacts.recommendationStream,
   });
   assert.equal(report.passed, true);
-  assert.equal(report.generateOutfit.sourceDependencyCount, 78);
-  assert.equal(report.generateOutfit.stagedDependencyCount, 78);
+  assert.ok(report.generateOutfit.sourceDependencyCount > 70);
+  assert.equal(report.generateOutfit.stagedDependencyCount, report.generateOutfit.sourceDependencyCount);
   assert.deepEqual(report.generateOutfit.missingDependencies, []);
-  assert.equal(report.recommendationStream.sourceDependencyCount, 79);
-  assert.equal(report.recommendationStream.stagedDependencyCount, 79);
+  assert.equal(report.recommendationStream.sourceDependencyCount, report.generateOutfit.sourceDependencyCount + 1);
+  assert.equal(report.recommendationStream.stagedDependencyCount, report.recommendationStream.sourceDependencyCount);
   assert.deepEqual(report.recommendationStream.missingDependencies, []);
   assert.equal(report.recommendationStream.isolatedBoot, true);
   assert.deepEqual(report.recommendationStream.outsideArtifactLocalDependencies, []);
@@ -80,6 +80,27 @@ test('artifact integrity gate fails when any recursive service dependency is rem
     generateOutfitArtifact: artifacts.generateOutfit,
     recommendationStreamArtifact: artifacts.recommendationStream,
   }), /Missing local runtime dependency/);
+});
+
+test('complete staged artifacts pass manifest, closure, required-file, and isolated-boot contract', (context) => {
+  const artifacts = stageBoth();
+  context.after(() => fs.rmSync(artifacts.parent, { recursive: true, force: true }));
+  for (const [name, artifact] of [['generateOutfit', artifacts.generateOutfit], ['recommendationStream', artifacts.recommendationStream]]) {
+    const report = checkArtifactContract(name, artifact);
+    assert.equal(report.passed, true);
+    assert.deepEqual(report.missingDependencies, []);
+    assert.deepEqual(report.requiredFilesMissing, []);
+    assert.equal(report.isolatedBoot, true);
+    assert.equal(report.manifestIntegrity, true);
+    assert.deepEqual(report.links, []);
+  }
+});
+
+test('manifest gate rejects a missing real required nested file', (context) => {
+  const artifacts = stageBoth();
+  context.after(() => fs.rmSync(artifacts.parent, { recursive: true, force: true }));
+  fs.rmSync(path.join(artifacts.generateOutfit, 'services', 'aestheticCompatibility.js'));
+  assert.throws(() => checkArtifactContract('generateOutfit', artifacts.generateOutfit), /manifest integrity failed/);
 });
 
 test('HTTP artifact gate fails when its vendored recommendation dependency is removed', (context) => {

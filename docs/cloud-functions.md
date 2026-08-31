@@ -1,5 +1,7 @@
 # 云函数维护文档
 
+> `generateOutfit` 与 `recommendationStream` 的生产/验收部署必须使用仓库唯一入口 `pnpm cloud:deploy <function>`。完整合同和禁止路径见 [CloudBase 云函数正式部署合同](./cloud-functions-deployment.md)。
+
 > 最后更新：2026-05-25
 
 ## 上传衣服主链路

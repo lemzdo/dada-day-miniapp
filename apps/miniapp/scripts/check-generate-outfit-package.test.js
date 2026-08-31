@@ -39,24 +39,13 @@ test('integrity check rejects runtime files excluded from the deployable source 
   assert.deepEqual(report.missingRuntimeFiles, ['services/runtime.test.js']);
 });
 
-test('deployment wrappers use the shared two-artifact owner and manifest-driven refresh', () => {
+test('legacy deployment wrappers delegate only to the canonical repository command', () => {
   const legacySource = fs.readFileSync(DEPLOY_SCRIPT, 'utf8');
   const source = fs.readFileSync(RECOMMENDATION_DEPLOY_SCRIPT, 'utf8');
-  assert.match(legacySource, /deploy-recommendation-functions\.ps1/);
+  assert.match(legacySource, /pnpm cloud:deploy generateOutfit/);
   assert.match(legacySource, /generateOutfit/);
-  assert.match(source, /cloud functions deploy/);
-  assert.match(source, /\$deploymentSourceDir = \[IO\.Path\]::GetFullPath\(\$StageRoot\)/);
-  assert.match(source, /--paths \$deploymentSourceDir --appid \$AppId/);
-  assert.match(source, /inc-deploy --env \$EnvironmentId --path \$deploymentSourceDir --file \$runtimeRoot --appid \$AppId/);
-  assert.doesNotMatch(source, /--project \$ProjectPath/);
-  assert.match(source, /--recommendationStream \$recommendationStreamStage/);
-  assert.match(source, /STAGED_GENERATE_OUTFIT_INDEX=true/);
-  assert.match(source, /generateOutfit\\vendor/);
+  assert.match(source, /pnpm cloud:deploy \$functionName/);
   assert.match(source, /Functions = @\('recommendationStream'\)/);
-  assert.doesNotMatch(source, /recommendationStreamStage.*cloudfunctions/);
-  assert.match(source, /stage-recommendation-artifacts\.js/);
-  assert.match(source, /check-recommendation-artifacts\.js/);
-  assert.match(source, /manifest\.refreshRoots/);
-  assert.match(source, /cloud functions inc-deploy/);
-  assert.doesNotMatch(source, /aestheticCompatibility/);
+  assert.doesNotMatch(`${legacySource}\n${source}`, /cloud functions (?:deploy|inc-deploy)/);
+  assert.doesNotMatch(`${legacySource}\n${source}`, /tcb fn deploy/);
 });

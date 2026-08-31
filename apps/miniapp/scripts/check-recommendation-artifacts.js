@@ -7,6 +7,80 @@ const path = require('node:path');
 const { collectRuntimeDependencies } = require('./check-generate-outfit-package');
 const { generateOutfitSource, recommendationStreamSource } = require('./stage-recommendation-artifacts');
 
+const REQUIRED_FILES = Object.freeze({
+  generateOutfit: [
+    'index.js',
+    'package.json',
+    'runtime/recommendationCore.js',
+    'services/aestheticCompatibility.js',
+    'vendor/ai-core/package.json',
+    'vendor/garment-assets/package.json',
+  ],
+  recommendationStream: [
+    'index.js',
+    'package.json',
+    'scf_bootstrap',
+    'generateOutfit/index.js',
+    'generateOutfit/runtime/recommendationCore.js',
+    'generateOutfit/services/aestheticCompatibility.js',
+    'generateOutfit/vendor/ai-core/package.json',
+    'generateOutfit/vendor/garment-assets/package.json',
+  ],
+});
+
+function sha256File(file) {
+  return require('node:crypto').createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+}
+
+function findLinks(root) {
+  const links = [];
+  const walk = (directory) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const absolute = path.join(directory, entry.name);
+      const metadata = fs.lstatSync(absolute);
+      if (metadata.isSymbolicLink()) {
+        links.push(path.relative(root, absolute).split(path.sep).join('/'));
+      } else if (metadata.isDirectory()) {
+        walk(absolute);
+      }
+    }
+  };
+  walk(root);
+  return links;
+}
+
+function verifyManifestIntegrity(name, artifactRoot, expectedManifestSha256 = '') {
+  const manifestPath = path.join(artifactRoot, 'artifact-manifest.json');
+  if (!fs.existsSync(manifestPath)) throw new Error(`${name} artifact manifest is missing`);
+  const manifestSha256 = sha256File(manifestPath);
+  if (expectedManifestSha256 && manifestSha256 !== expectedManifestSha256) {
+    throw new Error(`${name} remote artifact manifest does not match the staged artifact`);
+  }
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  if (manifest.name !== name || !Array.isArray(manifest.files) || !Array.isArray(manifest.runtimeDependencies)) {
+    throw new Error(`${name} artifact manifest is invalid`);
+  }
+  if (manifest.runtimeDependencyCount !== manifest.runtimeDependencies.length) {
+    throw new Error(`${name} artifact manifest dependency count is invalid`);
+  }
+  const failures = [];
+  for (const record of manifest.files) {
+    const file = path.resolve(artifactRoot, record.path);
+    const relative = path.relative(path.resolve(artifactRoot), file);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+      failures.push({ path: record.path, reason: 'OUTSIDE_ARTIFACT_ROOT' });
+    } else if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
+      failures.push({ path: record.path, reason: 'MISSING' });
+    } else if (fs.statSync(file).size !== record.bytes) {
+      failures.push({ path: record.path, reason: 'SIZE_MISMATCH' });
+    } else if (sha256File(file) !== record.sha256) {
+      failures.push({ path: record.path, reason: 'HASH_MISMATCH' });
+    }
+  }
+  if (failures.length > 0) throw new Error(`${name} artifact manifest integrity failed: ${JSON.stringify(failures)}`);
+  return { manifest, manifestSha256 };
+}
+
 function relativeFiles(root, files) {
   return files.map((file) => path.relative(root, file).split(path.sep).join('/'));
 }
@@ -137,6 +211,64 @@ function checkIsolatedRecommendationStreamArtifact(artifactRoot) {
   }
 }
 
+function checkIsolatedArtifact(name, artifactRoot) {
+  const tempParent = fs.mkdtempSync(path.join(os.tmpdir(), `d1d-${name}-isolated-`));
+  const isolatedRoot = path.join(tempParent, 'artifact');
+  try {
+    fs.cpSync(path.resolve(artifactRoot), isolatedRoot, { recursive: true, errorOnExist: true });
+    const outsideArtifactLocalDependencies = scanArtifactLocalDependencies(isolatedRoot);
+    const isolatedBoot = outsideArtifactLocalDependencies.length === 0 && bootArtifact(name, isolatedRoot);
+    return { isolatedBoot, outsideArtifactLocalDependencies };
+  } finally {
+    fs.rmSync(tempParent, { recursive: true, force: true });
+  }
+}
+
+function checkArtifactContract(name, artifactRoot, options = {}) {
+  if (!Object.hasOwn(REQUIRED_FILES, name)) throw new Error(`Unsupported artifact: ${name}`);
+  const resolvedRoot = path.resolve(artifactRoot);
+  const links = findLinks(resolvedRoot);
+  if (links.length > 0) throw new Error(`${name} artifact contains symlink or junction: ${JSON.stringify(links)}`);
+  const manifestIntegrity = verifyManifestIntegrity(name, resolvedRoot, options.expectedManifestSha256);
+  const requiredFilesMissing = REQUIRED_FILES[name].filter((file) => !fs.existsSync(path.join(resolvedRoot, file)));
+  if (requiredFilesMissing.length > 0) {
+    throw new Error(`${name} required files are missing: ${JSON.stringify(requiredFilesMissing)}`);
+  }
+
+  let closure;
+  if (name === 'generateOutfit') {
+    closure = compareDependencyClosure(generateOutfitSource, resolvedRoot);
+  } else {
+    const nested = compareDependencyClosure(generateOutfitSource, path.join(resolvedRoot, 'generateOutfit'));
+    const wrapper = fs.readFileSync(path.join(resolvedRoot, 'index.js'), 'utf8');
+    closure = {
+      sourceDependencyCount: nested.sourceDependencyCount + 1,
+      stagedDependencyCount: nested.stagedDependencyCount + 1,
+      missingDependencies: [
+        ...nested.missingDependencies.map((file) => `generateOutfit/${file}`),
+        ...(!wrapper.includes("require('./generateOutfit')") ? ['index.js'] : []),
+      ],
+    };
+  }
+  const isolated = checkIsolatedArtifact(name, resolvedRoot);
+  const passed = closure.missingDependencies.length === 0
+    && isolated.isolatedBoot
+    && isolated.outsideArtifactLocalDependencies.length === 0;
+  return {
+    name,
+    passed,
+    missingDependencies: closure.missingDependencies,
+    sourceDependencyCount: closure.sourceDependencyCount,
+    artifactDependencyCount: closure.stagedDependencyCount,
+    isolatedBoot: isolated.isolatedBoot,
+    outsideArtifactLocalDependencies: isolated.outsideArtifactLocalDependencies,
+    requiredFilesMissing,
+    manifestSha256: manifestIntegrity.manifestSha256,
+    manifestIntegrity: true,
+    links,
+  };
+}
+
 function checkArtifacts({ generateOutfitArtifact, recommendationStreamArtifact }) {
   const generate = compareDependencyClosure(generateOutfitSource, generateOutfitArtifact);
   const nestedStreamRoot = path.join(recommendationStreamArtifact, 'generateOutfit');
@@ -220,8 +352,12 @@ if (require.main === module) {
 
 module.exports = {
   bootArtifact,
+  checkArtifactContract,
   checkArtifacts,
+  checkIsolatedArtifact,
   compareDependencyClosure,
+  findLinks,
   scanArtifactLocalDependencies,
   checkIsolatedRecommendationStreamArtifact,
+  verifyManifestIntegrity,
 };

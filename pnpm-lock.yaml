@@ -8,6 +8,9 @@ importers:
 
   .:
     devDependencies:
+      '@cloudbase/cli':
+        specifier: 3.8.1
+        version: 3.8.1
       '@eslint/js':
         specifier: ^9.15.0
         version: 9.39.4
@@ -898,6 +901,10 @@ packages:
   '@babel/types@7.29.0':
     resolution: {integrity: sha512-LwdZHpScM4Qz8Xw2iKSzS+cfglZzJGvofQICy7W7v4caru4EaAmyUuO6BGrbyQ2mYV11W0U8j5mBhd14dd3B0A==}
     engines: {node: '>=6.9.0'}
+
+  '@cloudbase/cli@3.8.1':
+    resolution: {integrity: sha512-UTazVglGgMSqhsIk7MlbwRuSX/43vG83Ps598RIN5p/bF8I48pXlRlPQGj1m0PbE5VZFZS4I+tEudEr1MMt3Fw==}
+    hasBin: true
 
   '@cloudbase/cloud-api@0.5.5':
     resolution: {integrity: sha512-skNsOirrXPmQjL5NZpwfhM+kgEljYQQVetJRxOnhjeA3HVadNdJMejeXoGjOP9zua6b1YFPguVkLv+cYjw5jFg==}
@@ -7864,6 +7871,8 @@ snapshots:
     dependencies:
       '@babel/helper-string-parser': 7.27.1
       '@babel/helper-validator-identifier': 7.28.5
+
+  '@cloudbase/cli@3.8.1': {}
 
   '@cloudbase/cloud-api@0.5.5':
     dependencies:
