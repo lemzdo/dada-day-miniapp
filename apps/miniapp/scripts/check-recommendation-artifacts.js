@@ -5,7 +5,16 @@ const Module = require('node:module');
 const os = require('node:os');
 const path = require('node:path');
 const { collectRuntimeDependencies } = require('./check-generate-outfit-package');
-const { generateOutfitSource, recommendationStreamSource } = require('./stage-recommendation-artifacts');
+const {
+  generateOutfitSource,
+  processUploadImageSource,
+  recommendationStreamSource,
+} = require('./stage-recommendation-artifacts');
+
+const RECOMMENDATION_STREAM_CANONICAL_FILES = Object.freeze([
+  'services/recommendationFirstCardRenderer.js',
+  'services/recommendationVoiceRendererProductionV2.js',
+]);
 
 const REQUIRED_FILES = Object.freeze({
   generateOutfit: [
@@ -26,7 +35,31 @@ const REQUIRED_FILES = Object.freeze({
     'generateOutfit/vendor/ai-core/package.json',
     'generateOutfit/vendor/garment-assets/package.json',
   ],
+  processUploadImage: [
+    'index.js',
+    'package.json',
+    'services/wardrobeAssetPipeline.js',
+    'services/aestheticFeatures.js',
+    'services/thumbnail.js',
+    'shared/segmentationIntegrity.js',
+    'shared/thumbnail.js',
+    'vendor/garment-assets/package.json',
+    'vendor/garment-assets/src/index.js',
+  ],
 });
+
+function removeDeploymentMarker(source) {
+  return source.replace(/^\/\/ canonical-deploy-[^\r\n]+\r?\n/, '');
+}
+
+function findRecommendationStreamRuntimeDrift(artifactRoot) {
+  return RECOMMENDATION_STREAM_CANONICAL_FILES.filter((relative) => {
+    const canonical = path.join(generateOutfitSource, relative);
+    const embedded = path.join(artifactRoot, 'generateOutfit', relative);
+    if (!fs.existsSync(canonical) || !fs.existsSync(embedded)) return true;
+    return removeDeploymentMarker(fs.readFileSync(embedded, 'utf8')) !== fs.readFileSync(canonical, 'utf8');
+  });
+}
 
 function sha256File(file) {
   return require('node:crypto').createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -229,6 +262,12 @@ function checkArtifactContract(name, artifactRoot, options = {}) {
   const resolvedRoot = path.resolve(artifactRoot);
   const links = findLinks(resolvedRoot);
   if (links.length > 0) throw new Error(`${name} artifact contains symlink or junction: ${JSON.stringify(links)}`);
+  const embeddedRuntimeDrift = name === 'recommendationStream'
+    ? findRecommendationStreamRuntimeDrift(resolvedRoot)
+    : [];
+  if (embeddedRuntimeDrift.length > 0) {
+    throw new Error(`${name} embedded runtime drift: ${JSON.stringify(embeddedRuntimeDrift)}`);
+  }
   const manifestIntegrity = verifyManifestIntegrity(name, resolvedRoot, options.expectedManifestSha256);
   const requiredFilesMissing = REQUIRED_FILES[name].filter((file) => !fs.existsSync(path.join(resolvedRoot, file)));
   if (requiredFilesMissing.length > 0) {
@@ -238,7 +277,7 @@ function checkArtifactContract(name, artifactRoot, options = {}) {
   let closure;
   if (name === 'generateOutfit') {
     closure = compareDependencyClosure(generateOutfitSource, resolvedRoot);
-  } else {
+  } else if (name === 'recommendationStream') {
     const nested = compareDependencyClosure(generateOutfitSource, path.join(resolvedRoot, 'generateOutfit'));
     const wrapper = fs.readFileSync(path.join(resolvedRoot, 'index.js'), 'utf8');
     closure = {
@@ -249,6 +288,8 @@ function checkArtifactContract(name, artifactRoot, options = {}) {
         ...(!wrapper.includes("require('./generateOutfit')") ? ['index.js'] : []),
       ],
     };
+  } else {
+    closure = compareDependencyClosure(processUploadImageSource, resolvedRoot);
   }
   const isolated = checkIsolatedArtifact(name, resolvedRoot);
   const passed = closure.missingDependencies.length === 0
@@ -261,6 +302,7 @@ function checkArtifactContract(name, artifactRoot, options = {}) {
     sourceDependencyCount: closure.sourceDependencyCount,
     artifactDependencyCount: closure.stagedDependencyCount,
     isolatedBoot: isolated.isolatedBoot,
+    embeddedRuntimeDrift,
     outsideArtifactLocalDependencies: isolated.outsideArtifactLocalDependencies,
     requiredFilesMissing,
     manifestSha256: manifestIntegrity.manifestSha256,
@@ -356,6 +398,7 @@ module.exports = {
   checkArtifacts,
   checkIsolatedArtifact,
   compareDependencyClosure,
+  findRecommendationStreamRuntimeDrift,
   findLinks,
   scanArtifactLocalDependencies,
   checkIsolatedRecommendationStreamArtifact,

@@ -12,13 +12,18 @@ const {
   buildDeployArgs,
   deployFunction,
 } = require('./cloud-deploy');
-const { generateOutfitSource, recommendationStreamSource } = require('./stage-recommendation-artifacts');
+const {
+  generateOutfitSource,
+  processUploadImageSource,
+  recommendationStreamSource,
+} = require('./stage-recommendation-artifacts');
 
-test('both functions use one formal deployment contract with assembler adapters', (context) => {
+test('all stabilized functions use one formal deployment contract with assembler adapters', (context) => {
   assert.equal(CONTRACT_VERSION, 'cloudbase-artifact-root-v1');
   assert.notEqual(adapters.generateOutfit.assemble, adapters.recommendationStream.assemble);
+  assert.notEqual(adapters.processUploadImage.assemble, adapters.generateOutfit.assemble);
 
-  for (const name of ['generateOutfit', 'recommendationStream']) {
+  for (const name of ['generateOutfit', 'recommendationStream', 'processUploadImage']) {
     const workRoot = fs.mkdtempSync(path.join(os.tmpdir(), `d1d-contract-${name}-`));
     context.after(() => fs.rmSync(workRoot, { recursive: true, force: true }));
     let uploadedArtifactRoot = '';
@@ -50,10 +55,12 @@ test('both functions use one formal deployment contract with assembler adapters'
 test('formal deploy refuses repository source directories', () => {
   assert.throws(() => assertArtifactRoot('generateOutfit', generateOutfitSource), /SOURCE_DIRECTORY_DEPLOY_FORBIDDEN/);
   assert.throws(() => assertArtifactRoot('recommendationStream', recommendationStreamSource), /SOURCE_DIRECTORY_DEPLOY_FORBIDDEN/);
-  for (const name of ['generateOutfit', 'recommendationStream']) {
+  assert.throws(() => assertArtifactRoot('processUploadImage', processUploadImageSource), /SOURCE_DIRECTORY_DEPLOY_FORBIDDEN/);
+  for (const name of ['generateOutfit', 'recommendationStream', 'processUploadImage']) {
     const args = buildDeployArgs(name, 'test-env');
     assert.equal(args[args.indexOf('--dir') + 1], '.');
     assert.ok(!args.some((value) => path.resolve(value) === path.resolve(generateOutfitSource)));
     assert.ok(!args.some((value) => path.resolve(value) === path.resolve(recommendationStreamSource)));
+    assert.ok(!args.some((value) => path.resolve(value) === path.resolve(processUploadImageSource)));
   }
 });

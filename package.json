@@ -11,7 +11,8 @@
     "typecheck": "turbo typecheck",
     "clean": "turbo clean",
     "cloud:deploy": "node apps/miniapp/scripts/cloud-deploy.js",
-    "cloud:deploy:test": "node --test apps/miniapp/scripts/cloud-deploy.test.js apps/miniapp/scripts/check-recommendation-artifacts.test.js apps/miniapp/scripts/check-generate-outfit-package.test.js",
+    "cloud:deploy:audit": "node apps/miniapp/scripts/deployment-contract-lite.js",
+    "cloud:deploy:test": "node --test apps/miniapp/scripts/cloud-deploy.test.js apps/miniapp/scripts/check-recommendation-artifacts.test.js apps/miniapp/scripts/check-generate-outfit-package.test.js apps/miniapp/scripts/deployment-contract-lite.test.js",
     "devtools:health": "node apps/miniapp/scripts/devtools-acceptance.js health",
     "today:hot:accept": "node apps/miniapp/scripts/devtools-acceptance.js today-hot",
     "devtools:acceptance:test": "node --test apps/miniapp/scripts/devtools-acceptance.test.js"

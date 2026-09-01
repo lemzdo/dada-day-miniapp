@@ -7,20 +7,23 @@ const { spawnSync } = require('node:child_process');
 const { checkArtifactContract } = require('./check-recommendation-artifacts');
 const {
   generateOutfitSource,
+  processUploadImageSource,
   recommendationStreamSource,
   stageGenerateOutfit,
+  stageProcessUploadImage,
   stageRecommendationStream,
 } = require('./stage-recommendation-artifacts');
 
 const DEFAULT_ENVIRONMENT_ID = 'cloud1-d8gl3k1vkdf0b7f05';
 const CONTRACT_VERSION = 'cloudbase-artifact-root-v1';
-const SUPPORTED_FUNCTIONS = Object.freeze(['generateOutfit', 'recommendationStream']);
+const SUPPORTED_FUNCTIONS = Object.freeze(['generateOutfit', 'recommendationStream', 'processUploadImage']);
 const repoRoot = path.resolve(__dirname, '..', '..', '..');
 const cloudfunctionsRoot = path.resolve(__dirname, '..', 'cloudfunctions');
 
 const adapters = Object.freeze({
-  generateOutfit: Object.freeze({ assemble: stageGenerateOutfit, httpFunction: false }),
-  recommendationStream: Object.freeze({ assemble: stageRecommendationStream, httpFunction: true }),
+  generateOutfit: Object.freeze({ assemble: stageGenerateOutfit, httpFunction: false, nestedCopyRisk: false }),
+  recommendationStream: Object.freeze({ assemble: stageRecommendationStream, httpFunction: true, nestedCopyRisk: true }),
+  processUploadImage: Object.freeze({ assemble: stageProcessUploadImage, httpFunction: false, nestedCopyRisk: false }),
 });
 
 function parseArgs(argv) {
@@ -58,7 +61,8 @@ function assertArtifactRoot(name, artifactRoot) {
   const resolved = path.resolve(artifactRoot);
   if (isInside(cloudfunctionsRoot, resolved)
     || resolved === path.resolve(generateOutfitSource)
-    || resolved === path.resolve(recommendationStreamSource)) {
+    || resolved === path.resolve(recommendationStreamSource)
+    || resolved === path.resolve(processUploadImageSource)) {
     throw new Error(`SOURCE_DIRECTORY_DEPLOY_FORBIDDEN: ${resolved}`);
   }
   if (path.basename(resolved) !== name) throw new Error(`Artifact root basename must be ${name}: ${resolved}`);
@@ -73,6 +77,7 @@ function assertCleanRuntimeSources() {
     '-C', repoRoot, 'status', '--porcelain', '--',
     'apps/miniapp/cloudfunctions/generateOutfit',
     'apps/miniapp/cloudfunctions/recommendationStream',
+    'apps/miniapp/cloudfunctions/processUploadImage',
     'packages/ai-core',
     'packages/garment-assets',
   ], { encoding: 'utf8' });
@@ -130,6 +135,7 @@ function printGate(scope, report) {
   console.log(`${scope}_REQUIRED_FILES=${report.requiredFilesMissing.length === 0 ? 'PASS' : 'FAIL'}`);
   console.log(`${scope}_ISOLATED_BOOT=${report.isolatedBoot ? 'PASS' : 'FAIL'}`);
   console.log(`${scope}_MANIFEST_HASH_INTEGRITY=${report.manifestIntegrity ? 'PASS' : 'FAIL'}`);
+  console.log(`${scope}_EMBEDDED_RUNTIME_DRIFT=${JSON.stringify(report.embeddedRuntimeDrift)}`);
   console.log(`${scope}_SYMLINK_JUNCTIONS=${JSON.stringify(report.links)}`);
 }
 
@@ -159,7 +165,9 @@ function deployFunction(name, options = {}) {
     printGate(`${machineName(name)}_LOCAL`, localGate);
 
     const deployArgs = buildDeployArgs(name, environmentId);
-    if (deployArgs.includes(path.resolve(generateOutfitSource)) || deployArgs.includes(path.resolve(recommendationStreamSource))) {
+    if (deployArgs.includes(path.resolve(generateOutfitSource))
+      || deployArgs.includes(path.resolve(recommendationStreamSource))
+      || deployArgs.includes(path.resolve(processUploadImageSource))) {
       throw new Error('SOURCE_DIRECTORY_DEPLOY_FORBIDDEN');
     }
     console.log(`ARTIFACT_ROOT_DEPLOY=${artifactRoot}`);

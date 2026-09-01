@@ -11,6 +11,7 @@ const repoRoot = path.resolve(miniappRoot, '..', '..');
 const cloudfunctionsRoot = path.join(miniappRoot, 'cloudfunctions');
 const generateOutfitSource = path.join(cloudfunctionsRoot, 'generateOutfit');
 const recommendationStreamSource = path.join(cloudfunctionsRoot, 'recommendationStream');
+const processUploadImageSource = path.join(cloudfunctionsRoot, 'processUploadImage');
 
 function assertSafeDisposableDirectory(directory) {
   const resolved = path.resolve(directory);
@@ -23,6 +24,7 @@ function assertSafeDisposableDirectory(directory) {
     path.resolve(cloudfunctionsRoot),
     path.resolve(generateOutfitSource),
     path.resolve(recommendationStreamSource),
+    path.resolve(processUploadImageSource),
   ]);
   if (forbidden.has(resolved)) throw new Error(`Refusing to replace unsafe staging directory: ${resolved}`);
 }
@@ -91,12 +93,16 @@ function writeManifest({ name, destination, runtimeDependencies, refreshRoots })
 
 function stageVendorPackages(destination) {
   const aiCoreSource = path.join(repoRoot, 'packages', 'ai-core');
-  const garmentAssetsSource = path.join(repoRoot, 'packages', 'garment-assets');
   if (!fs.existsSync(path.join(aiCoreSource, 'package.json'))) throw new Error(`Shared AI core package is missing: ${aiCoreSource}`);
-  if (!fs.existsSync(path.join(garmentAssetsSource, 'package.json'))) throw new Error(`Shared garment assets package is missing: ${garmentAssetsSource}`);
   const aiCoreDestination = path.join(destination, 'vendor', 'ai-core');
   copyFile(path.join(aiCoreSource, 'package.json'), path.join(aiCoreDestination, 'package.json'));
   copyDirectory(path.join(aiCoreSource, 'src'), path.join(aiCoreDestination, 'src'), (sourcePath) => !sourcePath.endsWith('.test.js'));
+  stageGarmentAssetsPackage(destination);
+}
+
+function stageGarmentAssetsPackage(destination) {
+  const garmentAssetsSource = path.join(repoRoot, 'packages', 'garment-assets');
+  if (!fs.existsSync(path.join(garmentAssetsSource, 'package.json'))) throw new Error(`Shared garment assets package is missing: ${garmentAssetsSource}`);
   copyDirectory(garmentAssetsSource, path.join(destination, 'vendor', 'garment-assets'), (sourcePath) => {
     return !sourcePath.endsWith('.test.js') && !sourcePath.split(path.sep).includes('node_modules');
   });
@@ -143,14 +149,38 @@ function stageRecommendationStream(destination, options = {}) {
   return writeManifest({ name: 'recommendationStream', destination: resolvedDestination, runtimeDependencies, refreshRoots });
 }
 
+function stageProcessUploadImage(destination, { deploymentMarker = '' } = {}) {
+  const resolvedDestination = path.resolve(destination);
+  assertSafeDisposableDirectory(resolvedDestination);
+  fs.rmSync(resolvedDestination, { recursive: true, force: true });
+  fs.mkdirSync(resolvedDestination, { recursive: true });
+  const runtimeFiles = collectRuntimeDependencies(processUploadImageSource);
+  const runtimeDependencies = runtimeFiles.map((sourceFile) => {
+    const relative = path.relative(processUploadImageSource, sourceFile);
+    copyFile(sourceFile, path.join(resolvedDestination, relative), deploymentMarker);
+    return relative.split(path.sep).join('/');
+  });
+  const packageJson = JSON.parse(fs.readFileSync(path.join(processUploadImageSource, 'package.json'), 'utf8'));
+  packageJson.dependencies['@d1d/garment-assets'] = 'file:vendor/garment-assets';
+  fs.writeFileSync(path.join(resolvedDestination, 'package.json'), `${JSON.stringify(packageJson, null, 2)}\n`, 'utf8');
+  stageGarmentAssetsPackage(resolvedDestination);
+  const refreshRoots = runtimeDependencies
+    .filter((file) => file.includes('/'))
+    .map((file) => file.split('/')[0]);
+  refreshRoots.push('vendor');
+  return writeManifest({ name: 'processUploadImage', destination: resolvedDestination, runtimeDependencies, refreshRoots });
+}
+
 function main() {
   const [name, destination, deploymentMarker = ''] = process.argv.slice(2);
-  if (!['generateOutfit', 'recommendationStream'].includes(name) || !destination) {
-    throw new Error('Usage: node stage-recommendation-artifacts.js <generateOutfit|recommendationStream> <destination> [deploymentMarker]');
+  if (!['generateOutfit', 'recommendationStream', 'processUploadImage'].includes(name) || !destination) {
+    throw new Error('Usage: node stage-recommendation-artifacts.js <generateOutfit|recommendationStream|processUploadImage> <destination> [deploymentMarker]');
   }
   const manifest = name === 'generateOutfit'
     ? stageGenerateOutfit(destination, { deploymentMarker })
-    : stageRecommendationStream(destination, { deploymentMarker });
+    : name === 'recommendationStream'
+      ? stageRecommendationStream(destination, { deploymentMarker })
+      : stageProcessUploadImage(destination, { deploymentMarker });
   console.log(`[recommendation-artifact-stage] name=${name} dependencies=${manifest.runtimeDependencyCount} files=${manifest.files.length}`);
 }
 
@@ -163,7 +193,9 @@ if (require.main === module) {
 
 module.exports = {
   generateOutfitSource,
+  processUploadImageSource,
   recommendationStreamSource,
   stageGenerateOutfit,
+  stageProcessUploadImage,
   stageRecommendationStream,
 };

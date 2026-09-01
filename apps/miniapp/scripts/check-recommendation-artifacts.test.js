@@ -5,8 +5,16 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { checkArtifactContract, checkArtifacts, checkIsolatedRecommendationStreamArtifact } = require('./check-recommendation-artifacts');
-const { stageGenerateOutfit, stageRecommendationStream } = require('./stage-recommendation-artifacts');
+const {
+  checkArtifactContract,
+  checkArtifacts,
+  checkIsolatedRecommendationStreamArtifact,
+} = require('./check-recommendation-artifacts');
+const {
+  stageGenerateOutfit,
+  stageProcessUploadImage,
+  stageRecommendationStream,
+} = require('./stage-recommendation-artifacts');
 
 function stageBoth() {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'd1d-recommendation-artifacts-'));
@@ -101,6 +109,45 @@ test('manifest gate rejects a missing real required nested file', (context) => {
   context.after(() => fs.rmSync(artifacts.parent, { recursive: true, force: true }));
   fs.rmSync(path.join(artifacts.generateOutfit, 'services', 'aestheticCompatibility.js'));
   assert.throws(() => checkArtifactContract('generateOutfit', artifacts.generateOutfit), /manifest integrity failed/);
+});
+
+test('processUploadImage artifact contains and boots its complete local runtime closure', (context) => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'd1d-process-upload-artifact-'));
+  const artifact = path.join(parent, 'processUploadImage');
+  context.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+  stageProcessUploadImage(artifact);
+  const report = checkArtifactContract('processUploadImage', artifact);
+  assert.equal(report.passed, true);
+  assert.equal(report.sourceDependencyCount, 6);
+  assert.equal(report.artifactDependencyCount, report.sourceDependencyCount);
+  assert.deepEqual(report.missingDependencies, []);
+  assert.deepEqual(report.requiredFilesMissing, []);
+  assert.equal(report.isolatedBoot, true);
+});
+
+test('processUploadImage artifact gate fails when wardrobeAssetPipeline is absent', (context) => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'd1d-process-upload-missing-'));
+  const artifact = path.join(parent, 'processUploadImage');
+  context.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+  stageProcessUploadImage(artifact);
+  fs.rmSync(path.join(artifact, 'services', 'wardrobeAssetPipeline.js'));
+  assert.throws(
+    () => checkArtifactContract('processUploadImage', artifact),
+    /manifest integrity failed/,
+  );
+});
+
+test('recommendationStream gate rejects canonical renderer drift', (context) => {
+  const artifacts = stageBoth();
+  context.after(() => fs.rmSync(artifacts.parent, { recursive: true, force: true }));
+  fs.appendFileSync(
+    path.join(artifacts.recommendationStream, 'generateOutfit', 'services', 'recommendationFirstCardRenderer.js'),
+    '\n// stale embedded runtime\n',
+  );
+  assert.throws(
+    () => checkArtifactContract('recommendationStream', artifacts.recommendationStream),
+    /embedded runtime drift.*recommendationFirstCardRenderer\.js/,
+  );
 });
 
 test('HTTP artifact gate fails when its vendored recommendation dependency is removed', (context) => {
