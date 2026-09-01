@@ -16,6 +16,7 @@ const {
   resolveRecommendationCopyJobMisses,
   settleInteractiveRecommendationCopyJob,
 } = require('./recommendationCopyProductionJobV2');
+const { renderFirstCardCanonical } = require('./recommendationFirstCardRenderer');
 
 function fakeDatabase() {
   const collections = new Map(); let transactionTail = Promise.resolve();
@@ -77,6 +78,88 @@ test('all cache hits do not dispatch', async () => {
   for (const entry of jobEntries) await persistValidatedCanonicalCopy(database, { _openid: 'openid-a', rendererVersion: 'renderer-v2' }, entry, { text: `copy-${entry.position}` }, now);
   let calls = 0; const result = await prepareRecommendationCopyJob({ database, openid: 'openid-a', batchId: 'batch-a', rendererVersion: 'renderer-v2', entries: input, dispatch: async () => { calls += 1; } , now });
   assert.equal(calls, 0); assert.equal(result.status, 'ready_cache_hit'); assert.equal(result.initialCopies.length, 3);
+});
+
+test('provider stream validates, persists canonical, and next request is a cache hit', async () => {
+  const database = fakeDatabase();
+  const input = [{
+    position: 0,
+    outfitKey: 'outfit-first-card',
+    renderInputFingerprint: 'fingerprint-first-card',
+    preparedEntry: {
+      plan: { planId: 'plan-first-card', planHash: 'hash-first-card' },
+      input: {
+        planId: 'plan-first-card',
+        expressionMode: 'baseline',
+        garments: ['白衬衫'],
+        primary: null,
+      },
+    },
+  }];
+  const prepared = await prepareRecommendationCopyJob({
+    database,
+    openid: 'openid-first-card',
+    batchId: 'batch-first-card-1',
+    rendererVersion: 'renderer-v2',
+    entries: input,
+    executionMode: 'interactive',
+    now,
+  });
+  let providerCalls = 0;
+  const auditStages = [];
+  const rendered = await renderFirstCardCanonical({
+    entry: prepared.entries[0],
+    rendererConfig: {
+      onAuditStage: (stage, status) => auditStages.push({ stage, status }),
+      xiaodaAI: {
+        execute: async () => {
+          providerCalls += 1;
+          const payload = JSON.stringify({ copies: [{ id: '1', text: '简单日常，白衬衫穿起来很自然。' }] });
+          const frames = [
+            `data: ${JSON.stringify({ choices: [{ delta: { content: payload }, finish_reason: null }] })}\n`,
+            `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n`,
+            'data: [DONE]\n',
+          ];
+          return {
+            status: 200,
+            body: (async function* stream() {
+              for (const frame of frames) yield new TextEncoder().encode(frame);
+            }()),
+          };
+        },
+      },
+    },
+  });
+  assert.equal(rendered.status, 'success');
+  assert.equal(rendered.metadata.providerCalls, 1);
+  assert.equal(rendered.metadata.stream.finishReason, 'stop');
+  assert.equal(rendered.metadata.stream.doneReceived, true);
+  assert.ok(rendered.metadata.stream.firstChunkBytes > 0);
+  assert.ok(rendered.metadata.stream.lastChunkBytes > 0);
+  assert.ok(rendered.metadata.stream.rawLength > 0);
+  assert.equal(rendered.metadata.stream.errorEventCount, 0);
+  assert.equal(providerCalls, 1);
+  assert.deepEqual(auditStages, [
+    { stage: 'PROVIDER_START', status: 'started' },
+    { stage: 'PROVIDER_COMPLETE', status: 'completed' },
+    { stage: 'VALIDATOR_COMPLETE', status: 'accepted' },
+  ]);
+  const job = database._all('recommendation_copy_jobs_v2')[0];
+  await persistValidatedCanonicalCopy(database, job, prepared.entries[0], rendered.copy, now);
+  await settleInteractiveRecommendationCopyJob(database, prepared.jobId, { status: 'SUCCESS' }, now);
+  const next = await prepareRecommendationCopyJob({
+    database,
+    openid: 'openid-first-card',
+    batchId: 'batch-first-card-2',
+    rendererVersion: 'renderer-v2',
+    entries: input,
+    executionMode: 'interactive',
+    now,
+  });
+  assert.equal(next.status, 'ready_cache_hit');
+  assert.equal(next.initialCopies.length, 1);
+  assert.equal(next.initialCopies[0].text, rendered.copy.text);
+  assert.equal(providerCalls, 1);
 });
 
 test('same batch concurrent prepare dispatches once and second joins', async () => {

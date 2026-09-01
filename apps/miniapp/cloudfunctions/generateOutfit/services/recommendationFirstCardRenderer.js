@@ -105,6 +105,16 @@ function now() {
 }
 
 function metadataFrom(summary) {
+  const stream = summary?.stream && typeof summary.stream === 'object' ? {
+    chunkCount: Number(summary.stream.chunkCount || 0),
+    firstChunkBytes: Number(summary.stream.firstChunkBytes || 0),
+    lastChunkBytes: Number(summary.stream.lastChunkBytes || 0),
+    rawLength: Number(summary.stream.rawLength || 0),
+    finishReason: typeof summary.stream.finishReason === 'string' ? summary.stream.finishReason : null,
+    doneReceived: summary.stream.doneReceived === true,
+    parseErrorCount: Number(summary.stream.parseErrorCount || 0),
+    errorEventCount: Number(summary.stream.errorEventCount || 0),
+  } : null;
   return {
     rendererVersion: summary?.version,
     promptVariant: summary?.promptVariant,
@@ -113,6 +123,7 @@ function metadataFrom(summary) {
     planCount: Number(summary?.planCount || 0),
     validatedCount: Number(summary?.validatedCount || 0),
     invalidCount: Number(summary?.invalidCount || 0),
+    ...(stream ? { stream } : {}),
   };
 }
 

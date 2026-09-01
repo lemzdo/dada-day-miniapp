@@ -54,6 +54,71 @@ test('item 1 is delivered before stream completion', async () => {
   assert.deepEqual(seen, ['1']); assert.equal(sawBeforeEnd, true); assert.equal(result.status, 'failed_open'); assert.equal(result.failureCode, 'VOICE_RENDERER_STREAM_INCOMPLETE');
 });
 
+test('AI Core Uint8Array stream decodes complete provider output and terminal metadata', async () => {
+  const input = entries(1);
+  const payload = JSON.stringify({ copies: [{ id: '1', text: '这套简单日常，衣物1搭配很自然。' }] });
+  const frames = [
+    `data: ${JSON.stringify({ choices: [{ delta: { content: payload }, finish_reason: null }] })}\n`,
+    `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { total_tokens: 7 } })}\n`,
+    'data: [DONE]\n',
+  ];
+  const encoded = new TextEncoder().encode(frames.join(''));
+  const multibyteStart = encoded.findIndex((byte) => byte > 0x7f);
+  const chunks = [
+    encoded.slice(0, multibyteStart + 1),
+    encoded.slice(multibyteStart + 1, encoded.length - 5),
+    encoded.slice(encoded.length - 5),
+  ];
+  const body = (async function* stream() {
+    for (const chunk of chunks) yield chunk;
+  }());
+  const result = await renderRecommendationVoiceRendererProductionV2({
+    preparedEntries: input,
+    fetchImpl: async () => ({ status: 200, body }),
+  });
+  assert.equal(result.status, 'completed');
+  assert.equal(result.providerCalls, 1);
+  assert.equal(result.validatedCount, 1);
+  assert.equal(result.usage.total_tokens, 7);
+  assert.equal(result.stream.chunkCount, 3);
+  assert.ok(result.stream.firstChunkBytes > 0);
+  assert.ok(result.stream.lastChunkBytes > 0);
+  assert.equal(result.stream.rawLength, encoded.byteLength);
+  assert.equal(result.stream.finishReason, 'stop');
+  assert.equal(result.stream.doneReceived, true);
+  assert.equal(result.stream.parseErrorCount, 0);
+  assert.equal(result.stream.errorEventCount, 0);
+});
+
+test('provider SSE error event is surfaced with stream diagnostics', async () => {
+  const input = entries(1);
+  const body = (async function* stream() {
+    yield new TextEncoder().encode(`data: ${JSON.stringify({ error: { code: 'provider_stream_error' } })}\n`);
+  }());
+  const result = await renderRecommendationVoiceRendererProductionV2({
+    preparedEntries: input,
+    fetchImpl: async () => ({ status: 200, body }),
+  });
+  assert.equal(result.status, 'failed_open');
+  assert.equal(result.failureCode, 'VOICE_RENDERER_PROVIDER_STREAM_ERROR:provider_stream_error');
+  assert.equal(result.stream.errorEventCount, 1);
+});
+
+test('final SSE frame without newline is flushed through parser and validator', async () => {
+  const input = entries(1);
+  const payload = JSON.stringify({ copies: [{ id: '1', text: '这套简单日常，衣物1搭配很自然。' }] });
+  const body = (async function* stream() {
+    yield new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content: payload }, finish_reason: 'stop' }] })}`);
+  }());
+  const result = await renderRecommendationVoiceRendererProductionV2({
+    preparedEntries: input,
+    fetchImpl: async () => ({ status: 200, body }),
+  });
+  assert.equal(result.status, 'completed');
+  assert.equal(result.validatedCount, 1);
+  assert.equal(result.stream.finishReason, 'stop');
+});
+
 test('invalid item is skipped while later items continue', async () => {
   const input = entries(3); const calls = []; const bad = { copies: [{ id: '1', text: '不合规文案' }, { id: '2', text: '这套简单日常，衣物2搭配很自然。' }, { id: '3', text: '这套简单日常，衣物3搭配很自然。' }] };
   const result = await renderRecommendationVoiceRendererProductionV2({ preparedEntries: input, fetchImpl: provider(input, calls, { response: { status: 200, body: (async function* stream() { yield `data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify(bad) } }] })}\n`; }()) } }) });

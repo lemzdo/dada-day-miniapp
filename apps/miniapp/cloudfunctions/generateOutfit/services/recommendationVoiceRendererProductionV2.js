@@ -1,6 +1,7 @@
 'use strict';
 
 const fetch = require('node-fetch');
+const { TextDecoder } = require('node:util');
 const {
   VOICE_RENDERER_MODEL,
 } = require('./voiceRendererV2Contract');
@@ -84,13 +85,69 @@ function validateProductionCopy(copy, input, allInputs) {
   ));
   return { pass: failures.length === 0, failures: [...new Set(failures)] };
 }
-function parseSseLine(line) { const value = line.startsWith('data:') ? line.slice(5).trim() : ''; if (!value || value === '[DONE]') return null; try { return JSON.parse(value); } catch { return null; } }
+function parseSseLine(line) {
+  const value = line.startsWith('data:') ? line.slice(5).trim() : '';
+  if (!value) return { kind: 'ignored' };
+  if (value === '[DONE]') return { kind: 'done' };
+  try { return { kind: 'event', event: JSON.parse(value) }; } catch { return { kind: 'parse_error' }; }
+}
+function chunkByteLength(chunk) {
+  if (typeof chunk === 'string') return Buffer.byteLength(chunk);
+  if (Buffer.isBuffer(chunk) || ArrayBuffer.isView(chunk)) return chunk.byteLength;
+  if (chunk instanceof ArrayBuffer) return chunk.byteLength;
+  return Buffer.byteLength(String(chunk));
+}
+function decodeStreamChunk(chunk, decoder, decoderState) {
+  if (typeof chunk === 'string') {
+    const prefix = decoderState.active ? decoder.decode() : '';
+    decoderState.active = false;
+    return prefix + chunk;
+  }
+  if (Buffer.isBuffer(chunk) || ArrayBuffer.isView(chunk)) {
+    decoderState.active = true;
+    return decoder.decode(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength), { stream: true });
+  }
+  if (chunk instanceof ArrayBuffer) {
+    decoderState.active = true;
+    return decoder.decode(new Uint8Array(chunk), { stream: true });
+  }
+  return String(chunk);
+}
 async function renderRecommendationVoiceRendererProductionV2({ preparedEntries = [], misses, onValidated = async () => {}, onInvalid = async () => {}, apiKey = process.env.BAILIAN_API_KEY || process.env.DASHSCOPE_API_KEY, baseUrl = process.env.BAILIAN_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1', fetchImpl = fetch, invoke, timeoutMs = 25000 } = {}) {
   const entries = readArray(misses === undefined ? preparedEntries : misses);
   if (entries.length === 0) return { version: PRODUCTION_VERSION, status: 'noop', promptVariant: PROMPT_VARIANT, planCount: 0, providerCalls: 0, requestCount: 0, validatedCount: 0, invalidCount: 0 };
   if (entries.length > 8) throw new Error('VOICE_RENDERER_INPUT_COUNT');
   const normalized = entries.map((entry) => ({ ...entry, renderInputFingerprint: entry.renderInputFingerprint || buildRenderInputFingerprint(entry.input, { model: VOICE_RENDERER_MODEL, modelRouteVersion: PRODUCTION_MODEL_ROUTE_VERSION, generationParameters: GENERATION_PARAMETERS }) }));
   const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), timeoutMs); let response; let raw = ''; let content = ''; const seen = new Set(); const validated = []; const invalid = []; let usage = null;
+  const decoder = new TextDecoder(); const decoderState = { active: false };
+  const stream = { chunkCount: 0, firstChunkBytes: 0, lastChunkBytes: 0, rawLength: 0, finishReason: null, doneReceived: false, parseErrorCount: 0, errorEventCount: 0 };
+  const consumeLine = async (line) => {
+    const parsed = parseSseLine(line);
+    if (parsed.kind === 'ignored') return;
+    if (parsed.kind === 'done') { stream.doneReceived = true; return; }
+    if (parsed.kind === 'parse_error') { stream.parseErrorCount += 1; return; }
+    const event = parsed.event;
+    const finishReason = event?.choices?.[0]?.finish_reason;
+    if (typeof finishReason === 'string' && finishReason) stream.finishReason = finishReason;
+    if (event?.error) {
+      stream.errorEventCount += 1;
+      throw new Error(`VOICE_RENDERER_PROVIDER_STREAM_ERROR:${readText(event.error.code) || 'unknown'}`);
+    }
+    const delta = event?.choices?.[0]?.delta?.content;
+    if (typeof delta === 'string') content += delta;
+    if (event?.usage) usage = event.usage;
+    const copies = extractCompleteCopies(content);
+    for (const copy of copies) {
+      if (seen.has(copy.id)) continue;
+      seen.add(copy.id);
+      const index = Number(copy.id) - 1; const entry = normalized[index];
+      if (!entry || String(index + 1) !== copy.id) { const issue = { copy, error: 'VOICE_RENDERER_OUTPUT_PLAN_BINDING' }; invalid.push(issue); await onInvalid(issue); continue; }
+      const check = validateProductionCopy(copy, entry.input, normalized);
+      if (!check.pass) { const issue = { copy, entry, failures: check.failures }; invalid.push(issue); await onInvalid(issue); continue; }
+      const materialized = { ...copy, planId: entry.plan?.planId || entry.input?.planId, input: entry.input, renderInputFingerprint: entry.renderInputFingerprint };
+      validated.push(materialized); await onValidated(materialized);
+    }
+  };
   try {
     const request = buildProductionRequest(normalized);
     response = invoke
@@ -98,34 +155,23 @@ async function renderRecommendationVoiceRendererProductionV2({ preparedEntries =
       : await fetchImpl(`${baseUrl.replace(/\/$/, '')}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey || ''}` }, body: JSON.stringify(request), signal: controller.signal });
     if (!response || Number(response.status) >= 400) throw new Error(`VOICE_RENDERER_PROVIDER_HTTP:${response?.status || 'unknown'}`);
     for await (const chunk of response.body || []) {
-      raw += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+      const bytes = chunkByteLength(chunk);
+      stream.chunkCount += 1;
+      stream.firstChunkBytes ||= bytes;
+      stream.lastChunkBytes = bytes;
+      stream.rawLength += bytes;
+      raw += decodeStreamChunk(chunk, decoder, decoderState);
       const lines = raw.split(/\r?\n/); raw = lines.pop() || '';
       for (const line of lines) {
-        const event = parseSseLine(line); if (!event) continue;
-        const delta = event.choices?.[0]?.delta?.content; if (typeof delta === 'string') content += delta;
-        if (event.usage) usage = event.usage;
-        const copies = extractCompleteCopies(content);
-        for (const copy of copies) {
-          if (seen.has(copy.id)) continue;
-          seen.add(copy.id);
-          const index = Number(copy.id) - 1; const entry = normalized[index];
-          if (!entry || String(index + 1) !== copy.id) { const issue = { copy, error: 'VOICE_RENDERER_OUTPUT_PLAN_BINDING' }; invalid.push(issue); await onInvalid(issue); continue; }
-          const check = validateProductionCopy(copy, entry.input, normalized);
-          if (!check.pass) { const issue = { copy, entry, failures: check.failures }; invalid.push(issue); await onInvalid(issue); continue; }
-          const materialized = { ...copy, planId: entry.plan?.planId || entry.input?.planId, input: entry.input, renderInputFingerprint: entry.renderInputFingerprint };
-          validated.push(materialized); await onValidated(materialized);
-        }
+        await consumeLine(line);
       }
     }
-    if (raw) {
-      const event = parseSseLine(raw); const delta = event?.choices?.[0]?.delta?.content;
-      if (typeof delta === 'string') content += delta;
-      if (event?.usage) usage = event.usage;
-    }
+    if (decoderState.active) raw += decoder.decode();
+    if (raw) await consumeLine(raw);
   } catch (error) {
-    return { version: PRODUCTION_VERSION, status: 'failed_open', promptVariant: PROMPT_VARIANT, planCount: normalized.length, providerCalls: 1, requestCount: 1, validatedCount: validated.length, invalidCount: invalid.length, failureCode: error.name === 'AbortError' ? 'VOICE_RENDERER_TIMEOUT' : String(error.message || error) };
+    return { version: PRODUCTION_VERSION, status: 'failed_open', promptVariant: PROMPT_VARIANT, planCount: normalized.length, providerCalls: 1, requestCount: 1, validatedCount: validated.length, invalidCount: invalid.length, stream, failureCode: error.name === 'AbortError' ? 'VOICE_RENDERER_TIMEOUT' : String(error.message || error) };
   } finally { clearTimeout(timer); }
-  return { version: PRODUCTION_VERSION, status: validated.length === normalized.length ? 'completed' : 'failed_open', promptVariant: PROMPT_VARIANT, planCount: normalized.length, providerCalls: 1, requestCount: 1, validatedCount: validated.length, invalidCount: invalid.length, validated, invalid, usage, ...(validated.length === normalized.length ? {} : { failureCode: 'VOICE_RENDERER_STREAM_INCOMPLETE' }) };
+  return { version: PRODUCTION_VERSION, status: validated.length === normalized.length ? 'completed' : 'failed_open', promptVariant: PROMPT_VARIANT, planCount: normalized.length, providerCalls: 1, requestCount: 1, validatedCount: validated.length, invalidCount: invalid.length, validated, invalid, usage, stream, ...(validated.length === normalized.length ? {} : { failureCode: 'VOICE_RENDERER_STREAM_INCOMPLETE' }) };
 }
 
 function buildProductionRendererEntry(plan, recommendation, position, outfitKey) {
