@@ -16,7 +16,9 @@
     "cloud:deploy:test": "node --test apps/miniapp/scripts/cloud-deploy.test.js apps/miniapp/scripts/cloud-artifact-contract.test.js apps/miniapp/scripts/check-recommendation-artifacts.test.js apps/miniapp/scripts/check-generate-outfit-package.test.js apps/miniapp/scripts/deployment-contract-lite.test.js",
     "devtools:health": "node apps/miniapp/scripts/devtools-acceptance.js health",
     "today:hot:accept": "node apps/miniapp/scripts/devtools-acceptance.js today-hot",
-    "devtools:acceptance:test": "node --test apps/miniapp/scripts/devtools-acceptance.test.js"
+    "devtools:acceptance:test": "node --test apps/miniapp/scripts/devtools-acceptance.test.js",
+    "first-card:smoke": "node apps/miniapp/scripts/first-card-ai-smoke/runner.js --live",
+    "first-card:smoke:test": "node --test apps/miniapp/scripts/first-card-ai-smoke/runner.test.js"
   },
   "devDependencies": {
     "@cloudbase/cli": "3.8.1",
