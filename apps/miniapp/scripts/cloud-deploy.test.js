@@ -19,7 +19,7 @@ const {
 } = require('./stage-recommendation-artifacts');
 
 test('all stabilized functions use one formal deployment contract with assembler adapters', (context) => {
-  assert.equal(CONTRACT_VERSION, 'cloudbase-artifact-root-v1');
+  assert.equal(CONTRACT_VERSION, 'cloudbase-deployment-contract-v2');
   assert.notEqual(adapters.generateOutfit.assemble, adapters.recommendationStream.assemble);
   assert.notEqual(adapters.processUploadImage.assemble, adapters.generateOutfit.assemble);
 
@@ -30,10 +30,12 @@ test('all stabilized functions use one formal deployment contract with assembler
     const calls = [];
     const runner = (_tcbCli, args, cwd) => {
       calls.push({ args, cwd });
-      if (args[1] === 'deploy') {
+      if (args[1] === 'code' && args[2] === 'update') {
         uploadedArtifactRoot = cwd;
       } else if (args[1] === 'code' && args[2] === 'download') {
         fs.cpSync(uploadedArtifactRoot, args[4], { recursive: true });
+      } else if (args[1] === 'list') {
+        return { stdout: JSON.stringify({ data: [{ name, status: 'Deployment completed' }] }, null, 2) };
       }
     };
     const report = deployFunction(name, {
@@ -41,12 +43,13 @@ test('all stabilized functions use one formal deployment contract with assembler
       runner,
       tcbCli: 'mock-tcb',
       workRoot,
+      verifyInstalledDependencies: false, // Fake uploader has no CloudBase dependency installation.
     });
     assert.equal(report.localGate.passed, true);
     assert.equal(report.remoteGate.passed, true);
-    assert.equal(calls.length, 2);
+    assert.equal(calls.length, 3);
     assert.equal(calls[0].cwd, report.artifactRoot);
-    assert.deepEqual(calls[0].args.slice(0, 3), ['fn', 'deploy', name]);
+    assert.deepEqual(calls[0].args.slice(0, 4), ['fn', 'code', 'update', name]);
     assert.ok(calls[0].args.includes('--dir'));
     assert.equal(calls[0].args[calls[0].args.indexOf('--dir') + 1], '.');
   }

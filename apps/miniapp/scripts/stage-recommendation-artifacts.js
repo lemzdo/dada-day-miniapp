@@ -103,9 +103,9 @@ function stageVendorPackages(destination) {
 function stageGarmentAssetsPackage(destination) {
   const garmentAssetsSource = path.join(repoRoot, 'packages', 'garment-assets');
   if (!fs.existsSync(path.join(garmentAssetsSource, 'package.json'))) throw new Error(`Shared garment assets package is missing: ${garmentAssetsSource}`);
-  copyDirectory(garmentAssetsSource, path.join(destination, 'vendor', 'garment-assets'), (sourcePath) => {
-    return !sourcePath.endsWith('.test.js') && !sourcePath.split(path.sep).includes('node_modules');
-  });
+  const vendorDestination = path.join(destination, 'vendor', 'garment-assets');
+  copyFile(path.join(garmentAssetsSource, 'package.json'), path.join(vendorDestination, 'package.json'));
+  copyDirectory(path.join(garmentAssetsSource, 'src'), path.join(vendorDestination, 'src'), (sourcePath) => !sourcePath.endsWith('.test.js'));
 }
 
 function stageGenerateOutfit(destination, { deploymentMarker = '', reset = true } = {}) {

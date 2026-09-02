@@ -1,0 +1,50 @@
+{
+  "version": "cloudbase-deployment-contract-v2",
+  "sharedDirectories": ["shared"],
+  "remoteOnlyExclusions": {
+    "voiceRendererLatencyLab": "Historical latency experiment; no canonical source directory, not a production function. Never deploy from a downloaded artifact."
+  },
+  "functions": {
+    "archiveUserClothingMaterial": { "production": true, "kind": "event" },
+    "backfillClothesThumbnails": { "production": true, "kind": "event", "vendors": ["garment-assets"], "dynamicProfile": "thumbnail", "requiredFiles": ["shared/thumbnail.js"] },
+    "cleanupDeletedClothes": { "production": true, "kind": "event", "requiredFiles": ["config.json"] },
+    "confirmClothesDrafts": { "production": true, "kind": "event", "requiredFiles": ["aestheticFeatures.js", "services/wardrobeCapacity.js", "services/capacityGate.js", "shared/sceneEligibilityFacts.js"] },
+    "createUploadBatch": { "production": true, "kind": "event" },
+    "createUploadImage": { "production": true, "kind": "event" },
+    "createUserClothingMaterial": { "production": true, "kind": "event" },
+    "createUserClothingSubcategory": { "production": true, "kind": "event" },
+    "deleteClothes": { "production": true, "kind": "event" },
+    "discardClothesDraft": { "production": true, "kind": "event", "requiredFiles": ["services/discardClothesDraftCore.js"] },
+    "discardUploadBatch": { "production": true, "kind": "event" },
+    "generateOutfit": { "production": true, "kind": "event", "legacyAdapter": "stageGenerateOutfit", "vendors": ["ai-core", "garment-assets"], "dynamicProfile": "recommendation", "requiredFiles": ["runtime/recommendationCore.js", "services/aestheticCompatibility.js"] },
+    "getUserClothingMaterials": { "production": true, "kind": "event" },
+    "getUserClothingSubcategories": { "production": true, "kind": "event" },
+    "getWardrobe": { "production": true, "kind": "event", "requiredFiles": ["wardrobeCapacity.js", "aestheticFeatures.js"] },
+    "getWeather": { "production": true, "kind": "event" },
+    "httpFunctionSmokeLab": { "production": false, "kind": "http-server", "requiredFiles": ["scf_bootstrap"] },
+    "login": { "production": true, "kind": "event", "requiredFiles": ["wardrobeCapacity.js"] },
+    "processUploadImage": { "production": true, "kind": "event", "legacyAdapter": "stageProcessUploadImage", "vendors": ["garment-assets"], "dynamicProfile": "thumbnail", "requiredFiles": ["services/wardrobeAssetPipeline.js", "services/aestheticFeatures.js", "services/thumbnail.js", "shared/thumbnail.js", "shared/segmentationIntegrity.js"] },
+    "recognizeClothAttributes": { "production": true, "kind": "event", "requiredFiles": ["aestheticFeatures.js"] },
+    "recommendationStream": { "production": true, "kind": "http-handler", "legacyAdapter": "stageRecommendationStream", "nestedFunction": "generateOutfit", "requiredFiles": ["scf_bootstrap", "generateOutfit/index.js", "generateOutfit/runtime/recommendationCore.js", "generateOutfit/services/aestheticCompatibility.js", "generateOutfit/vendor/ai-core/package.json", "generateOutfit/vendor/garment-assets/package.json"] },
+    "recommendationTransportLab": { "production": false, "kind": "http-server", "requiredFiles": ["scf_bootstrap"] },
+    "refreshLearnedStyleProfile": { "production": true, "kind": "event", "requiredFiles": ["profilePersistence.js", "profileBuilder.js"] },
+    "segmentClothImage": { "production": true, "kind": "event", "requiredFiles": ["shared/segmentationIntegrity.js"] },
+    "submitFeedback": { "production": true, "kind": "event" },
+    "trackOutfitBehaviorEvents": { "production": true, "kind": "event", "requiredFiles": ["eventSchema.js"] },
+    "updateClothes": { "production": true, "kind": "event" },
+    "updateUserProfile": { "production": true, "kind": "event" }
+  },
+  "dynamicProfiles": {
+    "thumbnail": [
+      { "importer": "shared/thumbnail.js", "expression": "['..', 'vendor', 'garment-assets'].join('/')", "targets": ["../vendor/garment-assets"] }
+    ],
+    "recommendation": [
+      { "importer": "services/deployPackageResolver.js", "expression": "packageName", "targets": ["@d1d/ai-core", "@d1d/garment-assets"] },
+      { "importer": "services/deployPackageResolver.js", "expression": "vendorParts.join('/')", "targets": ["../vendor/ai-core", "../vendor/garment-assets"] }
+    ]
+  },
+  "packageResolverCalls": [
+    { "importer": "services/garmentAssetAdapter.js", "package": "@d1d/garment-assets", "fallback": "../vendor/garment-assets" },
+    { "importer": "services/recommendationFirstCardRenderer.js", "package": "@d1d/ai-core", "fallback": "../vendor/ai-core" }
+  ]
+}

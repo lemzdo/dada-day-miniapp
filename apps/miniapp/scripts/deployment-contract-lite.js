@@ -6,11 +6,7 @@ const { adapters, SUPPORTED_FUNCTIONS } = require('./cloud-deploy');
 const { collectDeployableFiles } = require('./check-generate-outfit-package');
 
 const cloudfunctionsRoot = path.resolve(__dirname, '..', 'cloudfunctions');
-const AUDITED_FUNCTIONS = Object.freeze([
-  Object.freeze({ name: 'generateOutfit', nestedCopyRisk: false }),
-  Object.freeze({ name: 'recommendationStream', nestedCopyRisk: true }),
-  Object.freeze({ name: 'processUploadImage', nestedCopyRisk: false }),
-]);
+const AUDITED_FUNCTIONS = Object.freeze(SUPPORTED_FUNCTIONS.map((name) => Object.freeze({ name, nestedCopyRisk: adapters[name].nestedCopyRisk })));
 const DYNAMIC_REQUIRE_RE = /\brequire\s*\(\s*(?!['"])([^)\r\n]+)\)/g;
 
 function findDynamicRequireLocations(sourceRoot) {
