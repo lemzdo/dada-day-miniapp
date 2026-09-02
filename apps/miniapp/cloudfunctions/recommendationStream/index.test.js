@@ -103,6 +103,33 @@ test('orchestrator cache hit is authoritative in recommendation.ready without a 
   assert.equal(output[0].data.response.light.cards[0].todayReason, '缓存文案。');
 });
 
+test('failure envelopes remain server-side for both response and tail outcomes', async () => {
+  async function capture(failure) {
+    const diagnostics = { auditId: 'audit-private', firstCardAudit: { failure } };
+    const handler = stream.createRecommendationStreamHandler({
+      createDiagnostics: () => diagnostics,
+      runRuntime: async (_input, _context, hooks) => {
+        const outcome = { status: 'FAIL', reason: 'PROVIDER_FAIL', ...(failure ? { failure } : {}) };
+        await hooks.onRecommendationReady({ batchId: 'batch-1', response: { batch: { batchId: 'batch-1' } } });
+        return { batchId: 'batch-1', aiDone: Promise.resolve(outcome), tailDone: Promise.resolve(outcome) };
+      },
+    });
+    const res = response();
+    await handler(request({ streamGeneration: 'generation-fixed' }), res);
+    return { headers: res.headers, chunks: res.chunks, ended: res.writableEnded };
+  }
+  const baseline = await capture(null);
+  const observed = await capture({
+    schemaVersion: 'first-card-runtime-observability/v1',
+    failureId: 'failure-private',
+    code: 'PROVIDER_HTTP_ERROR',
+    provider: { httpStatus: 401, requestId: 'request-private', errorCode: 'InvalidApiKey' },
+  });
+  assert.deepEqual(observed, baseline);
+  assert.equal(observed.ended, true);
+  assert.doesNotMatch(observed.chunks.join(''), /failure-private|request-private|InvalidApiKey/);
+});
+
 test('partial 1/3/7 and exhausted 0 keep their exact recommendation counts', async () => {
   for (const count of [1, 3, 7, 0]) {
     let rendererCalls = 0;

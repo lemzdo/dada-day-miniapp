@@ -3,6 +3,8 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { runRecommendationOrchestrator } = require('./recommendationOrchestrator');
+const { renderFirstCardCanonical } = require('../services/recommendationFirstCardRenderer');
+const { createXiaodaAI, createFailureEnvelope } = require('@d1d/ai-core');
 
 test('orchestrator announces core before ready and does not await renderer', async () => {
   const events = [];
@@ -485,4 +487,153 @@ test('deadline summary distinguishes provider completion from validator completi
   assert.equal(diagnostics.firstCardAudit.summary.validated, false);
   release({ status: 'failure', failureType: 'VALIDATOR_FAIL' });
   await new Promise((resolve) => setImmediate(resolve));
+});
+
+test('failureId is stable within an attempt and distinct across attempts', async () => {
+  const failure = createFailureEnvelope(new Error('rate limited'), { failureId: 'attempt-1-failure' }, {
+    stage: 'http_response', code: 'PROVIDER_HTTP_ERROR',
+    retryability: 'retryable', providerIssue: 'yes', businessRejected: 'no', deadline: { causedFailure: 'no', source: null },
+    provider: { httpStatus: 429 },
+  });
+  const context = interactiveContext({
+    context: {
+      diagnostics: { stageLogger: () => { throw new Error('logger must be fail-open'); } },
+      renderFirstCardCanonical: async () => ({ status: 'failure', failureType: 'PROVIDER_FAIL', failure }),
+    },
+  });
+  const first = await runRecommendationOrchestrator({}, context);
+  assert.equal(first.firstCardAi.failure.failureId, failure.failureId);
+  await first.tailDone;
+  assert.equal(first.firstCardAi.failure.failureId, failure.failureId);
+
+  const secondFailure = { ...failure, failureId: 'attempt-2-failure' };
+  const second = await runRecommendationOrchestrator({}, interactiveContext({
+    context: {
+      renderFirstCardCanonical: async () => ({ status: 'failure', failureType: 'PROVIDER_FAIL', failure: secondFailure }),
+    },
+  }));
+  assert.notEqual(first.firstCardAi.failure.failureId, second.firstCardAi.failure.failureId);
+});
+
+test('real Core to Renderer to Orchestrator preserves HTTP 429 failure evidence', async () => {
+  const logs = [];
+  const requests = [];
+  const ai = createXiaodaAI({ authLookup: 'secret', fetch: async (url, options) => {
+    requests.push({ url, options });
+    return {
+    ok: false, status: 429,
+    headers: { get: () => 'request-429' },
+    text: async () => JSON.stringify({ error: { code: 'Throttling.RateQuota' } }),
+    };
+  } });
+  const context = interactiveContext({
+    firstCardInteractive: { entry: { preparedEntry: { plan: { planId: 'plan-1' }, input: { planId: 'plan-1', expressionMode: 'baseline', garments: ['白衬衫'], primary: null } } } },
+    context: {
+      diagnostics: { auditId: 'audit-chain', stageLogger: (name, value) => logs.push({ name, value }) },
+      renderFirstCardCanonical: ({ entry, rendererConfig }) => renderFirstCardCanonical({ entry, rendererConfig: { ...rendererConfig, xiaodaAI: ai } }),
+    },
+  });
+  const result = await runRecommendationOrchestrator({}, context);
+  await result.tailDone;
+  const failure = result.firstCardAi.failure;
+  assert.equal(failure.code, 'PROVIDER_HTTP_ERROR');
+  assert.equal(failure.provider.httpStatus, 429);
+  assert.equal(failure.provider.requestId, 'request-429');
+  assert.equal(failure.provider.errorCode, 'Throttling.RateQuota');
+  assert.ok(failure.failureId);
+  assert.equal(failure.auditId, 'audit-chain');
+  assert.equal(failure.stage, 'http_response');
+  assert.equal(failure.retryability, 'retryable');
+  assert.equal(failure.providerIssue, 'yes');
+  assert.equal(failure.businessRejected, 'no');
+  assert.equal(failure.deadline.causedFailure, 'no');
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].options.method, 'POST');
+  const correlated = logs.filter((log) => log.value.failure);
+  assert.ok(correlated.some((log) => log.value.stage === 'PROVIDER_COMPLETE'));
+  assert.ok(correlated.some((log) => log.value.stage === 'STREAM_COMPLETE'));
+  assert.ok(correlated.some((log) => log.value.stage === 'EXECUTION_COMPLETE'));
+  assert.ok(correlated.some((log) => log.name === '[RecommendationAuditSummary]'));
+  assert.ok(correlated.every((log) => log.value.failure.failureId === failure.failureId));
+  assert.ok(correlated.every((log) => log.value.failure.attemptId === failure.attemptId));
+});
+
+for (const expireTail of [false, true]) test(`response deadline then actual provider failure (tail wait expired=${expireTail})`, async () => {
+  const logs = [];
+  const retryInputs = [];
+  let release;
+  let calls = 0;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const ai = createXiaodaAI({ authLookup: 'test-key', fetch: async () => {
+    calls += 1;
+    await gate;
+    return { ok: false, status: 503, headers: { get: () => 'late-request' }, text: async () => JSON.stringify({ error: { code: 'ServiceUnavailable' } }) };
+  } });
+  const diagnostics = { auditId: 'tail-audit', stageLogger: (name, value) => logs.push({ name, value }) };
+  const context = interactiveContext({
+    firstCardInteractive: {
+      entry: { preparedEntry: { plan: { planId: 'plan-1' }, input: { expressionMode: 'baseline', garments: ['白衬衫'], primary: null } } },
+      markCopyJobRetryable: async (input) => retryInputs.push(input),
+    },
+    context: {
+      diagnostics, handlerOrigin: process.hrtime.bigint() - 2200n * 1000000n,
+      firstCardTailTimeoutMs: expireTail ? 10 : 1000,
+      renderFirstCardCanonical: ({ entry, rendererConfig }) => renderFirstCardCanonical({ entry, rendererConfig: { ...rendererConfig, xiaodaAI: ai } }),
+    },
+  });
+  const result = await runRecommendationOrchestrator({}, context);
+  assert.equal(result.firstCardAi.status, 'TIMEOUT');
+  assert.equal(result.response.light.cards[0].todayReason, 'safe');
+  const responseSnapshot = diagnostics.firstCardAudit.responseSummary;
+  assert.equal(responseSnapshot.responseDeadlineReached, true);
+  assert.equal(responseSnapshot.executionOutcome, 'running');
+  assert.equal(responseSnapshot.failure, null);
+  if (expireTail) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal((await result.tailDone).status, 'TAIL_TIMEOUT');
+    assert.equal(diagnostics.firstCardAudit.summary.tailWaitExpired, true);
+    assert.equal(diagnostics.firstCardAudit.summary.failure, null);
+  }
+  release();
+  if (expireTail) await new Promise((resolve) => setImmediate(resolve));
+  else assert.equal((await result.tailDone).status, 'FAIL');
+  const final = diagnostics.firstCardAudit.summary;
+  assert.equal(final.executionOutcome, 'failed');
+  assert.equal(final.failure.provider.httpStatus, 503);
+  assert.equal(final.failure.deadline.causedFailure, 'no');
+  assert.equal(final.responseDeadlineReached, true);
+  assert.equal(final.tailWaitExpired, expireTail);
+  assert.equal(responseSnapshot.failure, null, 'response-time snapshot must not mutate');
+  assert.equal(responseSnapshot.executionOutcome, 'running');
+  assert.equal(calls, 1);
+  const ids = new Set(logs.filter((log) => log.value.failure).map((log) => log.value.failure.failureId));
+  assert.deepEqual([...ids], [final.failure.failureId]);
+  assert.ok(retryInputs.every((input) => !input.failure && !input.result?.failure));
+});
+
+test('pre-admission exhaustion allocates identity only when tail materializes', async () => {
+  let materialized;
+  const diagnostics = { auditId: 'pre-admission-audit', stageLogger: () => {} };
+  const context = interactiveContext({
+    firstCardInteractive: {
+      materializeFirstCard: async (options) => {
+        materialized = options;
+        const failure = createFailureEnvelope(new Error('rejected'), options.failureContext, {
+          stage: 'validation', code: 'VALIDATION_REJECTED', providerIssue: 'no', businessRejected: 'yes', deadline: { causedFailure: 'no', source: null },
+        });
+        options.onAuditStage('EXECUTION_COMPLETE', 'failed', { failure });
+        return { status: 'FAIL', reason: 'VALIDATOR_FAIL', failure };
+      },
+    },
+    context: { diagnostics, handlerOrigin: process.hrtime.bigint() - 2301n * 1000000n },
+  });
+  const result = await runRecommendationOrchestrator({}, context);
+  await result.tailDone;
+  assert.equal(diagnostics.firstCardAudit.responseSummary.executionOutcome, 'not_started');
+  assert.equal(diagnostics.firstCardAudit.responseSummary.failure, null);
+  assert.equal(typeof materialized.attemptId, 'string');
+  assert.equal(materialized.attemptId, materialized.failureContext.attemptId);
+  assert.equal(diagnostics.firstCardAudit.summary.failure.attemptId, materialized.attemptId);
+  assert.equal(diagnostics.firstCardAudit.summary.failure.auditId, 'pre-admission-audit');
+  assert.equal(diagnostics.firstCardAudit.summary.failure.deadline.causedFailure, 'no');
 });

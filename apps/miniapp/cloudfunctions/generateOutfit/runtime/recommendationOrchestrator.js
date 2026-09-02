@@ -4,6 +4,7 @@ const DEFAULT_AI_WINDOW_MS = 6000;
 const SERVER_RESPONSE_DEADLINE_MS = 2300;
 const SERVER_TAIL_TIMEOUT_MS = 6000;
 const { normalizeInput, runRecommendationCore } = require('./recommendationCore');
+const { createFailureEnvelope, getFailure, sanitizeFailure } = require('../services/firstCardObservability');
 
 function asPromise(value) {
   return Promise.resolve(value);
@@ -40,6 +41,28 @@ function setDiagnostic(context, key, value) {
   void safeCall(context?.onTelemetry, { key, value: normalized });
 }
 
+function newAttemptId() {
+  try { return globalThis.crypto?.randomUUID?.() || `attempt-${Date.now()}-${Math.random().toString(16).slice(2)}`; } catch { return `attempt-${Date.now()}`; }
+}
+
+function failureFor(context, error, overrides = {}) {
+  try {
+    return createFailureEnvelope(error, {
+      auditId: context?.diagnostics?.auditId || null,
+      batchId: context?.diagnostics?.batchId || null,
+      attemptId: context?.attemptId || null,
+      handlerStartedAt: context?.failureHandlerStartedAt,
+    }, overrides);
+  } catch { return null; }
+}
+
+function logAudit(context, label, value) {
+  try {
+    const result = (context?.diagnostics?.stageLogger || console.log)(label, value);
+    if (result && typeof result.catch === 'function') result.catch(() => {});
+  } catch { /* Logging cannot fail a recommendation. */ }
+}
+
 // Narrow, request-correlated audit for the interactive first-card path.  This
 // deliberately has no effect on scheduling or values used by the runtime.
 function auditStage(context, stage, status = 'completed', extra = {}) {
@@ -52,17 +75,27 @@ function auditStage(context, stage, status = 'completed', extra = {}) {
   const remaining = typeof deadlineAt === 'bigint'
     ? Math.max(0, Number(deadlineAt - now) / 1e6)
     : null;
+  const safeFailure = sanitizeFailure(extra?.failure, { auditId: diagnostics.auditId, attemptId: context.attemptId, batchId: diagnostics.batchId });
   const entry = {
     auditId: diagnostics.auditId || null,
     stage,
     elapsedFromHandlerMs: elapsed === null ? null : Math.round(elapsed * 1000) / 1000,
     remainingDeadlineMs: remaining === null ? null : Math.round(remaining * 1000) / 1000,
     status,
-    ...extra,
+    ...(safeFailure ? { failure: safeFailure } : {}),
+    ...(typeof extra?.attemptId === 'string' && /^[\w.-]+$/.test(extra.attemptId) ? { attemptId: extra.attemptId.slice(0, 128) } : {}),
   };
-  diagnostics.firstCardAudit = diagnostics.firstCardAudit || { stages: [], summary: null };
+  diagnostics.firstCardAudit = diagnostics.firstCardAudit || { stages: [], summary: null, executionOutcome: 'not_started' };
+  if (safeFailure) {
+    diagnostics.firstCardAudit.failure = safeFailure;
+    diagnostics.firstCardAudit.executionOutcome = 'failed';
+  } else if (stage === 'FIRST_CARD_AI_ADMITTED' && status === 'admitted') {
+    diagnostics.firstCardAudit.executionOutcome = 'running';
+  } else if (stage === 'EXECUTION_COMPLETE' && status === 'succeeded') {
+    diagnostics.firstCardAudit.executionOutcome = 'succeeded';
+  }
   diagnostics.firstCardAudit.stages.push(entry);
-  try { (diagnostics.stageLogger || console.log)('[RecommendationAudit]', entry); } catch { /* fail-open */ }
+  logAudit(context, '[RecommendationAudit]', entry);
 }
 
 function deadlineReasonAt(audit) {
@@ -93,12 +126,17 @@ function auditSummary(context, extra = {}) {
     firstCardAiStarted: has('FIRST_CARD_AI_ADMITTED'),
     providerCalled: has('PROVIDER_START'),
     validated: has('VALIDATOR_COMPLETE') && audit.stages.some((entry) => entry.stage === 'VALIDATOR_COMPLETE' && entry.status === 'accepted'),
-    persisted: has('CANONICAL_PERSISTED'),
+    persisted: audit.stages.some((entry) => entry.stage === 'CANONICAL_PERSISTED' && ['completed', 'tail'].includes(entry.status)),
     backgroundDispatched: backgroundAccepted,
     elapsedBeforeAiStartMs: ai?.elapsedFromHandlerMs ?? null,
     providerDurationMs: providerStart && providerComplete ? Math.max(0, providerComplete.elapsedFromHandlerMs - providerStart.elapsedFromHandlerMs) : null,
     remainingAtAiStartMs: ai?.remainingDeadlineMs ?? null,
     deadlineReason: extra.deadlineReason || audit.deadlineReason || null,
+    responseDeadlineReached: diagnostics.deadlineReached != null || audit.deadlineReason != null,
+    tailWaitExpired: audit.tailWaitExpired === true,
+    executionOutcome: audit.executionOutcome || 'not_started',
+    failure: sanitizeFailure(audit.failure),
+    snapshot: extra.snapshot || 'response',
     stageStatus: Object.fromEntries([
       'HANDLER_ENTRY', 'CORE_READY', 'NARRATIVE_PLAN_READY', 'CACHE_LOOKUP_DONE',
       'FIRST_CARD_AI_ADMITTED', 'PROVIDER_START', 'PROVIDER_COMPLETE',
@@ -107,12 +145,21 @@ function auditSummary(context, extra = {}) {
     ].map((stage) => [stage, has(stage) ? 'occurred' : 'not_occurred'])),
   };
   diagnostics.firstCardAudit.summary = summary;
-  try { (diagnostics.stageLogger || console.log)('[RecommendationAuditSummary]', summary); } catch { /* fail-open */ }
+  if (summary.snapshot === 'response' && !audit.responseSummary) diagnostics.firstCardAudit.responseSummary = summary;
+  logAudit(context, '[RecommendationAuditSummary]', summary);
   return summary;
 }
 
 function elapsedMs(origin) {
   return Number(monotonicNow() - origin) / 1e6;
+}
+
+function recordExecution(context, status, failure) {
+  const audit = context.diagnostics?.firstCardAudit;
+  const alreadyRecorded = audit?.stages.some((entry) => entry.stage === 'EXECUTION_COMPLETE'
+    && entry.attemptId === context.attemptId && entry.status === status);
+  if (!alreadyRecorded) auditStage(context, 'EXECUTION_COMPLETE', status, { attemptId: context.attemptId, failure });
+  if (audit?.responseSummary) auditSummary(context, { snapshot: 'execution' });
 }
 
 async function runRecommendationOrchestrator(input = {}, context = {}, lifecycleHooks = {}) {
@@ -121,6 +168,7 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
   const startedAt = Date.now();
   const handlerOrigin = typeof context.handlerOrigin === 'bigint' ? context.handlerOrigin : monotonicNow();
   context.handlerOrigin = handlerOrigin;
+  context.failureHandlerStartedAt = Date.now() - elapsedMs(handlerOrigin);
   const deadlineAt = handlerOrigin + globalThis.BigInt(SERVER_RESPONSE_DEADLINE_MS) * 1000000n;
   context.deadlineAt = deadlineAt;
   auditStage(context, 'HANDLER_ENTRY', 'entered');
@@ -192,13 +240,14 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
     let timer;
     const deadlinePromise = new Promise((resolve) => {
       timer = setTimeout(() => {
-        auditStage(context, 'DEADLINE_REACHED', 'timeout');
+        auditStage(context, 'DEADLINE_REACHED', 'timeout', { attemptId: context.attemptId });
         if (context?.diagnostics?.firstCardAudit) {
           context.diagnostics.firstCardAudit.deadlineReason = deadlineReasonAt(
             context.diagnostics.firstCardAudit,
           );
         }
         setDiagnostic(context, 'deadlineReached', elapsedMs(handlerOrigin));
+        if (context?.diagnostics?.firstCardAudit) context.diagnostics.firstCardAudit.responseDeadlineReached = true;
         setDiagnostic(context, 'FIRST_CARD_AI_RESULT', 'TIMEOUT');
         resolve({ status: 'TIMEOUT' });
       }, remainingMs);
@@ -245,7 +294,9 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
           );
         }
       } catch (error) {
-        outcome = { status: 'FAIL', reason: 'PERSIST_FAIL', error };
+        const failure = failureFor(context, error, { stage: 'persistence', code: 'PERSISTENCE_FAILED' });
+        auditStage(context, 'CANONICAL_PERSISTED', 'failed', { attemptId: context.attemptId, failure });
+        outcome = { status: 'FAIL', reason: 'PERSIST_FAIL', error, failure };
       }
     }
     // A first-card timeout is a response barrier, not an AI cancellation point.
@@ -303,35 +354,65 @@ async function persistAndCompleteFirstCard(interactive, copy) {
 
 async function markFirstCardRetryable(interactive, outcome) {
   if (typeof interactive.markCopyJobRetryable !== 'function') return;
-  try { await interactive.markCopyJobRetryable(outcome); } catch { /* recovery state is fail-open */ }
+  // Envelopes are diagnostic only; retain the pre-contract durable-job input.
+  const legacyOutcome = { ...outcome };
+  delete legacyOutcome.failure;
+  if (legacyOutcome.result && typeof legacyOutcome.result === 'object') {
+    legacyOutcome.result = { ...legacyOutcome.result };
+    delete legacyOutcome.result.failure;
+  }
+  try { await interactive.markCopyJobRetryable(legacyOutcome); } catch { /* recovery state is fail-open */ }
 }
 
 async function settleFirstCardTail({ cardPromise, persistPromise, interactive, context }) {
   const tailTimeoutMs = Math.max(1, Number(context.firstCardTailTimeoutMs) || SERVER_TAIL_TIMEOUT_MS);
   let tailOpen = true;
+  let tailFailureStage = 'runtime';
   let timer;
   const timeout = new Promise((resolve) => {
     timer = setTimeout(() => {
       tailOpen = false;
+      if (context?.diagnostics) context.diagnostics.firstCardAudit = { ...(context.diagnostics.firstCardAudit || {}), tailWaitExpired: true };
       resolve({ status: 'TAIL_TIMEOUT', reason: 'TAIL_TIMEOUT' });
     }, tailTimeoutMs);
     timer.unref?.();
   });
   const work = (async () => {
     let late = await cardPromise;
-    if (!tailOpen) return { status: 'TAIL_TIMEOUT', reason: 'TAIL_TIMEOUT' };
+    if (!tailOpen) {
+      if (late?.failure || late?.result?.failure) auditStage(context, 'TAIL_COMPLETE', 'failed', { failure: late.failure || late.result.failure });
+      auditSummary(context, { snapshot: 'execution' });
+      return { status: 'TAIL_TIMEOUT', reason: 'TAIL_TIMEOUT' };
+    }
     // A provider that was already admitted must never be started a second
     // time. Materialization is only valid for the explicit pre-admission case.
     if (late?.status === 'TIMEOUT'
       && late.reason === 'PRE_AI_EXHAUSTION'
       && typeof interactive.materializeFirstCard === 'function') {
+      const attemptId = newAttemptId();
+      context.attemptId = attemptId;
+      auditStage(context, 'FIRST_CARD_AI_ADMITTED', 'admitted', { attemptId });
       late = await interactive.materializeFirstCard({
         timeoutMs: tailTimeoutMs,
-        onAuditStage: (stage, status) => auditStage(context, stage, status),
+        attemptId,
+        failureContext: {
+          attemptId,
+          auditId: context.diagnostics?.auditId || null,
+          batchId: context.diagnostics?.batchId || null,
+          handlerStartedAt: context.failureHandlerStartedAt,
+        },
+        onAuditStage: (stage, status, extra) => auditStage(context, stage, status, { attemptId, failure: extra?.failure }),
       });
     }
-    if (!tailOpen) return { status: 'TAIL_TIMEOUT', reason: 'TAIL_TIMEOUT' };
+    if (late?.status === 'FAIL' && !late.failure) late = { ...late, failure: failureFor(context, late.error || late, { stage: 'runtime', code: 'RUNTIME_FAILED' }) };
+    if (late?.status === 'SUCCESS' && context.diagnostics?.firstCardAudit) context.diagnostics.firstCardAudit.executionOutcome = 'succeeded';
+    if (!tailOpen) {
+      if (late?.failure || late?.result?.failure) auditStage(context, 'TAIL_COMPLETE', 'failed', { failure: late.failure || late.result.failure });
+      auditSummary(context, { snapshot: 'execution' });
+      return { status: 'TAIL_TIMEOUT', reason: 'TAIL_TIMEOUT' };
+    }
     if (late?.status === 'SUCCESS') {
+      tailFailureStage = 'persistence';
       const persisted = await (persistPromise || persistAndCompleteFirstCard(interactive, late.copy));
       if (!tailOpen) return { status: 'TAIL_TIMEOUT', reason: 'TAIL_TIMEOUT' };
       auditStage(context, 'CANONICAL_PERSISTED', 'tail');
@@ -347,6 +428,10 @@ async function settleFirstCardTail({ cardPromise, persistPromise, interactive, c
       await markFirstCardRetryable(interactive, late || { status: 'FAIL', reason: 'TAIL_FAIL' });
       setDiagnostic(context, 'FIRST_CARD_AI_RESULT', late?.reason || 'TAIL_FAIL');
     }
+    const terminalFailure = late?.failure || late?.result?.failure || null;
+    if (terminalFailure) auditStage(context, 'TAIL_COMPLETE', 'failed', { failure: terminalFailure });
+    else auditStage(context, 'TAIL_COMPLETE', late?.status === 'SUCCESS_TAIL' ? 'succeeded' : late?.status === 'TAIL_TIMEOUT' ? 'wait_expired' : 'completed');
+    auditSummary(context, { snapshot: 'tail' });
     // This flag now means an AI result was intentionally thrown away. A late
     // result is retained by the server tail, so it must remain false.
     setDiagnostic(context, 'AI_LATE_DISCARDED', false);
@@ -356,8 +441,12 @@ async function settleFirstCardTail({ cardPromise, persistPromise, interactive, c
     setDiagnostic(context, 'AI_LATE_DISCARDED', false);
     setDiagnostic(context, 'FIRST_CARD_AI_RESULT', 'TAIL_FAIL');
     await markFirstCardRetryable(interactive, { status: 'FAIL', reason: 'PERSIST_FAIL', error });
-    try { (context?.diagnostics?.stageLogger || console.warn)('[RecommendationFirstCardTailFailOpen]', error); } catch { /* fail-open */ }
-    return { status: 'FAIL', reason: 'PERSIST_FAIL', error };
+    const failure = failureFor(context, error, { stage: tailFailureStage, code: tailFailureStage === 'persistence' ? 'PERSISTENCE_FAILED' : 'RUNTIME_FAILED' });
+    logAudit(context, '[RecommendationFirstCardTailFailOpen]', { failure });
+    if (tailFailureStage === 'persistence') auditStage(context, 'CANONICAL_PERSISTED', 'failed', { attemptId: context.attemptId, failure });
+    auditStage(context, 'TAIL_COMPLETE', 'failed', { failure });
+    auditSummary(context, { snapshot: 'tail' });
+    return { status: 'FAIL', reason: 'PERSIST_FAIL', error, failure };
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -370,9 +459,10 @@ async function runFirstCard(interactive, context, origin, deadlineAt) {
       admission = { ...interactive, ...(await interactive.resolveAdmission()) };
       auditStage(context, 'CACHE_LOOKUP_DONE', admission.cachedCopy ? 'hit' : 'miss');
     } catch (error) {
-      auditStage(context, 'CACHE_LOOKUP_DONE', 'failed');
+      const failure = failureFor(context, error, { stage: 'admission', code: 'ADMISSION_FAILED' });
+      auditStage(context, 'CACHE_LOOKUP_DONE', 'failed', { attemptId: context.attemptId, failure });
       setDiagnostic(context, 'FIRST_CARD_AI_RESULT', 'PROVIDER_FAIL');
-      return { status: 'FAIL', reason: 'PROVIDER_FAIL', error };
+      return { status: 'FAIL', reason: 'PROVIDER_FAIL', error, failure };
     }
   }
   if (admission.cachedCopy) {
@@ -381,7 +471,9 @@ async function runFirstCard(interactive, context, origin, deadlineAt) {
   }
   if (typeof context.renderFirstCardCanonical !== 'function' || !admission.entry) {
     setDiagnostic(context, 'FIRST_CARD_AI_RESULT', 'PROVIDER_FAIL');
-    return { status: 'FAIL', reason: 'NO_INTERACTIVE_RENDERER' };
+    const failure = failureFor(context, new Error('NO_INTERACTIVE_RENDERER'), { stage: 'admission', code: 'ADMISSION_FAILED', providerIssue: 'no', businessRejected: 'no', deadline: { causedFailure: 'no', source: null } });
+    recordExecution(context, 'failed', failure);
+    return { status: 'FAIL', reason: 'NO_INTERACTIVE_RENDERER', failure };
   }
   // Admission (including the canonical lookup) may itself be asynchronous.
   // Never start a provider once the absolute handler deadline has elapsed.
@@ -391,7 +483,9 @@ async function runFirstCard(interactive, context, origin, deadlineAt) {
     return { status: 'TIMEOUT', reason: 'PRE_AI_EXHAUSTION' };
   }
   const aiStartedAt = monotonicNow();
-  auditStage(context, 'FIRST_CARD_AI_ADMITTED', 'admitted');
+  const attemptId = newAttemptId();
+  context.attemptId = attemptId;
+  auditStage(context, 'FIRST_CARD_AI_ADMITTED', 'admitted', { attemptId });
   setDiagnostic(context, 'firstCardAiStart', elapsedMs(origin));
   try {
     const providerRemainingMs = Math.max(0, Number(deadlineAt - monotonicNow()) / 1e6);
@@ -407,7 +501,15 @@ async function runFirstCard(interactive, context, origin, deadlineAt) {
       rendererConfig: {
         ...(admission.rendererConfig || {}),
         timeoutMs: Math.floor(providerTimeoutMs),
-        onAuditStage: (stage, status) => auditStage(context, stage, status),
+        attemptId: context.attemptId,
+        failureContext: {
+          ...(admission.rendererConfig?.failureContext || {}),
+          attemptId: context.attemptId,
+          auditId: context.diagnostics?.auditId || null,
+          batchId: context.diagnostics?.batchId || null,
+          handlerStartedAt: context.failureHandlerStartedAt,
+        },
+        onAuditStage: (stage, status, extra) => auditStage(context, stage, status, { failure: extra?.failure, attemptId }),
       },
     });
     const aiMs = Number(monotonicNow() - aiStartedAt) / 1e6;
@@ -419,9 +521,16 @@ async function runFirstCard(interactive, context, origin, deadlineAt) {
         ? 'VALIDATOR_FAIL'
         : 'PROVIDER_FAIL';
       setDiagnostic(context, 'FIRST_CARD_AI_RESULT', reason);
-      return { status: 'FAIL', reason, result };
+      const failure = sanitizeFailure(result?.failure) || failureFor(context, result, {
+        stage: reason === 'VALIDATOR_FAIL' ? 'validation' : 'runtime',
+        code: reason === 'VALIDATOR_FAIL' ? 'VALIDATION_REJECTED' : 'UNKNOWN_FAILURE',
+      });
+      recordExecution(context, 'failed', failure);
+      return { status: 'FAIL', reason, result, ...(failure ? { failure } : {}) };
     }
     setDiagnostic(context, 'FIRST_CARD_AI_RESULT', 'SUCCESS');
+    if (context?.diagnostics?.firstCardAudit) context.diagnostics.firstCardAudit.executionOutcome = 'succeeded';
+    recordExecution(context, 'succeeded');
     setDiagnostic(context, 'firstCardAiValidated', elapsedMs(origin));
     return {
       status: 'SUCCESS',
@@ -432,7 +541,10 @@ async function runFirstCard(interactive, context, origin, deadlineAt) {
   } catch (error) {
     setDiagnostic(context, 'FIRST_CARD_AI_MS', Number(monotonicNow() - aiStartedAt) / 1e6);
     setDiagnostic(context, 'FIRST_CARD_AI_RESULT', 'PROVIDER_FAIL');
-    return { status: 'FAIL', reason: 'PROVIDER_FAIL', error };
+    if (context?.diagnostics?.firstCardAudit) context.diagnostics.firstCardAudit.executionOutcome = 'failed';
+    const failure = getFailure(error) || failureFor(context, error, { stage: 'runtime', code: 'RUNTIME_FAILED' });
+    recordExecution(context, 'failed', failure);
+    return { status: 'FAIL', reason: 'PROVIDER_FAIL', error, ...(failure ? { failure } : {}) };
   }
 }
 

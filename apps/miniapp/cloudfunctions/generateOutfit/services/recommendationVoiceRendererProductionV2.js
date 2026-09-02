@@ -1,4 +1,5 @@
 'use strict';
+const { createFailureEnvelope, describeFailure, providerMetadata, emitAudit } = require('./firstCardObservability');
 
 const fetch = require('node-fetch');
 const { TextDecoder } = require('node:util');
@@ -113,7 +114,7 @@ function decodeStreamChunk(chunk, decoder, decoderState) {
   }
   return String(chunk);
 }
-async function renderRecommendationVoiceRendererProductionV2({ preparedEntries = [], misses, onValidated = async () => {}, onInvalid = async () => {}, apiKey = process.env.BAILIAN_API_KEY || process.env.DASHSCOPE_API_KEY, baseUrl = process.env.BAILIAN_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1', fetchImpl = fetch, invoke, timeoutMs = 25000 } = {}) {
+async function renderRecommendationVoiceRendererProductionV2({ preparedEntries = [], misses, onValidated = async () => {}, onInvalid = async () => {}, failureContext = {}, onAuditStage, apiKey = process.env.BAILIAN_API_KEY || process.env.DASHSCOPE_API_KEY, baseUrl = process.env.BAILIAN_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1', fetchImpl = fetch, invoke, timeoutMs = 25000 } = {}) {
   const entries = readArray(misses === undefined ? preparedEntries : misses);
   if (entries.length === 0) return { version: PRODUCTION_VERSION, status: 'noop', promptVariant: PROMPT_VARIANT, planCount: 0, providerCalls: 0, requestCount: 0, validatedCount: 0, invalidCount: 0 };
   if (entries.length > 8) throw new Error('VOICE_RENDERER_INPUT_COUNT');
@@ -121,6 +122,7 @@ async function renderRecommendationVoiceRendererProductionV2({ preparedEntries =
   const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), timeoutMs); let response; let raw = ''; let content = ''; const seen = new Set(); const validated = []; const invalid = []; let usage = null;
   const decoder = new TextDecoder(); const decoderState = { active: false };
   const stream = { chunkCount: 0, firstChunkBytes: 0, lastChunkBytes: 0, rawLength: 0, finishReason: null, doneReceived: false, parseErrorCount: 0, errorEventCount: 0 };
+  let streamFailureProvider = null;
   const consumeLine = async (line) => {
     const parsed = parseSseLine(line);
     if (parsed.kind === 'ignored') return;
@@ -131,6 +133,12 @@ async function renderRecommendationVoiceRendererProductionV2({ preparedEntries =
     if (typeof finishReason === 'string' && finishReason) stream.finishReason = finishReason;
     if (event?.error) {
       stream.errorEventCount += 1;
+      const errorCode = event.error.code ?? event.error.error_code;
+      streamFailureProvider = providerMetadata(response, {
+        model: VOICE_RENDERER_MODEL,
+        errorCode: typeof errorCode === 'number' && Number.isFinite(errorCode) ? String(errorCode) : errorCode || null,
+        requestId: event.request_id || event.requestId || event.error.request_id || providerMetadata(response).requestId,
+      });
       throw new Error(`VOICE_RENDERER_PROVIDER_STREAM_ERROR:${readText(event.error.code) || 'unknown'}`);
     }
     const delta = event?.choices?.[0]?.delta?.content;
@@ -148,11 +156,13 @@ async function renderRecommendationVoiceRendererProductionV2({ preparedEntries =
       validated.push(materialized); await onValidated(materialized);
     }
   };
+  let providerResponseReceived = false;
   try {
     const request = buildProductionRequest(normalized);
     response = invoke
       ? await invoke({ apiKey, baseUrl, request, signal: controller.signal })
       : await fetchImpl(`${baseUrl.replace(/\/$/, '')}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey || ''}` }, body: JSON.stringify(request), signal: controller.signal });
+    providerResponseReceived = true;
     if (!response || Number(response.status) >= 400) throw new Error(`VOICE_RENDERER_PROVIDER_HTTP:${response?.status || 'unknown'}`);
     for await (const chunk of response.body || []) {
       const bytes = chunkByteLength(chunk);
@@ -169,9 +179,42 @@ async function renderRecommendationVoiceRendererProductionV2({ preparedEntries =
     if (decoderState.active) raw += decoder.decode();
     if (raw) await consumeLine(raw);
   } catch (error) {
-    return { version: PRODUCTION_VERSION, status: 'failed_open', promptVariant: PROMPT_VARIANT, planCount: normalized.length, providerCalls: 1, requestCount: 1, validatedCount: validated.length, invalidCount: invalid.length, stream, failureCode: error.name === 'AbortError' ? 'VOICE_RENDERER_TIMEOUT' : String(error.message || error) };
+    const failure = describeFailure(error, failureContext, {
+      stage: providerResponseReceived ? 'stream_read' : 'request',
+      provider: streamFailureProvider || providerMetadata(response, { model: VOICE_RENDERER_MODEL }),
+      providerStreamError: streamFailureProvider !== null,
+      rendererTimedOut: controller.signal.aborted,
+      abortReason: controller.signal.reason,
+    });
+    emitAudit(onAuditStage, 'STREAM_COMPLETE', 'failed', { failure });
+    return { version: PRODUCTION_VERSION, status: 'failed_open', promptVariant: PROMPT_VARIANT, planCount: normalized.length, providerCalls: 1, requestCount: 1, validatedCount: validated.length, invalidCount: invalid.length, stream, failureCode: error.name === 'AbortError' ? 'VOICE_RENDERER_TIMEOUT' : String(error.message || error), ...(failure ? { failure } : {}) };
   } finally { clearTimeout(timer); }
-  return { version: PRODUCTION_VERSION, status: validated.length === normalized.length ? 'completed' : 'failed_open', promptVariant: PROMPT_VARIANT, planCount: normalized.length, providerCalls: 1, requestCount: 1, validatedCount: validated.length, invalidCount: invalid.length, validated, invalid, usage, stream, ...(validated.length === normalized.length ? {} : { failureCode: 'VOICE_RENDERER_STREAM_INCOMPLETE' }) };
+  const incomplete = validated.length !== normalized.length;
+  let failure;
+  if (incomplete) {
+    const validatorCodes = invalid.flatMap((issue) => issue.failures || [issue.error]).filter(Boolean);
+    const structural = new Set(['OUTPUT_CONTRACT', 'OUTPUT_TEXT', 'OUTPUT_ID', 'VOICE_RENDERER_OUTPUT_PLAN_BINDING']);
+    let parseFailed = stream.parseErrorCount > 0;
+    // Inspect only already-buffered output, after the existing failed outcome.
+    // A partial JSON suffix remains OUTPUT_INCOMPLETE; no new reject condition.
+    if (content.trim() && /[}\]]$/.test(content.trim())) {
+      try { JSON.parse(content); } catch { parseFailed = true; }
+    }
+    const provider = providerMetadata(response, { model: VOICE_RENDERER_MODEL });
+    if (provider.httpStatus >= 400) {
+      failure = describeFailure(new Error('VOICE_RENDERER_STREAM_INCOMPLETE'), failureContext, { provider });
+    } else {
+      failure = createFailureEnvelope(new Error('VOICE_RENDERER_STREAM_INCOMPLETE'), failureContext, {
+        stage: invalid.length ? 'validation' : 'output_parse',
+        code: invalid.length ? 'VALIDATION_REJECTED' : parseFailed ? 'OUTPUT_PARSE_FAILED' : 'OUTPUT_INCOMPLETE',
+        retryability: 'unknown', providerIssue: invalid.length ? 'no' : 'unknown',
+        businessRejected: validatorCodes.some((code) => !structural.has(code)) ? 'yes' : 'no',
+        deadline: { causedFailure: 'no', source: null }, provider, validatorCodes,
+      });
+    }
+  }
+  emitAudit(onAuditStage, 'STREAM_COMPLETE', incomplete ? 'failed' : 'completed', failure ? { failure } : {});
+  return { version: PRODUCTION_VERSION, status: incomplete ? 'failed_open' : 'completed', promptVariant: PROMPT_VARIANT, planCount: normalized.length, providerCalls: 1, requestCount: 1, validatedCount: validated.length, invalidCount: invalid.length, validated, invalid, usage, stream, ...(incomplete ? { failureCode: 'VOICE_RENDERER_STREAM_INCOMPLETE', ...(failure ? { failure } : {}) } : {}) };
 }
 
 function buildProductionRendererEntry(plan, recommendation, position, outfitKey) {

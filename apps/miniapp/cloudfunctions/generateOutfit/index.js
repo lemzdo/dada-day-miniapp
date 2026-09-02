@@ -1148,7 +1148,7 @@ async function prepareProductionRecommendationWork(core, diagnostics, context = 
       // invokes this only after the safe response. It remains in-process and
       // uses the same canonical renderer/validator contract as the first-card
       // path; no SCF event is needed for the normal request.
-      materializeFirstCard: async ({ timeoutMs, onAuditStage } = {}) => {
+      materializeFirstCard: async ({ timeoutMs, onAuditStage, attemptId, failureContext } = {}) => {
         const job = await copyJobPromise;
         const entry = job?.entries?.[0];
         if (!job || !entry) return { status: 'FAIL', reason: 'NO_INTERACTIVE_RENDERER' };
@@ -1157,12 +1157,14 @@ async function prepareProductionRecommendationWork(core, diagnostics, context = 
           entry,
           rendererConfig: {
             timeoutMs: Math.max(1, Math.floor(Number(timeoutMs) || 6000)),
+            attemptId,
+            failureContext: { ...(failureContext || {}), attemptId },
             onAuditStage,
           },
         });
         const status = String(rendered?.status || '').toUpperCase();
         if (status !== 'SUCCESS') {
-          return { status: 'FAIL', reason: rendered?.failureType || 'PROVIDER_FAIL', result: rendered };
+          return { status: 'FAIL', reason: rendered?.failureType || 'PROVIDER_FAIL', result: rendered, ...(rendered?.failure ? { failure: rendered.failure } : {}) };
         }
         return { status: 'SUCCESS', copy: rendered.copy || rendered.canonicalCopy };
       },

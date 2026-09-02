@@ -5,5 +5,5 @@
   "main": "./src/index.js",
   "types": "./src/index.d.ts",
   "scripts": { "test": "node --test src/**/*.test.js", "typecheck": "tsc --noEmit" },
-  "devDependencies": { "@types/node": "^22.10.0" }
+  "devDependencies": { "@types/node": "^22.10.0", "@starter-template/types": "workspace:*" }
 }

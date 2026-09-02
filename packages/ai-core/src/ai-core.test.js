@@ -15,3 +15,19 @@ test('request body is passed unchanged and raw response is exposed', async () =>
   assert.equal(captured.init.headers.Authorization, 'Bearer legacy-key');
   assert.equal(result.metadata.promptVersion, 'voice-contract-v2.0-compressed-v2-production-1');
 });
+
+test('real registry validator rejection emits the contract failure code', async () => {
+  registerTask('contract_validation_task', { model: 'test', stream: false, validator: 'contract_validation_validator' });
+  registerValidator('contract_validation_validator', () => false);
+  const ai = createXiaodaAI({ authLookup: 'secret', fetch: async () => ({ ok: true, status: 200, json: async () => ({ choices: [{ message: { content: 'x' } }] }) }) });
+  await assert.rejects(ai.execute('contract_validation_task', { text: 'x' }), (error) => {
+    assert.equal(error.failure.code, 'VALIDATION_REJECTED');
+    assert.equal(error.failure.stage, 'validation');
+    assert.equal(error.failure.retryability, 'unknown');
+    assert.equal(error.failure.providerIssue, 'no');
+    assert.equal(error.failure.businessRejected, 'yes');
+    assert.equal(error.failure.deadline.causedFailure, 'no');
+    assert.deepEqual(error.failure.evidence.validatorCodes, ['VALIDATOR_FAIL']);
+    return true;
+  });
+});

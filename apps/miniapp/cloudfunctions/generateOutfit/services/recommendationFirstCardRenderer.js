@@ -6,8 +6,9 @@ const {
   validateProductionCopy,
 } = require('./recommendationVoiceRendererProductionV2');
 const { loadDeployPackage } = require('./deployPackageResolver');
+const { createFailureEnvelope, describeFailure, providerMetadata, emitAudit } = require('./firstCardObservability');
 
-function defaultXiaodaAI() {
+function defaultXiaodaAI(failureContext) {
   // Keep the dependency lazy so local parser/validator tests can continue to
   // inject fetch without requiring a deploy-time package installation.
   try {
@@ -37,6 +38,7 @@ function defaultXiaodaAI() {
   } catch (error) {
     const wrapped = new Error(`AI_CORE_UNAVAILABLE:${error?.message || error}`);
     wrapped.cause = error;
+    createFailureEnvelope(wrapped, failureContext || {}, { stage: 'ai_core', code: 'AI_CORE_UNAVAILABLE', providerIssue: 'no', businessRejected: 'no', deadline: { causedFailure: 'no', source: null } });
     throw wrapped;
   }
 }
@@ -54,6 +56,7 @@ function responseFromCoreResult(result) {
     const body = response.body;
     return {
       ...response,
+      __failureProvider: providerMetadata(response),
       body: (async function* stream() {
         try {
           for await (const chunk of body) yield chunk;
@@ -66,6 +69,7 @@ function responseFromCoreResult(result) {
   const text = typeof response?.text === 'string' ? response.text : '';
   return {
     status: 200,
+    __failureProvider: providerMetadata(response),
     body: (async function* stream() {
       try {
         yield `data: ${JSON.stringify({ choices: [{ delta: { content: text } }], usage: response?.usage || null })}\n`;
@@ -78,8 +82,8 @@ function responseFromCoreResult(result) {
 }
 
 async function invokeRecommendationReason({ entry, rendererConfig, request, signal }) {
-  const xiaodaAI = rendererConfig.xiaodaAI || defaultXiaodaAI();
-  try { rendererConfig.onAuditStage?.('PROVIDER_START', 'started'); } catch { /* audit is fail-open */ }
+  const xiaodaAI = rendererConfig.xiaodaAI || defaultXiaodaAI(rendererConfig.failureContext);
+  emitAudit(rendererConfig.onAuditStage, 'PROVIDER_START', 'started', { attemptId: rendererConfig.failureContext?.attemptId });
   const options = {
     ...rendererConfig.aiOptions,
     request,
@@ -89,13 +93,15 @@ async function invokeRecommendationReason({ entry, rendererConfig, request, sign
     promptVersion: 'voice-contract-v2.0-compressed-v2-production-1',
     rawResponse: true,
     timeoutMs: Number(rendererConfig.timeoutMs || 25000),
+    failureContext: rendererConfig.failureContext || {},
   };
   try {
     const result = await xiaodaAI.execute('recommendation_reason', entry.preparedEntry.input, options);
-    try { rendererConfig.onAuditStage?.('PROVIDER_COMPLETE', 'completed'); } catch { /* audit is fail-open */ }
+    emitAudit(rendererConfig.onAuditStage, 'PROVIDER_COMPLETE', 'completed');
     return responseFromCoreResult(result);
   } catch (error) {
-    try { rendererConfig.onAuditStage?.('PROVIDER_COMPLETE', 'failed'); } catch { /* audit is fail-open */ }
+    const failure = describeFailure(error, rendererConfig.failureContext || {}, { stage: 'request', provider: { name: 'dashscope', model: 'qwen3.7-max' } });
+    emitAudit(rendererConfig.onAuditStage, 'PROVIDER_COMPLETE', 'failed', { failure });
     throw error;
   }
 }
@@ -146,13 +152,16 @@ async function renderFirstCardCanonical({ entry, rendererConfig = {} } = {}) {
   };
 
   if (!entry || !entry.preparedEntry) {
-    return {
+    const result = {
       status: 'failure',
       failureType: 'PROVIDER_FAIL',
       failureCode: 'FIRST_CARD_INPUT_INVALID',
       metadata: { providerCalls: 0, requestCount: 0, planCount: 0, validatedCount: 0, invalidCount: 0 },
       timing: timing(),
     };
+    result.failure = createFailureEnvelope(new Error(result.failureCode), rendererConfig.failureContext || {}, { stage: 'admission', code: 'ADMISSION_FAILED', retryability: 'not_retryable', providerIssue: 'no', businessRejected: 'no', deadline: { causedFailure: 'no', source: null } });
+    emitAudit(rendererConfig.onAuditStage, 'EXECUTION_COMPLETE', 'failed', { failure: result.failure });
+    return result;
   }
 
   let summary;
@@ -175,21 +184,26 @@ async function renderFirstCardCanonical({ entry, rendererConfig = {} } = {}) {
       // allowed to persist or dispatch while the interactive render is live.
       onValidated: async () => {},
       onInvalid: async () => {},
+      failureContext: rendererConfig.failureContext || {},
     });
   } catch (error) {
-    return {
+    const result = {
       status: 'failure',
       failureType: 'PROVIDER_FAIL',
       failureCode: String(error?.message || error || 'FIRST_CARD_PROVIDER_ERROR'),
       metadata: { providerCalls: 1, requestCount: 1, planCount: 1, validatedCount: 0, invalidCount: 0 },
       timing: timing(),
     };
+    result.failure = describeFailure(error, rendererConfig.failureContext || {}, { stage: 'request' });
+    emitAudit(rendererConfig.onAuditStage, 'EXECUTION_COMPLETE', 'failed', { failure: result.failure });
+    return result;
   }
 
   const metadata = metadataFrom(summary);
   const copy = Array.isArray(summary?.validated) ? summary.validated[0] : undefined;
   if (summary?.status === 'completed' && summary?.validatedCount === 1 && copy) {
-    try { rendererConfig.onAuditStage?.('VALIDATOR_COMPLETE', 'accepted'); } catch { /* audit is fail-open */ }
+    emitAudit(rendererConfig.onAuditStage, 'VALIDATOR_COMPLETE', 'accepted');
+    emitAudit(rendererConfig.onAuditStage, 'EXECUTION_COMPLETE', 'succeeded');
     return {
       status: 'success',
       validatedCopy: copy,
@@ -202,9 +216,9 @@ async function renderFirstCardCanonical({ entry, rendererConfig = {} } = {}) {
 
   const validatorFailure = Number(summary?.invalidCount || 0) > 0;
   if (validatorFailure) {
-    try { rendererConfig.onAuditStage?.('VALIDATOR_COMPLETE', 'rejected'); } catch { /* audit is fail-open */ }
+    emitAudit(rendererConfig.onAuditStage, 'VALIDATOR_COMPLETE', 'rejected', { failure: summary.failure });
   }
-  return {
+  const result = {
     status: 'failure',
     failureType: validatorFailure ? 'VALIDATOR_FAIL' : 'PROVIDER_FAIL',
     failureCode: failureCodeFrom(summary, validatorFailure ? 'FIRST_CARD_VALIDATOR_FAIL' : 'FIRST_CARD_PROVIDER_FAIL'),
@@ -213,6 +227,13 @@ async function renderFirstCardCanonical({ entry, rendererConfig = {} } = {}) {
     timing: timing(),
     ...(validatorFailure ? { validatorFailures: summary.invalid } : {}),
   };
+  result.failure = summary?.failure || createFailureEnvelope(new Error(result.failureCode), rendererConfig.failureContext || {}, {
+    stage: validatorFailure ? 'validation' : 'output_parse',
+    code: validatorFailure ? 'VALIDATION_REJECTED' : 'OUTPUT_INCOMPLETE',
+    businessRejected: validatorFailure ? 'yes' : 'no',
+  });
+  emitAudit(rendererConfig.onAuditStage, 'EXECUTION_COMPLETE', 'failed', { failure: result.failure });
+  return result;
 }
 
 module.exports = { loadAiCore, renderFirstCardCanonical };

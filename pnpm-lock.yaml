@@ -200,6 +200,9 @@ importers:
 
   packages/ai-core:
     devDependencies:
+      '@starter-template/types':
+        specifier: workspace:*
+        version: link:../types
       '@types/node':
         specifier: ^22.10.0
         version: 22.19.19

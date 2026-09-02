@@ -102,6 +102,13 @@ test('provider SSE error event is surfaced with stream diagnostics', async () =>
   assert.equal(result.status, 'failed_open');
   assert.equal(result.failureCode, 'VOICE_RENDERER_PROVIDER_STREAM_ERROR:provider_stream_error');
   assert.equal(result.stream.errorEventCount, 1);
+  assert.equal(result.failure.code, 'PROVIDER_STREAM_ERROR');
+  assert.equal(result.failure.stage, 'stream_read');
+  assert.equal(result.failure.retryability, 'unknown');
+  assert.equal(result.failure.providerIssue, 'unknown');
+  assert.equal(result.failure.businessRejected, 'no');
+  assert.equal(result.failure.deadline.causedFailure, 'no');
+  assert.equal(result.failure.provider.errorCode, 'provider_stream_error');
 });
 
 test('final SSE frame without newline is flushed through parser and validator', async () => {
@@ -151,4 +158,55 @@ test('request builder keeps contract version and exact generation route', () => 
   const request = buildProductionRequest(entries(1)); assert.equal(request.model, 'qwen3.7-max'); assert.equal(request.top_p, 0.8); assert.equal(request.max_tokens, 1200); assert.equal(request.stream_options.include_usage, true);
   assert.equal(PRODUCTION_PROMPT_VERSION, 'voice-contract-v2.0-compressed-v2-production-1');
   assert.notEqual(PRODUCTION_MODEL_ROUTE_VERSION, VOICE_RENDERER_MODEL_ROUTE_VERSION);
+});
+
+function failureOf(result) {
+  assert.ok(result?.failure, 'expected failure envelope');
+  assert.equal(result.failure.schemaVersion, 'first-card-runtime-observability/v1');
+  return result.failure;
+}
+
+test('parse failure is distinct from business validation rejection', async () => {
+  const malformed = {
+    status: 200,
+    body: (async function* stream() { yield 'data: {not-json}\n'; yield 'data: [DONE]\n'; }()),
+  };
+  const parsed = await renderRecommendationVoiceRendererProductionV2({ preparedEntries: entries(1), fetchImpl: async () => malformed });
+  const parseFailure = failureOf(parsed);
+  assert.equal(parseFailure.stage, 'output_parse');
+  assert.equal(parseFailure.code, 'OUTPUT_PARSE_FAILED');
+  assert.equal(parseFailure.businessRejected, 'no');
+  assert.equal(parseFailure.providerIssue, 'unknown');
+  assert.equal(parseFailure.retryability, 'unknown');
+  assert.equal(parseFailure.deadline.causedFailure, 'no');
+
+  const rejected = await renderRecommendationVoiceRendererProductionV2({
+    preparedEntries: entries(1),
+    fetchImpl: async () => ({ status: 200, body: (async function* stream() {
+      yield `data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify({ copies: [{ id: '1', text: '不合规文案' }] }) } }] })}\n`;
+      yield 'data: [DONE]\n';
+    }()) }),
+  });
+  const validationFailure = failureOf(rejected);
+  assert.equal(validationFailure.stage, 'validation');
+  assert.equal(validationFailure.code, 'VALIDATION_REJECTED');
+  assert.equal(validationFailure.retryability, 'unknown');
+  assert.equal(validationFailure.providerIssue, 'no');
+  assert.equal(validationFailure.businessRejected, 'yes');
+  assert.equal(validationFailure.deadline.causedFailure, 'no');
+  assert.ok(validationFailure.evidence.validatorCodes.length > 0);
+});
+
+test('tolerated malformed SSE does not change a subsequently successful business result', async () => {
+  const input = entries(1);
+  const result = await renderRecommendationVoiceRendererProductionV2({ preparedEntries: input, fetchImpl: async () => ({
+    status: 200, body: (async function* () {
+      yield 'data: {bad-json}\n';
+      for await (const chunk of responseFor(input).body) yield chunk;
+    })(),
+  }) });
+  assert.equal(result.status, 'completed');
+  assert.equal(result.validatedCount, 1);
+  assert.equal(result.stream.parseErrorCount, 1);
+  assert.equal(result.failure, undefined);
 });
