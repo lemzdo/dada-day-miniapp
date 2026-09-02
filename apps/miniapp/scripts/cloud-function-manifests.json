@@ -44,6 +44,7 @@
     ]
   },
   "packageResolverCalls": [
+    { "importer": "services/firstCardObservability.js", "package": "@d1d/ai-core", "fallback": "../vendor/ai-core" },
     { "importer": "services/garmentAssetAdapter.js", "package": "@d1d/garment-assets", "fallback": "../vendor/garment-assets" },
     { "importer": "services/recommendationFirstCardRenderer.js", "package": "@d1d/ai-core", "fallback": "../vendor/ai-core" }
   ]
