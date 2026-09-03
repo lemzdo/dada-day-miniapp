@@ -637,3 +637,305 @@ test('pre-admission exhaustion allocates identity only when tail materializes', 
   assert.equal(diagnostics.firstCardAudit.summary.failure.auditId, 'pre-admission-audit');
   assert.equal(diagnostics.firstCardAudit.summary.failure.deadline.causedFailure, 'no');
 });
+
+test('Phase1A early admission owns one promise and does not duplicate provider work', async () => {
+  const events = [];
+  const core = interactiveCore();
+  const entry = { preparedEntry: { plan: { planId: 'plan-1', fingerprint: 'fp-1', outfitKey: 'look-1' } } };
+  let prepareCalls = 0;
+  let providerCalls = 0;
+  let releaseAdmission;
+  const admission = new Promise((resolve) => { releaseAdmission = resolve; });
+  const interactive = {
+    entry,
+    resolveAdmission: async () => { events.push('lookup'); return { entry }; },
+    persistCanonicalCopy: async (copy) => ({ ...copy, outfitKey: 'look-1', cardIndex: 0 }),
+    applyCanonicalToResponse: (response, copy) => ({ ...response, light: { cards: [{ outfitKey: 'look-1', todayReason: copy.text }] } }),
+  };
+  const running = runRecommendationOrchestrator({}, {
+    prepareFirstCardInteractive: () => {
+      prepareCalls += 1;
+      return admission;
+    },
+    computeRecommendation: async (_input, runtimeContext) => {
+      events.push('card0');
+      runtimeContext.onFirstCardReady({ entry, recommendation: core.outfits[0], plan: entry.preparedEntry.plan });
+      events.push('card1-N');
+      return core;
+    },
+    prepareRecommendationWork: async () => ({ batchId: core.metadata.batchId, tasks: [], narrativePlans: core.narrativePlans, rendererEntries: [entry], firstCardInteractive: interactive }),
+    persistAndAssembleRecommendation: async () => ({ batch: { batchId: core.metadata.batchId, countContract: {} }, light: { cards: [{ outfitKey: 'look-1', todayReason: 'safe' }] } }),
+    renderFirstCardCanonical: async () => { providerCalls += 1; events.push('provider'); return { status: 'success', copy: { planId: 'plan-1', fingerprint: 'fp-1', outfitKey: 'look-1', text: 'early' } }; },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(prepareCalls, 1);
+  assert.equal(providerCalls, 0, 'provider waits for the single admission promise');
+  releaseAdmission({ ...interactive });
+  const result = await running;
+  await result.tailDone;
+  assert.equal(providerCalls, 1);
+  assert.deepEqual(events.slice(0, 3), ['card0', 'card1-N', 'lookup']);
+  assert.equal(result.firstCardAi.status, 'SUCCESS');
+});
+
+test('Phase1A keeps the prepared adapter as the canonical persistence owner', async () => {
+  const core = interactiveCore();
+  const entry = { preparedEntry: { plan: { planId: 'plan-1' } } };
+  let persisted = 0;
+  const preparedInteractive = {
+    entry,
+    resolveAdmission: async () => ({ entry }),
+    persistCanonicalCopy: async (copy) => { persisted += 1; return { ...copy, outfitKey: 'look-1', cardIndex: 0 }; },
+    completeCopyJob: async () => {},
+    applyCanonicalToResponse: (response, copy) => ({ ...response, light: { cards: [{ outfitKey: 'look-1', todayReason: copy.text }] } }),
+  };
+  const result = await runRecommendationOrchestrator({}, {
+    prepareFirstCardInteractive: () => ({ entry }),
+    computeRecommendation: async (_input, runtimeContext) => { runtimeContext.onFirstCardReady({ entry }); return core; },
+    prepareRecommendationWork: async () => ({ batchId: core.metadata.batchId, tasks: [], narrativePlans: core.narrativePlans, rendererEntries: [entry], firstCardInteractive: preparedInteractive }),
+    persistAndAssembleRecommendation: async () => ({ batch: { batchId: core.metadata.batchId, countContract: {} }, light: { cards: [{ outfitKey: 'look-1', todayReason: 'safe' }] } }),
+    renderFirstCardCanonical: async () => ({ status: 'success', copy: { planId: 'plan-1', text: 'early' } }),
+  });
+  assert.equal(result.firstCardAi.status, 'SUCCESS');
+  assert.equal(persisted, 1);
+  assert.equal(result.response.light.cards[0].todayReason, 'early');
+});
+
+test('Phase1A async setup rejection is absorbed and leaves no unhandled rejection', async () => {
+  const core = interactiveCore();
+  const errors = [];
+  const onUnhandled = (error) => errors.push(error);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    const result = await runRecommendationOrchestrator({}, {
+      prepareFirstCardInteractive: async () => { throw new Error('setup failed'); },
+      computeRecommendation: async (_input, runtimeContext) => {
+        runtimeContext.onFirstCardReady({ entry: { preparedEntry: { plan: { planId: 'plan-1' } } } });
+        return core;
+      },
+      prepareRecommendationWork: async () => ({ batchId: core.metadata.batchId, tasks: [], narrativePlans: core.narrativePlans, rendererEntries: [], firstCardInteractive: { entry: {} } }),
+      persistAndAssembleRecommendation: async () => ({ batch: { batchId: core.metadata.batchId, countContract: {} } }),
+    });
+    assert.equal(result.batchId, core.metadata.batchId);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(errors, []);
+  } finally {
+    process.removeListener('unhandledRejection', onUnhandled);
+  }
+});
+
+test('Phase1A provider failure is tail-owned and does not leak a rejection', async () => {
+  const core = interactiveCore();
+  const interactive = {
+    entry: { preparedEntry: { plan: { planId: 'plan-1' } } },
+    resolveAdmission: async () => ({ entry: interactive.entry }),
+    persistCanonicalCopy: async () => { throw new Error('must not persist failure'); },
+    markCopyJobRetryable: async () => {},
+  };
+  const unhandled = [];
+  const onUnhandled = (error) => unhandled.push(error);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    const result = await runRecommendationOrchestrator({}, {
+      prepareFirstCardInteractive: () => interactive,
+      computeRecommendation: async (_input, runtimeContext) => { runtimeContext.onFirstCardReady({ entry: interactive.entry }); return core; },
+      prepareRecommendationWork: async () => ({ batchId: core.metadata.batchId, tasks: [], narrativePlans: core.narrativePlans, rendererEntries: [interactive.entry], firstCardInteractive: interactive }),
+      persistAndAssembleRecommendation: async () => ({ batch: { batchId: core.metadata.batchId, countContract: {} }, light: { cards: [{ outfitKey: 'look-1', todayReason: 'safe' }] } }),
+      renderFirstCardCanonical: async () => { throw new Error('provider failed'); },
+    });
+    assert.equal(result.firstCardAi.status, 'FAIL');
+    await result.tailDone;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.removeListener('unhandledRejection', onUnhandled);
+  }
+});
+
+function deferredCardWork() {
+  let resolve;
+  let reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
+test('Phase1A latches duplicate and reentrant callbacks before synchronous preparation', async () => {
+  for (const throws of [false, true]) {
+    let callback;
+    let preparationCalls = 0;
+    let providerCalls = 0;
+    const context = interactiveContext();
+    context.prepareFirstCardInteractive = () => {
+      preparationCalls += 1;
+      callback({ entry: { unexpected: true } });
+      if (throws) throw new Error('setup failed');
+      return { entry: { planId: 'original' } };
+    };
+    context.computeRecommendation = async (_input, runtimeContext) => {
+      callback = runtimeContext.onFirstCardReady;
+      callback({});
+      callback({ entry: { unexpected: true } });
+      return interactiveCore();
+    };
+    context.renderFirstCardCanonical = async ({ entry }) => {
+      providerCalls += 1;
+      assert.equal(entry.planId, 'original');
+      return { status: 'success', copy: { text: 'one provider' } };
+    };
+    const result = await runRecommendationOrchestrator({}, context);
+    await result.tailDone;
+    assert.equal(preparationCalls, 1);
+    assert.equal(providerCalls, throws ? 0 : 1);
+    assert.equal(result.firstCardAi.status, throws ? 'FAIL' : 'SUCCESS');
+  }
+});
+
+test('Phase1A early success waits for complete batch commit before canonical persistence and ready', async () => {
+  const batch = deferredCardWork();
+  const events = [];
+  const context = interactiveContext({ firstCardInteractive: {
+    persistCanonicalCopy: async (copy) => { events.push('canonical'); return copy; },
+  } });
+  context.prepareFirstCardInteractive = () => ({ entry: {} });
+  context.computeRecommendation = async (_input, runtimeContext) => {
+    runtimeContext.onFirstCardReady({});
+    return interactiveCore();
+  };
+  context.renderFirstCardCanonical = async () => {
+    events.push('provider');
+    return { status: 'success', copy: { text: 'ready' } };
+  };
+  context.persistAndAssembleRecommendation = async () => {
+    events.push('batch-start');
+    await batch.promise;
+    events.push('batch-commit');
+    return { batch: { batchId: 'batch-interactive' }, light: { cards: [{ outfitKey: 'look-1' }] } };
+  };
+  const running = runRecommendationOrchestrator({}, context, {
+    onRecommendationReady: () => events.push('ready'),
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, ['provider', 'batch-start']);
+  batch.resolve();
+  const result = await running;
+  await result.tailDone;
+  assert.deepEqual(events, ['provider', 'batch-start', 'batch-commit', 'canonical', 'ready']);
+});
+
+for (const failedStage of ['core', 'prepare', 'assembler']) {
+  for (const providerFails of [false, true]) {
+    test(`Phase1A ${failedStage} failure drains admitted provider ${providerFails ? 'rejection' : 'success'} before propagating`, async () => {
+      const provider = deferredCardWork();
+      const error = new Error(`${failedStage} failed`);
+      let providerCalls = 0;
+      let persisted = 0;
+      let retryCount = 0;
+      let completed = false;
+      const context = interactiveContext({ firstCardInteractive: {
+        persistCanonicalCopy: async () => { persisted += 1; },
+        markCopyJobRetryable: async () => { retryCount += 1; },
+      } });
+      context.prepareFirstCardInteractive = () => ({ entry: {} });
+      context.computeRecommendation = async (_input, runtimeContext) => {
+        runtimeContext.onFirstCardReady({});
+        if (failedStage === 'core') throw error;
+        return interactiveCore();
+      };
+      if (failedStage === 'prepare') context.prepareRecommendationWork = async () => { throw error; };
+      if (failedStage === 'assembler') context.persistAndAssembleRecommendation = async () => { throw error; };
+      context.renderFirstCardCanonical = () => { providerCalls += 1; return provider.promise; };
+      const caught = runRecommendationOrchestrator({}, context).then(
+        () => { completed = true; return null; },
+        (cause) => { completed = true; return cause; },
+      );
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(providerCalls, 1);
+      assert.equal(completed, false, 'failure cleanup must own the in-flight provider');
+      if (providerFails) provider.reject(new Error('provider failed after batch'));
+      else provider.resolve({ status: 'success', copy: { text: 'unused' } });
+      assert.equal(await caught, error);
+      assert.equal(persisted, 0, 'failed batch cannot move canonical persistence into cleanup');
+      assert.equal(retryCount, failedStage === 'assembler' ? 1 : 0);
+    });
+  }
+}
+
+test('Phase1A partial preparation exposes cleanup through returned tailDone', async () => {
+  const provider = deferredCardWork();
+  const context = interactiveContext();
+  context.prepareFirstCardInteractive = () => ({ entry: {} });
+  context.computeRecommendation = async (_input, runtimeContext) => {
+    runtimeContext.onFirstCardReady({});
+    return interactiveCore();
+  };
+  context.prepareRecommendationWork = async () => ({ tasks: [], narrativePlans: [], rendererEntries: [] });
+  context.renderFirstCardCanonical = () => provider.promise;
+  const result = await runRecommendationOrchestrator({}, context);
+  assert.equal(typeof result.tailDone?.then, 'function');
+  let tailComplete = false;
+  const tail = result.tailDone.then((value) => { tailComplete = true; return value; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(tailComplete, false);
+  provider.reject(new Error('late provider failure'));
+  assert.equal((await tail).status, 'FAIL');
+  await result.aiDone;
+});
+
+test('Phase1A failure cleanup is bounded and still observes rejection after tail expires', async () => {
+  const provider = deferredCardWork();
+  const context = interactiveContext();
+  context.firstCardTailTimeoutMs = 5;
+  context.prepareFirstCardInteractive = () => ({ entry: {} });
+  context.computeRecommendation = async (_input, runtimeContext) => {
+    runtimeContext.onFirstCardReady({});
+    throw new Error('core failed');
+  };
+  context.renderFirstCardCanonical = () => provider.promise;
+  const keepAlive = setTimeout(() => {}, 1000);
+  try {
+    await assert.rejects(runRecommendationOrchestrator({}, context), /core failed/);
+    provider.reject(new Error('rejected after tail window'));
+    await new Promise((resolve) => setImmediate(resolve));
+  } finally {
+    clearTimeout(keepAlive);
+  }
+});
+
+test('Phase1A abandoned async preparation never starts a provider after Core fails', async () => {
+  const admission = deferredCardWork();
+  const context = interactiveContext();
+  let calls = 0;
+  context.prepareFirstCardInteractive = () => admission.promise;
+  context.computeRecommendation = async (_input, runtimeContext) => {
+    runtimeContext.onFirstCardReady({});
+    throw new Error('core failed');
+  };
+  context.renderFirstCardCanonical = async () => { calls += 1; return { status: 'success' }; };
+  const caught = assert.rejects(runRecommendationOrchestrator({}, context), /core failed/);
+  await new Promise((resolve) => setImmediate(resolve));
+  admission.resolve({ entry: {} });
+  await caught;
+  assert.equal(calls, 0);
+});
+
+test('Phase1A late callbacks cannot duplicate the prepared-path provider', async () => {
+  const provider = deferredCardWork();
+  const context = interactiveContext();
+  let callback;
+  let calls = 0;
+  let earlyPreparations = 0;
+  context.prepareFirstCardInteractive = () => { earlyPreparations += 1; return { entry: {} }; };
+  context.computeRecommendation = async (_input, runtimeContext) => {
+    callback = runtimeContext.onFirstCardReady;
+    return interactiveCore();
+  };
+  context.renderFirstCardCanonical = () => { calls += 1; return provider.promise; };
+  const running = runRecommendationOrchestrator({}, context);
+  await new Promise((resolve) => setImmediate(resolve));
+  callback({});
+  assert.equal(earlyPreparations, 0);
+  assert.equal(calls, 1);
+  provider.resolve({ status: 'success', copy: { text: 'single provider' } });
+  const result = await running;
+  await result.tailDone;
+});

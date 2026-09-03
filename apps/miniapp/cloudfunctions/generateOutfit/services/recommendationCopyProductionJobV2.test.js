@@ -1,3 +1,5 @@
+/* global require, TextEncoder, setImmediate */
+/* eslint-disable @typescript-eslint/no-require-imports */
 'use strict';
 
 const assert = require('node:assert/strict');
@@ -142,7 +144,9 @@ test('provider stream validates, persists canonical, and next request is a cache
   assert.deepEqual(auditStages, [
     { stage: 'PROVIDER_START', status: 'started' },
     { stage: 'PROVIDER_COMPLETE', status: 'completed' },
+    { stage: 'STREAM_COMPLETE', status: 'completed' },
     { stage: 'VALIDATOR_COMPLETE', status: 'accepted' },
+    { stage: 'EXECUTION_COMPLETE', status: 'succeeded' },
   ]);
   const job = database._all('recommendation_copy_jobs_v2')[0];
   await persistValidatedCanonicalCopy(database, job, prepared.entries[0], rendered.copy, now);

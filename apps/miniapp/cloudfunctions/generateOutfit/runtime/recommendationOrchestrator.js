@@ -174,23 +174,60 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
   auditStage(context, 'HANDLER_ENTRY', 'entered');
   setDiagnostic(context, 'requestStart', 0);
   setDiagnostic(context, 'AI_LATE_DISCARDED', false);
-  let earlyInteractive = null;
-  let earlyCardPromise = null;
+  // The owner is created at admission time and is the single handle shared by
+  // the response race and the server tail.  Keeping the promise in one owner
+  // prevents a late callback (or the normal prepared path) from starting card0
+  // a second time.
+  let earlyCardOwner = null;
+  let coreFinished = false;
   const orchestrationContext = {
     ...context,
     onFirstCardReady: (payload) => {
-      if (earlyInteractive || typeof context.prepareFirstCardInteractive !== 'function') return;
+      if (earlyCardOwner) return earlyCardOwner.interactive || earlyCardOwner.promise;
+      if (coreFinished) return;
+      if (typeof context.prepareFirstCardInteractive !== 'function') return;
+      // Latch before invoking the adapter: production preparation may invoke
+      // user supplied/re-entrant code, and the callback must remain one-shot
+      // even when preparation throws synchronously.
+      earlyCardOwner = { interactive: null, promise: null };
+      let preparedInteractive;
       try {
-        earlyInteractive = context.prepareFirstCardInteractive(payload);
-        const start = (value) => runFirstCard(value, context, handlerOrigin, deadlineAt);
+        preparedInteractive = context.prepareFirstCardInteractive(payload);
+        const owner = earlyCardOwner;
+        const start = (value) => owner.abandoned
+          ? Promise.resolve({ status: 'FAIL', reason: 'RECOMMENDATION_FAILED' })
+          : runFirstCard(value, context, handlerOrigin, deadlineAt);
         // Production preparation is synchronous, so runFirstCard reaches the
         // canonical read immediately while Core continues plans 1..N. Keep
         // Promise support for injected adapters without duplicating the path.
-        earlyCardPromise = earlyInteractive && typeof earlyInteractive.then === 'function'
-          ? asPromise(earlyInteractive).then(start)
-          : start(earlyInteractive);
-      } catch { earlyInteractive = null; earlyCardPromise = null; }
-      return earlyInteractive;
+        if (preparedInteractive && typeof preparedInteractive.then === 'function') {
+          earlyCardOwner.promise = asPromise(preparedInteractive)
+            .then((value) => {
+              owner.interactive = value;
+              return start(value);
+            })
+            .catch((error) => {
+              const failure = failureFor(context, error, { stage: 'admission', code: 'ADMISSION_FAILED' });
+              setDiagnostic(context, 'FIRST_CARD_AI_RESULT', 'PROVIDER_FAIL');
+              return { status: 'FAIL', reason: 'PROVIDER_FAIL', error, failure };
+            });
+        } else {
+          earlyCardOwner.interactive = preparedInteractive;
+          earlyCardOwner.promise = asPromise(start(preparedInteractive)).catch((error) => {
+            const failure = failureFor(context, error, { stage: 'runtime', code: 'RUNTIME_FAILED' });
+            setDiagnostic(context, 'FIRST_CARD_AI_RESULT', 'PROVIDER_FAIL');
+            return { status: 'FAIL', reason: 'PROVIDER_FAIL', error, failure };
+          });
+        }
+        // The owner promise always has a rejection handler before control
+        // returns to Core, so an adapter failure cannot become unhandled.
+        return owner.interactive || owner.promise;
+      } catch (error) {
+        const failure = failureFor(context, error, { stage: 'admission', code: 'ADMISSION_FAILED' });
+        setDiagnostic(context, 'FIRST_CARD_AI_RESULT', 'PROVIDER_FAIL');
+        earlyCardOwner.promise = Promise.resolve({ status: 'FAIL', reason: 'PROVIDER_FAIL', error, failure });
+        return earlyCardOwner.promise;
+      }
     },
   };
   orchestrationContext.deadlineAt = deadlineAt;
@@ -198,6 +235,7 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
   let prepared;
   try {
     core = await runRecommendationCore(normalized, orchestrationContext);
+    coreFinished = true;
     auditStage(context, 'CORE_READY');
     setDiagnostic(context, 'coreResultReady', elapsedMs(handlerOrigin));
     void safeCall(lifecycleHooks.onCoreResultAvailable, { result: core, input: normalized });
@@ -227,14 +265,28 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
     }
     const interactive = prepared.firstCardInteractive;
     if (!interactive) {
+      // Core may have admitted card0 before preparation determined that the
+      // normal interactive path is unavailable. Drain the owned promise for a
+      // bounded tail window so its rejection is observed and its owner is
+      // released without changing the response contract.
       const response = await context.persistAndAssembleRecommendation(core, prepared, normalized);
-      return finishLegacy({ core, prepared, response, context, lifecycleHooks, startedAt, handlerOrigin });
+      const result = await finishLegacy({ core, prepared, response, context, lifecycleHooks, startedAt, handlerOrigin });
+      if (earlyCardOwner) result.tailDone = drainEarlyCardOwner(earlyCardOwner, context);
+      return result;
     }
     const requiredPromise = asPromise(
       context.persistAndAssembleRecommendation(core, prepared, normalized),
     );
-    const cardPromise = earlyCardPromise
-      || runFirstCard(interactive, context, handlerOrigin, deadlineAt);
+    // Observe assembler failures immediately; the response path still awaits
+    // this same promise and preserves its existing failure semantics.
+    void requiredPromise.catch(() => undefined);
+    const cardPromise = earlyCardOwner?.promise
+      || asPromise(runFirstCard(interactive, context, handlerOrigin, deadlineAt)).catch((error) => ({
+        status: 'FAIL', reason: 'PROVIDER_FAIL', error,
+        failure: failureFor(context, error, { stage: 'runtime', code: 'RUNTIME_FAILED' }),
+      }));
+    // The early adapter only admits/renders card0. Canonical persistence and
+    // retry hooks are completed by the prepared adapter in the normal path.
     const activeInteractive = prepared.firstCardInteractive || interactive;
     const remainingMs = Math.max(0, Number(deadlineAt - monotonicNow()) / 1e6);
     let timer;
@@ -265,6 +317,9 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
           // Persistence and job completion share one promise across the UI
           // race and server tail. Never issue a second canonical write.
           firstCardPersistPromise = persistAndCompleteFirstCard(activeInteractive, first.copy);
+          // Tail takeover may outlive the response race. Mark this promise as
+          // observed immediately, including when the response deadline wins.
+          void firstCardPersistPromise.catch(() => undefined);
           const persistRemainingMs = Math.max(0, Number(deadlineAt - monotonicNow()) / 1e6);
           if (persistRemainingMs <= 0) {
             outcome = { status: 'TIMEOUT', reason: 'POST_VALIDATION' };
@@ -273,11 +328,15 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
             const persistDeadline = new Promise((resolve) => {
               persistTimer = setTimeout(() => resolve({ timedOut: true }), persistRemainingMs);
             });
-            const persistResult = await Promise.race([
-              firstCardPersistPromise.then((value) => ({ value })),
-              persistDeadline,
-            ]);
-            if (persistTimer) clearTimeout(persistTimer);
+            let persistResult;
+            try {
+              persistResult = await Promise.race([
+                firstCardPersistPromise.then((value) => ({ value })),
+                persistDeadline,
+              ]);
+            } finally {
+              if (persistTimer) clearTimeout(persistTimer);
+            }
             if (persistResult?.timedOut) {
               outcome = { status: 'TIMEOUT', reason: 'POST_VALIDATION' };
             } else {
@@ -334,8 +393,24 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
       outcome,
       tailDone,
     });
+    // Tail settlement owns cleanup. The derived promise also remains
+    // fail-open if an injected retry adapter violates its contract.
+    result.tailDone = Promise.resolve(tailDone).then(
+      (value) => { if (earlyCardOwner) earlyCardOwner.promise = null; return value; },
+      (error) => {
+        if (earlyCardOwner) earlyCardOwner.promise = null;
+        return { status: 'FAIL', reason: 'TAIL_FAIL', error };
+      },
+    );
     return result;
   } catch (error) {
+    coreFinished = true;
+    // Core/prepare failures can happen after card0 was admitted. There is no
+    // response to carry tailDone in this branch. Keep this invocation alive
+    // until bounded cleanup settles, then propagate the original failure.
+    if (earlyCardOwner?.promise) {
+      await drainEarlyCardOwner(earlyCardOwner, context, prepared?.firstCardInteractive, error);
+    }
     await safeCall(lifecycleHooks.onRuntimeFailure, { error, input: normalized });
     throw error;
   }
@@ -362,6 +437,40 @@ async function markFirstCardRetryable(interactive, outcome) {
     delete legacyOutcome.result.failure;
   }
   try { await interactive.markCopyJobRetryable(legacyOutcome); } catch { /* recovery state is fail-open */ }
+}
+
+function drainEarlyCardOwner(owner, context, interactive, error) {
+  if (owner?.tailDone) return owner.tailDone;
+  if (!owner?.promise) return Promise.resolve({ status: 'NO_EARLY_CARD' });
+  owner.abandoned = true;
+  const timeoutMs = Math.max(1, Number(context.firstCardTailTimeoutMs) || SERVER_TAIL_TIMEOUT_MS);
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve({ status: 'TAIL_TIMEOUT', reason: 'TAIL_TIMEOUT' }), timeoutMs);
+    timer.unref?.();
+  });
+  // Promise.race observes both branches; the explicit catch keeps the owner
+  // fail-open even if an injected adapter returns a malformed thenable.
+  const work = Promise.resolve(owner.promise).catch((cause) => ({
+    status: 'FAIL', reason: 'EARLY_CARD_FAIL', error: cause,
+  })).then(async (result) => {
+    // A successful provider result is still uncommitted when the batch fails.
+    // Leave its job retryable through the existing prepared adapter; cleanup
+    // never writes canonical data. Cached copies already have a durable owner.
+    if (interactive && !owner.retryableMarked && result?.status !== 'CACHE_HIT') {
+      owner.retryableMarked = true;
+      await markFirstCardRetryable(interactive, { status: 'FAIL', reason: 'RECOMMENDATION_FAILED', error });
+    }
+    return result;
+  });
+  owner.tailDone = Promise.race([work, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+    owner.promise = null;
+  }).catch(() => {
+    owner.promise = null;
+    return { status: 'FAIL', reason: 'EARLY_CARD_FAIL' };
+  });
+  return owner.tailDone;
 }
 
 async function settleFirstCardTail({ cardPromise, persistPromise, interactive, context }) {
