@@ -129,6 +129,7 @@ const {
 } = require('./services/sceneEligibilityV3');
 const { buildItemFactsContext } = require('./services/itemFactsContext');
 const {
+  createCanonicalCandidateBatchSelector,
   createCandidateCore,
   hydrateCanonicalScore,
   materializeCanonicalCandidate,
@@ -996,6 +997,7 @@ async function computeProductionRecommendationCore(event, diagnostics = createRe
   const weatherMode = weather.mode;
   const weatherSnapshot = toWeatherSnapshot(weather);
   recordRecommendationStage(diagnostics, 'runtime:inputReady');
+  recordRecommendationStage(diagnostics, 'INPUT_READY');
   const debugRecommendationAudit = isRecommendationQaAuditEnabled(
     event.debugRecommendationAudit,
     process.env.RECOMMENDATION_QA_AUDIT_ENABLED,
@@ -1088,7 +1090,13 @@ async function computeProductionRecommendationCore(event, diagnostics = createRe
   let firstCardPlanAttempted = false;
   const notifyFirstCard = ({ plan, recommendation, index = 0 }) => {
     if (index !== 0 || typeof scfContext.onFirstCardReady !== 'function') return;
+    let entry;
     try {
+      entry = buildProductionRendererEntry(plan, recommendation, 0, recommendation?.outfitKey);
+      recordRecommendationStage(diagnostics, 'FINGERPRINT_READY', {
+        batchId: v2BatchId,
+        fields: { planId: plan.planId, cardIndex: 0 },
+      });
       if (diagnostics.plan0ReadyAt === undefined && plan && recommendation) {
         // Use the same runtime origin as RecommendationAudit, including when
         // the HTTP adapter created diagnostics before loading the runtime.
@@ -1103,7 +1111,7 @@ async function computeProductionRecommendationCore(event, diagnostics = createRe
       }
     } catch { /* Observations cannot alter first-card admission. */ }
     try {
-      const entry = buildProductionRendererEntry(plan, recommendation, 0, recommendation?.outfitKey);
+      if (!entry) return;
       // The orchestrator owns the work; observe injected async hook failures.
       const admissionProgress = scfContext.onFirstCardReady({
         entry,
@@ -1132,6 +1140,10 @@ async function computeProductionRecommendationCore(event, diagnostics = createRe
       diagnostics,
       onFirstCardMaterialized: ({ recommendation }) => {
         firstCardPlanAttempted = true;
+        recordRecommendationStage(diagnostics, 'PLAN0_BUILD_START', {
+          batchId: v2BatchId,
+          fields: { outfitKey: recommendation.outfitKey },
+        });
         try {
           firstCardPlan = buildRecommendationNarrativePlanV2(recommendation, {
             scene,
@@ -1142,6 +1154,10 @@ async function computeProductionRecommendationCore(event, diagnostics = createRe
           firstCardFailureCode = readShadowFailureCode(error);
           return;
         }
+        recordRecommendationStage(diagnostics, 'PLAN0_BUILD_DONE', {
+          batchId: v2BatchId,
+          fields: { planId: firstCardPlan.planId },
+        });
         return notifyFirstCard({ plan: firstCardPlan, recommendation });
       },
     });
@@ -4618,6 +4634,9 @@ function generateRuleRecommendations({
   });
   timings.candidateConstructionMs = Date.now() - candidateConstructionStartedAt;
   timings.compositionMs = Date.now() - compositionStartedAt;
+  recordRecommendationStage(diagnostics, 'CANDIDATE_GENERATION', {
+    fields: { candidateCount: compositionCandidates.length },
+  });
   if (diagnostics) diagnostics.stage = 'canonicalize';
   const candidateCoreStartedAt = Date.now();
   let candidates = compositionCandidates.map((candidate) => createCandidateCore(candidate, {
@@ -4687,27 +4706,25 @@ function generateRuleRecommendations({
   }
   timings.scoringMs = Date.now() - scoringStartedAt;
   timings.scoringPreparationMs = timings.scoringMs;
+  recordRecommendationStage(diagnostics, 'SCORING', {
+    fields: { scoredCandidateCount: scored.length },
+  });
   if (diagnostics) diagnostics.stage = 'batchSelection';
-  const batchSelectionStartedAt = Date.now();
   const filteringStartedAt = Date.now();
   const available = scored.filter((rec) => !excluded.has(rec.outfitKey));
   const sortedAvailable = sortCandidatesStable(available);
   timings.filteringMs = Date.now() - filteringStartedAt;
   timings.exclusionMs = Date.now() - exclusionStartedAt;
   const dedupeStartedAt = Date.now();
-  const selectedCandidateCores = selectCanonicalCandidateBatch(sortedAvailable, limit);
-
-  const reasonSelections = selectBatchEligibilityReasons(selectedCandidateCores.map((candidate) => ({
-    outfitKey: candidate.outfitKey,
-    reasonCandidates: candidate.eligibilityReasonCandidates,
-  })));
-  for (let index = 0; index < selectedCandidateCores.length; index += 1) {
-    selectedCandidateCores[index].eligibilityReason = cloneEligibilityReason(reasonSelections[index].selectedReason);
+  const selector = createCanonicalCandidateBatchSelector(sortedAvailable, limit);
+  const selectedCandidateCores = selector.selected;
+  const firstSelectedCandidate = selector.selectNext();
+  let selectionWorkMs = Date.now() - dedupeStartedAt;
+  if (firstSelectedCandidate) {
+    recordRecommendationStage(diagnostics, 'SELECTOR_CARD0_FIXED', {
+      fields: { outfitKey: firstSelectedCandidate.outfitKey },
+    });
   }
-
-  assertEligibilityReasons(selectedCandidateCores, { node: 'afterSelection', scene, weather: normalizedWeather });
-  timings.dedupeMs = Date.now() - dedupeStartedAt;
-  timings.batchSelectionMs = Date.now() - batchSelectionStartedAt;
   const materializationStartedAt = Date.now();
   const materialize = (candidate) => materializeSelectedCandidate(candidate, {
     scene,
@@ -4719,26 +4736,60 @@ function generateRuleRecommendations({
     instrumentation: testInstrumentation,
   });
   const results = [];
-  if (selectedCandidateCores[0]) {
-    const card0 = materialize(selectedCandidateCores[0]);
+  if (firstSelectedCandidate && typeof onFirstCardMaterialized === 'function') {
+    recordRecommendationStage(diagnostics, 'CARD0_MATERIALIZE_START');
+    const card0 = materialize(firstSelectedCandidate);
     results.push(card0);
-    // This is the first point at which the selected card is fully materialized
-    // and its batch eligibility reason has been fixed. The callback is invoked
-    // before materializing card1..N so the existing orchestrator can admit the
-    // card0 provider work while the remainder follows the original path.
-    if (typeof onFirstCardMaterialized === 'function') {
-      const admissionProgress = onFirstCardMaterialized({ recommendation: card0, index: 0 });
-      if (admissionProgress && typeof admissionProgress.then === 'function') {
-        return Promise.resolve(admissionProgress).then(
-          () => finishRecommendationBatch(),
-          () => finishRecommendationBatch(),
-        );
-      }
+    recordRecommendationStage(diagnostics, 'CARD0_MATERIALIZE_DONE', {
+      fields: { outfitKey: card0.outfitKey },
+    });
+    // Card0's identity, score and clothes are final after selector round0.
+    // Its display-only eligibility reason is filled from the unchanged global
+    // allocator below; Narrative Plan and renderer fingerprint do not read it.
+    const admissionProgress = onFirstCardMaterialized({ recommendation: card0, index: 0 });
+    if (admissionProgress && typeof admissionProgress.then === 'function') {
+      return Promise.resolve(admissionProgress).then(
+        () => finishRecommendationBatch(),
+        () => finishRecommendationBatch(),
+      );
     }
   }
   return finishRecommendationBatch();
 
   function finishRecommendationBatch() {
+    const remainingSelectionStartedAt = Date.now();
+    selector.selectRemaining();
+    selectionWorkMs += Date.now() - remainingSelectionStartedAt;
+    recordRecommendationStage(diagnostics, 'SELECTOR_FULL_BATCH_DONE', {
+      fields: { selectedCount: selectedCandidateCores.length },
+    });
+
+    const reasonStartedAt = Date.now();
+    const reasonSelections = selectBatchEligibilityReasons(selectedCandidateCores.map((candidate) => ({
+      outfitKey: candidate.outfitKey,
+      reasonCandidates: candidate.eligibilityReasonCandidates,
+    })));
+    for (let index = 0; index < selectedCandidateCores.length; index += 1) {
+      selectedCandidateCores[index].eligibilityReason = cloneEligibilityReason(reasonSelections[index].selectedReason);
+    }
+    const reasonWorkMs = Date.now() - reasonStartedAt;
+    recordRecommendationStage(diagnostics, 'ELIGIBILITY_REASON_FULL_BATCH_DONE', {
+      fields: { selectedCount: reasonSelections.length },
+    });
+    if (reasonSelections[0]) {
+      recordRecommendationStage(diagnostics, 'ELIGIBILITY_REASON_CARD0_READY', {
+        fields: { reasonCode: reasonSelections[0].selectedReason?.code || '' },
+      });
+    }
+    assertEligibilityReasons(selectedCandidateCores, { node: 'afterSelection', scene, weather: normalizedWeather });
+    timings.dedupeMs = selectionWorkMs + reasonWorkMs;
+    timings.batchSelectionMs = timings.filteringMs + selectionWorkMs + reasonWorkMs;
+
+    if (firstSelectedCandidate && results.length === 0) {
+      results.push(materialize(firstSelectedCandidate));
+    } else if (results[0]) {
+      results[0].eligibilityReason = cloneEligibilityReason(firstSelectedCandidate.eligibilityReason);
+    }
     for (let index = 1; index < selectedCandidateCores.length; index += 1) {
       results.push(materialize(selectedCandidateCores[index]));
     }

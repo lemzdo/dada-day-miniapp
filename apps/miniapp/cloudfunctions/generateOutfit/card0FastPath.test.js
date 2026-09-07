@@ -24,7 +24,7 @@ const CLOTHES = [
 
 // Isolated modules make index.js and the original styling helper use the same
 // instrumented REAL planner. No source substitutions or mocked plan outputs.
-function loadCore({ failPlanIndex, failEntry = false, remainingCardCpuMs = 0 } = {}) {
+function loadCore({ failPlanIndex, failEntry = false, remainingCardCpuMs = 0, remainingSelectorCpuMs = 0 } = {}) {
   const events = [];
   const attempts = [];
   let materializations = 0;
@@ -62,6 +62,28 @@ function loadCore({ failPlanIndex, failEntry = false, remainingCardCpuMs = 0 } =
     }
     if (request === './services/canonicalCandidate') return {
       ...canonical,
+      createCanonicalCandidateBatchSelector(...args) {
+        const selector = canonical.createCanonicalCandidateBatchSelector(...args);
+        if (remainingSelectorCpuMs <= 0) return selector;
+        let round = 0;
+        const instrumented = {
+          selected: selector.selected,
+          selectNext() {
+            const index = round++;
+            events.push(`selector${index}`);
+            if (index > 0) {
+              const until = performance.now() + remainingSelectorCpuMs;
+              while (performance.now() < until) { /* deterministic synchronous gate */ }
+            }
+            return selector.selectNext();
+          },
+          selectRemaining() {
+            while (instrumented.selectNext()) { /* Continue instrumented rounds. */ }
+            return instrumented.selected;
+          },
+        };
+        return instrumented;
+      },
       materializeCanonicalCandidate(...args) {
         const index = materializations++;
         events.push(`materialize${index}`);
@@ -139,6 +161,11 @@ test('Phase1A moves admission before card1 materialization and reuses plan0/fing
   assert.equal(payload.entry.preparedEntry.plan.planId, result.narrativePlans[0].planId);
   assert.strictEqual(payload.recommendation, result.outfits[0]);
   assert.deepEqual(publicBatch(result.outfits), publicBatch(oldOutfits));
+  assert.deepEqual(
+    result.outfits.map((outfit) => outfit.eligibilityReason),
+    oldOutfits.map((outfit) => outfit.eligibilityReason),
+    'the global reason allocator must backfill the exact legacy reason source data',
+  );
   assert.deepEqual(result.outfits.countContract, oldOutfits.countContract);
   assert.deepEqual(result.narrativePlans, oldPlans.plans);
   assert.equal(result.metadata.narrativePlanStatus, oldPlans.diagnostics.status);
@@ -146,13 +173,26 @@ test('Phase1A moves admission before card1 materialization and reuses plan0/fing
   assert.deepEqual(payload.entry, legacyEntry);
   assert.equal(payload.inputIdentityHash, result.identity.identityHash);
   assert.equal(payload.batchId, result.metadata.batchId);
+  assert.deepEqual(
+    result.metadata.candidatePoolPersistenceInput.candidates,
+    oldOutfits.candidatePoolCandidates,
+    'candidate pool identity/content remains unchanged',
+  );
+  const stageNames = result.evidence.diagnostics.stageDiagnostics.map((entry) => entry.stage);
+  const stageIndex = (name) => stageNames.indexOf(name);
+  assert.ok(stageIndex('SELECTOR_CARD0_FIXED') < stageIndex('CARD0_MATERIALIZE_START'));
+  assert.ok(stageIndex('CARD0_MATERIALIZE_DONE') < stageIndex('PLAN0_BUILD_START'));
+  assert.ok(stageIndex('PLAN0_BUILD_DONE') < stageIndex('FINGERPRINT_READY'));
+  assert.ok(stageIndex('FINGERPRINT_READY') < stageIndex('PLAN0_READY'));
+  assert.ok(stageIndex('PLAN0_READY') < stageIndex('SELECTOR_FULL_BATCH_DONE'));
+  assert.ok(stageIndex('SELECTOR_FULL_BATCH_DONE') < stageIndex('ELIGIBILITY_REASON_FULL_BATCH_DONE'));
   t.diagnostic(`before: ${old.events.join(' -> ')}`);
   t.diagnostic(`after: ${fast.events.join(' -> ')}`);
 });
 
 test('Phase1A starts the real provider before the synchronous remainder reaches FULL_BATCH_READY', async () => {
   async function runSchedulingCase(awaitAdmissionProgress) {
-    const harness = loadCore({ remainingCardCpuMs: 3 });
+    const harness = loadCore({ remainingCardCpuMs: 3, remainingSelectorCpuMs: 3 });
     const events = harness.events;
     let earlyEntry;
     let providerCalls = 0;
@@ -214,6 +254,7 @@ test('Phase1A starts the real provider before the synchronous remainder reaches 
   const fixed = await runSchedulingCase(true);
   assert.ok(legacy.events.indexOf('FULL_BATCH_READY') < legacy.events.indexOf('PROVIDER_START'));
   assert.ok(fixed.events.indexOf('plan0') < fixed.events.indexOf('PROVIDER_START'));
+  assert.ok(fixed.events.indexOf('PROVIDER_START') < fixed.events.indexOf('selector1'));
   assert.ok(fixed.events.indexOf('PROVIDER_START') < fixed.events.indexOf('materialize1'));
   assert.ok(fixed.events.indexOf('PROVIDER_START') < fixed.events.indexOf('FULL_BATCH_READY'));
   assert.equal(fixed.providerCalls, 1);

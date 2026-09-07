@@ -202,14 +202,15 @@ function setCanonicalReasonCandidates(candidate, reasons = []) {
   return target;
 }
 
-function selectCanonicalCandidateBatch(candidates = [], limit = 8) {
+function createCanonicalCandidateBatchSelector(candidates = [], limit = 8) {
   const remaining = (Array.isArray(candidates) ? candidates : [])
     .map(requireCandidate)
     .filter((candidate) => candidate.itemIds.length > 0)
     .slice();
   const selected = [];
 
-  while (selected.length < limit && remaining.length > 0) {
+  function selectNext() {
+    if (selected.length >= limit || remaining.length === 0) return null;
     const bestQuality = Math.max(...remaining.map((candidate) => baseQuality(candidate)));
     const comparable = remaining.filter((candidate) => baseQuality(candidate) >= bestQuality - QUALITY_COMPARABILITY_DELTA);
     const pool = comparable.length > 0 ? comparable : remaining;
@@ -219,7 +220,7 @@ function selectCanonicalCandidateBatch(candidates = [], limit = 8) {
         || right.evaluation.baseQuality - left.evaluation.baseQuality
         || readItemSignature(left.candidate).localeCompare(readItemSignature(right.candidate)));
     const chosen = ranked[0];
-    if (!chosen) break;
+    if (!chosen) return null;
     chosen.candidate.batchSelection = {
       ...chosen.evaluation,
       comparableAlternativeCount: Math.max(0, comparable.length - 1),
@@ -230,9 +231,19 @@ function selectCanonicalCandidateBatch(candidates = [], limit = 8) {
     selected.push(chosen.candidate);
     const index = remaining.indexOf(chosen.candidate);
     if (index >= 0) remaining.splice(index, 1);
+    return chosen.candidate;
   }
 
-  return selected;
+  function selectRemaining() {
+    while (selectNext()) { /* Continue the same selector state. */ }
+    return selected;
+  }
+
+  return { selected, selectNext, selectRemaining };
+}
+
+function selectCanonicalCandidateBatch(candidates = [], limit = 8) {
+  return createCanonicalCandidateBatchSelector(candidates, limit).selectRemaining();
 }
 
 function evaluateSetContribution(candidate, selected, bestQuality, comparableCandidates = []) {
@@ -455,6 +466,7 @@ module.exports = {
   CANONICAL_CANDIDATE_VERSION,
   REQUIRED_ROLE_KEYS,
   adaptCompositionCandidate,
+  createCanonicalCandidateBatchSelector,
   createCandidateCore,
   hydrateCanonicalEligibility,
   hydrateCanonicalScore,
