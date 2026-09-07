@@ -33,6 +33,25 @@ function events(res) {
   });
 }
 
+test('production HTTP telemetry forwards milestones without adding SSE fields or frames', async () => {
+  const records = [];
+  const body = { batch: { batchId: 'milestone-batch' } };
+  const handler = stream.createRecommendationStreamHandler({
+    createDiagnostics: () => ({}), recordStage: (_diagnostics, stage, details) => records.push({ stage, ...details }),
+    runRuntime: async (_input, context, hooks) => {
+      for (const key of ['AI_START', 'AI_COMPLETE', 'CANONICAL_READY']) context.onTelemetry({ key, value: 12 });
+      await hooks.onRecommendationReady({ batchId: body.batch.batchId, response: body });
+      return { response: body, aiDone: Promise.resolve({ status: 'SUCCESS' }) };
+    },
+  });
+  const res = response();
+  await handler(request(), res);
+  assert.deepEqual(records.filter(({ stage }) => ['AI_START', 'AI_COMPLETE', 'CANONICAL_READY'].includes(stage))
+    .map(({ elapsedMs }) => elapsedMs), [12, 12, 12]);
+  assert.deepEqual(events(res).map(({ name }) => name), ['recommendation.ready', 'complete']);
+  assert.deepEqual(events(res)[0].data.response, body);
+});
+
 test('HTTP auth and client generation map to the existing user and batch identity', async () => {
   const handler = stream.createRecommendationStreamHandler({ runRuntime: async (_input, context, hooks) => {
     assert.equal(context.userIdentity.openid, 'openid-1');

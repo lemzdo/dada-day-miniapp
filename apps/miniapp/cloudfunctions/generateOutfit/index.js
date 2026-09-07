@@ -825,6 +825,38 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
     : process.hrtime.bigint();
   let backgroundPromise = Promise.resolve([]);
   let firstCardCopyJobPromise = null;
+  let firstCardCopyJobSettlementPromise = null;
+  const settleFirstCardCopyJob = (outcome = {}) => {
+    // Success and failure share one first-call-wins settlement owner.  This
+    // prevents a late response-application error from settling a job that was
+    // already completed successfully (or vice versa).
+    if (firstCardCopyJobSettlementPromise) return firstCardCopyJobSettlementPromise;
+    firstCardCopyJobSettlementPromise = Promise.resolve(firstCardCopyJobPromise)
+      .catch(() => null)
+      .then((job) => {
+        if (!job?.jobId) return { updated: false, status: 'not_found' };
+        // A cache-hit job is already durably owned by its canonical copy. An
+        // unrelated later Core failure must not downgrade that ready state.
+        if (outcome.status === 'FAIL'
+          && job.initialCopies?.some((copy) => copy?.cardIndex === 0)) {
+          return { updated: false, status: 'ready_cache_hit' };
+        }
+        return settleInteractiveRecommendationCopyJob(db, job.jobId, outcome);
+      });
+    return firstCardCopyJobSettlementPromise;
+  };
+  const markFirstCardCopyJobRetryable = ({ reason, error, result } = {}) => {
+    const normalizedReason = readString(reason) || 'PROVIDER_FAIL';
+    const failedStage = normalizedReason === 'VALIDATOR_FAIL'
+      ? 'validation'
+      : normalizedReason === 'PERSIST_FAIL' ? 'canonical_write' : 'provider';
+    return settleFirstCardCopyJob({
+      status: 'FAIL',
+      failedStage,
+      failureCode: readString(result?.failureCode)
+        || (error ? getRecommendationErrorCode(error) : normalizedReason),
+    });
+  };
   const runtimeHooks = {
     ...lifecycleHooks,
     onNarrativePlansReady: (payload) => {
@@ -845,6 +877,7 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
       const elapsedStages = new Set([
         'requestStart', 'coreResultReady', 'firstCardAiStart', 'firstCardAiValidated',
         'firstCardCanonicalPersisted', 'recommendationReady', 'deadlineReached', 'responseReady',
+        'PLAN0_READY', 'AI_START', 'AI_COMPLETE', 'CANONICAL_READY',
       ]);
       if (elapsedStages.has(key)) {
         recordRecommendationStage(diagnostics, key, {
@@ -871,6 +904,8 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
     prepareRecommendationWork: async (core) => prepareProductionRecommendationWork(core, diagnostics, {
       ...context,
       firstCardCopyJobPromise,
+      markFirstCardCopyJobRetryable,
+      settleFirstCardCopyJob,
     }),
     persistAndAssembleRecommendation: async (core, prepared) => persistAndAssembleProductionRecommendation(core, prepared, diagnostics),
     renderFirstCardCanonical: context.renderFirstCardCanonical || renderFirstCardCanonical,
@@ -903,6 +938,7 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
             cardIndex: jobEntry.position,
           } : null };
         },
+        markCopyJobRetryable: markFirstCardCopyJobRetryable,
         applyCanonicalToResponse: applyFirstCardCanonicalToResponse,
       };
     }),
@@ -1052,6 +1088,20 @@ async function computeProductionRecommendationCore(event, diagnostics = createRe
   let firstCardPlanAttempted = false;
   const notifyFirstCard = ({ plan, recommendation, index = 0 }) => {
     if (index !== 0 || typeof scfContext.onFirstCardReady !== 'function') return;
+    try {
+      if (diagnostics.plan0ReadyAt === undefined && plan && recommendation) {
+        // Use the same runtime origin as RecommendationAudit, including when
+        // the HTTP adapter created diagnostics before loading the runtime.
+        diagnostics.plan0ReadyAt = typeof scfContext.handlerOrigin === 'bigint'
+          ? Number(process.hrtime.bigint() - scfContext.handlerOrigin) / 1e6
+          : monotonicElapsedMs(diagnostics);
+        recordRecommendationStage(diagnostics, 'PLAN0_READY', {
+          elapsedMs: diagnostics.plan0ReadyAt,
+          batchId: v2BatchId,
+          fields: { planId: plan.planId, cardIndex: 0 },
+        });
+      }
+    } catch { /* Observations cannot alter first-card admission. */ }
     try {
       const entry = buildProductionRendererEntry(plan, recommendation, 0, recommendation?.outfitKey);
       // The orchestrator owns the work; observe injected async hook failures.
@@ -1280,11 +1330,17 @@ async function prepareProductionRecommendationWork(core, diagnostics, context = 
         return { status: 'SUCCESS', copy: rendered.copy || rendered.canonicalCopy };
       },
       completeCopyJob: async () => {
+        if (typeof context.settleFirstCardCopyJob === 'function') {
+          return context.settleFirstCardCopyJob({ status: 'SUCCESS' });
+        }
         const job = await copyJobPromise;
         if (!job?.jobId) throw new Error('COPY_JOB_ID_REQUIRED');
         return settleInteractiveRecommendationCopyJob(db, job.jobId, { status: 'SUCCESS' });
       },
       markCopyJobRetryable: async ({ reason, error, result } = {}) => {
+        if (typeof context.markFirstCardCopyJobRetryable === 'function') {
+          return context.markFirstCardCopyJobRetryable({ reason, error, result });
+        }
         const job = await copyJobPromise;
         if (!job?.jobId) return { updated: false, status: 'not_found' };
         const normalizedReason = readString(reason) || 'PROVIDER_FAIL';

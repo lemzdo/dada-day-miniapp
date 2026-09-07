@@ -1,5 +1,7 @@
 # Deterministic First Card AI QA smoke
 
+生产微信入口的单命令 smoke 见 [Production Smoke Enablement](./production-first-card-smoke.md)。本文 runner 仍使用隔离内存数据库。
+
 这个 QA runner 通过固定测试输入和全新内存数据库自然获得首卡 MISS，并运行真实的 recommendationStream HTTP handler、generateOutfit runtime、FirstCardRenderer、AI Core 和 Provider。生产 prompt、模型、timeout、fallback、缓存策略保持原样。
 
 ## 运行

@@ -28,6 +28,7 @@ export default tseslint.config(
       'apps/miniapp/scripts/cloud-deploy*.js',
       'apps/miniapp/scripts/deployment-contract-lite*.js',
       'apps/miniapp/scripts/stage-recommendation-artifacts.js',
+      'apps/miniapp/scripts/production-first-card-smoke/*.js',
     ],
     languageOptions: {
       sourceType: 'commonjs',
@@ -40,6 +41,10 @@ export default tseslint.config(
         process: 'readonly',
         require: 'readonly',
         SharedArrayBuffer: 'readonly',
+        TextEncoder: 'readonly',
+        wx: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
       },
     },
     rules: {
@@ -66,8 +71,9 @@ export default tseslint.config(
     files: [
       'packages/ai-core/src/{failure,provider,index,provider.test,ai-core.test}.js',
       'apps/miniapp/cloudfunctions/generateOutfit/index.js',
-      'apps/miniapp/cloudfunctions/recommendationStream/index.test.js',
+      'apps/miniapp/cloudfunctions/recommendationStream/index{,.test}.js',
       'apps/miniapp/cloudfunctions/generateOutfit/services/firstCardObservability.js',
+      'apps/miniapp/cloudfunctions/generateOutfit/services/recommendationCopyProductionArchitecture.test.js',
       'apps/miniapp/cloudfunctions/generateOutfit/runtime/recommendationOrchestrator{,.test}.js',
       'apps/miniapp/cloudfunctions/generateOutfit/services/recommendation{FirstCardRenderer,VoiceRendererProductionV2}{,.test}.js',
     ],

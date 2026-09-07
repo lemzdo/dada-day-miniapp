@@ -150,7 +150,8 @@ function createRecommendationStreamHandler({
           return;
         }
         if (!['requestStart', 'coreResultReady', 'firstCardAiStart', 'firstCardAiValidated',
-          'firstCardCanonicalPersisted', 'deadlineReached', 'responseReady'].includes(key)) return;
+          'firstCardCanonicalPersisted', 'deadlineReached', 'responseReady',
+          'PLAN0_READY', 'AI_START', 'AI_COMPLETE', 'CANONICAL_READY'].includes(key)) return;
         stage(key, {
           elapsedMs: typeof value === 'number' ? value : undefined,
           batchId: readyBatchId || undefined,

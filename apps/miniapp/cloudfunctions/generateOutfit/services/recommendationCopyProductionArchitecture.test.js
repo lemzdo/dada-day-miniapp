@@ -48,6 +48,10 @@ test('first-card provider admission waits for the durable card0 job reservation'
     'async function runProductionRecommendationRuntime',
     'async function computeProductionRecommendationCore',
   );
+  const prepareBody = bodyBetween(
+    'async function prepareProductionRecommendationWork',
+    'async function persistAndAssembleProductionRecommendation',
+  );
   assert.match(runtimeBody, /firstCardCopyJobPromise \|\|= prepareRecommendationCopyJob/);
   assert.match(runtimeBody, /resolveAdmission: async \(\) => \{[\s\S]*await firstCardCopyJobPromise/);
   const firstCardBody = orchestratorSource.slice(
@@ -58,6 +62,25 @@ test('first-card provider admission waits for the durable card0 job reservation'
     firstCardBody.indexOf('await interactive.resolveAdmission()')
       < firstCardBody.indexOf('await context.renderFirstCardCanonical'),
   );
+  assert.match(runtimeBody, /markCopyJobRetryable: markFirstCardCopyJobRetryable/);
+  assert.match(runtimeBody, /firstCardCopyJobSettlementPromise/);
+  assert.match(runtimeBody, /settleFirstCardCopyJob = \(outcome = \{\}\)/);
+  assert.match(runtimeBody, /settleInteractiveRecommendationCopyJob\(db, job\.jobId/);
+  assert.match(prepareBody, /context\.settleFirstCardCopyJob\(\{ status: 'SUCCESS' \}\)/);
+});
+
+test('production success and retry cleanup share one first-call-wins durable settlement', () => {
+  const runtimeBody = bodyBetween(
+    'async function runProductionRecommendationRuntime',
+    'async function computeProductionRecommendationCore',
+  );
+  const prepareBody = bodyBetween(
+    'async function prepareProductionRecommendationWork',
+    'async function persistAndAssembleProductionRecommendation',
+  );
+  assert.match(runtimeBody, /settleFirstCardCopyJob\(\{\s*status: 'FAIL'/);
+  assert.match(prepareBody, /context\.settleFirstCardCopyJob\(\{ status: 'SUCCESS' \}\)/);
+  assert.match(runtimeBody, /if \(firstCardCopyJobSettlementPromise\) return firstCardCopyJobSettlementPromise/);
 });
 
 test('SCF Event worker remains available only as a recovery action', () => {

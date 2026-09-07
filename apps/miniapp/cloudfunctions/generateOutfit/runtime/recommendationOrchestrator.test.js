@@ -132,6 +132,36 @@ test('one-shot first-card ready starts lookup/provider before Core releases', as
   await running;
 });
 
+test('performance milestones use provider start and full execution end, while HIT remains AI-free', async () => {
+  const timings = [];
+  const diagnostics = { auditId: 'milestones', stageLogger() {} };
+  const context = interactiveContext({ context: {
+    diagnostics, onTelemetry: (value) => timings.push(value),
+    renderFirstCardCanonical: async ({ rendererConfig }) => {
+      assert.equal(diagnostics.AI_START, undefined, 'admission is not a provider call');
+      rendererConfig.onAuditStage('PROVIDER_START', 'started');
+      rendererConfig.onAuditStage('PROVIDER_COMPLETE', 'completed');
+      assert.equal(diagnostics.AI_COMPLETE, undefined, 'a streaming Response is not completed AI');
+      rendererConfig.onAuditStage('EXECUTION_COMPLETE', 'succeeded');
+      return { status: 'success', copy: { planId: 'plan-1', text: 'AI canonical' } };
+    },
+  } });
+  const result = await runRecommendationOrchestrator({}, context);
+  await result.tailDone;
+  assert.deepEqual(timings.filter(({ key }) => ['AI_START', 'AI_COMPLETE', 'CANONICAL_READY'].includes(key))
+    .map(({ key }) => key), ['AI_START', 'AI_COMPLETE', 'CANONICAL_READY']);
+  assert.equal(result.response.light.cards[0].todayReason, 'AI canonical');
+  const hitTimings = [];
+  await runRecommendationOrchestrator({}, interactiveContext({
+    firstCardInteractive: { cachedCopy: { text: 'cached' } },
+    context: { diagnostics: { auditId: 'hit-milestones', stageLogger() {} },
+      onTelemetry: ({ key }) => hitTimings.push(key),
+      renderFirstCardCanonical: () => { throw new Error('HIT must not render'); } },
+  }));
+  assert.ok(hitTimings.includes('CANONICAL_READY'));
+  assert.ok(!hitTimings.includes('AI_START') && !hitTimings.includes('AI_COMPLETE'));
+});
+
 test('early provider does not await unrelated candidate persistence', async () => {
   let releaseCandidate;
   const candidateGate = new Promise((resolve) => { releaseCandidate = resolve; });
@@ -879,6 +909,51 @@ test('Phase1A partial preparation exposes cleanup through returned tailDone', as
   provider.reject(new Error('late provider failure'));
   assert.equal((await tail).status, 'FAIL');
   await result.aiDone;
+});
+
+test('Phase1A core failure settles the admission-owned durable job when preparation has not completed', async () => {
+  const provider = deferredCardWork();
+  let retryCount = 0;
+  const admission = {
+    entry: {},
+    markCopyJobRetryable: async () => { retryCount += 1; },
+  };
+  const context = interactiveContext();
+  context.prepareFirstCardInteractive = () => admission;
+  context.computeRecommendation = async (_input, runtimeContext) => {
+    runtimeContext.onFirstCardReady({});
+    throw new Error('core failed before preparation');
+  };
+  context.renderFirstCardCanonical = () => provider.promise;
+  const caught = runRecommendationOrchestrator({}, context);
+  await new Promise((resolve) => setImmediate(resolve));
+  provider.resolve({ status: 'success', copy: { text: 'unused' } });
+  await assert.rejects(caught, /core failed before preparation/);
+  assert.equal(retryCount, 1);
+});
+
+test('Phase1A starts admission cleanup before an unresolved provider settles', async () => {
+  const provider = deferredCardWork();
+  let retryCount = 0;
+  let cleanupStarted = false;
+  const admission = {
+    entry: {},
+    markCopyJobRetryable: async () => { cleanupStarted = true; retryCount += 1; },
+  };
+  const context = interactiveContext();
+  context.prepareFirstCardInteractive = () => admission;
+  context.computeRecommendation = async (_input, runtimeContext) => {
+    runtimeContext.onFirstCardReady({});
+    throw new Error('core failed while provider is running');
+  };
+  context.renderFirstCardCanonical = () => provider.promise;
+  const caught = runRecommendationOrchestrator({}, context);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(cleanupStarted, true);
+  assert.equal(retryCount, 1);
+  provider.resolve({ status: 'success', copy: { text: 'unused' } });
+  await assert.rejects(caught, /core failed while provider is running/);
+  assert.equal(retryCount, 1);
 });
 
 test('Phase1A failure cleanup is bounded and still observes rejection after tail expires', async () => {

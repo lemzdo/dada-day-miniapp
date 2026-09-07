@@ -18,7 +18,10 @@
     "today:hot:accept": "node apps/miniapp/scripts/devtools-acceptance.js today-hot",
     "devtools:acceptance:test": "node --test apps/miniapp/scripts/devtools-acceptance.test.js",
     "first-card:smoke": "node apps/miniapp/scripts/first-card-ai-smoke/runner.js --live",
-    "first-card:smoke:test": "node --test apps/miniapp/scripts/first-card-ai-smoke/runner.test.js"
+    "first-card:smoke:test": "node --test apps/miniapp/scripts/first-card-ai-smoke/runner.test.js",
+    "first-card:production-smoke": "node apps/miniapp/scripts/production-first-card-smoke/runner.js --live",
+    "first-card:production-smoke:test": "node --test apps/miniapp/scripts/production-first-card-smoke/*.test.js",
+    "first-card:production-smoke:compare": "node apps/miniapp/scripts/production-first-card-smoke/compare.js"
   },
   "devDependencies": {
     "@cloudbase/cli": "3.8.1",

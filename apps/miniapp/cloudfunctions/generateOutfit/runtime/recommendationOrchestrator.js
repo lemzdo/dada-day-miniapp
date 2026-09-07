@@ -95,6 +95,15 @@ function auditStage(context, stage, status = 'completed', extra = {}) {
     diagnostics.firstCardAudit.executionOutcome = 'succeeded';
   }
   diagnostics.firstCardAudit.stages.push(entry);
+  // Align the public performance timeline with the provider lifecycle. The
+  // admission latch is earlier than provider invocation and must not be
+  // reported as AI_START.
+  if (stage === 'PROVIDER_START' && diagnostics.AI_START === undefined) {
+    setDiagnostic(context, 'AI_START', entry.elapsedFromHandlerMs);
+  } else if (stage === 'EXECUTION_COMPLETE'
+    && diagnostics.AI_COMPLETE === undefined) {
+    setDiagnostic(context, 'AI_COMPLETE', entry.elapsedFromHandlerMs);
+  }
   logAudit(context, '[RecommendationAudit]', entry);
 }
 
@@ -343,6 +352,7 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
               persisted = persistResult.value || first.copy;
               auditStage(context, 'CANONICAL_PERSISTED');
               setDiagnostic(context, 'firstCardCanonicalPersisted', elapsedMs(handlerOrigin));
+              setDiagnostic(context, 'CANONICAL_READY', elapsedMs(handlerOrigin));
             }
           }
         }
@@ -409,7 +419,15 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
     // response to carry tailDone in this branch. Keep this invocation alive
     // until bounded cleanup settles, then propagate the original failure.
     if (earlyCardOwner?.promise) {
-      await drainEarlyCardOwner(earlyCardOwner, context, prepared?.firstCardInteractive, error);
+      // Core/prepare can fail before the prepared work adapter exists.  The
+      // admission adapter is still the owner of the reserved durable job and
+      // must receive the retryable settlement in that case.
+      await drainEarlyCardOwner(
+        earlyCardOwner,
+        context,
+        prepared?.firstCardInteractive || earlyCardOwner.interactive,
+        error,
+      );
     }
     await safeCall(lifecycleHooks.onRuntimeFailure, { error, input: normalized });
     throw error;
@@ -451,16 +469,20 @@ function drainEarlyCardOwner(owner, context, interactive, error) {
   });
   // Promise.race observes both branches; the explicit catch keeps the owner
   // fail-open even if an injected adapter returns a malformed thenable.
+  let retryableSettlement = Promise.resolve();
+  if (interactive && !owner.retryableMarked) {
+    owner.retryableMarked = true;
+    retryableSettlement = Promise.resolve(
+      markFirstCardRetryable(interactive, { status: 'FAIL', reason: 'RECOMMENDATION_FAILED', error }),
+    ).catch(() => undefined);
+  }
   const work = Promise.resolve(owner.promise).catch((cause) => ({
     status: 'FAIL', reason: 'EARLY_CARD_FAIL', error: cause,
   })).then(async (result) => {
-    // A successful provider result is still uncommitted when the batch fails.
-    // Leave its job retryable through the existing prepared adapter; cleanup
-    // never writes canonical data. Cached copies already have a durable owner.
-    if (interactive && !owner.retryableMarked && result?.status !== 'CACHE_HIT') {
-      owner.retryableMarked = true;
-      await markFirstCardRetryable(interactive, { status: 'FAIL', reason: 'RECOMMENDATION_FAILED', error });
-    }
+    // The retryable settlement starts immediately above, while this branch
+    // only drains the already-admitted provider promise. Cleanup never writes
+    // canonical data; cached copies already have a durable owner.
+    await retryableSettlement;
     return result;
   });
   owner.tailDone = Promise.race([work, timeout]).finally(() => {
@@ -526,6 +548,7 @@ async function settleFirstCardTail({ cardPromise, persistPromise, interactive, c
       if (!tailOpen) return { status: 'TAIL_TIMEOUT', reason: 'TAIL_TIMEOUT' };
       auditStage(context, 'CANONICAL_PERSISTED', 'tail');
       setDiagnostic(context, 'firstCardCanonicalPersisted', elapsedMs(context.handlerOrigin));
+      setDiagnostic(context, 'CANONICAL_READY', elapsedMs(context.handlerOrigin));
       setDiagnostic(context, 'FIRST_CARD_AI_RESULT', 'SUCCESS_TAIL');
       return { ...late, copy: persisted || late.copy, status: 'SUCCESS_TAIL' };
     }
@@ -576,6 +599,7 @@ async function runFirstCard(interactive, context, origin, deadlineAt) {
   }
   if (admission.cachedCopy) {
     setDiagnostic(context, 'FIRST_CARD_AI_RESULT', 'CACHE_HIT');
+    setDiagnostic(context, 'CANONICAL_READY', elapsedMs(origin));
     return { status: 'CACHE_HIT', copy: admission.cachedCopy };
   }
   if (typeof context.renderFirstCardCanonical !== 'function' || !admission.entry) {
