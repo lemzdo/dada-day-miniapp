@@ -21,7 +21,7 @@ function phaseTimeline(report, mode) {
     stages: request?.stages || request?.audit?.stages || [],
     performanceStages: request?.performanceStages || request?.audit?.performanceStages || [],
   });
-  return { PLAN0_READY: timeline.PLAN0_READY, AI_START: timeline.AI_START,
+  return { PLAN0_READY: timeline.PLAN0_READY, FULL_BATCH_READY: timeline.FULL_BATCH_READY, AI_START: timeline.AI_START,
     AI_COMPLETE: timeline.AI_COMPLETE, CANONICAL_READY: timeline.CANONICAL_READY,
     VISIBLE: validTime(request?.visibility?.elapsedFromRequestMs) ? request.visibility.elapsedFromRequestMs : null };
 }

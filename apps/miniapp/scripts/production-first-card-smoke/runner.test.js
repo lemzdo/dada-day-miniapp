@@ -24,7 +24,14 @@ function harness(initialCache, options = {}) {
     const hit = cachePresent;
     if (!hit) cachePresent = true;
     const stages = [{ stage: 'CACHE_LOOKUP_DONE', status: hit ? 'hit' : 'miss' }];
-    if (!hit) stages.push({ stage: 'FIRST_CARD_AI_ADMITTED', status: 'admitted' }, { stage: 'PROVIDER_START', status: 'started' }, { stage: 'PROVIDER_COMPLETE', status: 'completed' }, { stage: 'VALIDATOR_COMPLETE', status: 'accepted' }, { stage: 'CANONICAL_PERSISTED', status: 'completed' });
+    if (!hit) stages.push(
+      { stage: 'FIRST_CARD_AI_ADMITTED', status: 'admitted', elapsedFromHandlerMs: 1 },
+      { stage: 'PROVIDER_START', status: 'started', elapsedFromHandlerMs: 2 },
+      { stage: 'FULL_BATCH_READY', status: 'completed', elapsedFromHandlerMs: 3 },
+      { stage: 'PROVIDER_COMPLETE', status: 'completed', elapsedFromHandlerMs: 4 },
+      { stage: 'VALIDATOR_COMPLETE', status: 'accepted', elapsedFromHandlerMs: 5 },
+      { stage: 'CANONICAL_PERSISTED', status: 'completed', elapsedFromHandlerMs: 6 },
+    );
     return { result, job: await admin.getJob({ openid: context.openid, batchId: result.batchId }), cache: hit ? await admin.getCache({}) : { _id: buildCacheIdentity({ openid, rendererVersion, renderInputFingerprint: fingerprint }), cacheId: buildCacheIdentity({ openid, rendererVersion, renderInputFingerprint: fingerprint }), _openid: openid, rendererVersion, renderInputFingerprint: fingerprint, source: 'ai_cache', text: '真实文案' }, audit: { stages, summaries: [{ executionOutcome: 'succeeded', failure: null, validated: true, persisted: true, providerCalled: hit ? false : true, firstCardAiStarted: hit ? false : true }], unparsed: 0 } };
   };
   return { admin, mini, invoke, wait, get deletes() { return deletes; }, set currentUser(value) { currentUser = value; }, get user() { return currentUser; } };

@@ -877,7 +877,7 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
       const elapsedStages = new Set([
         'requestStart', 'coreResultReady', 'firstCardAiStart', 'firstCardAiValidated',
         'firstCardCanonicalPersisted', 'recommendationReady', 'deadlineReached', 'responseReady',
-        'PLAN0_READY', 'AI_START', 'AI_COMPLETE', 'CANONICAL_READY',
+        'PLAN0_READY', 'FULL_BATCH_READY', 'AI_START', 'AI_COMPLETE', 'CANONICAL_READY',
       ]);
       if (elapsedStages.has(key)) {
         recordRecommendationStage(diagnostics, key, {
@@ -1105,18 +1105,20 @@ async function computeProductionRecommendationCore(event, diagnostics = createRe
     try {
       const entry = buildProductionRendererEntry(plan, recommendation, 0, recommendation?.outfitKey);
       // The orchestrator owns the work; observe injected async hook failures.
-      void Promise.resolve(scfContext.onFirstCardReady({
+      const admissionProgress = scfContext.onFirstCardReady({
         entry,
         recommendation,
         plan,
         batchId: v2BatchId,
         inputIdentityHash: candidatePoolIdentity.identityHash,
-      })).catch(() => undefined);
+      });
+      void Promise.resolve(admissionProgress).catch(() => undefined);
+      return admissionProgress;
     } catch { /* Admission failure cannot invalidate a completed plan. */ }
   };
   if (!recommendations) {
     const candidateGenerationStartedAt = Date.now();
-    recommendations = generateRuleRecommendations({
+    recommendations = await generateRuleRecommendations({
       clothes,
       scene,
       weather,
@@ -1140,7 +1142,7 @@ async function computeProductionRecommendationCore(event, diagnostics = createRe
           firstCardFailureCode = readShadowFailureCode(error);
           return;
         }
-        notifyFirstCard({ plan: firstCardPlan, recommendation });
+        return notifyFirstCard({ plan: firstCardPlan, recommendation });
       },
     });
     recordServerPhase(diagnostics, 'candidateGeneration', candidateGenerationStartedAt);
@@ -4725,17 +4727,26 @@ function generateRuleRecommendations({
     // before materializing card1..N so the existing orchestrator can admit the
     // card0 provider work while the remainder follows the original path.
     if (typeof onFirstCardMaterialized === 'function') {
-      onFirstCardMaterialized({ recommendation: card0, index: 0 });
+      const admissionProgress = onFirstCardMaterialized({ recommendation: card0, index: 0 });
+      if (admissionProgress && typeof admissionProgress.then === 'function') {
+        return Promise.resolve(admissionProgress).then(
+          () => finishRecommendationBatch(),
+          () => finishRecommendationBatch(),
+        );
+      }
     }
   }
-  for (let index = 1; index < selectedCandidateCores.length; index += 1) {
-    results.push(materialize(selectedCandidateCores[index]));
-  }
-  timings.materializationMs = Date.now() - materializationStartedAt;
-  recordInstrumentationTiming(testInstrumentation, 'materializationMs', timings.materializationMs);
+  return finishRecommendationBatch();
 
-  const exclusionStats = getExclusionStats(scored, excludedOutfitKeys, excludeClothingIdSets);
-  results.debug = {
+  function finishRecommendationBatch() {
+    for (let index = 1; index < selectedCandidateCores.length; index += 1) {
+      results.push(materialize(selectedCandidateCores[index]));
+    }
+    timings.materializationMs = Date.now() - materializationStartedAt;
+    recordInstrumentationTiming(testInstrumentation, 'materializationMs', timings.materializationMs);
+
+    const exclusionStats = getExclusionStats(scored, excludedOutfitKeys, excludeClothingIdSets);
+    results.debug = {
     candidateCount: candidates.length,
     generatedCount: candidates.length,
     guardCandidateCount: guardResult.debug.guardCandidateCount,
@@ -4760,26 +4771,27 @@ function generateRuleRecommendations({
         'DIVERSITY_EXHAUSTED',
       )
       : '',
-  };
-  if (debugRecommendationAudit) {
-    results.debug._auditGuardAcceptedCandidates = scored;
-    results.debug._auditGuardRejectedCandidates = guardResult.rejected;
+    };
+    if (debugRecommendationAudit) {
+      results.debug._auditGuardAcceptedCandidates = scored;
+      results.debug._auditGuardRejectedCandidates = guardResult.rejected;
+    }
+    results.debug._auditAcceptedCandidates = scored;
+    results.countContract = buildRecommendationCountContract({
+      requestedBatchSize: limit,
+      returnedCardCount: results.length,
+      remainingUniqueBeforeConsume: available.length,
+      executionMode: 'full_compute',
+    });
+    results.limited = results.countContract.expectedCardCount < results.countContract.requestedBatchSize;
+    results.exhausted = results.countContract.poolExhaustedAfterConsume;
+    Object.defineProperty(results, 'candidatePoolCandidates', {
+      value: scored,
+      enumerable: false,
+      configurable: false,
+    });
+    return results;
   }
-  results.debug._auditAcceptedCandidates = scored;
-  results.countContract = buildRecommendationCountContract({
-    requestedBatchSize: limit,
-    returnedCardCount: results.length,
-    remainingUniqueBeforeConsume: available.length,
-    executionMode: 'full_compute',
-  });
-  results.limited = results.countContract.expectedCardCount < results.countContract.requestedBatchSize;
-  results.exhausted = results.countContract.poolExhaustedAfterConsume;
-  Object.defineProperty(results, 'candidatePoolCandidates', {
-    value: scored,
-    enumerable: false,
-    configurable: false,
-  });
-  return results;
 }
 
 function generateCandidatePoolRecommendations({

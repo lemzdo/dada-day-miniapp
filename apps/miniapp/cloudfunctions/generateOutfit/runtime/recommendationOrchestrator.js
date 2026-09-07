@@ -147,7 +147,7 @@ function auditSummary(context, extra = {}) {
     failure: sanitizeFailure(audit.failure),
     snapshot: extra.snapshot || 'response',
     stageStatus: Object.fromEntries([
-      'HANDLER_ENTRY', 'CORE_READY', 'NARRATIVE_PLAN_READY', 'CACHE_LOOKUP_DONE',
+      'HANDLER_ENTRY', 'FULL_BATCH_READY', 'CORE_READY', 'NARRATIVE_PLAN_READY', 'CACHE_LOOKUP_DONE',
       'FIRST_CARD_AI_ADMITTED', 'PROVIDER_START', 'PROVIDER_COMPLETE',
       'VALIDATOR_COMPLETE', 'CANONICAL_PERSISTED', 'BACKGROUND_DISPATCHED',
       'DEADLINE_REACHED',
@@ -192,20 +192,32 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
   const orchestrationContext = {
     ...context,
     onFirstCardReady: (payload) => {
-      if (earlyCardOwner) return earlyCardOwner.interactive || earlyCardOwner.promise;
+      if (earlyCardOwner) return earlyCardOwner.admissionProgress;
       if (coreFinished) return;
       if (typeof context.prepareFirstCardInteractive !== 'function') return;
       // Latch before invoking the adapter: production preparation may invoke
       // user supplied/re-entrant code, and the callback must remain one-shot
       // even when preparation throws synchronously.
-      earlyCardOwner = { interactive: null, promise: null };
+      let resolveAdmissionProgress;
+      const admissionProgress = new Promise((resolve) => { resolveAdmissionProgress = resolve; });
+      earlyCardOwner = {
+        interactive: null,
+        promise: null,
+        admissionProgress,
+        admissionProgressSettled: false,
+      };
       let preparedInteractive;
       try {
         preparedInteractive = context.prepareFirstCardInteractive(payload);
         const owner = earlyCardOwner;
+        const markAdmissionProgress = (status) => {
+          if (owner.admissionProgressSettled) return;
+          owner.admissionProgressSettled = true;
+          resolveAdmissionProgress({ status });
+        };
         const start = (value) => owner.abandoned
-          ? Promise.resolve({ status: 'FAIL', reason: 'RECOMMENDATION_FAILED' })
-          : runFirstCard(value, context, handlerOrigin, deadlineAt);
+          ? (markAdmissionProgress('abandoned'), Promise.resolve({ status: 'FAIL', reason: 'RECOMMENDATION_FAILED' }))
+          : runFirstCard(value, context, handlerOrigin, deadlineAt, markAdmissionProgress);
         // Production preparation is synchronous, so runFirstCard reaches the
         // canonical read immediately while Core continues plans 1..N. Keep
         // Promise support for injected adapters without duplicating the path.
@@ -216,6 +228,7 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
               return start(value);
             })
             .catch((error) => {
+              markAdmissionProgress('admission_failed');
               const failure = failureFor(context, error, { stage: 'admission', code: 'ADMISSION_FAILED' });
               setDiagnostic(context, 'FIRST_CARD_AI_RESULT', 'PROVIDER_FAIL');
               return { status: 'FAIL', reason: 'PROVIDER_FAIL', error, failure };
@@ -223,6 +236,7 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
         } else {
           earlyCardOwner.interactive = preparedInteractive;
           earlyCardOwner.promise = asPromise(start(preparedInteractive)).catch((error) => {
+            markAdmissionProgress('admission_failed');
             const failure = failureFor(context, error, { stage: 'runtime', code: 'RUNTIME_FAILED' });
             setDiagnostic(context, 'FIRST_CARD_AI_RESULT', 'PROVIDER_FAIL');
             return { status: 'FAIL', reason: 'PROVIDER_FAIL', error, failure };
@@ -230,12 +244,14 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
         }
         // The owner promise always has a rejection handler before control
         // returns to Core, so an adapter failure cannot become unhandled.
-        return owner.interactive || owner.promise;
+        return owner.admissionProgress;
       } catch (error) {
+        resolveAdmissionProgress({ status: 'admission_failed' });
+        earlyCardOwner.admissionProgressSettled = true;
         const failure = failureFor(context, error, { stage: 'admission', code: 'ADMISSION_FAILED' });
         setDiagnostic(context, 'FIRST_CARD_AI_RESULT', 'PROVIDER_FAIL');
         earlyCardOwner.promise = Promise.resolve({ status: 'FAIL', reason: 'PROVIDER_FAIL', error, failure });
-        return earlyCardOwner.promise;
+        return earlyCardOwner.admissionProgress;
       }
     },
   };
@@ -245,6 +261,8 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
   try {
     core = await runRecommendationCore(normalized, orchestrationContext);
     coreFinished = true;
+    auditStage(context, 'FULL_BATCH_READY');
+    setDiagnostic(context, 'FULL_BATCH_READY', elapsedMs(handlerOrigin));
     auditStage(context, 'CORE_READY');
     setDiagnostic(context, 'coreResultReady', elapsedMs(handlerOrigin));
     void safeCall(lifecycleHooks.onCoreResultAvailable, { result: core, input: normalized });
@@ -584,13 +602,14 @@ async function settleFirstCardTail({ cardPromise, persistPromise, interactive, c
   }
 }
 
-async function runFirstCard(interactive, context, origin, deadlineAt) {
+async function runFirstCard(interactive, context, origin, deadlineAt, onAdmissionProgress = () => {}) {
   let admission = interactive;
   if (typeof interactive.resolveAdmission === 'function') {
     try {
       admission = { ...interactive, ...(await interactive.resolveAdmission()) };
       auditStage(context, 'CACHE_LOOKUP_DONE', admission.cachedCopy ? 'hit' : 'miss');
     } catch (error) {
+      onAdmissionProgress('admission_failed');
       const failure = failureFor(context, error, { stage: 'admission', code: 'ADMISSION_FAILED' });
       auditStage(context, 'CACHE_LOOKUP_DONE', 'failed', { attemptId: context.attemptId, failure });
       setDiagnostic(context, 'FIRST_CARD_AI_RESULT', 'PROVIDER_FAIL');
@@ -598,11 +617,13 @@ async function runFirstCard(interactive, context, origin, deadlineAt) {
     }
   }
   if (admission.cachedCopy) {
+    onAdmissionProgress('cache_hit');
     setDiagnostic(context, 'FIRST_CARD_AI_RESULT', 'CACHE_HIT');
     setDiagnostic(context, 'CANONICAL_READY', elapsedMs(origin));
     return { status: 'CACHE_HIT', copy: admission.cachedCopy };
   }
   if (typeof context.renderFirstCardCanonical !== 'function' || !admission.entry) {
+    onAdmissionProgress('no_renderer');
     setDiagnostic(context, 'FIRST_CARD_AI_RESULT', 'PROVIDER_FAIL');
     const failure = failureFor(context, new Error('NO_INTERACTIVE_RENDERER'), { stage: 'admission', code: 'ADMISSION_FAILED', providerIssue: 'no', businessRejected: 'no', deadline: { causedFailure: 'no', source: null } });
     recordExecution(context, 'failed', failure);
@@ -611,6 +632,7 @@ async function runFirstCard(interactive, context, origin, deadlineAt) {
   // Admission (including the canonical lookup) may itself be asynchronous.
   // Never start a provider once the absolute handler deadline has elapsed.
   if (Number(deadlineAt - monotonicNow()) <= 0) {
+    onAdmissionProgress('deadline_exhausted');
     auditStage(context, 'FIRST_CARD_AI_ADMITTED', 'not_admitted');
     setDiagnostic(context, 'FIRST_CARD_AI_RESULT', 'TIMEOUT');
     return { status: 'TIMEOUT', reason: 'PRE_AI_EXHAUSTION' };
@@ -642,7 +664,10 @@ async function runFirstCard(interactive, context, origin, deadlineAt) {
           batchId: context.diagnostics?.batchId || null,
           handlerStartedAt: context.failureHandlerStartedAt,
         },
-        onAuditStage: (stage, status, extra) => auditStage(context, stage, status, { failure: extra?.failure, attemptId }),
+        onAuditStage: (stage, status, extra) => {
+          auditStage(context, stage, status, { failure: extra?.failure, attemptId });
+          if (stage === 'PROVIDER_START') onAdmissionProgress('provider_started');
+        },
       },
     });
     const aiMs = Number(monotonicNow() - aiStartedAt) / 1e6;
@@ -672,6 +697,7 @@ async function runFirstCard(interactive, context, origin, deadlineAt) {
       aiMs,
     };
   } catch (error) {
+    onAdmissionProgress('provider_failed_before_start');
     setDiagnostic(context, 'FIRST_CARD_AI_MS', Number(monotonicNow() - aiStartedAt) / 1e6);
     setDiagnostic(context, 'FIRST_CARD_AI_RESULT', 'PROVIDER_FAIL');
     if (context?.diagnostics?.firstCardAudit) context.diagnostics.firstCardAudit.executionOutcome = 'failed';

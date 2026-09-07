@@ -17,8 +17,8 @@ const BATCH_ID = 'batch-1';
 const CACHE_ID = buildCacheIdentity({ openid: OPENID, rendererVersion: RENDERER, renderInputFingerprint: FINGERPRINT });
 const JOB_ID = buildJobIdentity({ openid: OPENID, batchId: BATCH_ID, rendererVersion: RENDERER });
 
-function stage(stageName, status, auditId = 'audit-1') {
-  return { auditId, stage: stageName, status, elapsedFromHandlerMs: 1 };
+function stage(stageName, status, auditId = 'audit-1', elapsedFromHandlerMs = 1) {
+  return { auditId, stage: stageName, status, elapsedFromHandlerMs };
 }
 
 function baseAudit(stages, summary = {}) {
@@ -75,6 +75,7 @@ function missAudit() {
     stage('CACHE_LOOKUP_DONE', 'miss'),
     stage('FIRST_CARD_AI_ADMITTED', 'admitted'),
     stage('PROVIDER_START', 'started'),
+    stage('FULL_BATCH_READY', 'completed', 'audit-1', 2),
     stage('PROVIDER_COMPLETE', 'completed'),
     stage('VALIDATOR_COMPLETE', 'accepted'),
     stage('CANONICAL_PERSISTED', 'tail'),
@@ -91,7 +92,7 @@ test('timeline combines correlated performance logs and execution end without fa
     '[RecommendationStage] { auditId: "audit-1", stage: "CANONICAL_READY", elapsedMs: 110 }',
     '[RecommendationAudit] { auditId: "audit-1", stage: "FIRST_CARD_VISIBLE", status: "completed", elapsedFromHandlerMs: 120 }',
   ], 'audit-1');
-  assert.deepEqual(buildTimeline(audit), { PLAN0_READY: 10, AI_START: 20, AI_COMPLETE: 100,
+  assert.deepEqual(buildTimeline(audit), { PLAN0_READY: 10, FULL_BATCH_READY: null, AI_START: 20, AI_COMPLETE: 100,
     CANONICAL_READY: 110, FIRST_CARD_VISIBLE: null });
   assert.equal(audit.performanceStages.length, 2);
   const legacy = buildTimeline({ stages: [stage('NARRATIVE_PLAN_READY', 'completed'), stage('PROVIDER_COMPLETE', 'completed')] });

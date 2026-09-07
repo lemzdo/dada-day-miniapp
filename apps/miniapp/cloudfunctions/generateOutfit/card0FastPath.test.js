@@ -1,4 +1,4 @@
-/* global require, module, __dirname, process, setImmediate */
+/* global require, module, __dirname, process, setImmediate, performance */
 /* eslint-disable @typescript-eslint/no-require-imports */
 'use strict';
 
@@ -7,6 +7,7 @@ const fs = require('node:fs');
 const Module = require('node:module');
 const path = require('node:path');
 const test = require('node:test');
+const { runRecommendationOrchestrator } = require('./runtime/recommendationOrchestrator');
 const { buildProductionRendererEntry } = require('./services/recommendationVoiceRendererProductionV2');
 const { createCandidatePoolRecord } = require('./services/candidatePool');
 const narrative = require('./services/recommendationNarrativePlanV2');
@@ -23,7 +24,7 @@ const CLOTHES = [
 
 // Isolated modules make index.js and the original styling helper use the same
 // instrumented REAL planner. No source substitutions or mocked plan outputs.
-function loadCore({ failPlanIndex, failEntry = false } = {}) {
+function loadCore({ failPlanIndex, failEntry = false, remainingCardCpuMs = 0 } = {}) {
   const events = [];
   const attempts = [];
   let materializations = 0;
@@ -62,7 +63,12 @@ function loadCore({ failPlanIndex, failEntry = false } = {}) {
     if (request === './services/canonicalCandidate') return {
       ...canonical,
       materializeCanonicalCandidate(...args) {
-        events.push(`materialize${materializations++}`);
+        const index = materializations++;
+        events.push(`materialize${index}`);
+        if (index > 0 && remainingCardCpuMs > 0) {
+          const until = performance.now() + remainingCardCpuMs;
+          while (performance.now() < until) { /* deterministic synchronous gate */ }
+        }
         return canonical.materializeCanonicalCandidate(...args);
       },
     };
@@ -142,6 +148,78 @@ test('Phase1A moves admission before card1 materialization and reuses plan0/fing
   assert.equal(payload.batchId, result.metadata.batchId);
   t.diagnostic(`before: ${old.events.join(' -> ')}`);
   t.diagnostic(`after: ${fast.events.join(' -> ')}`);
+});
+
+test('Phase1A starts the real provider before the synchronous remainder reaches FULL_BATCH_READY', async () => {
+  async function runSchedulingCase(awaitAdmissionProgress) {
+    const harness = loadCore({ remainingCardCpuMs: 3 });
+    const events = harness.events;
+    let earlyEntry;
+    let providerCalls = 0;
+    let settlements = 0;
+    const interactive = {
+      resolveAdmission: async () => {
+        events.push('CACHE_LOOKUP_START');
+        await new Promise((resolve) => setImmediate(resolve));
+        events.push('CACHE_LOOKUP_DONE');
+        return { entry: earlyEntry };
+      },
+      persistCanonicalCopy: async (copy) => copy,
+      completeCopyJob: async () => { settlements += 1; },
+      markCopyJobRetryable: async () => { settlements += 1; },
+      applyCanonicalToResponse: (response) => response,
+    };
+    let coreSnapshot;
+    const result = await runRecommendationOrchestrator(INPUT, {
+      diagnostics: harness.internals.createRecommendationDiagnostics({ ...INPUT, auditId: `scheduling-${awaitAdmissionProgress}` }),
+      prepareFirstCardInteractive: ({ entry }) => { earlyEntry = entry; return interactive; },
+      computeRecommendation: async (_input, runtimeContext) => {
+        const core = await compute(harness, {}, (payload) => {
+          const progress = runtimeContext.onFirstCardReady(payload);
+          return awaitAdmissionProgress ? progress : undefined;
+        });
+        events.push('FULL_BATCH_READY');
+        coreSnapshot = core;
+        return core;
+      },
+      prepareRecommendationWork: async (core) => ({
+        batchId: core.metadata.batchId,
+        tasks: [],
+        narrativePlans: core.narrativePlans,
+        rendererEntries: [earlyEntry],
+        firstCardInteractive: interactive,
+      }),
+      persistAndAssembleRecommendation: async (core) => ({
+        batch: { batchId: core.metadata.batchId, countContract: core.outfits.countContract },
+      }),
+      renderFirstCardCanonical: async ({ entry, rendererConfig }) => {
+        providerCalls += 1;
+        events.push('PROVIDER_START');
+        rendererConfig.onAuditStage('PROVIDER_START', 'started');
+        return {
+          status: 'success',
+          copy: {
+            planId: entry.preparedEntry.plan.planId,
+            renderInputFingerprint: entry.renderInputFingerprint,
+            text: 'deterministic copy',
+          },
+        };
+      },
+    });
+    await result.tailDone;
+    return { core: coreSnapshot, events, providerCalls, settlements };
+  }
+
+  const legacy = await runSchedulingCase(false);
+  const fixed = await runSchedulingCase(true);
+  assert.ok(legacy.events.indexOf('FULL_BATCH_READY') < legacy.events.indexOf('PROVIDER_START'));
+  assert.ok(fixed.events.indexOf('plan0') < fixed.events.indexOf('PROVIDER_START'));
+  assert.ok(fixed.events.indexOf('PROVIDER_START') < fixed.events.indexOf('materialize1'));
+  assert.ok(fixed.events.indexOf('PROVIDER_START') < fixed.events.indexOf('FULL_BATCH_READY'));
+  assert.equal(fixed.providerCalls, 1);
+  assert.equal(fixed.settlements, 1);
+  assert.deepEqual(publicBatch(fixed.core.outfits), publicBatch(legacy.core.outfits));
+  assert.deepEqual(fixed.core.narrativePlans, legacy.core.narrativePlans);
 });
 
 test('Phase1A preserves candidate-pool HIT order, callback boundary, identity and fingerprint', async () => {

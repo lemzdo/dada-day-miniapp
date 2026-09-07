@@ -63,7 +63,7 @@ function extractAudit(logs, auditId) {
         if (seen.has(key)) continue;
         seen.add(key);
         if (match[1] === 'RecommendationStage') {
-          if (['PLAN0_READY', 'AI_START', 'AI_COMPLETE', 'CANONICAL_READY'].includes(entry.stage)) {
+          if (['PLAN0_READY', 'FULL_BATCH_READY', 'AI_START', 'AI_COMPLETE', 'CANONICAL_READY'].includes(entry.stage)) {
             performanceStages.push({ auditId: entry.auditId, batchId: entry.batchId,
               stage: entry.stage, elapsedMs: entry.elapsedMs });
           }
@@ -85,6 +85,8 @@ function buildTimeline(audit = {}) {
     && validTime(entry.elapsedMs))?.elapsedMs;
   return {
     PLAN0_READY: performanceTime('PLAN0_READY') ?? null,
+    FULL_BATCH_READY: auditTime('FULL_BATCH_READY', ['completed'])
+      ?? performanceTime('FULL_BATCH_READY') ?? null,
     AI_START: auditTime('PROVIDER_START', ['started']) ?? performanceTime('AI_START') ?? null,
     // execute returning a streaming Response is not completion of AI work.
     AI_COMPLETE: auditTime('EXECUTION_COMPLETE', ['succeeded', 'failed']) ?? performanceTime('AI_COMPLETE') ?? null,
@@ -111,9 +113,12 @@ function verifyInvocation({ audit, result, job, cache, openid, expectedFingerpri
   const summary = audit.summaries.at(-1);
   if (!summary || summary.failure !== null || audit.stages.some((value) => value.failure)) throw new Error('SMOKE_AUDIT_FAILED_OR_MISSING');
   if (mode === 'miss') {
+    const timeline = buildTimeline(audit);
     if (starts.length !== 1 || !has('FIRST_CARD_AI_ADMITTED', 'admitted') || !has('PROVIDER_COMPLETE', 'completed')
       || !has('VALIDATOR_COMPLETE', 'accepted') || !(has('CANONICAL_PERSISTED', 'completed') || has('CANONICAL_PERSISTED', 'tail'))
       || summary.executionOutcome !== 'succeeded' || summary.validated !== true || summary.persisted !== true) throw new Error('SMOKE_AI_NOT_SUCCESSFUL');
+    if (!Number.isFinite(timeline.FULL_BATCH_READY)
+      || !(timeline.AI_START < timeline.FULL_BATCH_READY)) throw new Error('SMOKE_PROVIDER_NOT_BEFORE_FULL_BATCH');
   } else {
     if (starts.length || summary.providerCalled !== false || summary.firstCardAiStarted !== false) throw new Error('SMOKE_HIT_CALLED_PROVIDER');
     if (requireCanonicalText && hash(result.firstCard.todayReason || '') !== hash(cache.text)) throw new Error('SMOKE_HIT_TEXT_MISMATCH');
