@@ -97,7 +97,7 @@ async function invokeRecommendationReason({ entry, rendererConfig, request, sign
   };
   try {
     const result = await xiaodaAI.execute('recommendation_reason', entry.preparedEntry.input, options);
-    emitAudit(rendererConfig.onAuditStage, 'PROVIDER_COMPLETE', 'completed');
+    emitAudit(rendererConfig.onAuditStage, 'RESPONSE_HEADERS', 'received');
     return responseFromCoreResult(result);
   } catch (error) {
     const failure = describeFailure(error, rendererConfig.failureContext || {}, { stage: 'request', provider: { name: 'dashscope', model: 'qwen3.7-max' } });

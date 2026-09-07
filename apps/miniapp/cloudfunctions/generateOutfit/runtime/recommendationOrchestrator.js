@@ -148,8 +148,10 @@ function auditSummary(context, extra = {}) {
     snapshot: extra.snapshot || 'response',
     stageStatus: Object.fromEntries([
       'HANDLER_ENTRY', 'FULL_BATCH_READY', 'CORE_READY', 'NARRATIVE_PLAN_READY', 'CACHE_LOOKUP_DONE',
-      'FIRST_CARD_AI_ADMITTED', 'PROVIDER_START', 'PROVIDER_COMPLETE',
-      'VALIDATOR_COMPLETE', 'CANONICAL_PERSISTED', 'BACKGROUND_DISPATCHED',
+      'FIRST_CARD_AI_ADMITTED', 'PROVIDER_START', 'RESPONSE_HEADERS',
+      'FIRST_COMPLETE_CANDIDATE', 'FIRST_VALIDATED', 'PROVIDER_COMPLETE',
+      'VALIDATOR_COMPLETE', 'CANONICAL_WRITE_START', 'CANONICAL_WRITE_DONE',
+      'CANONICAL_PERSISTED', 'BACKGROUND_DISPATCHED',
       'DEADLINE_REACHED',
     ].map((stage) => [stage, has(stage) ? 'occurred' : 'not_occurred'])),
   };
@@ -343,7 +345,7 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
         if (first.status !== 'CACHE_HIT') {
           // Persistence and job completion share one promise across the UI
           // race and server tail. Never issue a second canonical write.
-          firstCardPersistPromise = persistAndCompleteFirstCard(activeInteractive, first.copy);
+          firstCardPersistPromise = persistAndCompleteFirstCard(activeInteractive, first.copy, context);
           // Tail takeover may outlive the response race. Mark this promise as
           // observed immediately, including when the response deadline wins.
           void firstCardPersistPromise.catch(() => undefined);
@@ -452,11 +454,22 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
   }
 }
 
-async function persistAndCompleteFirstCard(interactive, copy) {
+async function persistAndCompleteFirstCard(interactive, copy, context) {
   if (typeof interactive.persistCanonicalCopy !== 'function') {
     throw new Error('CANONICAL_PERSISTENCE_REQUIRED');
   }
-  const persisted = await interactive.persistCanonicalCopy(copy);
+  auditStage(context, 'CANONICAL_WRITE_START', 'started', { attemptId: context?.attemptId });
+  let persisted;
+  try {
+    persisted = await interactive.persistCanonicalCopy(copy);
+    auditStage(context, 'CANONICAL_WRITE_DONE', 'completed', { attemptId: context?.attemptId });
+  } catch (error) {
+    auditStage(context, 'CANONICAL_WRITE_DONE', 'failed', {
+      attemptId: context?.attemptId,
+      failure: failureFor(context, error, { stage: 'persistence', code: 'PERSISTENCE_FAILED' }),
+    });
+    throw error;
+  }
   if (typeof interactive.completeCopyJob === 'function') {
     await interactive.completeCopyJob({ copy: persisted || copy });
   }
@@ -562,7 +575,7 @@ async function settleFirstCardTail({ cardPromise, persistPromise, interactive, c
     }
     if (late?.status === 'SUCCESS') {
       tailFailureStage = 'persistence';
-      const persisted = await (persistPromise || persistAndCompleteFirstCard(interactive, late.copy));
+      const persisted = await (persistPromise || persistAndCompleteFirstCard(interactive, late.copy, context));
       if (!tailOpen) return { status: 'TAIL_TIMEOUT', reason: 'TAIL_TIMEOUT' };
       auditStage(context, 'CANONICAL_PERSISTED', 'tail');
       setDiagnostic(context, 'firstCardCanonicalPersisted', elapsedMs(context.handlerOrigin));

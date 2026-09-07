@@ -148,12 +148,15 @@ async function renderRecommendationVoiceRendererProductionV2({ preparedEntries =
     for (const copy of copies) {
       if (seen.has(copy.id)) continue;
       seen.add(copy.id);
+      emitAudit(onAuditStage, 'FIRST_COMPLETE_CANDIDATE', 'extracted');
       const index = Number(copy.id) - 1; const entry = normalized[index];
       if (!entry || String(index + 1) !== copy.id) { const issue = { copy, error: 'VOICE_RENDERER_OUTPUT_PLAN_BINDING' }; invalid.push(issue); await onInvalid(issue); continue; }
       const check = validateProductionCopy(copy, entry.input, normalized);
       if (!check.pass) { const issue = { copy, entry, failures: check.failures }; invalid.push(issue); await onInvalid(issue); continue; }
       const materialized = { ...copy, planId: entry.plan?.planId || entry.input?.planId, input: entry.input, renderInputFingerprint: entry.renderInputFingerprint };
-      validated.push(materialized); await onValidated(materialized);
+      validated.push(materialized);
+      emitAudit(onAuditStage, 'FIRST_VALIDATED', 'accepted');
+      await onValidated(materialized);
     }
   };
   let providerResponseReceived = false;
@@ -186,6 +189,7 @@ async function renderRecommendationVoiceRendererProductionV2({ preparedEntries =
       rendererTimedOut: controller.signal.aborted,
       abortReason: controller.signal.reason,
     });
+    if (providerResponseReceived) emitAudit(onAuditStage, 'PROVIDER_COMPLETE', 'failed', { failure });
     emitAudit(onAuditStage, 'STREAM_COMPLETE', 'failed', { failure });
     return { version: PRODUCTION_VERSION, status: 'failed_open', promptVariant: PROMPT_VARIANT, planCount: normalized.length, providerCalls: 1, requestCount: 1, validatedCount: validated.length, invalidCount: invalid.length, stream, failureCode: error.name === 'AbortError' ? 'VOICE_RENDERER_TIMEOUT' : String(error.message || error), ...(failure ? { failure } : {}) };
   } finally { clearTimeout(timer); }
@@ -213,6 +217,7 @@ async function renderRecommendationVoiceRendererProductionV2({ preparedEntries =
       });
     }
   }
+  emitAudit(onAuditStage, 'PROVIDER_COMPLETE', incomplete ? 'failed' : 'completed', failure ? { failure } : {});
   emitAudit(onAuditStage, 'STREAM_COMPLETE', incomplete ? 'failed' : 'completed', failure ? { failure } : {});
   return { version: PRODUCTION_VERSION, status: incomplete ? 'failed_open' : 'completed', promptVariant: PROMPT_VARIANT, planCount: normalized.length, providerCalls: 1, requestCount: 1, validatedCount: validated.length, invalidCount: invalid.length, validated, invalid, usage, stream, ...(incomplete ? { failureCode: 'VOICE_RENDERER_STREAM_INCOMPLETE', ...(failure ? { failure } : {}) } : {}) };
 }

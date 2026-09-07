@@ -74,6 +74,7 @@ export default tseslint.config(
       'apps/miniapp/cloudfunctions/recommendationStream/index{,.test}.js',
       'apps/miniapp/cloudfunctions/generateOutfit/services/firstCardObservability.js',
       'apps/miniapp/cloudfunctions/generateOutfit/services/recommendationCopyProductionArchitecture.test.js',
+      'apps/miniapp/cloudfunctions/generateOutfit/services/recommendationCopyProductionJobV2{,.test}.js',
       'apps/miniapp/cloudfunctions/generateOutfit/runtime/recommendationOrchestrator{,.test}.js',
       'apps/miniapp/cloudfunctions/generateOutfit/services/recommendation{FirstCardRenderer,VoiceRendererProductionV2}{,.test}.js',
     ],

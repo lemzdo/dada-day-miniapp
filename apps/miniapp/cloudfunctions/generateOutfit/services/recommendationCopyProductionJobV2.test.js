@@ -22,6 +22,7 @@ const { renderFirstCardCanonical } = require('./recommendationFirstCardRenderer'
 
 function fakeDatabase() {
   const collections = new Map(); let transactionTail = Promise.resolve();
+  const metrics = { transactions: 0, updates: 0 };
   const command = { in: (values) => ({ __in: values.slice() }) };
   const matches = (doc, query) => Object.entries(query || {}).every(([key, expected]) => expected?.__in ? expected.__in.includes(doc[key]) : doc[key] === expected);
   const collection = (name) => {
@@ -32,7 +33,7 @@ function fakeDatabase() {
         const ref = {
           async get() { const data = store.get(id); return { data: data ? { ...data } : null }; },
           async set({ data }) { store.set(id, { ...data }); },
-          async update({ data }) { store.set(id, { ...(store.get(id) || {}), ...data }); },
+          async update({ data }) { metrics.updates += 1; store.set(id, { ...(store.get(id) || {}), ...data }); },
         }; return ref;
       },
       where(query) { let limit = Infinity; return { limit(value) { limit = value; return this; }, async get() { return { data: [...store.values()].filter((doc) => matches(doc, query)).slice(0, limit).map((doc) => ({ ...doc })) }; } }; },
@@ -41,8 +42,9 @@ function fakeDatabase() {
   return {
     command,
     collection,
-    async runTransaction(callback) { let result; const run = transactionTail.then(() => callback({ collection })); transactionTail = run.catch(() => {}); result = await run; return result; },
+    async runTransaction(callback) { metrics.transactions += 1; let result; const run = transactionTail.then(() => callback({ collection })); transactionTail = run.catch(() => {}); result = await run; return result; },
     _all(name) { return [...(collections.get(name) || new Map()).values()]; },
+    _metrics: metrics,
   };
 }
 
@@ -143,6 +145,9 @@ test('provider stream validates, persists canonical, and next request is a cache
   assert.equal(providerCalls, 1);
   assert.deepEqual(auditStages, [
     { stage: 'PROVIDER_START', status: 'started' },
+    { stage: 'RESPONSE_HEADERS', status: 'received' },
+    { stage: 'FIRST_COMPLETE_CANDIDATE', status: 'extracted' },
+    { stage: 'FIRST_VALIDATED', status: 'accepted' },
     { stage: 'PROVIDER_COMPLETE', status: 'completed' },
     { stage: 'STREAM_COMPLETE', status: 'completed' },
     { stage: 'VALIDATOR_COMPLETE', status: 'accepted' },
@@ -288,10 +293,29 @@ test('interactive card0 success completes its durable job without dispatch state
   });
   const job = database._all('recommendation_copy_jobs_v2')[0];
   await persistValidatedCanonicalCopy(database, job, prepared.entries[0], { text: 'tail canonical' }, now);
+  const beforeSettlement = { ...database._metrics };
   const settled = await settleInteractiveRecommendationCopyJob(
     database,
     prepared.jobId,
-    { status: 'SUCCESS' },
+    {
+      status: 'SUCCESS',
+      runtimeAuditV1: {
+        firstCardAiCriticalPath: {
+          timingsMs: {
+            plan0ReadyMs: 1415.024,
+            providerStartMs: 1812.396,
+            providerHeadersMs: null,
+            firstCompleteCandidateMs: 2501.2345,
+            firstValidatedMs: 2502.3456,
+            providerCompleteMs: 5112.024,
+            validatorCompleteMs: 5112.222,
+            canonicalWriteStartMs: 5113.001,
+            canonicalWriteDoneMs: 5119.999,
+            ignoredText: 'must-not-persist',
+          },
+        },
+      },
+    },
     now,
   );
   const stored = database._all('recommendation_copy_jobs_v2')[0];
@@ -300,6 +324,25 @@ test('interactive card0 success completes its durable job without dispatch state
   assert.equal(stored.completedAt, now.toISOString());
   assert.equal(stored.dispatchAcceptedAt, undefined);
   assert.equal(stored.dispatchRequestId, undefined);
+  assert.equal(database._metrics.transactions - beforeSettlement.transactions, 1);
+  assert.equal(database._metrics.updates - beforeSettlement.updates, 1);
+  assert.deepEqual(stored.runtimeAuditV1, {
+    firstCardAiCriticalPath: {
+      schemaVersion: 1,
+      origin: 'handler_monotonic',
+      timingsMs: {
+        plan0ReadyMs: 1415.024,
+        providerStartMs: 1812.396,
+        providerHeadersMs: null,
+        firstCompleteCandidateMs: 2501.235,
+        firstValidatedMs: 2502.346,
+        providerCompleteMs: 5112.024,
+        validatorCompleteMs: 5112.222,
+        canonicalWriteStartMs: 5113.001,
+        canonicalWriteDoneMs: 5119.999,
+      },
+    },
+  });
 });
 
 for (const [failedStage, failureCode] of [
@@ -321,7 +364,14 @@ for (const [failedStage, failureCode] of [
     const settled = await settleInteractiveRecommendationCopyJob(
       database,
       prepared.jobId,
-      { status: 'FAIL', failedStage, failureCode },
+      {
+        status: 'FAIL',
+        failedStage,
+        failureCode,
+        runtimeAuditV1: {
+          firstCardAiCriticalPath: { timingsMs: { providerStartMs: 12.345 } },
+        },
+      },
       now,
     );
     const stored = database._all('recommendation_copy_jobs_v2')[0];
@@ -331,6 +381,8 @@ for (const [failedStage, failureCode] of [
     assert.equal(stored.failureCode, failureCode);
     assert.equal(stored.completedAt, undefined);
     assert.equal(stored.dispatchAcceptedAt, undefined);
+    assert.equal(stored.runtimeAuditV1.firstCardAiCriticalPath.timingsMs.providerStartMs, 12.345);
+    assert.equal(stored.runtimeAuditV1.firstCardAiCriticalPath.timingsMs.firstValidatedMs, null);
   });
 }
 

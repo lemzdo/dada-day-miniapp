@@ -271,7 +271,7 @@ test('interactive audit records correlated first-card stages and a complete summ
   const stages = new Set(audit.map((entry) => entry.stage));
   for (const stage of ['HANDLER_ENTRY', 'CORE_READY', 'NARRATIVE_PLAN_READY', 'CACHE_LOOKUP_DONE', 'BACKGROUND_DISPATCHED',
     'FIRST_CARD_AI_ADMITTED', 'PROVIDER_START', 'PROVIDER_COMPLETE', 'VALIDATOR_COMPLETE',
-    'CANONICAL_PERSISTED']) assert.ok(stages.has(stage), stage);
+    'CANONICAL_WRITE_START', 'CANONICAL_WRITE_DONE', 'CANONICAL_PERSISTED']) assert.ok(stages.has(stage), stage);
   const summary = context.diagnostics.firstCardAudit.summary;
   assert.equal(summary.auditId, 'audit-test');
   assert.equal(summary.firstCardAiStarted, true);

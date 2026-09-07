@@ -8,6 +8,38 @@ const JOB_VERSION = 'recommendation-copy-job-v2.0';
 const LEASE_MS = 60 * 1000;
 const DISPATCH_LEASE_MS = 60 * 1000;
 const STORAGE_COLLECTIONS = Object.freeze([JOB_COLLECTION, CACHE_COLLECTION]);
+const RUNTIME_AUDIT_TIMING_KEYS = Object.freeze([
+  'plan0ReadyMs',
+  'providerStartMs',
+  'providerHeadersMs',
+  'firstCompleteCandidateMs',
+  'firstValidatedMs',
+  'providerCompleteMs',
+  'validatorCompleteMs',
+  'canonicalWriteStartMs',
+  'canonicalWriteDoneMs',
+]);
+
+function runtimeAuditUpdate(value) {
+  const source = value?.firstCardAiCriticalPath;
+  if (!source || typeof source !== 'object') return {};
+  const timingsMs = Object.fromEntries(RUNTIME_AUDIT_TIMING_KEYS.map((key) => {
+    const rawTiming = source.timingsMs?.[key];
+    const timing = typeof rawTiming === 'number' ? rawTiming : Number.NaN;
+    return [key, Number.isFinite(timing) && timing >= 0 && timing <= 120000
+      ? Math.round(timing * 1000) / 1000
+      : null];
+  }));
+  return {
+    runtimeAuditV1: {
+      firstCardAiCriticalPath: {
+        schemaVersion: 1,
+        origin: 'handler_monotonic',
+        timingsMs,
+      },
+    },
+  };
+}
 
 function buildJobIdentity({ openid, batchId, rendererVersion }) {
   return `rcj-${hash(`${openid}|${batchId}|${rendererVersion}`)}`;
@@ -392,6 +424,7 @@ async function finishRecommendationCopyJob(database, job, leaseToken, summary, n
     completedAt: now.toISOString(),
     updatedAt: now.toISOString(),
     leaseUntil: '',
+    ...runtimeAuditUpdate(summary?.runtimeAuditV1),
   } });
   return { updated: true, stale: false, status, readyCount, invalidCount };
 }
@@ -425,6 +458,7 @@ async function settleInteractiveRecommendationCopyJob(database, jobId, outcome =
         failureCode: '',
         completedAt: now.toISOString(),
         updatedAt: now.toISOString(),
+        ...runtimeAuditUpdate(outcome.runtimeAuditV1),
       } });
       result = { updated: true, status: 'completed', readyCount };
       return;
@@ -439,6 +473,7 @@ async function settleInteractiveRecommendationCopyJob(database, jobId, outcome =
       failedStage,
       failureCode,
       updatedAt: now.toISOString(),
+      ...runtimeAuditUpdate(outcome.runtimeAuditV1),
     } });
     result = { updated: true, status: 'interactive', readyCount, failedStage, failureCode };
   });

@@ -43,6 +43,7 @@ test('zero entries is a no-op', async () => {
 
 test('item 1 is delivered before stream completion', async () => {
   const input = entries(2); let sawBeforeEnd = false;
+  const auditStages = [];
   const body = (async function* stream() {
     const firstJson = '{"copies":[{"id":"1","text":"这套简单日常，衣物1搭配很自然。"}';
     yield `data: ${JSON.stringify({ choices: [{ delta: { content: firstJson } }] })}\n`;
@@ -50,8 +51,10 @@ test('item 1 is delivered before stream completion', async () => {
     const closing = JSON.stringify({ choices: [{ delta: { content: String.fromCharCode(125, 93, 125) } }] });
     yield `data: ${closing}\n`;
   }());
-  const seen = []; const result = await renderRecommendationVoiceRendererProductionV2({ preparedEntries: input, fetchImpl: async () => ({ status: 200, body }), onValidated: async (copy) => { seen.push(copy.id); sawBeforeEnd = true; } });
+  const seen = []; const result = await renderRecommendationVoiceRendererProductionV2({ preparedEntries: input, fetchImpl: async () => ({ status: 200, body }), onAuditStage: (stage) => auditStages.push(stage), onValidated: async (copy) => { seen.push(copy.id); sawBeforeEnd = true; } });
   assert.deepEqual(seen, ['1']); assert.equal(sawBeforeEnd, true); assert.equal(result.status, 'failed_open'); assert.equal(result.failureCode, 'VOICE_RENDERER_STREAM_INCOMPLETE');
+  assert.ok(auditStages.indexOf('FIRST_COMPLETE_CANDIDATE') < auditStages.indexOf('FIRST_VALIDATED'));
+  assert.ok(auditStages.indexOf('FIRST_VALIDATED') < auditStages.indexOf('PROVIDER_COMPLETE'));
 });
 
 test('AI Core Uint8Array stream decodes complete provider output and terminal metadata', async () => {

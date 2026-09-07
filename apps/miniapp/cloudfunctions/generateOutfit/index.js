@@ -817,6 +817,35 @@ function countFailureCodes(values) {
   }, {});
 }
 
+function buildFirstCardRuntimeAudit(diagnostics) {
+  const stages = Array.isArray(diagnostics?.firstCardAudit?.stages)
+    ? diagnostics.firstCardAudit.stages
+    : [];
+  const stageMs = (stage) => {
+    const entry = stages.find((candidate) => candidate?.stage === stage
+      && !['not_occurred', 'not_reached', 'not_admitted', 'skipped'].includes(candidate?.status));
+    return Number.isFinite(entry?.elapsedFromHandlerMs) ? entry.elapsedFromHandlerMs : null;
+  };
+  const plan0ReadyMs = Number.isFinite(diagnostics?.plan0ReadyAt)
+    ? diagnostics.plan0ReadyAt
+    : Number.isFinite(diagnostics?.PLAN0_READY) ? diagnostics.PLAN0_READY : null;
+  return {
+    firstCardAiCriticalPath: {
+      timingsMs: {
+        plan0ReadyMs,
+        providerStartMs: stageMs('PROVIDER_START'),
+        providerHeadersMs: stageMs('RESPONSE_HEADERS'),
+        firstCompleteCandidateMs: stageMs('FIRST_COMPLETE_CANDIDATE'),
+        firstValidatedMs: stageMs('FIRST_VALIDATED'),
+        providerCompleteMs: stageMs('PROVIDER_COMPLETE'),
+        validatorCompleteMs: stageMs('VALIDATOR_COMPLETE'),
+        canonicalWriteStartMs: stageMs('CANONICAL_WRITE_START'),
+        canonicalWriteDoneMs: stageMs('CANONICAL_WRITE_DONE'),
+      },
+    },
+  };
+}
+
 // Single production Runtime seam used by callFunction and HTTP/SSE. Core
 // planning completes before Orchestrator-owned background and response stages.
 async function runProductionRecommendationRuntime(input, context = {}, lifecycleHooks = context.lifecycleHooks || {}) {
@@ -842,7 +871,10 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
           && job.initialCopies?.some((copy) => copy?.cardIndex === 0)) {
           return { updated: false, status: 'ready_cache_hit' };
         }
-        return settleInteractiveRecommendationCopyJob(db, job.jobId, outcome);
+        return settleInteractiveRecommendationCopyJob(db, job.jobId, {
+          ...outcome,
+          runtimeAuditV1: buildFirstCardRuntimeAudit(diagnostics),
+        });
       });
     return firstCardCopyJobSettlementPromise;
   };

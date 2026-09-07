@@ -89,6 +89,9 @@ test('uses the shared AI core recommendation_reason entry point', async () => {
   assert.equal(cancelled, 1);
   assert.deepEqual(auditStages, [
       { stage: 'PROVIDER_START', status: 'started' },
+      { stage: 'RESPONSE_HEADERS', status: 'received' },
+      { stage: 'FIRST_COMPLETE_CANDIDATE', status: 'extracted' },
+      { stage: 'FIRST_VALIDATED', status: 'accepted' },
       { stage: 'PROVIDER_COMPLETE', status: 'completed' },
       { stage: 'STREAM_COMPLETE', status: 'completed' },
       { stage: 'VALIDATOR_COMPLETE', status: 'accepted' },
