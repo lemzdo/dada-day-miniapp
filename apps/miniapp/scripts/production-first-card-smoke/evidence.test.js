@@ -85,6 +85,7 @@ function missAudit() {
 test('timeline combines correlated performance logs and execution end without fabricating plan or visibility', () => {
   const audit = extractAudit([
     '[RecommendationStage] { auditId: "audit-1", batchId: "batch-1", stage: "PLAN0_READY", elapsedMs: 10 }',
+    '[RecommendationStage] { auditId: "audit-1", batchId: "batch-1", stage: "STABLE_SORT_DONE", elapsedMs: 9 }',
     '[RecommendationStage] { auditId: "other", stage: "PLAN0_READY", elapsedMs: 1 }',
     '[RecommendationAudit] { auditId: "audit-1", stage: "PROVIDER_START", status: "started", elapsedFromHandlerMs: 20 }',
     '[RecommendationAudit] { auditId: "audit-1", stage: "PROVIDER_COMPLETE", status: "completed", elapsedFromHandlerMs: 30 }',
@@ -94,7 +95,8 @@ test('timeline combines correlated performance logs and execution end without fa
   ], 'audit-1');
   assert.deepEqual(buildTimeline(audit), { PLAN0_READY: 10, FULL_BATCH_READY: null, AI_START: 20, AI_COMPLETE: 100,
     CANONICAL_READY: 110, FIRST_CARD_VISIBLE: null });
-  assert.equal(audit.performanceStages.length, 2);
+  assert.equal(audit.performanceStages.length, 3);
+  assert.equal(audit.performanceStages.find((entry) => entry.stage === 'STABLE_SORT_DONE').elapsedMs, 9);
   const legacy = buildTimeline({ stages: [stage('NARRATIVE_PLAN_READY', 'completed'), stage('PROVIDER_COMPLETE', 'completed')] });
   assert.equal(legacy.PLAN0_READY, null);
   assert.equal(legacy.AI_COMPLETE, null);

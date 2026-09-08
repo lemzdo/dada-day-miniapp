@@ -45,6 +45,17 @@ test('natural MISS then HIT does not delete cache', async () => {
   assert.equal(report.status, 'PASS'); assert.equal(h.deletes, 0); assert.deepEqual(report.requests.map((r) => r.mode), ['miss', 'hit']); cleanup(dir);
 });
 
+test('hit-only attribution mode takes bounded canonical HIT samples without deleting cache or calling Provider', async () => {
+  const h = harness(true); const dir = tempDir();
+  const report = await runProductionSmoke({ admin: h.admin, mini: h.mini, directory: dir, invoke: h.invoke,
+    wait: h.wait, progress: () => {}, hitSamples: 3 });
+  assert.equal(report.status, 'PASS'); assert.equal(report.sampleMode, 'canonical_hit_only');
+  assert.equal(report.sampleCount, 3); assert.equal(h.deletes, 0);
+  assert.deepEqual(report.requests.map((request) => request.mode), ['hit', 'hit', 'hit']);
+  assert.ok(report.requests.every((request) => request.providerStarts === 0));
+  cleanup(dir);
+});
+
 test('fixed comparison date is reused by every bounded MISS/HIT request without a force flag', async () => {
   const h = harness(true); const dir = tempDir(); const inputs = [];
   try {

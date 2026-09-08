@@ -63,10 +63,7 @@ function extractAudit(logs, auditId) {
         if (seen.has(key)) continue;
         seen.add(key);
         if (match[1] === 'RecommendationStage') {
-          if (['PLAN0_READY', 'FULL_BATCH_READY', 'AI_START', 'AI_COMPLETE', 'CANONICAL_READY'].includes(entry.stage)) {
-            performanceStages.push({ auditId: entry.auditId, batchId: entry.batchId,
-              stage: entry.stage, elapsedMs: entry.elapsedMs });
-          }
+          performanceStages.push({ ...entry });
         } else if (match[1] === 'RecommendationAudit') stages.push(entry);
         else summaries.push(entry);
       } catch { unparsed += 1; }

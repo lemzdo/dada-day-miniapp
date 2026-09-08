@@ -222,9 +222,16 @@ async function renderRecommendationVoiceRendererProductionV2({ preparedEntries =
   return { version: PRODUCTION_VERSION, status: incomplete ? 'failed_open' : 'completed', promptVariant: PROMPT_VARIANT, planCount: normalized.length, providerCalls: 1, requestCount: 1, validatedCount: validated.length, invalidCount: invalid.length, validated, invalid, usage, stream, ...(incomplete ? { failureCode: 'VOICE_RENDERER_STREAM_INCOMPLETE', ...(failure ? { failure } : {}) } : {}) };
 }
 
-function buildProductionRendererEntry(plan, recommendation, position, outfitKey) {
-  const preparedEntry = buildRecommendationVoiceMaterializationEntry(plan, recommendation);
-  return { position, outfitKey, preparedEntry, renderInputFingerprint: buildRenderInputFingerprint(preparedEntry.input, { model: VOICE_RENDERER_MODEL, modelRouteVersion: PRODUCTION_MODEL_ROUTE_VERSION, generationParameters: GENERATION_PARAMETERS }) };
+function buildProductionRendererEntry(plan, recommendation, position, outfitKey, observer) {
+  const preparedEntry = buildRecommendationVoiceMaterializationEntry(plan, recommendation, observer);
+  if (typeof observer === 'function') {
+    try { observer('RENDERER_FINGERPRINT_START'); } catch { /* side-channel only */ }
+  }
+  const renderInputFingerprint = buildRenderInputFingerprint(preparedEntry.input, { model: VOICE_RENDERER_MODEL, modelRouteVersion: PRODUCTION_MODEL_ROUTE_VERSION, generationParameters: GENERATION_PARAMETERS });
+  if (typeof observer === 'function') {
+    try { observer('RENDERER_FINGERPRINT_DONE'); } catch { /* side-channel only */ }
+  }
+  return { position, outfitKey, preparedEntry, renderInputFingerprint };
 }
 async function consumeProductionRendererStream(options = {}) {
   return renderRecommendationVoiceRendererProductionV2(options);

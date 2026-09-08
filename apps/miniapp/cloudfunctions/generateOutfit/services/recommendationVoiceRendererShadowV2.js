@@ -1,3 +1,5 @@
+/* global require, process, AbortController, setTimeout, clearTimeout, module */
+/* eslint-disable @typescript-eslint/no-require-imports */
 const crypto = require('crypto');
 const fetch = require('node-fetch');
 const { validateRecommendationNarrativePlanV2 } = require('./recommendationNarrativePlanV2');
@@ -220,8 +222,13 @@ async function runRecommendationVoiceRendererShadowV2({
   };
 }
 
-function buildRecommendationVoiceMaterializationEntry(plan, recommendation) {
-  const input = buildRendererInputFromNarrativePlan(plan, recommendation);
+function observePreparation(observer, stage, fields = {}) {
+  if (typeof observer !== 'function') return;
+  try { observer(stage, fields); } catch { /* Observability must not change renderer preparation. */ }
+}
+
+function buildRecommendationVoiceMaterializationEntry(plan, recommendation, observer) {
+  const input = buildRendererInputFromNarrativePlan(plan, recommendation, observer);
   return {
     version: 'recommendation-voice-materialization-input-v2.0',
     plan: {
@@ -252,9 +259,12 @@ function normalizePreparedMaterializationEntry(entry) {
   };
 }
 
-function buildRendererInputFromNarrativePlan(plan, recommendation = {}) {
+function buildRendererInputFromNarrativePlan(plan, recommendation = {}, observer) {
+  observePreparation(observer, 'NARRATIVE_PLAN_REVALIDATION_START');
   const validation = validateRecommendationNarrativePlanV2(plan);
   if (!validation.valid) throw new Error(`VOICE_RENDERER_PLAN_INVALID:${validation.errors[0] || 'unknown'}`);
+  observePreparation(observer, 'NARRATIVE_PLAN_REVALIDATION_DONE');
+  observePreparation(observer, 'RENDERER_INPUT_BUILD_START');
   const items = readArray(recommendation.items);
   const itemById = new Map(items.map((item) => [readItemId(item), item]));
   const selectedItemIds = new Set(plan.identity.outfitComposition.itemIds);
@@ -294,6 +304,7 @@ function buildRendererInputFromNarrativePlan(plan, recommendation = {}) {
       admitSimpleWhenBaseline: true, noNewMeaning: true, noNewFacts: true,
     },
   };
+  observePreparation(observer, 'RENDERER_INPUT_BUILD_DONE');
   return input;
 }
 

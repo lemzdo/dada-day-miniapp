@@ -399,27 +399,32 @@ async function generateRecommendationV2({
     throw createBusinessError('V2_RECOMMENDATION_IDENTITY_INVALID', 'V2 requires unique outfit identities');
   }
   const reasonPreparationStartedAt = Date.now();
+  recordRecommendationStage(diagnostics, 'SAFE_REASON_COMPILATION_START', { batchId });
   const safeReasons = compileRecommendationReasonsV2({
     outfits: recommendations,
     scene,
     weather: weatherSnapshot,
   });
   diagnostics.timings.reasonPreparationMs = Date.now() - reasonPreparationStartedAt;
+  recordRecommendationStage(diagnostics, 'SAFE_REASON_COMPILATION_DONE', { batchId });
   if (!Array.isArray(safeReasons) || safeReasons.length !== recommendations.length
     || safeReasons.some((entry) => typeof entry.reason !== 'string' || !entry.reason.trim())) {
     throw createBusinessError('V2_SAFE_REASON_INCOMPLETE', 'V2 safe reasons must cover all cards');
   }
   // Status is deliberately projected from the selected candidates in parallel. It does not
   // invoke the Legacy enrichment/state/snapshot path and therefore cannot block its head.
+  recordRecommendationStage(diagnostics, 'RESPONSE_STATUS_QUERIES_START', { batchId });
   const [favoriteMap, wornMap] = await Promise.all([
     findV2FavoriteKeys(openid, order),
     findV2WornKeys(openid, order, targetDate),
   ]);
+  recordRecommendationStage(diagnostics, 'RESPONSE_STATUS_QUERIES_DONE', { batchId });
   const status = order.map((outfitKey, index) => ({
     isFavorite: Boolean(favoriteMap.get(outfitKey)) || recommendations[index].isFavorite === true,
     isWornToday: Boolean(wornMap.get(outfitKey)) || recommendations[index].isWornToday === true,
   }));
   const cardCompilationStartedAt = Date.now();
+  recordRecommendationStage(diagnostics, 'RESPONSE_PROJECTION_START', { batchId });
   const initialCopiesByOutfitKey = new Map((Array.isArray(copyJob?.initialCopies) ? copyJob.initialCopies : [])
     .map((copy) => [copy.outfitKey, copy]));
   const copyMaterializing = copyJob?.dispatch?.accepted === true
@@ -452,6 +457,7 @@ async function generateRecommendationV2({
     ...status[index],
   })), batchId);
   diagnostics.timings.cardCompilationMs = Date.now() - cardCompilationStartedAt;
+  recordRecommendationStage(diagnostics, 'RESPONSE_PROJECTION_DONE', { batchId });
   const coreInput = {
     batchId,
     sceneKey: sceneContract.sceneKey,
@@ -471,6 +477,7 @@ async function generateRecommendationV2({
     },
     order,
   };
+  recordRecommendationStage(diagnostics, 'RESPONSE_HASH_START', { batchId });
   const unsignedCore = projectBatchCoreV2(coreInput);
   const hashInput = JSON.stringify({
     core: { ...unsignedCore, contentHash: '' },
@@ -481,6 +488,7 @@ async function generateRecommendationV2({
     .update(`${batchId}|${contentHash}`)
     .digest('hex');
   const batch = projectBatchCoreV2({ ...coreInput, contentHash, commitToken });
+  recordRecommendationStage(diagnostics, 'RESPONSE_HASH_DONE', { batchId });
   const batchPersistenceStartedAt = Date.now();
   const batchPersistenceTiming = {};
   diagnostics.workCounts.batchPersistence += 1;
@@ -677,8 +685,9 @@ function recordNarrativePlansReady(diagnostics, recommendations, shadow) {
 }
 
 function monotonicElapsedMs(diagnostics) {
-  if (!diagnostics?.monotonicOriginAt) return null;
-  return Number(process.hrtime.bigint() - diagnostics.monotonicOriginAt) / 1e6;
+  const origin = diagnostics?.handlerOriginAt || diagnostics?.monotonicOriginAt;
+  if (!origin) return null;
+  return Number(process.hrtime.bigint() - origin) / 1e6;
 }
 
 function emitRecommendationServerDone({ diagnostics, executionMode, response } = {}) {
@@ -853,6 +862,7 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
   const handlerOrigin = typeof context.handlerOrigin === 'bigint'
     ? context.handlerOrigin
     : process.hrtime.bigint();
+  diagnostics.handlerOriginAt = handlerOrigin;
   let backgroundPromise = Promise.resolve([]);
   let firstCardCopyJobPromise = null;
   let firstCardCopyJobSettlementPromise = null;
@@ -958,6 +968,10 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
         entries: [entry],
         auditId: diagnostics.auditId,
         executionMode: 'interactive',
+        onPreparationStage: (stage, fields) => recordRecommendationStage(diagnostics, stage, {
+          batchId,
+          fields,
+        }),
       });
       return {
         entry,
@@ -1124,7 +1138,12 @@ async function computeProductionRecommendationCore(event, diagnostics = createRe
     if (index !== 0 || typeof scfContext.onFirstCardReady !== 'function') return;
     let entry;
     try {
-      entry = buildProductionRendererEntry(plan, recommendation, 0, recommendation?.outfitKey);
+      entry = buildProductionRendererEntry(plan, recommendation, 0, recommendation?.outfitKey, (stage, fields) => {
+        recordRecommendationStage(diagnostics, `CARD0_INITIAL_${stage}`, {
+          batchId: v2BatchId,
+          fields: { cardIndex: 0, ...fields },
+        });
+      });
       recordRecommendationStage(diagnostics, 'FINGERPRINT_READY', {
         batchId: v2BatchId,
         fields: { planId: plan.planId, cardIndex: 0 },
@@ -1205,6 +1224,7 @@ async function computeProductionRecommendationCore(event, diagnostics = createRe
   // C2: selection/materialization and card order are frozen. Narrative Plans are
   // complete and bound before persistence is scheduled, so only async dispatch
   // acceptance—not provider completion—may delay the recommendation response.
+  recordRecommendationStage(diagnostics, 'NARRATIVE_PLANS_1_7_BUILD_START', { batchId: v2BatchId });
   const stylingPlans = firstCardPlanAttempted
     ? buildStylingPlansWithFirstCard({
       recommendations,
@@ -1221,6 +1241,10 @@ async function computeProductionRecommendationCore(event, diagnostics = createRe
     recommendationInstanceSeed: diagnostics.auditId || v2BatchId,
     telemetrySampleRate: 0,
     onPlanReady: notifyFirstCard,
+  });
+  recordRecommendationStage(diagnostics, 'NARRATIVE_PLANS_1_7_BUILD_DONE', {
+    batchId: v2BatchId,
+    fields: { planCount: stylingPlans?.plans?.length || 0 },
   });
   diagnostics.batchId = v2BatchId;
   recordNarrativePlansReady(diagnostics, recommendations, stylingPlans);
@@ -1287,12 +1311,36 @@ async function prepareProductionRecommendationWork(core, diagnostics, context = 
   if (core.outfits.length > 0
     && metadata.narrativePlanStatus === 'completed'
     && plans.length === core.outfits.length) {
-    const entries = plans.map((plan, position) => buildProductionRendererEntry(
-      plan,
-      core.outfits[position],
-      position,
-      core.outfits[position]?.outfitKey,
-    ));
+    recordRecommendationStage(diagnostics, 'ALL_RENDERER_ENTRIES_BUILD_START', { batchId: metadata.batchId });
+    const entries = plans.map((plan, position) => {
+      recordRecommendationStage(diagnostics, position === 0
+        ? 'CARD0_RENDERER_ENTRY_REBUILD_START'
+        : 'CARDS_1_7_RENDERER_ENTRY_BUILD_START', {
+        batchId: metadata.batchId,
+        fields: { cardIndex: position },
+      });
+      const entry = buildProductionRendererEntry(
+        plan,
+        core.outfits[position],
+        position,
+        core.outfits[position]?.outfitKey,
+        (stage, fields) => recordRecommendationStage(diagnostics, `CARD_${position}_${stage}`, {
+          batchId: metadata.batchId,
+          fields: { cardIndex: position, ...fields },
+        }),
+      );
+      recordRecommendationStage(diagnostics, position === 0
+        ? 'CARD0_RENDERER_ENTRY_REBUILD_DONE'
+        : 'CARDS_1_7_RENDERER_ENTRY_BUILD_DONE', {
+        batchId: metadata.batchId,
+        fields: { cardIndex: position },
+      });
+      return entry;
+    });
+    recordRecommendationStage(diagnostics, 'ALL_RENDERER_ENTRIES_BUILD_DONE', {
+      batchId: metadata.batchId,
+      fields: { entryCount: entries.length },
+    });
     rendererEntries = entries;
     // The bounded milestone owns one durable card0 job. Remaining cards keep
     // their deterministic safe copy and are not part of first-card completion.
@@ -1306,6 +1354,10 @@ async function prepareProductionRecommendationWork(core, diagnostics, context = 
       entries: firstCardEntries,
       auditId: diagnostics.auditId,
       executionMode: 'interactive',
+      onPreparationStage: (stage, fields) => recordRecommendationStage(diagnostics, stage, {
+        batchId: metadata.batchId,
+        fields,
+      }),
     })
       .then((job) => { Object.assign(responseCopyJob, job || {}); return job; })
       .catch((error) => {
@@ -4650,6 +4702,7 @@ function generateRuleRecommendations({
         instrumentation: testInstrumentation,
       });
   timings.candidateFactPreparationMs = Date.now() - itemFactsStartedAt;
+  recordRecommendationStage(diagnostics, 'CANDIDATE_FACTS_DONE');
   const candidateConstructionStartedAt = Date.now();
   const compositionCandidates = buildOutfitCandidatesV1({
     clothes: filtered,
@@ -4665,6 +4718,9 @@ function generateRuleRecommendations({
     compactCandidates: true,
   });
   timings.candidateConstructionMs = Date.now() - candidateConstructionStartedAt;
+  recordRecommendationStage(diagnostics, 'CANDIDATE_CONSTRUCTION_DONE', {
+    fields: { candidateCount: compositionCandidates.length },
+  });
   timings.compositionMs = Date.now() - compositionStartedAt;
   recordRecommendationStage(diagnostics, 'CANDIDATE_GENERATION', {
     fields: { candidateCount: compositionCandidates.length },
@@ -4690,6 +4746,9 @@ function generateRuleRecommendations({
   }
   candidates.debug = compositionCandidates.debug;
   timings.canonicalizeMs = Date.now() - candidateCoreStartedAt;
+  recordRecommendationStage(diagnostics, 'CANDIDATE_HYDRATE_DONE', {
+    fields: { candidateCount: candidates.length },
+  });
   if (diagnostics) diagnostics.stage = 'eligibility';
   const eligibilityStartedAt = Date.now();
   const guardResult = applyWearabilityAndSceneEligibility(candidates, {
@@ -4701,6 +4760,9 @@ function generateRuleRecommendations({
     instrumentation: testInstrumentation,
   });
   timings.eligibilityMs = Date.now() - eligibilityStartedAt;
+  recordRecommendationStage(diagnostics, 'ELIGIBILITY_DONE', {
+    fields: { acceptedCount: guardResult.accepted.length },
+  });
   timings.wearabilitySceneEligibilityMs = timings.eligibilityMs;
   const exclusionStartedAt = Date.now();
   const excluded = new Set([
@@ -4737,6 +4799,9 @@ function generateRuleRecommendations({
       candidate.selectionSignatures.itemSignature = outfitKey;
   }
   timings.scoringMs = Date.now() - scoringStartedAt;
+  recordRecommendationStage(diagnostics, 'SCORING_DONE', {
+    fields: { scoredCandidateCount: scored.length },
+  });
   timings.scoringPreparationMs = timings.scoringMs;
   recordRecommendationStage(diagnostics, 'SCORING', {
     fields: { scoredCandidateCount: scored.length },
@@ -4745,6 +4810,9 @@ function generateRuleRecommendations({
   const filteringStartedAt = Date.now();
   const available = scored.filter((rec) => !excluded.has(rec.outfitKey));
   const sortedAvailable = sortCandidatesStable(available);
+  recordRecommendationStage(diagnostics, 'STABLE_SORT_DONE', {
+    fields: { availableCount: sortedAvailable.length },
+  });
   timings.filteringMs = Date.now() - filteringStartedAt;
   timings.exclusionMs = Date.now() - exclusionStartedAt;
   const dedupeStartedAt = Date.now();
@@ -4753,6 +4821,9 @@ function generateRuleRecommendations({
   const firstSelectedCandidate = selector.selectNext();
   let selectionWorkMs = Date.now() - dedupeStartedAt;
   if (firstSelectedCandidate) {
+    recordRecommendationStage(diagnostics, 'CARD0_IDENTITY_FREEZE', {
+      fields: { outfitKey: firstSelectedCandidate.outfitKey },
+    });
     recordRecommendationStage(diagnostics, 'SELECTOR_CARD0_FIXED', {
       fields: { outfitKey: firstSelectedCandidate.outfitKey },
     });

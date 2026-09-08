@@ -80,8 +80,12 @@ test('storage bootstrap creates only the fixed job and canonical cache collectio
 test('all cache hits do not dispatch', async () => {
   const database = fakeDatabase(); const input = entries(3); const jobEntries = normalizeJobEntries(input, { openid: 'openid-a', rendererVersion: 'renderer-v2' });
   for (const entry of jobEntries) await persistValidatedCanonicalCopy(database, { _openid: 'openid-a', rendererVersion: 'renderer-v2' }, entry, { text: `copy-${entry.position}` }, now);
-  let calls = 0; const result = await prepareRecommendationCopyJob({ database, openid: 'openid-a', batchId: 'batch-a', rendererVersion: 'renderer-v2', entries: input, dispatch: async () => { calls += 1; } , now });
+  const preparationStages = [];
+  let calls = 0; const result = await prepareRecommendationCopyJob({ database, openid: 'openid-a', batchId: 'batch-a', rendererVersion: 'renderer-v2', entries: input, dispatch: async () => { calls += 1; }, now,
+    onPreparationStage: (stage) => preparationStages.push(stage) });
   assert.equal(calls, 0); assert.equal(result.status, 'ready_cache_hit'); assert.equal(result.initialCopies.length, 3);
+  assert.deepEqual(preparationStages, ['CANONICAL_CACHE_LOOKUP_START', 'CANONICAL_CACHE_LOOKUP_DONE',
+    'COPY_JOB_RESERVATION_START', 'COPY_JOB_RESERVATION_DONE', 'INITIAL_COPIES_RESOLUTION_DONE']);
 });
 
 test('provider stream validates, persists canonical, and next request is a cache hit', async () => {

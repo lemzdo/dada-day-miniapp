@@ -100,6 +100,7 @@ async function prepareRecommendationCopyJob({
   dispatch,
   executionMode = 'event',
   now = new Date(),
+  onPreparationStage,
 } = {}) {
   const interactive = executionMode === 'interactive';
   if (!database || !openid || !batchId || !rendererVersion
@@ -107,7 +108,14 @@ async function prepareRecommendationCopyJob({
     throw new Error('COPY_JOB_PREPARE_INPUT');
   }
   const normalizedEntries = normalizeJobEntries(entries, { openid, rendererVersion });
+  emitPreparationStage(onPreparationStage, 'CANONICAL_CACHE_LOOKUP_START', {
+    entryCount: normalizedEntries.length,
+  });
   const cached = await readCachedCopies(database, openid, rendererVersion, normalizedEntries);
+  emitPreparationStage(onPreparationStage, 'CANONICAL_CACHE_LOOKUP_DONE', {
+    entryCount: normalizedEntries.length,
+    cacheHitCount: cached.length,
+  });
   const cachedById = new Map(cached.map((copy) => [copy.cacheId, copy]));
   const misses = normalizedEntries.filter((entry) => !cachedById.has(entry.cacheId));
   const jobId = buildJobIdentity({ openid, batchId, rendererVersion });
@@ -132,12 +140,17 @@ async function prepareRecommendationCopyJob({
     createdAt: timestamp,
     updatedAt: timestamp,
   };
+  emitPreparationStage(onPreparationStage, 'COPY_JOB_RESERVATION_START', { jobId });
   const reservation = await reserveJob(database, draft);
+  emitPreparationStage(onPreparationStage, 'COPY_JOB_RESERVATION_DONE', {
+    jobId,
+    created: reservation.created === true,
+  });
   const job = reservation.job;
   const dispatchResult = !interactive && job.missCount > 0
     ? await dispatchPreparedRecommendationCopyJob({ database, jobId, dispatch, now })
     : { accepted: false, joined: reservation.created === false, status: job.status };
-  return {
+  const prepared = {
     version: JOB_VERSION,
     rendererVersion,
     jobId,
@@ -155,6 +168,16 @@ async function prepareRecommendationCopyJob({
     entries: normalizedEntries,
     missEntries: normalizedEntries.filter((entry) => !cachedById.has(entry.cacheId)),
   };
+  emitPreparationStage(onPreparationStage, 'INITIAL_COPIES_RESOLUTION_DONE', {
+    initialCopyCount: prepared.initialCopies.length,
+    missCount: prepared.missEntries.length,
+  });
+  return prepared;
+}
+
+function emitPreparationStage(observer, stage, fields = {}) {
+  if (typeof observer !== 'function') return;
+  try { observer(stage, fields); } catch { /* Diagnostics must remain fail-open. */ }
 }
 
 async function dispatchPreparedRecommendationCopyJob({
