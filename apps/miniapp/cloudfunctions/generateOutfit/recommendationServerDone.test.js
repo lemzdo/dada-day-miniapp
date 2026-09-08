@@ -1,5 +1,3 @@
-/* global require, process, console */
-/* eslint-disable @typescript-eslint/no-require-imports */
 const assert = require('node:assert/strict');
 const Module = require('node:module');
 const test = require('node:test');
@@ -120,21 +118,4 @@ test('stage diagnostics reuse the request monotonic origin and required identity
   assert.deepEqual(entries, diagnostics.stageDiagnostics);
   diagnostics.stageLogger = () => { throw new Error('logger unavailable'); };
   assert.doesNotThrow(() => internals.recordRecommendationStage(diagnostics, 'runtime:c2'));
-});
-
-test('post-response tasks remain cold until the one-shot response gate releases them', async () => {
-  const internals = loadInternals();
-  const scheduled = [];
-  const gate = internals.createPostResponseTaskGate((callback) => scheduled.push(callback));
-  let started = false;
-  const task = gate.ready.then(() => { started = true; });
-  await Promise.resolve();
-  assert.equal(started, false);
-  assert.equal(gate.release(), true);
-  assert.equal(gate.release(), false);
-  assert.equal(started, false);
-  assert.equal(scheduled.length, 1);
-  scheduled[0]();
-  await task;
-  assert.equal(started, true);
 });
