@@ -819,6 +819,21 @@ function readShadowFailureCode(error) {
   return typeof value === 'string' && value.trim() ? value.trim().slice(0, 80) : 'SHADOW_UNKNOWN_ERROR';
 }
 
+function createPostResponseTaskGate(schedule = setImmediate) {
+  let released = false;
+  let resolveReady;
+  const ready = new Promise((resolve) => { resolveReady = resolve; });
+  return {
+    ready,
+    release() {
+      if (released) return false;
+      released = true;
+      schedule(resolveReady);
+      return true;
+    },
+  };
+}
+
 function countFailureCodes(values) {
   return values.reduce((counts, value) => {
     counts[value] = (counts[value] || 0) + 1;
@@ -864,6 +879,7 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
     : process.hrtime.bigint();
   diagnostics.handlerOriginAt = handlerOrigin;
   let backgroundPromise = Promise.resolve([]);
+  const postResponseTaskGate = createPostResponseTaskGate();
   let firstCardCopyJobPromise = null;
   let firstCardCopyJobSettlementPromise = null;
   const settleFirstCardCopyJob = (outcome = {}) => {
@@ -904,6 +920,13 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
     ...lifecycleHooks,
     onNarrativePlansReady: (payload) => {
       try { return lifecycleHooks.onNarrativePlansReady?.(payload); } catch { return undefined; }
+    },
+    onRecommendationReady: (payload) => {
+      try { return lifecycleHooks.onRecommendationReady?.(payload); } finally { postResponseTaskGate.release(); }
+    },
+    onRuntimeFailure: (payload) => {
+      postResponseTaskGate.release();
+      try { return lifecycleHooks.onRuntimeFailure?.(payload); } catch { return undefined; }
     },
     onPostC2TasksScheduled: ({ tasks = [] } = {}) => {
       backgroundPromise = Promise.allSettled(
@@ -949,6 +972,7 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
       firstCardCopyJobPromise,
       markFirstCardCopyJobRetryable,
       settleFirstCardCopyJob,
+      postResponseTasksReady: postResponseTaskGate.ready,
     }),
     persistAndAssembleRecommendation: async (core, prepared) => persistAndAssembleProductionRecommendation(core, prepared, diagnostics),
     renderFirstCardCanonical: context.renderFirstCardCanonical || renderFirstCardCanonical,
@@ -1288,11 +1312,12 @@ async function computeProductionRecommendationCore(event, diagnostics = createRe
 
 async function prepareProductionRecommendationWork(core, diagnostics, context = {}) {
   const metadata = core?.metadata || {};
+  const postResponseTasksReady = context.postResponseTasksReady || Promise.resolve();
   let candidatePoolPersistPromise = Promise.resolve(null);
   const candidatePoolInput = metadata.candidatePoolPersistenceInput;
   if (candidatePoolInput) {
     diagnostics.workCounts.candidatePoolPersistence += 1;
-    candidatePoolPersistPromise = Promise.resolve().then(() => persistGeneratedCandidatePool({
+    candidatePoolPersistPromise = postResponseTasksReady.then(() => persistGeneratedCandidatePool({
       diagnostics, candidatePoolId: candidatePoolInput.candidatePoolId,
       identity: core.identity, candidates: candidatePoolInput.candidates,
       debugRecommendationAudit: metadata.debugRecommendationAudit,
@@ -1367,7 +1392,7 @@ async function prepareProductionRecommendationWork(core, diagnostics, context = 
         return null;
       });
     diagnostics.workCounts.batchAdmission += 1;
-    copyOverlayPromise = copyJobPromise.then(async (job) => {
+    copyOverlayPromise = postResponseTasksReady.then(() => copyJobPromise).then(async (job) => {
       if (!job?.jobId) return null;
       try {
         const overlay = await readRecommendationCopyOverlay(db, metadata.openid, metadata.batchId, PRODUCTION_RENDERER_VERSION);
@@ -6062,6 +6087,7 @@ if (process.env.NODE_ENV === 'test') {
     createRecommendationDiagnostics,
     recordRecommendationStage,
     recordNarrativePlansReady,
+    createPostResponseTaskGate,
     emitRecommendationServerDone,
     recordServerPhase,
     measureCanonicalBatchInput,
