@@ -4778,13 +4778,13 @@ function generateRuleRecommendations({
     // Card0's identity, score and clothes are final after selector round0.
     // Its display-only eligibility reason is filled from the unchanged global
     // allocator below; Narrative Plan and renderer fingerprint do not read it.
-    // Admission owns only the independent card0 cache/job path. Do not await
-    // its progress here: waiting would serialize full-batch selection and
-    // materialization behind an async DB barrier that card0 correctness does
-    // not depend on. The orchestrator retains the returned promise through its
-    // early-card owner, so failures remain observed and the provider is still
-    // started exactly once.
-    onFirstCardMaterialized({ recommendation: card0, index: 0 });
+    const admissionProgress = onFirstCardMaterialized({ recommendation: card0, index: 0 });
+    if (admissionProgress && typeof admissionProgress.then === 'function') {
+      return Promise.resolve(admissionProgress).then(
+        () => finishRecommendationBatch(),
+        () => finishRecommendationBatch(),
+      );
+    }
   }
   return finishRecommendationBatch();
 
