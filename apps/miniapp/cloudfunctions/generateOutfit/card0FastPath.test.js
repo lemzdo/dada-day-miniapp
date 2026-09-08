@@ -190,8 +190,8 @@ test('Phase1A moves admission before card1 materialization and reuses plan0/fing
   t.diagnostic(`after: ${fast.events.join(' -> ')}`);
 });
 
-test('Phase1A starts the real provider before the synchronous remainder reaches FULL_BATCH_READY', async () => {
-  async function runSchedulingCase(awaitAdmissionProgress) {
+test('card0 admission does not block the synchronous remainder before FULL_BATCH_READY', async () => {
+  async function runSchedulingCase() {
     const harness = loadCore({ remainingCardCpuMs: 3, remainingSelectorCpuMs: 3 });
     const events = harness.events;
     let earlyEntry;
@@ -211,12 +211,11 @@ test('Phase1A starts the real provider before the synchronous remainder reaches 
     };
     let coreSnapshot;
     const result = await runRecommendationOrchestrator(INPUT, {
-      diagnostics: harness.internals.createRecommendationDiagnostics({ ...INPUT, auditId: `scheduling-${awaitAdmissionProgress}` }),
+      diagnostics: harness.internals.createRecommendationDiagnostics({ ...INPUT, auditId: 'scheduling-no-admission-barrier' }),
       prepareFirstCardInteractive: ({ entry }) => { earlyEntry = entry; return interactive; },
       computeRecommendation: async (_input, runtimeContext) => {
         const core = await compute(harness, {}, (payload) => {
-          const progress = runtimeContext.onFirstCardReady(payload);
-          return awaitAdmissionProgress ? progress : undefined;
+          runtimeContext.onFirstCardReady(payload);
         });
         events.push('FULL_BATCH_READY');
         coreSnapshot = core;
@@ -250,17 +249,11 @@ test('Phase1A starts the real provider before the synchronous remainder reaches 
     return { core: coreSnapshot, events, providerCalls, settlements };
   }
 
-  const legacy = await runSchedulingCase(false);
-  const fixed = await runSchedulingCase(true);
-  assert.ok(legacy.events.indexOf('FULL_BATCH_READY') < legacy.events.indexOf('PROVIDER_START'));
-  assert.ok(fixed.events.indexOf('plan0') < fixed.events.indexOf('PROVIDER_START'));
-  assert.ok(fixed.events.indexOf('PROVIDER_START') < fixed.events.indexOf('selector1'));
-  assert.ok(fixed.events.indexOf('PROVIDER_START') < fixed.events.indexOf('materialize1'));
-  assert.ok(fixed.events.indexOf('PROVIDER_START') < fixed.events.indexOf('FULL_BATCH_READY'));
-  assert.equal(fixed.providerCalls, 1);
-  assert.equal(fixed.settlements, 1);
-  assert.deepEqual(publicBatch(fixed.core.outfits), publicBatch(legacy.core.outfits));
-  assert.deepEqual(fixed.core.narrativePlans, legacy.core.narrativePlans);
+  const result = await runSchedulingCase();
+  assert.ok(result.events.indexOf('plan0') < result.events.indexOf('PROVIDER_START'));
+  assert.ok(result.events.indexOf('FULL_BATCH_READY') < result.events.indexOf('CACHE_LOOKUP_DONE'));
+  assert.equal(result.providerCalls, 1);
+  assert.equal(result.settlements, 1);
 });
 
 test('Phase1A preserves candidate-pool HIT order, callback boundary, identity and fingerprint', async () => {
