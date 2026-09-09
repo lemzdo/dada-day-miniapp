@@ -106,9 +106,12 @@ const {
   resolveRealAiReviewSource,
 } = require('./services/recommendationReviewProvenance');
 const {
-  buildOutfitCandidatesV1,
   createCompositionItemFacts,
 } = require('./services/outfitCompositionV1');
+const {
+  hierarchicalOutfitSearch,
+  selectDiversityReservoir,
+} = require('./services/hierarchicalOutfitSearch');
 const { buildOutfitCardViewModel } = require('./services/outfitCardViewModel');
 const { compileRecommendationReasonsV2 } = require('./services/recommendationReasonV2');
 const {
@@ -124,7 +127,6 @@ const {
 } = require('./services/recommendationV2BatchRepository');
 const {
   applyWearabilityAndSceneEligibility,
-  evaluateOptionalItemPolicy,
   normalizeScene,
 } = require('./services/sceneEligibilityV3');
 const { buildItemFactsContext } = require('./services/itemFactsContext');
@@ -4535,6 +4537,79 @@ function resolveCandidateSourceItems(candidate, itemFactsContext, sourceItemById
   });
 }
 
+function buildSceneEvidenceAcceptanceDiagnostics(recommendations = []) {
+  const debug = recommendations?.debug || {};
+  const accepted = Array.isArray(debug._auditGuardAcceptedCandidates)
+    ? debug._auditGuardAcceptedCandidates
+    : [];
+  const rejected = Array.isArray(debug._auditGuardRejectedCandidates)
+    ? debug._auditGuardRejectedCandidates
+    : [];
+  const ranked = accepted.map((candidate) => {
+    const sceneResult = candidate?.sceneEligibility || candidate?.eligibility?.scene || {};
+    const evidence = Array.isArray(sceneResult.sceneEvidence) ? sceneResult.sceneEvidence : [];
+    return {
+      outfitKey: candidate?.outfitKey || candidate?.selectionSignatures?.itemSignature || '',
+      sceneFitScore: Number(sceneResult.sceneFitScore ?? candidate?.sceneFitScore) || 0,
+      rankingScore: Number(candidate?.rankingScore) || 0,
+      positiveFamilies: uniqueSorted(evidence
+        .filter((entry) => /_POSITIVE$/.test(String(entry?.severity || '')))
+        .map((entry) => entry.evidenceFamily)),
+      negativeFamilies: uniqueSorted(evidence
+        .filter((entry) => entry?.severity === 'NEGATIVE_SIGNAL')
+        .map((entry) => entry.evidenceFamily)),
+      evidenceIds: uniqueSorted(evidence.map((entry) => entry?.id)),
+    };
+  }).sort((left, right) => right.rankingScore - left.rankingScore
+    || right.sceneFitScore - left.sceneFitScore
+    || left.outfitKey.localeCompare(right.outfitKey));
+  const selectedKeys = new Set((Array.isArray(recommendations) ? recommendations : [])
+    .map((candidate) => candidate?.outfitKey)
+    .filter(Boolean));
+  const scores = ranked.map((candidate) => candidate.sceneFitScore).sort((left, right) => left - right);
+  const hardRejected = rejected.filter((entry) => entry?.rejectionStage === 'scene_hard_conflict');
+  const wearabilityRejected = rejected.filter((entry) => entry?.rejectionStage === 'wearability_guard');
+  return {
+    version: SCENE_EVIDENCE_VERSION,
+    fingerprint: SCENE_EVIDENCE_FINGERPRINT,
+    generated: Number(debug.candidateCount) || accepted.length + rejected.length,
+    eligible: accepted.length,
+    hardRejected: hardRejected.length,
+    wearabilityRejected: wearabilityRejected.length,
+    selected: selectedKeys.size,
+    sceneFitDistribution: {
+      min: scores[0] ?? null,
+      median: scores.length > 0 ? scores[Math.floor((scores.length - 1) / 2)] : null,
+      max: scores[scores.length - 1] ?? null,
+      buckets: {
+        low: scores.filter((score) => score < 4).length,
+        neutral: scores.filter((score) => score >= 4 && score < 6).length,
+        positive: scores.filter((score) => score >= 6 && score < 8).length,
+        strong: scores.filter((score) => score >= 8).length,
+      },
+    },
+    topEvidenceFamilies: countRankedValues(ranked.flatMap((candidate) => candidate.positiveFamilies)),
+    negativeFamilies: countRankedValues(ranked.flatMap((candidate) => candidate.negativeFamilies)),
+    candidates: ranked.map((candidate, index) => ({
+      ...candidate,
+      rank: index + 1,
+      selected: selectedKeys.has(candidate.outfitKey),
+    })),
+  };
+}
+
+function countRankedValues(values) {
+  const counts = new Map();
+  for (const value of values.filter(Boolean)) counts.set(value, (counts.get(value) || 0) + 1);
+  return [...counts.entries()]
+    .map(([family, count]) => ({ family, count }))
+    .sort((left, right) => right.count - left.count || left.family.localeCompare(right.family));
+}
+
+function uniqueSorted(values) {
+  return [...new Set(values.filter((value) => typeof value === 'string' && value))].sort();
+}
+
 function materializeSelectedCandidate(candidate, {
   scene,
   weather,
@@ -4551,12 +4626,6 @@ function materializeSelectedCandidate(candidate, {
     sourceItemById,
     instrumentation,
   });
-  attachSemanticOptionalItem(materialized, {
-    scene,
-    weather,
-    hasRealWeather,
-    sourceItemById,
-  });
   const scores = materialized.scores || {};
   materialized.scoreExplanations = buildScoreExplanations(scores, tempConfig, scene)
     .filter((entry) => hasRealWeather || entry.dimension !== 'weatherAdaptation');
@@ -4565,87 +4634,6 @@ function materializeSelectedCandidate(candidate, {
     : '';
   recordInstrumentationMetric(instrumentation, 'materializeCandidateTitle');
   return materialized;
-}
-
-function attachSemanticOptionalItem(materialized, {
-  scene,
-  weather,
-  hasRealWeather,
-  sourceItemById,
-} = {}) {
-  if (!(sourceItemById instanceof Map)) return materialized;
-  const selectedIds = new Set(materialized.itemIds || []);
-  const sceneKey = normalizeScene(scene);
-  const temperature = Number(weather?.temp ?? weather?.temperature);
-  const sourceItems = [...sourceItemById.values()].filter((item) => item?._id && !selectedIds.has(item._id));
-  const needsLayer = hasRealWeather && Number.isFinite(temperature)
-    && (temperature <= 20 || (sceneKey === 'work' && temperature <= 24));
-  const outerwear = needsLayer
-    ? selectUsefulOptional(sourceItems, 'outerwear', sceneKey, materialized.items)
-    : null;
-  const accessory = !outerwear && !['home', 'sport'].includes(sceneKey)
-    ? selectUsefulOptional(sourceItems, 'accessory', sceneKey, materialized.items)
-    : null;
-  const selected = outerwear || accessory;
-  if (!selected) return materialized;
-
-  const slot = outerwear ? 'outerwear' : 'accessory';
-  const role = outerwear ? 'functional' : 'optional';
-  const item = { ...selected, outfitSlot: slot, outfitRole: role };
-  materialized.items.push(item);
-  materialized.itemIds.push(selected._id);
-  materialized.itemFactRefs.push({ itemId: selected._id, slot, role });
-  materialized.outfitItemRoles.push({
-    id: selected._id,
-    slot,
-    role,
-    displayName: selected.customName || selected.subCategory || selected.subcategory || selected.category || '单品',
-  });
-  if (slot === 'outerwear') {
-    materialized.roleItemIds.outerwear = selected._id;
-    materialized.itemsByRole.outerwear = item;
-  }
-  return materialized;
-}
-
-function selectUsefulOptional(items, kind, sceneKey, coreItems) {
-  const coreColors = new Set(coreItems.flatMap((item) => normalizeColors(item).map((color) => color?.name).filter(Boolean)));
-  return (Array.isArray(items) ? items : [])
-    .filter((item) => kind === 'outerwear' ? isUsefulOuterwear(item) : isUsefulAccessory(item))
-    .filter((item) => evaluateOptionalItemPolicy(sceneKey, [item]).kept.length === 1)
-    .filter((item) => kind !== 'accessory' || accessoryAddsValue(item, coreColors, sceneKey))
-    .map((item) => ({ item, score: scoreOptionalItem(item, kind, sceneKey, coreColors) }))
-    .sort((left, right) => right.score - left.score || String(left.item._id).localeCompare(String(right.item._id)))
-    .map((entry) => entry.item)[0] || null;
-}
-
-function isUsefulOuterwear(item) {
-  const text = [item.category, item.subcategory, item.subCategory, item.customName, ...(readArray(item.styleTags)), ...(readArray(item.sceneTags))]
-    .filter(Boolean).join(' ').toLowerCase();
-  return item.category === 'outerwear' || /外套|夹克|西装|风衣|开衫|coat|jacket|blazer|cardigan/.test(text);
-}
-
-function isUsefulAccessory(item) {
-  const text = [item.category, item.subcategory, item.subCategory, item.customName, ...(readArray(item.styleTags)), ...(readArray(item.sceneTags))]
-    .filter(Boolean).join(' ').toLowerCase();
-  return item.category === 'accessory' || /包|帽|围巾|项链|耳环|腰带|配饰|bag|hat|scarf|necklace|belt/.test(text);
-}
-
-function accessoryAddsValue(item, coreColors, sceneKey) {
-  const colors = normalizeColors(item).map((color) => color?.name).filter(Boolean);
-  if (colors.some((color) => !coreColors.has(color))) return true;
-  const text = [item.subcategory, item.subCategory, item.customName, ...(readArray(item.sceneTags))].filter(Boolean).join(' ').toLowerCase();
-  return sceneKey === 'date' ? /约会|亮|重点|date|accent/.test(text) : /通勤|简约|work|office/.test(text);
-}
-
-function scoreOptionalItem(item, kind, sceneKey, coreColors) {
-  const text = [item.subcategory, item.subCategory, item.customName, ...(readArray(item.sceneTags)), ...(readArray(item.styleTags))]
-    .filter(Boolean).join(' ').toLowerCase();
-  let score = kind === 'outerwear' ? 3 : 1;
-  if (sceneKey === 'work' && /通勤|上班|西装|work|office|blazer/.test(text)) score += 3;
-  if (sceneKey === 'date' && /约会|优雅|亮|date|accent/.test(text)) score += 3;
-  if (normalizeColors(item).some((color) => color?.name && !coreColors.has(color.name))) score += 1;
-  return score;
 }
 
 function recordInstrumentationMetric(instrumentation, name) {
@@ -4704,19 +4692,28 @@ function generateRuleRecommendations({
   timings.candidateFactPreparationMs = Date.now() - itemFactsStartedAt;
   recordRecommendationStage(diagnostics, 'CANDIDATE_FACTS_DONE');
   const candidateConstructionStartedAt = Date.now();
-  const compositionCandidates = buildOutfitCandidatesV1({
+  const searchResult = hierarchicalOutfitSearch({
     clothes: filtered,
     scene,
     weather: normalizedWeather,
-    weatherMode: normalizedWeather.mode,
-    recommendationProfile,
-    excludeClothingIdSets,
-    excludedOutfitKeys,
-    maxResults: Math.max(Number(maxResults || 8), 1) * 8,
-    returnRawCandidates: true,
     itemFactsContext,
-    compactCandidates: true,
+    targetBatchSize: 8,
+    // Initial batch plus five refreshes is the existing production quality
+    // contract; reservoir capacity is derived from this batch target.
+    targetQualifiedBatches: 6,
   });
+  const compositionCandidates = searchResult.candidates;
+  compositionCandidates.debug = {
+    ...searchResult.diagnostics,
+    candidateCount: compositionCandidates.length,
+    weatherMode: normalizedWeather.mode,
+    hasUsableWeather: hasRealWeather,
+    temperatureBandApplied: hasRealWeather,
+    temperatureFilterSkippedReason: hasRealWeather ? '' : 'NO_USABLE_WEATHER',
+    candidateCountBeforeTemperatureFilter: compositionCandidates.length,
+    candidateCountAfterTemperatureFilter: compositionCandidates.length,
+    limitedReason: compositionCandidates.length === 0 ? 'NO_BOUNDED_SKELETON' : '',
+  };
   timings.candidateConstructionMs = Date.now() - candidateConstructionStartedAt;
   recordRecommendationStage(diagnostics, 'CANDIDATE_CONSTRUCTION_DONE', {
     fields: { candidateCount: compositionCandidates.length },
@@ -4808,7 +4805,13 @@ function generateRuleRecommendations({
   });
   if (diagnostics) diagnostics.stage = 'batchSelection';
   const filteringStartedAt = Date.now();
-  const available = scored.filter((rec) => !excluded.has(rec.outfitKey));
+  const sortedScored = sortCandidatesStable(scored);
+  const reservoirCapacity = Math.max(
+    8,
+    Number(searchResult.diagnostics?.budget?.reservoirCapacity) || 8,
+  );
+  const reservoir = selectDiversityReservoir(sortedScored, reservoirCapacity, searchResult.diagnostics);
+  const available = reservoir.filter((rec) => !excluded.has(rec.outfitKey));
   const sortedAvailable = sortCandidatesStable(available);
   recordRecommendationStage(diagnostics, 'STABLE_SORT_DONE', {
     fields: { availableCount: sortedAvailable.length },
@@ -4899,7 +4902,7 @@ function generateRuleRecommendations({
     timings.materializationMs = Date.now() - materializationStartedAt;
     recordInstrumentationTiming(testInstrumentation, 'materializationMs', timings.materializationMs);
 
-    const exclusionStats = getExclusionStats(scored, excludedOutfitKeys, excludeClothingIdSets);
+    const exclusionStats = getExclusionStats(reservoir, excludedOutfitKeys, excludeClothingIdSets);
     results.debug = {
     candidateCount: candidates.length,
     generatedCount: candidates.length,
@@ -4918,6 +4921,7 @@ function generateRuleRecommendations({
     requestedExcludedCount: exclusionStats.requestedExcludedCount,
     actualExcludedCandidateCount: exclusionStats.actualExcludedCandidateCount,
     remainingCandidateCount: available.length,
+    search: { ...searchResult.diagnostics },
     timings,
     limitedReason: (guardResult.debug.limitedReason || candidates.debug?.limitedReason || results.length < limit)
       ? classifyLimitedReason(
@@ -4940,7 +4944,7 @@ function generateRuleRecommendations({
     results.limited = results.countContract.expectedCardCount < results.countContract.requestedBatchSize;
     results.exhausted = results.countContract.poolExhaustedAfterConsume;
     Object.defineProperty(results, 'candidatePoolCandidates', {
-      value: scored,
+      value: reservoir,
       enumerable: false,
       configurable: false,
     });
@@ -5402,7 +5406,7 @@ function scoreCandidateDerivedFacts(derivedFacts, context) {
 }
 
 function isCandidateDerivedFacts(value) {
-  return value?.version === 'candidate-derived-facts-v1';
+  return value?.version === 'candidate-derived-facts-v2';
 }
 
 function scoreWeather(items, tempConfig) {
@@ -6073,6 +6077,7 @@ if (process.env.NODE_ENV === 'test') {
     normalizeOutfitPayload,
     persistCanonicalCopyMaterialization,
     generateRuleRecommendations,
+    buildSceneEvidenceAcceptanceDiagnostics,
     buildRankingScore,
     scoreCandidate,
     assertEligibilityReasons,

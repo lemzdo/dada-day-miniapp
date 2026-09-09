@@ -608,7 +608,48 @@ test('real composition candidates keep roles, score, reasons, copy, and QA on on
   assert.ok(qa.finalCards.every((card) => card.score > 0 && card.reasonCode));
 });
 
-test('valid work and sport fixtures retain eligible candidates through the canonical pipeline', () => {
+test('structural and accessory items participate in final identity validation scoring and evidence', () => {
+  const internals = loadGenerateOutfitInternals();
+  const base = {
+    styleTags: ['simple'], sceneTags: ['work'], seasonTags: ['winter'],
+    colorPalette: [{ name: 'black', hex: '#111111' }], confidence: 0.95,
+  };
+  const clothes = [
+    { ...base, _id: 'winter-top', category: 'top', subcategory: 'wool sweater', customName: 'wool sweater', sleeveLength: 'long' },
+    { ...base, _id: 'winter-bottom', category: 'bottom', subcategory: 'long wool pants', customName: 'long wool pants', pantsLength: 'long' },
+    { ...base, _id: 'winter-shoes', category: 'shoes', subcategory: 'ankle boots', customName: 'ankle boots' },
+    { ...base, _id: 'winter-coat', category: 'outerwear', subcategory: 'warm work coat', customName: 'warm work coat' },
+    { ...base, _id: 'thermal-socks', category: 'accessory', subcategory: 'functional thermal socks', customName: 'functional thermal socks' },
+    { ...base, _id: 'thermal-hat', category: 'accessory', subcategory: 'functional thermal hat', customName: 'functional thermal hat' },
+    { ...base, _id: 'work-bag', category: 'accessory', subcategory: 'simple work bag', customName: 'simple work bag' },
+  ];
+  const recommendations = internals.generateRuleRecommendations({
+    clothes, scene: 'work', weather: { temp: 5, weather: 'clear' }, weatherMode: 'live',
+    recommendationProfile: profile(), excludeClothingIdSets: [], excludedOutfitKeys: [],
+    maxResults: 8, debugRecommendationAudit: true,
+  });
+
+  assert.ok(recommendations.length > 0);
+  for (const candidate of recommendations) {
+    const sortedIds = candidate.itemIds.slice().sort();
+    assert.equal(candidate.outfitKey, sortedIds.join('_'));
+    assert.deepEqual(candidate.itemFactRefs.map((entry) => entry.itemId).sort(), sortedIds);
+    assert.deepEqual(candidate.copyFacts.items.map((entry) => entry.id).sort(), sortedIds);
+    assert.deepEqual(Object.keys(candidate.copyFacts.itemFactsById).sort(), sortedIds);
+    assert.equal(candidate.aggregateEligibilityFacts.itemCount, sortedIds.length);
+    assert.ok(candidate.roleItemIds.outerwear);
+    assert.ok(candidate.roleItemIds.hat);
+    assert.ok(candidate.eligibility?.scene);
+    assert.ok(candidate.totalScore > 0);
+  }
+  const accessoryCandidate = recommendations.candidatePoolCandidates.find((candidate) => candidate.itemIds.includes('work-bag'));
+  assert.ok(accessoryCandidate);
+  assert.equal(accessoryCandidate.outfitKey, accessoryCandidate.itemIds.slice().sort().join('_'));
+  assert.ok(accessoryCandidate.eligibility?.scene);
+  assert.ok(accessoryCandidate.totalScore > 0);
+});
+
+test('valid home work date and sport fixtures retain eligible candidates through the canonical pipeline', () => {
   const internals = loadGenerateOutfitInternals();
   const workWardrobe = [
     { _id: 'work-top', category: 'top', subcategory: 'office simple shirt', customName: 'office simple shirt', styleTags: ['simple'], sceneTags: ['work'], colorPalette: [{ name: 'black' }] },
@@ -616,10 +657,22 @@ test('valid work and sport fixtures retain eligible candidates through the canon
     { _id: 'work-shoes', category: 'shoes', subcategory: 'simple loafer shoes', customName: 'simple loafer shoes', shoeType: 'loafer', styleTags: ['simple'], sceneTags: ['work'], colorPalette: [{ name: 'black' }] },
   ];
   const work = generate(internals, { clothes: workWardrobe, scene: 'work', weather: { temp: 24, weather: 'clear' } });
+  const home = generate(internals, { clothes: [
+    { _id: 'home-top', category: 'top', subcategory: 'casual home top', customName: 'casual home top', styleTags: ['casual'], sceneTags: ['home'], colorPalette: [{ name: 'white' }] },
+    { _id: 'home-bottom', category: 'bottom', subcategory: 'casual home pants', customName: 'casual home pants', pantsLength: 'long', styleTags: ['casual'], sceneTags: ['home'], colorPalette: [{ name: 'gray' }] },
+  ], scene: 'home', weather: { temp: 22, weather: 'clear' } });
+  const date = generate(internals, { clothes: [
+    { _id: 'date-dress', category: 'onepiece', subcategory: 'simple date dress', customName: 'simple date dress', styleTags: ['simple'], sceneTags: ['date'], colorPalette: [{ name: 'blue' }] },
+    { _id: 'date-shoes', category: 'shoes', subcategory: 'simple outing shoes', customName: 'simple outing shoes', styleTags: ['simple'], sceneTags: ['date'], colorPalette: [{ name: 'black' }] },
+  ], scene: 'date', weather: { temp: 22, weather: 'clear' } });
   const sport = generate(internals, { clothes: buildTwentyFiveCandidateSportWardrobe(), scene: 'sport', weather: { temp: 22, weather: 'clear' } });
 
+  assert.ok(home.debug.guardAcceptedCount > 0);
+  assert.ok(home.length > 0);
   assert.ok(work.debug.guardAcceptedCount > 0);
   assert.ok(work.length > 0);
+  assert.ok(date.debug.guardAcceptedCount > 0);
+  assert.ok(date.length > 0);
   assert.ok(sport.debug.guardAcceptedCount > 0);
   assert.ok(sport.length > 0);
 });

@@ -65,9 +65,9 @@ function candidate() {
     scoreBreakdown: { total: 8.5, styleUnity: 8 },
     totalScore: 8.5,
     rankingScore: 8.5,
-    outfitKey: 'bottom-a_shoe-a_top-a',
+    outfitKey: 'accessory-a_bottom-a_shoe-a_top-a',
     selectionSignatures: {
-      itemSignature: 'bottom-a_shoe-a_top-a',
+      itemSignature: 'accessory-a_bottom-a_shoe-a_top-a',
       archetype: 'top+bottom+shoes',
       reasonCodeSignature: 'WORK_SIMPLE_TOP_PANTS_SHOES',
       titleSignature: 'work',
@@ -100,9 +100,11 @@ test('candidate pool compacts reconstructible fields while preserving the hydrat
   for (const key of ['archetype', 'eligibility', 'itemFactRefs', 'rankingScore', 'reasonCodes', 'scores', 'selectionSignatures', 'totalScore']) {
     assert.ok(Object.hasOwn(entry, key), `${key} must be retained`);
   }
-  for (const key of ['itemIds', 'itemRoles', 'roleItemIds', 'stableSortId']) {
+  for (const key of ['itemRoles', 'stableSortId']) {
     assert.equal(Object.hasOwn(entry, key), false, `${key} must not be duplicated in storage`);
   }
+  assert.deepEqual(entry.itemIds, candidate().itemIds);
+  assert.equal(Object.hasOwn(entry, 'roleItemIds'), false, 'single-valued roles are reconstructed from refs');
   const hydrated = hydrateCandidateCore(entry, {
     reasonDescriptorForCode: (code) => getReasonSelectionDescriptor(code, ELIGIBILITY_REASON_CATALOG),
   });
@@ -149,6 +151,38 @@ test('candidate pool validates user isolation, identity changes, expiry, and cor
   assert.equal(validateCandidatePool({ ...pool, candidates: [{ stableSortId: 'broken' }] }, baseIdentity, 1001).reason, 'pool_corrupt');
 });
 
+test('full-ensemble pool keeps outerwear and multiple accessory roles through hydrate', () => {
+  const source = candidate();
+  source.itemIds.push('outer-a', 'hat-a', 'bag-a', 'necklace-a');
+  source.itemFactRefs.push(
+    { itemId: 'outer-a', slot: 'outerwear', role: 'functional' },
+    { itemId: 'hat-a', slot: 'hat', role: 'optional' },
+    { itemId: 'bag-a', slot: 'bag', role: 'optional' },
+    { itemId: 'necklace-a', slot: 'necklace', role: 'optional' },
+  );
+  source.roleItemIds = {
+    top: 'top-a', bottom: 'bottom-a', onepiece: '', outerwear: 'outer-a', shoes: 'shoe-a',
+    hat: 'hat-a', bag: 'bag-a', necklace: 'necklace-a', accessory: ['hat-a', 'bag-a', 'necklace-a'],
+  };
+  source.outfitKey = source.itemIds.slice().sort().join('_');
+  const pool = createCandidatePoolRecord({ candidatePoolId: 'batch:full-ensemble', identity: identity(), candidates: [source], now: 1000 });
+  const hydrated = hydrateCandidateCore(pool.candidates[0], {
+    reasonDescriptorForCode: (code) => getReasonSelectionDescriptor(code, ELIGIBILITY_REASON_CATALOG),
+  });
+  assert.deepEqual(hydrated.itemIds, source.itemIds);
+  assert.equal(hydrated.roleItemIds.outerwear, 'outer-a');
+  assert.deepEqual(hydrated.roleItemIds.accessory, ['hat-a', 'bag-a', 'necklace-a']);
+  assert.equal(hydrated.outfitKey, source.outfitKey);
+});
+
+test('old candidate pool schema is rejected as a cache miss', () => {
+  const pool = createCandidatePoolRecord({ candidatePoolId: 'batch:old-version', identity: identity(), candidates: [candidate()], now: 1000 });
+  assert.deepEqual(validateCandidatePool({ ...pool, schemaVersion: 2, version: 'candidate-pool-v2' }, identity(), 1001), {
+    ok: false,
+    reason: 'schema_invalid',
+  });
+});
+
 test('pool candidates rehydrate with catalog metadata but without stored facts or copy', () => {
   const pool = createCandidatePoolRecord({ candidatePoolId: 'batch:pool-test', identity: identity(), candidates: [candidate()], now: 1000 });
   const core = hydrateCandidateCore(pool.candidates[0], {
@@ -165,7 +199,7 @@ test('pool candidates rehydrate with catalog metadata but without stored facts o
   assert.equal(Object.hasOwn(core, 'derivedFacts'), false);
 });
 
-test('V2 pool hydration ignores legacy missing, empty, or invalid title fields', () => {
+test('V3 pool hydration ignores legacy missing, empty, or invalid title fields', () => {
   const pool = createCandidatePoolRecord({
     candidatePoolId: 'batch:legacy-v2-title',
     identity: identity(),
@@ -182,7 +216,7 @@ test('V2 pool hydration ignores legacy missing, empty, or invalid title fields',
     reasonDescriptorForCode: (code) => getReasonSelectionDescriptor(code, ELIGIBILITY_REASON_CATALOG),
   }));
 
-  assert.equal(pool.schemaVersion, 2);
+  assert.equal(pool.schemaVersion, CANDIDATE_POOL_SCHEMA_VERSION);
   assert.equal(hydrated.every((entry) => entry.outfitKey === candidate().outfitKey), true);
   assert.equal(hydrated.every((entry) => !Object.hasOwn(entry, 'title')), true);
   assert.equal(hydrated.every((entry) => !Object.hasOwn(entry, 'displayTitle')), true);

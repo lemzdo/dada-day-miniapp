@@ -1,5 +1,3 @@
-/* global module */
-
 const ROLE_ORDER = Object.freeze([
   'top', 'bottom', 'skirt', 'onepiece', 'shoes', 'outerwear', 'accessory',
 ]);

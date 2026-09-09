@@ -2,9 +2,12 @@ const { adaptLegacyVisibleFacts } = require('./recommendationEligibilityFacts');
 const { buildOutfitCopyFacts } = require('./outfitCopyFacts');
 const { createCandidateDerivedFacts } = require('./candidateDerivedFacts');
 
-const CANDIDATE_CORE_VERSION = 'candidate-core-v1';
-const CANONICAL_CANDIDATE_VERSION = 'canonical-candidate-v1';
-const REQUIRED_ROLE_KEYS = Object.freeze(['top', 'bottom', 'onepiece', 'outerwear', 'shoes']);
+const CANDIDATE_CORE_VERSION = 'candidate-core-v2';
+const CANONICAL_CANDIDATE_VERSION = 'canonical-candidate-v2';
+const REQUIRED_ROLE_KEYS = Object.freeze([
+  'top', 'bottom', 'skirt', 'dress', 'onepiece', 'outerwear', 'shoes', 'socks', 'gloves',
+  'scarf', 'hat', 'bag', 'belt', 'necklace', 'bracelet', 'watch', 'accessory',
+]);
 const QUALITY_COMPARABILITY_DELTA = 1.25;
 
 function createCandidateCore(composition = {}, options = {}) {
@@ -61,6 +64,7 @@ function createCandidateCore(composition = {}, options = {}) {
     totalScore: 0,
     rankingScore: 0,
     selectionSignatures,
+    outfitKey: itemIds.slice().sort().join('_'),
     validatorRejectReasons: [],
     riskFlags: [],
   };
@@ -250,9 +254,9 @@ function evaluateSetContribution(candidate, selected, bestQuality, comparableCan
   const repeatedRoles = [];
   let reusePenalty = 0;
   for (const role of REQUIRED_ROLE_KEYS) {
-    const itemId = readRoleItemId(candidate, role);
-    if (!itemId) continue;
-    const reuseCount = selected.filter((entry) => readRoleItemId(entry, role) === itemId).length;
+    const itemIds = readRoleItemIds(candidate, role);
+    if (itemIds.length === 0) continue;
+    const reuseCount = selected.filter((entry) => readRoleItemIds(entry, role).some((id) => itemIds.includes(id))).length;
     if (reuseCount > 0) {
       repeatedRoles.push(role);
       reusePenalty += reuseCount === 1 ? 1.8 : 3.6 + reuseCount;
@@ -276,7 +280,7 @@ function evaluateSetContribution(candidate, selected, bestQuality, comparableCan
   const expressionPenalty = titleReuse * 0.7 + tagReuse * 0.5 + archetypeReuse * 0.8 + reasonReuse * 0.65;
   const candidateQuality = baseQuality(candidate);
   const hasUnseenRoleAlternative = repeatedRoles.some((role) => comparableCandidates.some((entry) => (
-    entry !== candidate && readRoleItemId(entry, role) && readRoleItemId(entry, role) !== readRoleItemId(candidate, role)
+    entry !== candidate && readRoleItemIds(entry, role).some((id) => !readRoleItemIds(candidate, role).includes(id))
   )));
   const reuseExplanation = repeatedRoles.length === 0
     ? ''
@@ -309,19 +313,32 @@ function requireCanonicalCandidate(candidate) {
 }
 
 function buildRoleItemIds(itemFactRefs) {
-  const roles = { top: '', bottom: '', onepiece: '', outerwear: '', shoes: '' };
+  const roles = Object.fromEntries(REQUIRED_ROLE_KEYS.map((role) => [role, '']));
+  const add = (role, itemId) => {
+    if (!Object.hasOwn(roles, role) || !itemId) return;
+    if (!roles[role]) roles[role] = itemId;
+    else if (Array.isArray(roles[role])) roles[role] = [...roles[role], itemId];
+    else roles[role] = [roles[role], itemId];
+  };
   for (const item of itemFactRefs) {
-    const role = item.slot === 'skirt' ? 'bottom' : item.slot;
-    if (Object.hasOwn(roles, role) && !roles[role]) roles[role] = item.itemId;
+    add(item.slot, item.itemId);
+    if (item.slot === 'skirt') add('bottom', item.itemId);
   }
   return roles;
 }
 
 function buildItemsByRole(items) {
-  const roles = { top: null, bottom: null, onepiece: null, outerwear: null, shoes: null };
+  const roles = Object.fromEntries(REQUIRED_ROLE_KEYS.map((role) => [role, null]));
+  const add = (role, item) => {
+    if (!Object.hasOwn(roles, role) || !item) return;
+    if (!roles[role]) roles[role] = item;
+    else if (Array.isArray(roles[role])) roles[role] = [...roles[role], item];
+    else roles[role] = [roles[role], item];
+  };
   for (const item of items) {
-    const role = readSlot(item) === 'skirt' ? 'bottom' : readSlot(item);
-    if (Object.hasOwn(roles, role) && !roles[role]) roles[role] = item;
+    const role = readSlot(item);
+    add(role, item);
+    if (role === 'skirt') add('bottom', item);
   }
   return roles;
 }
@@ -333,7 +350,7 @@ function buildArchetype(roleItemIds) {
 
 function buildSelectionSignatures({ itemIds, roleItemIds, archetype, itemFactRecords, scene }) {
   const styles = uniqueStrings(itemFactRecords.flatMap((facts) => facts?.copyItemFacts?.styleTags || facts?.sourceItem?.styleTags || []));
-  const hasOnepiece = Boolean(roleItemIds.onepiece);
+  const hasOnepiece = Boolean(roleItemIds.onepiece || roleItemIds.dress);
   return {
     itemSignature: itemIds.slice().sort().join('_'),
     archetype,
@@ -368,9 +385,12 @@ function resolveSourceItem(itemId, options) {
   return null;
 }
 
-function readRoleItemId(candidate, role) {
-  if (candidate?.roleItemIds && typeof candidate.roleItemIds === 'object') return candidate.roleItemIds[role] || '';
-  return readItemId(candidate?.itemsByRole?.[role]);
+function readRoleItemIds(candidate, role) {
+  const value = candidate?.roleItemIds && typeof candidate.roleItemIds === 'object' ? candidate.roleItemIds[role] : null;
+  if (Array.isArray(value)) return uniqueStrings(value);
+  if (value) return [value];
+  const item = candidate?.itemsByRole?.[role];
+  return Array.isArray(item) ? item.map(readItemId).filter(Boolean) : [readItemId(item)].filter(Boolean);
 }
 
 function readSelectionSignature(candidate, name) {

@@ -401,7 +401,7 @@ test('tryPersistCandidatePool handles all persistence scenarios', async () => {
   assert.ok(writes.slice(0, -1).every((entry) => entry.data.recordType === 'chunk'));
   assert.ok(writes.every((entry) => !Object.hasOwn(entry.data, '_id')));
   assert.ok(writes.every((entry) => Buffer.byteLength(JSON.stringify(entry.data), 'utf8') <= CANDIDATE_POOL_MAX_BYTES));
-  assert.ok(writes.every((entry) => entry.id.startsWith('pool-v2:')));
+  assert.ok(writes.every((entry) => entry.id.startsWith('pool-v3:')));
 });
 
 test('strict CloudBase mock accepts one, two, and four chunks without persisting _id', async () => {
@@ -537,7 +537,7 @@ test('strict CloudBase mock cleans already-written chunks after a mid-write fail
   assert.equal(loaded.reason, 'not_found');
 });
 
-test('deterministic V2 writes are retry and concurrent safe', async () => {
+test('deterministic V3 writes are retry and concurrent safe', async () => {
   const identity = buildCandidatePoolIdentity({
     openid: 'persist-retry-test',
     clothes: largeWardrobe(),
@@ -572,7 +572,7 @@ test('deterministic V2 writes are retry and concurrent safe', async () => {
   assert.equal(second.status, 'saved');
   const retry = await request();
   assert.equal(retry.status, 'saved');
-  assert.ok(writes.every((record) => record.id.startsWith('pool-v2:')));
+  assert.ok(writes.every((record) => record.id.startsWith('pool-v3:')));
   assert.ok(writes.every((record) => !Object.hasOwn(record.data, '_id')));
   assert.equal(writes.filter((record) => record.data.recordType === 'manifest').length, 3);
   const loaded = await loadCandidatePool({ database, candidatePoolId: 'batch:retry-safe', identity, now: 1001 });
@@ -744,7 +744,7 @@ test('tryPersistCandidatePool handles database timeout by code', async () => {
   assert.equal(result.candidatePoolId, null);
 });
 
-test('V2 manifest and chunks round-trip a real 320-candidate UTF-8 pool', async () => {
+test('V3 manifest and chunks round-trip a real 320-candidate UTF-8 pool', async () => {
   const identity = buildCandidatePoolIdentity({
     openid: 'roundtrip-user',
     clothes: largeWardrobe(),
@@ -779,12 +779,12 @@ test('V2 manifest and chunks round-trip a real 320-candidate UTF-8 pool', async 
       { itemId: `bottom-${index}`, slot: 'bottom', role: 'core' },
       { itemId: `shoe-${index}`, slot: 'shoes', role: 'core' },
     ],
-    outfitKey: `candidate-${index}`,
+    outfitKey: `bottom-${index}_shoe-${index}_top-${index}`,
     title: `居家组合 ${index}`,
     styleTags: ['simple', 'home'],
     todayReason: `今天适合居家活动 ${index} ${'舒适搭配。'.repeat(20)}`,
     copyContract: { todayReason: `今天适合居家活动 ${index}`, title: `居家组合 ${index}`, reuseExplanation: 'quality_tradeoff_too_large' },
-    selectionSignatures: { ...base.selectionSignatures, itemSignature: `candidate-${index}` },
+    selectionSignatures: { ...base.selectionSignatures, itemSignature: `bottom-${index}_shoe-${index}_top-${index}` },
   }));
   const pool = createCandidatePoolRecord({ candidatePoolId: 'batch:roundtrip-320', identity, candidates, now: 1000 });
   const plan = buildCandidatePoolStoragePlan(pool);

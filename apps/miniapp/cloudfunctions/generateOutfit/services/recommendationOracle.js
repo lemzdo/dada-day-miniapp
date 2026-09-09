@@ -1,7 +1,5 @@
 'use strict';
 
-/* global module */
-
 /**
  * Test-only recommendation references.
  *

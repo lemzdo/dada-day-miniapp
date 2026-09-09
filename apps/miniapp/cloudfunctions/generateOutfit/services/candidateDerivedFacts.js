@@ -1,8 +1,10 @@
-const DERIVED_FACTS_VERSION = 'candidate-derived-facts-v1';
-const ROLE_KEYS = Object.freeze(['top', 'bottom', 'onepiece', 'outerwear', 'shoes']);
+const DERIVED_FACTS_VERSION = 'candidate-derived-facts-v2';
+const ROLE_KEYS = Object.freeze([
+  'top', 'bottom', 'skirt', 'dress', 'onepiece', 'outerwear', 'shoes', 'socks', 'gloves',
+  'scarf', 'hat', 'bag', 'belt', 'necklace', 'bracelet', 'watch', 'accessory',
+]);
 
 function createCandidateDerivedFacts({
-  itemFactRefs = [],
   itemFactRecords = [],
   roleItemIds = {},
   archetype = '',
@@ -48,7 +50,10 @@ function createCandidateDerivedFacts({
     lastWornAtValues: sourceItems.map((item) => item.lastWornAt),
     fashionScores: sourceItems.map((item) => Number(item.fashionScore || 0)),
     itemSignature: selectionSignatures.itemSignature || '',
-    roleSignature: ROLE_KEYS.map((role) => roleItemIds[role] || '').join('|'),
+    roleSignature: ROLE_KEYS.map((role) => {
+      const value = roleItemIds[role];
+      return Array.isArray(value) ? value.join(',') : (value || '');
+    }).join('|'),
     archetype,
     existingSelectionSignatures: selectionSignatures,
   };

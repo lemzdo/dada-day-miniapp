@@ -78,3 +78,39 @@ The small full-ensemble oracle is implemented in
 not yet run. Therefore Phase 1 status remains baseline-only: correctness and
 oracle fixtures are available, but Phase 2 quality/scaling gates are not yet
 passed.
+
+## Phase 2 hierarchical bounded-search baseline
+
+Captured 2026-09-09 from the Phase 2 working tree based on `eccbd66`, runtime
+`hierarchical-outfit-search-v2` / `candidate-core-v2`. Five samples per fixture
+were executed through the real `generateRuleRecommendations` production Core
+path, including final wearability/scene eligibility, production scoring,
+diversity reservoir, and eight-card batch selection. The command used
+`node --expose-gc`, with GC between samples. Heap peak is process `heapUsed`;
+heap delta is the largest after-minus-before sample observation, not retained
+heap.
+
+The production policy derives capacity from six qualified TARGET_8 batches:
+reservoir 96, final-evaluation headroom 8× reservoir (768), accessory expansion
+120 across 48 evenly distributed seeds. These values are formulas from the
+batch target, not wardrobe-size truncation.
+
+| wardrobe | raw skeleton / skeleton work | structural / accessory expansions | full eligibility / accepted / scoring | reservoir / selected | core P50/P95 ms | eligibility P50/P95 ms | scoring P50/P95 ms | heap peak / delta bytes |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 30 | 223 / 659 | 3,840 / 120 | 768 / 768 / 768 | 96 / 8 | 195.031 / 238.814 | 34 / 46 | 5 / 9 | 55,545,432 / 42,328,544 |
+| 100 | 328 / 888 | 3,850 / 120 | 768 / 768 / 768 | 96 / 8 | 210.386 / 212.411 | 31 / 35 | 4 / 7 | 83,587,720 / 70,162,216 |
+| 300 | 348 / 928 | 3,915 / 120 | 768 / 768 / 768 | 96 / 8 | 246.221 / 247.652 | 30 / 36 | 4 / 5 | 39,726,472 / 25,757,272 |
+| 500 | 348 / 928 | 3,915 / 120 | 768 / 768 / 768 | 96 / 8 | 269.582 / 277.158 | 31 / 33 | 4 / 5 | 88,214,784 / 73,746,080 |
+
+The legacy 500-item count-only estimate is 1,442,400 raw combinations (worst
+role concentration: 3,937,500); the production bounded engine fully evaluated
+768 candidates. From 300→500, skeleton, structural, accessory, eligibility,
+scoring, and reservoir counts stay flat; only O(N) indexing/prefilter work grows.
+
+Quality gates pass: small core-only output is set-equivalent to the frozen
+Legacy Core Oracle; a small full ensemble selects the same unique best outfit
+as the exhaustive oracle; home/work/date/sport production fixtures remain
+eligible; and an initial batch plus five pool refreshes yields 48 unique cards
+with every pool HIT exactly matching a full recompute under cumulative
+exclusions. Optional structural/accessory tests verify that every selected item
+participates in identity, final eligibility, score, and evidence materialization.

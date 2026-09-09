@@ -1,16 +1,16 @@
 const crypto = require('crypto');
 
-// V2 keeps the existing collection but changes the document contract. A pool
+// V3 keeps the existing collection but changes the document contract. A pool
 // is visible only when its manifest exists and all chunks validate.
 const CANDIDATE_POOL_COLLECTION = 'recommendation_candidate_pools';
-const CANDIDATE_POOL_SCHEMA_VERSION = 2;
-const CANDIDATE_POOL_VERSION = 'candidate-pool-v2';
+const CANDIDATE_POOL_SCHEMA_VERSION = 3;
+const CANDIDATE_POOL_VERSION = 'candidate-pool-v3-full-ensemble';
 const CANDIDATE_POOL_TTL_MS = 10 * 60 * 1000;
 const CANDIDATE_POOL_MAX_BYTES = 256 * 1024;
 const CANDIDATE_POOL_CHUNK_DATA_BUDGET = 240 * 1024;
 const CANDIDATE_POOL_RECORD_TYPES = Object.freeze({ manifest: 'manifest', chunk: 'chunk' });
 const CANDIDATE_POOL_MANIFEST_STATUS = 'ready';
-const CANDIDATE_POOL_DOCUMENT_ID_PREFIX = 'pool-v2';
+const CANDIDATE_POOL_DOCUMENT_ID_PREFIX = 'pool-v3';
 const CANDIDATE_POOL_CHECKSUM_ALGORITHM = 'json-sha256-v1';
 const PREPARED_CANDIDATE_JSON = Symbol('preparedCandidateJson');
 const PREPARED_CANDIDATE_CHUNKS = Symbol('preparedCandidateChunks');
@@ -32,8 +32,11 @@ const CANDIDATE_POOL_SENSITIVE_KEYS = new Set([
   'poolId',
   'recommendationBatchId',
 ]);
-const ROLE_KEYS = Object.freeze(['top', 'bottom', 'onepiece', 'outerwear', 'shoes']);
-const ITEM_SLOT_KEYS = Object.freeze([...ROLE_KEYS, 'accessory']);
+const ROLE_KEYS = Object.freeze([
+  'top', 'bottom', 'skirt', 'dress', 'onepiece', 'outerwear', 'shoes', 'socks', 'gloves',
+  'scarf', 'hat', 'bag', 'belt', 'necklace', 'bracelet', 'watch', 'accessory',
+]);
+const ITEM_SLOT_KEYS = ROLE_KEYS;
 
 function buildCandidatePoolIdentity({
   openid,
@@ -154,10 +157,14 @@ function serializeCandidateCore(candidate = {}) {
     ...(Array.isArray(source.reasonCodes) ? source.reasonCodes : []),
   ]);
   const persisted = {
-    version: readString(source.version) || 'candidate-core-v1',
+    version: readString(source.version) || 'candidate-core-v2',
     compositionVersion: readString(source.compositionVersion),
     structureType: readString(source.structureType),
+    itemIds,
     itemFactRefs,
+    ...(Object.values(roleItemIds).some((value) => Array.isArray(value))
+      ? { roleItemIds: sanitizeRoleItemIds(roleItemIds) }
+      : {}),
     archetype: readString(source.archetype),
     aggregateEligibilityFacts: source.aggregateEligibilityFacts || {
       itemCount: itemIds.length,
@@ -185,7 +192,7 @@ function serializeCandidateCore(candidate = {}) {
 function hydrateCandidateCore(poolCandidate, { reasonDescriptorForCode } = {}) {
   if (!isPoolCandidate(poolCandidate)) throw new Error('candidate pool entry is malformed');
   const source = cloneJsonValue(poolCandidate);
-  // V2 pools are presentation-agnostic. Ignore title fields left by older
+  // V3 pools are presentation-agnostic. Ignore title fields left by older
   // writers so the current wardrobe facts rebuild the canonical title.
   delete source.title;
   delete source.displayTitle;
@@ -873,9 +880,7 @@ function buildRuntimeCandidatePoolProjectionProfile({ candidates = [], chunks = 
       'observationFocus',
     ],
     authoritativeDuplicateFieldsRemoved: [
-      'itemIds',
       'itemRoles',
-      'roleItemIds',
       'scoreBreakdown',
       'weatherEligibility',
       'sceneEligibility',
@@ -917,7 +922,9 @@ function buildCandidatePoolCategoryBytes(
     scores: byFields(['scores', 'totalScore', 'rankingScore']),
     itemAttributes: byFields(['items', 'itemFacts', 'wardrobeItems', 'clothingAttributes']),
     itemReferencesAndStructure: byFields([
+      'itemIds',
       'itemFactRefs',
+      'roleItemIds',
       'archetype',
       'structureType',
       'compositionVersion',
@@ -1670,7 +1677,9 @@ function sanitizeIdentity(identity = {}) {
 
 function sanitizeRoleItemIds(value = {}) {
   return ROLE_KEYS.reduce((result, role) => {
-    result[role] = readString(value?.[role]);
+    const raw = value?.[role];
+    const values = Array.isArray(raw) ? uniqueStrings(raw) : [readString(raw)].filter(Boolean);
+    result[role] = values.length > 1 ? values : (values[0] || '');
     return result;
   }, {});
 }
@@ -1691,7 +1700,10 @@ function serializeItemRoles(candidate = {}) {
   return itemIds.map((itemId) => {
     const ref = refsByItemId.get(itemId);
     if (ref) return ref;
-    const slot = ROLE_KEYS.find((role) => roleItemIds[role] === itemId) || '';
+    const slot = ROLE_KEYS.find((role) => {
+      const value = roleItemIds[role];
+      return Array.isArray(value) ? value.includes(itemId) : value === itemId;
+    }) || '';
     return { itemId, slot, role: slot ? 'core' : '' };
   });
 }
@@ -1735,9 +1747,13 @@ function isPoolCandidate(candidate) {
   const roleItemIds = hasRoleItemIds(candidate.roleItemIds)
     ? sanitizeRoleItemIds(candidate.roleItemIds)
     : buildRoleItemIdsFromRefs(itemRoles);
-  const roleIds = Object.values(roleItemIds).filter(Boolean);
+  const roleIds = Object.values(roleItemIds).flatMap((value) => Array.isArray(value) ? value : [value]).filter(Boolean);
   if (!roleIds.every((id) => itemIds.includes(id))) return false;
   if (itemRoles.length !== itemIds.length || !itemRoles.every((item) => itemIds.includes(item.itemId))) return false;
+  const fullOutfitIdentity = itemIds.slice().sort().join('_');
+  if (readString(candidate.outfitKey || candidate.stableSortId) !== fullOutfitIdentity) return false;
+  const storedItemSignature = readString(candidate.selectionSignatures?.itemSignature);
+  if (storedItemSignature && storedItemSignature !== fullOutfitIdentity) return false;
   if (!Array.isArray(candidate.reasonCodes) || candidate.reasonCodes.length === 0) return false;
   if (!candidate.reasonCodes.every((code) => typeof code === 'string' && code)) return false;
   if (!Number.isFinite(Number(candidate.totalScore)) || !Number.isFinite(Number(candidate.rankingScore))) return false;
@@ -1752,9 +1768,16 @@ function hasRoleItemIds(value) {
 
 function buildRoleItemIdsFromRefs(itemFactRefs) {
   const result = sanitizeRoleItemIds({});
+  const add = (role, itemId) => {
+    if (!Object.hasOwn(result, role) || !itemId) return;
+    const current = result[role];
+    if (!current) result[role] = itemId;
+    else if (Array.isArray(current)) result[role] = [...current, itemId];
+    else result[role] = [current, itemId];
+  };
   for (const ref of Array.isArray(itemFactRefs) ? itemFactRefs : []) {
-    const role = ref.slot === 'skirt' ? 'bottom' : ref.slot;
-    if (Object.hasOwn(result, role) && !result[role]) result[role] = ref.itemId;
+    add(ref.slot, ref.itemId);
+    if (ref.slot === 'skirt') add('bottom', ref.itemId);
   }
   return result;
 }

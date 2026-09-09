@@ -92,3 +92,9 @@ ready / needs_review / failed
 用户确认
   ↓
 保存正式衣柜
+
+## Recommendation Runtime 2.2 Phase 2 性能进度（2026-09-09）
+
+- hierarchical bounded-search 已完成真实生产 Core 的 30/100/300/500 full benchmark：500 件只进入 768 次完整 eligibility/scoring、96 个 reservoir entries，旧 legacy raw estimate 为 1,442,400；300→500 的组合阶段计数保持不变。
+- Legacy Core Oracle、Small Full-Ensemble Exhaustive Oracle、home/work/date/sport、完整配饰 identity/evidence 和连续 5 次 refresh（48 套无重复且与 full recompute 等价）均已通过。
+- Candidate Pool 已升级为 V3 full-ensemble cache schema；旧 V2 直接视为 cache miss，不做错误 hydrate。Pool 显式 cache-fill budget 与 runtime critical-path 收口属于 Phase 3。
