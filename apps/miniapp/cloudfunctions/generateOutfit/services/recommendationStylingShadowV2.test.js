@@ -234,7 +234,7 @@ test('generateOutfit diagnostic Narrative Plans are ready before candidate-pool 
   const source = fs.readFileSync(path.join(__dirname, '..', 'index.js'), 'utf8');
   const recommendationIndex = source.search(/recommendations = (?:await )?generateRuleRecommendations\(\{/);
   const shadowIndex = source.indexOf('const stylingPlans =', recommendationIndex);
-  const persistenceIndex = source.indexOf('candidatePoolPersistPromise = Promise.resolve()', shadowIndex);
+  const persistenceIndex = source.indexOf('candidatePoolCacheFillPlan = createCandidatePoolCacheFillPlan', shadowIndex);
   assert.ok(recommendationIndex > 0);
   assert.ok(shadowIndex > recommendationIndex);
   assert.ok(persistenceIndex > shadowIndex);

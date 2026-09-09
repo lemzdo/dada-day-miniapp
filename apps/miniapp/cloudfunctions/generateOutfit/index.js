@@ -182,6 +182,10 @@ const {
   tryPersistCandidatePool,
 } = require('./services/candidatePool');
 const {
+  createCandidatePoolCacheFillPlan,
+  decideCandidatePoolCacheFill,
+} = require('./services/candidatePoolCachePolicy');
+const {
   hasRealRecommendationWeather,
   normalizeRecommendationWeather,
   toWeatherSnapshot,
@@ -196,7 +200,13 @@ const {
   canPersistAiReviewAsReady,
   resolveAiReviewFailureSettlement,
 } = require('./services/aiReviewSettlement');
-const { runRecommendationOrchestrator } = require('./runtime/recommendationOrchestrator');
+const {
+  SERVER_RESPONSE_DEADLINE_MS,
+  runRecommendationOrchestrator,
+} = require('./runtime/recommendationOrchestrator');
+
+const FIRST_CARD_VISIBLE_TARGET_MS = 3000;
+const CLIENT_VISIBLE_RESERVE_MS = FIRST_CARD_VISIBLE_TARGET_MS - SERVER_RESPONSE_DEADLINE_MS;
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
@@ -1134,6 +1144,7 @@ async function computeProductionRecommendationCore(event, diagnostics = createRe
   // build its plan at the first-card boundary without changing the seed.
   const v2BatchId = readString(event.v2BatchId) || `v2-${createRecommendationBatchId(now)}`;
   let firstCardPlan = null;
+  let firstCardRendererEntry = null;
   let firstCardFailureCode = '';
   let firstCardPlanAttempted = false;
   const notifyFirstCard = ({ plan, recommendation, index = 0 }) => {
@@ -1146,6 +1157,7 @@ async function computeProductionRecommendationCore(event, diagnostics = createRe
           fields: { cardIndex: 0, ...fields },
         });
       });
+      firstCardRendererEntry = entry;
       recordRecommendationStage(diagnostics, 'FINGERPRINT_READY', {
         batchId: v2BatchId,
         fields: { planId: plan.planId, cardIndex: 0 },
@@ -1284,25 +1296,35 @@ async function computeProductionRecommendationCore(event, diagnostics = createRe
       candidatePoolPersistenceInput,
       debugRecommendationAudit,
       narrativePlanStatus: stylingPlans?.diagnostics?.status,
+      firstCardRendererEntry,
     },
   };
 }
 
 async function prepareProductionRecommendationWork(core, diagnostics, context = {}) {
   const metadata = core?.metadata || {};
-  let candidatePoolPersistPromise = Promise.resolve(null);
+  let candidatePoolCacheFillPlan = null;
   const candidatePoolInput = metadata.candidatePoolPersistenceInput;
   if (candidatePoolInput) {
     diagnostics.workCounts.candidatePoolPersistence += 1;
-    candidatePoolPersistPromise = Promise.resolve().then(() => persistGeneratedCandidatePool({
-      diagnostics, candidatePoolId: candidatePoolInput.candidatePoolId,
-      identity: core.identity, candidates: candidatePoolInput.candidates,
-      debugRecommendationAudit: metadata.debugRecommendationAudit,
-      debugCandidatePoolProjection: candidatePoolInput.debugCandidatePoolProjection,
-    })).catch((error) => {
-      console.warn('[RecommendationCandidatePoolPersistFailOpen]', { auditId: diagnostics.auditId, batchId: metadata.batchId, failureCode: getRecommendationErrorCode(error) });
-      return { status: 'failed_open' };
+    const policyInput = context.candidatePoolCachePolicy
+      || resolveCandidatePoolCachePolicyInput(metadata.event);
+    const decision = decideCandidatePoolCacheFill({
+      ...policyInput,
+      elapsedMs: policyInput.elapsedMs ?? monotonicElapsedMs(diagnostics) ?? 0,
     });
+    candidatePoolCacheFillPlan = createCandidatePoolCacheFillPlan({
+      decision,
+      execute: () => persistGeneratedCandidatePool({
+        diagnostics, candidatePoolId: candidatePoolInput.candidatePoolId,
+        identity: core.identity, candidates: candidatePoolInput.candidates,
+        debugRecommendationAudit: metadata.debugRecommendationAudit,
+        debugCandidatePoolProjection: candidatePoolInput.debugCandidatePoolProjection,
+      }),
+    });
+    diagnostics.candidatePoolCacheFillDecision = decision;
+    diagnostics.candidatePoolSaveStatus = 'not_started';
+    diagnostics.candidatePoolSaveReason = decision.reason;
   }
   const responseCopyJob = { status: 'pending', initialCopies: [], dispatch: { accepted: false } };
   let copyJobPromise = Promise.resolve(null);
@@ -1314,10 +1336,10 @@ async function prepareProductionRecommendationWork(core, diagnostics, context = 
     && metadata.narrativePlanStatus === 'completed'
     && plans.length === core.outfits.length) {
     recordRecommendationStage(diagnostics, 'ALL_RENDERER_ENTRIES_BUILD_START', { batchId: metadata.batchId });
-    const entries = plans.map((plan, position) => {
-      recordRecommendationStage(diagnostics, position === 0
-        ? 'CARD0_RENDERER_ENTRY_REBUILD_START'
-        : 'CARDS_1_7_RENDERER_ENTRY_BUILD_START', {
+    const entries = [];
+    const buildEntry = (position) => {
+      const plan = plans[position];
+      recordRecommendationStage(diagnostics, 'CARDS_1_7_RENDERER_ENTRY_BUILD_START', {
         batchId: metadata.batchId,
         fields: { cardIndex: position },
       });
@@ -1331,19 +1353,33 @@ async function prepareProductionRecommendationWork(core, diagnostics, context = 
           fields: { cardIndex: position, ...fields },
         }),
       );
-      recordRecommendationStage(diagnostics, position === 0
-        ? 'CARD0_RENDERER_ENTRY_REBUILD_DONE'
-        : 'CARDS_1_7_RENDERER_ENTRY_BUILD_DONE', {
+      recordRecommendationStage(diagnostics, 'CARDS_1_7_RENDERER_ENTRY_BUILD_DONE', {
         batchId: metadata.batchId,
         fields: { cardIndex: position },
       });
       return entry;
-    });
-    recordRecommendationStage(diagnostics, 'ALL_RENDERER_ENTRIES_BUILD_DONE', {
-      batchId: metadata.batchId,
-      fields: { entryCount: entries.length },
-    });
+    };
+    if (metadata.firstCardRendererEntry) {
+      entries.push(metadata.firstCardRendererEntry);
+      recordRecommendationStage(diagnostics, 'CARD0_RENDERER_ENTRY_REUSED', {
+        batchId: metadata.batchId,
+        fields: { cardIndex: 0 },
+      });
+    } else {
+      entries.push(buildEntry(0));
+    }
     rendererEntries = entries;
+    const remainingRendererEntriesPromise = new Promise((resolve) => {
+      setImmediate(() => {
+        for (let position = 1; position < plans.length; position += 1) entries.push(buildEntry(position));
+        recordRecommendationStage(diagnostics, 'ALL_RENDERER_ENTRIES_BUILD_DONE', {
+          batchId: metadata.batchId,
+          fields: { entryCount: entries.length },
+        });
+        resolve(entries);
+      });
+    });
+    void remainingRendererEntriesPromise.catch(() => undefined);
     // The bounded milestone owns one durable card0 job. Remaining cards keep
     // their deterministic safe copy and are not part of first-card completion.
     const firstCardEntries = entries.slice(0, 1);
@@ -1369,14 +1405,16 @@ async function prepareProductionRecommendationWork(core, diagnostics, context = 
         return null;
       });
     diagnostics.workCounts.batchAdmission += 1;
-    copyOverlayPromise = copyJobPromise.then(async (job) => {
-      if (!job?.jobId) return null;
-      try {
-        const overlay = await readRecommendationCopyOverlay(db, metadata.openid, metadata.batchId, PRODUCTION_RENDERER_VERSION);
-        if (overlay.copies.length > 0) responseCopyJob.initialCopies = overlay.copies;
-        return overlay;
-      } catch { return null; }
-    });
+    copyOverlayPromise = copyJobPromise.then((job) => new Promise((resolve) => {
+      setImmediate(async () => {
+        if (!job?.jobId) { resolve(null); return; }
+        try {
+          const overlay = await readRecommendationCopyOverlay(db, metadata.openid, metadata.batchId, PRODUCTION_RENDERER_VERSION);
+          if (overlay.copies.length > 0) responseCopyJob.initialCopies = overlay.copies;
+          resolve(overlay);
+        } catch { resolve(null); }
+      });
+    }));
     firstCardInteractive = {
       resolveAdmission: async () => {
         const job = await copyJobPromise;
@@ -1474,8 +1512,12 @@ async function prepareProductionRecommendationWork(core, diagnostics, context = 
     responseCopyJob,
     copyJobPromise,
     copyOverlayPromise,
-    candidatePoolPersistPromise,
-    tasks: [copyJobPromise, candidatePoolPersistPromise, copyOverlayPromise],
+    candidatePoolCacheFillPlan,
+    // Pool fill is intentionally not an orchestrator background task. It is
+    // started only after required recommendation persistence and an explicit
+    // measured-budget decision.
+    candidatePoolPersistPromise: null,
+    tasks: [copyJobPromise, copyOverlayPromise],
     narrativePlans: plans,
     rendererEntries,
     firstCardInteractive,
@@ -1514,7 +1556,7 @@ function applyFirstCardCanonicalToResponse(response, canonicalCopy) {
 
 async function persistAndAssembleProductionRecommendation(core, prepared, diagnostics) {
   const metadata = core.metadata;
-  return generateRecommendationV2({
+  const response = await generateRecommendationV2({
     event: metadata.event,
     recommendations: core.outfits,
     batchId: metadata.batchId,
@@ -1530,6 +1572,33 @@ async function persistAndAssembleProductionRecommendation(core, prepared, diagno
     now: metadata.now,
     diagnostics,
   });
+  const cacheFillPlan = prepared?.candidatePoolCacheFillPlan;
+  let candidatePoolId = core?.executionState?.cacheHit === true
+    ? readString(metadata.event?.recommendationBatchId) || null
+    : null;
+  if (cacheFillPlan?.decision?.decision === 'await') {
+    const fillResult = await cacheFillPlan.start();
+    candidatePoolId = fillResult?.status === 'saved'
+      ? readString(fillResult.candidatePoolId) || null
+      : null;
+    diagnostics.candidatePoolSaveStatus = fillResult?.status || 'failed_open';
+    diagnostics.candidatePoolSaveReason = fillResult?.reason || null;
+  }
+  return { ...response, candidatePoolId };
+}
+
+function resolveCandidatePoolCachePolicyInput(event = {}) {
+  const configuredP95 = Number(process.env.RECOMMENDATION_CANDIDATE_POOL_SAVE_P95_MS);
+  const productionProbe = event.performanceDiagnostics === true
+    && readString(event.acceptanceRunId).startsWith('production-smoke-');
+  return {
+    homepageBudgetMs: FIRST_CARD_VISIBLE_TARGET_MS,
+    measuredSaveP95Ms: Number.isFinite(configuredP95) && configuredP95 >= 0
+      ? configuredP95
+      : productionProbe ? 0 : undefined,
+    clientReserveMs: CLIENT_VISIBLE_RESERVE_MS,
+    safetyMarginMs: 0,
+  };
 }
 
 async function materializeRecommendationCanonicalCopyV2(event, {
@@ -6102,6 +6171,9 @@ if (process.env.NODE_ENV === 'test') {
     recordStatusQueryDiagnostic,
     runProductionRecommendationRuntime,
     computeProductionRecommendationCore,
+    createCandidatePoolCacheFillPlan,
+    decideCandidatePoolCacheFill,
+    resolveCandidatePoolCachePolicyInput,
   };
 }
 

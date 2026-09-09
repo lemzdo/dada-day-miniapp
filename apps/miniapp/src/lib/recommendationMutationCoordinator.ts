@@ -67,6 +67,7 @@ interface AcquireOptions {
 
 export interface NextBatchOptions {
   currentBatchId: string;
+  candidatePoolId: string | null;
   currentContentHash: string;
   excludedOutfitKeys: string[];
   refreshSemantics?: string;
@@ -224,6 +225,7 @@ export function buildNextBatchIdentity(input: EffectiveRecommendationInput, opti
   return [
     input.identity,
     options.currentBatchId,
+    options.candidatePoolId ?? '',
     options.currentContentHash,
     options.refreshSemantics ?? 'refresh',
     exclusions.join(','),
@@ -238,7 +240,7 @@ export function prepareNextRecommendationForInput(
     .map((key) => key.trim()).sort();
   const request = toRecommendationRequest({
     ...input,
-    recommendationBatchId: options.currentBatchId,
+    recommendationBatchId: options.candidatePoolId || undefined,
     excludedOutfitKeys,
     requestKind: 'refresh',
   }, 'refresh');

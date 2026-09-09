@@ -20,6 +20,7 @@ test('Today prefetches only after restored/current commits and joins failed pref
 });
 
 test('prefetch request uses refresh trigger and accumulated seen exclusions', () => {
+  assert.match(source, /candidatePoolId: snapshot\.candidatePoolId/);
   assert.match(source, /currentContentHash: snapshot\.core\.contentHash/);
   assert.match(source, /excludedOutfitKeys: \[\.\.\.seenOutfitKeysRef\.current\]/);
   assert.match(source, /trigger: 'refresh'/);
@@ -42,6 +43,7 @@ test('next identity and request contract bind effective input, current batch, ha
   );
   assert.match(identityBody, /input\.identity/);
   assert.match(identityBody, /options\.currentBatchId/);
+  assert.match(identityBody, /options\.candidatePoolId/);
   assert.match(identityBody, /options\.currentContentHash/);
   assert.match(identityBody, /options\.refreshSemantics/);
   assert.match(identityBody, /exclusions\.join\(','\)/);
@@ -51,6 +53,7 @@ test('next identity and request contract bind effective input, current batch, ha
     coordinatorSource.indexOf('export function acquireNextRecommendationForInput'),
   );
   assert.match(prepareBody, /requestKind: 'refresh'/);
+  assert.match(prepareBody, /recommendationBatchId: options\.candidatePoolId \|\| undefined/);
   assert.match(prepareBody, /\}, 'refresh'\)/);
   assert.match(prepareBody, /excludedOutfitKeys/);
   assert.match(prepareBody, /requestKey: buildNextBatchIdentity/);

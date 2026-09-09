@@ -12,6 +12,7 @@ export interface TodayV2Snapshot {
   schemaVersion: 'today-v2';
   inputIdentity: string;
   batchId: string;
+  candidatePoolId: string | null;
   core: RecommendationBatchCoreV2;
   cards: HomeLightCardV2[];
   savedAt: string;
@@ -31,6 +32,7 @@ export function toTodayV2Snapshot(
     schemaVersion: response.schemaVersion,
     inputIdentity,
     batchId: response.batch.batchId,
+    candidatePoolId: response.candidatePoolId,
     core: response.batch,
     cards: response.light.cards.map((card) => ({
       referenceId: card.referenceId,
@@ -68,6 +70,7 @@ export function readTodayV2Snapshot(
     || !snapshot.inputIdentity
     || (expectedInputIdentity !== undefined && snapshot.inputIdentity !== expectedInputIdentity)
     || typeof snapshot.batchId !== 'string'
+    || !(snapshot.candidatePoolId === null || typeof snapshot.candidatePoolId === 'string')
     || !snapshot.core || snapshot.core.batchId !== snapshot.batchId
     || !Number.isInteger(snapshot.core.cardCount) || snapshot.core.cardCount < 1 || snapshot.core.cardCount > 8
     || snapshot.core.countContract?.requestedCardCount !== 8

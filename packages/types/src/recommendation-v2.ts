@@ -106,6 +106,8 @@ export interface RecommendationBatchCoreV2 {
 export interface RecommendationHomeLightResponseV2 {
   runtimeVersion: typeof RECOMMENDATION_V2_RUNTIME_VERSION;
   schemaVersion: typeof RECOMMENDATION_V2_SCHEMA_VERSION;
+  /** Present only when the refresh cache is known to be durably available. */
+  candidatePoolId: string | null;
   batch: RecommendationBatchCoreV2;
   light: HomeLightPayloadV2;
 }

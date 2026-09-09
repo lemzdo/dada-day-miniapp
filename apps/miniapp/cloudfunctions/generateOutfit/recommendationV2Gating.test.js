@@ -45,19 +45,19 @@ test('FULL_COMPUTE schedules existing candidate-pool persistence while cache hit
   assert.doesNotMatch(source, /upsertRecommendationOutfitsBatch|projectRecommendationResponseOutfits/);
 });
 
-test('C2 launches bounded card0 and noncritical persistence without SCF dispatch', () => {
+test('C2 prepares bounded card0 work while candidate-pool fill remains explicit and unstarted', () => {
   const c2Start = source.indexOf('async function prepareProductionRecommendationWork');
   const readyInput = source.indexOf('async function persistAndAssembleProductionRecommendation', c2Start);
   const postC2 = source.slice(c2Start, readyInput);
   assert.ok(c2Start >= 0 && readyInput > c2Start);
-  assert.match(postC2, /candidatePoolPersistPromise = Promise\.resolve\(\)\.then/);
+  assert.match(postC2, /candidatePoolCacheFillPlan = createCandidatePoolCacheFillPlan/);
   assert.match(postC2, /copyJobPromise = context\.firstCardCopyJobPromise \|\| prepareRecommendationCopyJob/);
   assert.match(postC2, /copyOverlayPromise = copyJobPromise\.then/);
   assert.match(postC2, /firstCardInteractive = \{/);
   assert.match(postC2, /executionMode: 'interactive'/);
   assert.match(postC2, /materializeFirstCard/);
   assert.match(postC2, /completeCopyJob/);
-  assert.match(postC2, /tasks: \[copyJobPromise, candidatePoolPersistPromise, copyOverlayPromise\]/);
+  assert.match(postC2, /tasks: \[copyJobPromise, copyOverlayPromise\]/);
   assert.doesNotMatch(postC2, /scheduleBackgroundMaterialization|dispatchPreparedRecommendationCopyJob|dispatchScfEvent/);
   assert.doesNotMatch(postC2, /copyJob\s*=\s*await copyJobPromise|await candidatePoolPersistPromise|await copyOverlayPromise/);
 });
@@ -78,6 +78,16 @@ test('required batch persistence remains the only post-C2 durability barrier bef
   const runtime = source.slice(start, end);
   assert.match(runtime, /const persisted = await persistRecommendationBatchV2\(/);
   assert.ok(runtime.indexOf('await persistRecommendationBatchV2') < runtime.indexOf('return response'));
+});
+
+test('V2 exposes only a confirmed candidate pool id and keeps it separate from batch identity', () => {
+  const start = source.indexOf('async function persistAndAssembleProductionRecommendation');
+  const end = source.indexOf('async function materializeRecommendationCanonicalCopyV2', start);
+  const body = source.slice(start, end);
+  assert.match(body, /core\?\.executionState\?\.cacheHit === true/);
+  assert.match(body, /fillResult\?\.status === 'saved'/);
+  assert.match(body, /return \{ \.\.\.response, candidatePoolId \}/);
+  assert.doesNotMatch(body, /candidatePoolId:\s*metadata\.batchId/);
 });
 
 test('event parity and HTTP lifecycle both settle post-C2 persistence safely', () => {

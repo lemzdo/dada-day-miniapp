@@ -928,6 +928,7 @@ export default function TodayPage() {
     setBatchExhausted(false);
     const run = prepareNextRecommendationForInput(effectiveInput, {
       currentBatchId: snapshot.batchId,
+      candidatePoolId: snapshot.candidatePoolId,
       currentContentHash: snapshot.core.contentHash,
       excludedOutfitKeys: [...seenOutfitKeysRef.current],
       refreshSemantics: 'refresh',
@@ -1160,7 +1161,7 @@ export default function TodayPage() {
       sceneKey: selectedSceneKeyRef.current,
       weather: currentWeatherRef.current,
       weatherMode: currentWeatherModeRef.current,
-      recommendationBatchId: previous?.batchId,
+      recommendationBatchId: previous?.candidatePoolId || undefined,
       excludedOutfitKeys: [],
       requestKind: 'refresh',
     });
@@ -1174,7 +1175,7 @@ export default function TodayPage() {
       sceneKey: selectedSceneKeyRef.current,
       weather: currentWeatherRef.current,
       weatherMode: currentWeatherModeRef.current,
-      recommendationBatchId: previous?.batchId,
+      recommendationBatchId: previous?.candidatePoolId || undefined,
       excludedOutfitKeys: exclusions,
       requestKind: 'refresh',
     });
@@ -1196,6 +1197,7 @@ export default function TodayPage() {
         traceTodayRuntime('recommendation:start', traceGeneration, undefined, { requestKind: 'refresh', trigger: 'refresh' });
         const nextOptions = {
           currentBatchId: previous?.batchId || '',
+          candidatePoolId: previous?.candidatePoolId || null,
           currentContentHash: previous?.core.contentHash || '',
           excludedOutfitKeys: exclusions,
           refreshSemantics: 'refresh',

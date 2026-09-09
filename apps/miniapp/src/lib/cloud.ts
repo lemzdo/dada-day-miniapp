@@ -846,6 +846,7 @@ function assertHomeLightV2(value: unknown): RecommendationHomeLightResponseV2 {
   const response = value as Partial<RecommendationHomeLightResponseV2>;
   if (response.runtimeVersion !== RECOMMENDATION_V2_RUNTIME_VERSION
     || response.schemaVersion !== RECOMMENDATION_V2_SCHEMA_VERSION
+    || !(response.candidatePoolId === null || typeof response.candidatePoolId === 'string')
     || !response.batch || !response.light
     || response.batch.runtimeVersion !== RECOMMENDATION_V2_RUNTIME_VERSION
     || response.light.runtimeVersion !== RECOMMENDATION_V2_RUNTIME_VERSION

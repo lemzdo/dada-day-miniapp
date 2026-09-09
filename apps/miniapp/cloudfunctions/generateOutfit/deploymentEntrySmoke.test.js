@@ -268,6 +268,5 @@ test('deployed generateOutfit entry loads the shared runtime contract and serves
     assert.ok(response.data.batch.cardCount >= 0 && response.data.batch.cardCount <= 1);
     assert.equal(response.data.batch.countContract.returnedCardCount, response.data.batch.cardCount);
   }
-  assert.ok(candidatePoolRecords.some((record) => record.recordType === 'manifest'));
-  assert.ok(candidatePoolRecords.some((record) => record.recordType === 'chunk'));
+  assert.equal(candidatePoolRecords.length, 0, 'unmeasured cache budget must not start a pool write');
 });

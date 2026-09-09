@@ -8,6 +8,7 @@ const source = fs.readFileSync(path.join(__dirname, 'todayV2Adapter.ts'), 'utf8'
 test('Home Light adapter uses a minimal whitelist and independent snapshot key', () => {
   assert.match(source, /TODAY_V2_SNAPSHOT_KEY/);
   assert.match(source, /core: response\.batch/);
+  assert.match(source, /candidatePoolId: response\.candidatePoolId/);
   assert.match(source, /displayImageUrl/);
   assert.doesNotMatch(source, /isTodayV2Enabled|TARO_APP_RECOMMENDATION_V2_ENABLED/);
 });
@@ -21,6 +22,7 @@ test('Home Light snapshot rejects deep product payloads', () => {
 test('Home Light snapshot is exact-input bound', () => {
   assert.match(source, /inputIdentity: string/);
   assert.match(source, /snapshot\.inputIdentity !== expectedInputIdentity/);
+  assert.match(source, /snapshot\.candidatePoolId === null \|\| typeof snapshot\.candidatePoolId === 'string'/);
 });
 
 test('persisted current snapshots reject zero and malformed partial count contracts', () => {
