@@ -3,6 +3,28 @@
 > 最后更新：2026-05-22  
 > 用途：记录还未解决的问题。
 
+## Recommendation Runtime 2.2 Phase 1 baseline (2026-09-09)
+
+- 当前 legacy 推荐核心按 `top × (bottom + skirt) × shoes + onepiece × shoes`
+  物化候选；100 件 fixture 已产生 11,616 个候选，eligibility P50/P95 为
+  2,769.220ms。300/500 件 count-only 估算分别为 311,904 / 1,442,400，
+  worst-case 估算分别为 850,500 / 3,937,500；禁止把这些规模直接交给旧的
+  full materialization。
+- Candidate Pool 当前仍为 V2 compact cache，serializer 仅覆盖有限 role/slot；
+  完整 outerwear/socks/gloves/scarf/hat/bag 等参与 outfit identity、eligibility
+  和 scoring 的合同尚未建立，optional-item correctness 与 schema/version bump
+  仍是风险。
+- refresh no-repeat 依赖客户端 `seenOutfitKeysRef` 累积传入；服务端没有同一
+  input identity 的 durable seen ledger。客户端状态丢失、并发 refresh 或跨端
+  恢复仍可能重复展示。
+- Candidate Pool save 仍以后台 Promise 启动并在 SSE response 后等待 tail，尚未
+  按显式 foreground cache budget 做 save/fail-open 决策；pool 写入可能与首卡、
+  required batch persistence 竞争资源。
+- `prepareProductionRecommendationWork` 仍同步构建 cards1–7 renderer entries，
+  且 card0 entry/fingerprint 存在首次 materialization 后的重建路径。
+
+Phase 1 真实指标详见 `docs/performance/recommendation-baseline.md`。
+
 
 
 | 顺序   | 需求                                                    | 优先级             | 当前判断                             |

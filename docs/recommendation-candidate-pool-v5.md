@@ -1,4 +1,6 @@
-# 今日推荐候选池 V5
+# 今日推荐候选池 V5（历史文档）
+
+> **Historical / superseded by Recommendation Runtime 2.2.** 本文保留 V5 的实现与运维背景，不能单独作为当前架构真源；Candidate Pool 在 2.2 中定义为 performance cache，而非 business durable source of truth。当前合同、失效语义与 bounded-search 约束以 Recommendation Runtime 2.2 文档和 ADR 为准。
 
 本轮只完成代码、测试和部署准备，未创建云端集合、索引或部署云函数。
 
