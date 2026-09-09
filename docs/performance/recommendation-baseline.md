@@ -1,8 +1,8 @@
 # Recommendation Runtime Scaling Baseline
 
 > Architecture target: Recommendation Runtime 2.2  
-> Captured: 2026-09-09  
-> Commit: `e25e51d068d992f53454c24414548765c48dac68`  
+> Captured: 2026-09-10
+> Commit: `baca6aa` (Phase 4 boundary/runtime verification follow-up)
 > Node: `v24.15.0`  
 > Runtime: legacy `buildOutfitCandidatesV1` + `applyWearabilityAndSceneEligibility`; benchmark `recommendation-scaling-v1`.
 
@@ -114,3 +114,68 @@ eligible; and an initial batch plus five pool refreshes yields 48 unique cards
 with every pool HIT exactly matching a full recompute under cumulative
 exclusions. Optional structural/accessory tests verify that every selected item
 participates in identity, final eligibility, score, and evidence materialization.
+
+## Phase 3 compact candidate-pool and runtime baseline
+
+Captured 2026-09-09 at commit `d521c51`, pool runtime
+`candidate-pool-v3-full-ensemble`. The local benchmark uses the real 96-entry
+production reservoir and storage projection. It measures serialization and
+hydration only; it does not emulate or claim CloudBase database latency.
+
+| candidates | source bytes | compact bytes / ratio | manifest / chunks bytes | serialization P50/P95 ms | heap peak bytes | hydrate / refresh |
+|---:|---:|---:|---:|---:|---:|---:|
+| 96 | 7,230,290 | 175,148 / 2.42% | 1,240 / 173,908 | 1.462 / 1.462 | 42,701,664 | 96 / 8 |
+
+Hydrated candidates preserve final item ids and roles, ranking inputs and pool
+identity. The refresh sample excludes the previous batch and returns eight new
+cards. The full regression additionally covers pool missing, expired, corrupt,
+save-failure, exhaustion and identity-change paths, plus 48 unique cards across
+the initial batch and five cumulative refreshes.
+
+The cache write plan is lazy: preparation does not start serialization or a DB
+write. A production request awaits cache fill only when measured save P95 fits
+the remaining 3,000ms product budget after the 2,300ms server deadline and the
+client reserve. Otherwise it fails open with `candidatePoolId: null`. Required
+batch persistence remains ordered before the optional cache fill.
+
+## Production verification (2026-09-10)
+
+CloudBase CLI authentication was restored and both `generateOutfit` and
+`recommendationStream` passed the remote artifact contract at commit `baca6aa`:
+dependency closure empty, required files, isolated boot, manifest integrity,
+embedded-runtime drift, symlink/junction, and installed-dependency checks all
+passed. The existing canonical smoke produced three valid HIT samples with the
+same render fingerprint `62978c...8a7e3`, HTTP 200, `recommendation.ready` plus
+`complete`, and `providerStarts=0`. The HTTP smoke intentionally records page
+visibility as unavailable; it cannot prove a pixel was painted.
+
+| sample | mode | SERVER_RESPONSE_READY ms | Core/CORE_READY ms | eligibility ms | required batch persistence ms | pool save | provider added calls |
+|---|---|---:|---:|---:|---:|---|---:|
+| hit-1 (`01-23-33`) | canonical HIT | 6,013.856 | 5,500.331 | 4,287.506 | 6,012.335 | not observed | 0 |
+| hit-2 (`01-23-33`) | canonical HIT | 6,225.543 | 5,703.068 | 4,602.429 | 6,223.672 | not observed | 0 |
+| hit-1 (`01-29-08`) | canonical HIT | 5,334.735 | 5,040.055 | 3,836.837 | 5,333.827 | not observed | 0 |
+
+The three-sample `SERVER_RESPONSE_READY` median is **6,013.856ms** (P95/max
+6,225.543ms), **+1,157.271ms** versus the historical authoritative 4,856.585ms
+median. A full baseline → exact one-cache deletion → MISS run returned valid SSE
+ready/complete frames; its delayed audit later showed `CACHE_LOOKUP_DONE=miss`,
+`CORE_READY=5,394.343ms`, `ELIGIBILITY_DONE=4,104.137ms`,
+`runtime:batchPersistenceDone=5,868.058ms`, `recommendationReady=5,870.045ms`,
+and `PROVIDER_START=5,881.156ms`. The cache reappeared as
+`recommendation-canonical-copy-cache-v2.0` and the MISS batch job reached
+`completed`; the smoke timeout was only an audit-tail window failure.
+
+Production Candidate Pool save P50/P95 remains **NOT_OBSERVED**: no
+`runtime:candidatePoolPersistenceStart/Done` stage was emitted in the smoke
+requests, so the local 1.462ms compact serialization number must not be called a
+CloudBase DB save measurement. The explicit policy therefore remains fail-open
+and never claims an unsaved pool id.
+
+The dominant production bottleneck is full-compute execution on the CloudBase
+runtime: candidate construction/hydration and especially final eligibility run
+several seconds before response assembly. Per the frozen Goal contract, this
+result is recorded as a performance risk and no third micro-optimization pass is
+started automatically. Existing Today cold telemetry also recorded
+`serverTotalMs=1831` and `coldTtuiMs=3026`; the current smoke has no page paint
+observer, so `FIRST_CARD_VISIBLE<3000ms` is not claimed (and the observed cold
+TTUI is slightly above target).

@@ -48,7 +48,6 @@ const {
   isRecommendationCanonicalCopyRuntimeV2Enabled,
   resolveCanonicalCopyForStorage,
 } = require('./services/recommendationCanonicalCopyRuntimeV2');
-const { loadActiveWardrobe } = require('./services/loadActiveWardrobe');
 const { applySnapshotAsset } = require('./services/garmentAssetAdapter');
 const {
   createAiReviewServiceError,
@@ -168,14 +167,12 @@ const {
 } = require('./services/qaAuditControl');
 const {
   AI_REVIEW_VERSION,
-  CANDIDATE_POOL_ENGINE_VERSION,
   CLOUD_BUILD_VERSION,
   REASON_CATALOG_VERSION,
   SCENE_EVIDENCE_FINGERPRINT,
   SCENE_EVIDENCE_VERSION,
 } = require('./services/buildVersions');
 const {
-  buildCandidatePoolIdentity,
   getReasonSelectionDescriptor,
   hydrateCandidateCore,
   loadCandidatePool,
@@ -204,6 +201,9 @@ const {
   SERVER_RESPONSE_DEADLINE_MS,
   runRecommendationOrchestrator,
 } = require('./runtime/recommendationOrchestrator');
+const { loadRecommendationInputSnapshot } = require('./runtime/inputSnapshotService');
+const { resolveRecommendationCache } = require('./runtime/recommendationCacheCoordinator');
+const { createRecommendationResult } = require('./runtime/recommendationResult');
 
 const FIRST_CARD_VISIBLE_TARGET_MS = 3000;
 const CLIENT_VISIBLE_RESERVE_MS = FIRST_CARD_VISIBLE_TARGET_MS - SERVER_RESPONSE_DEADLINE_MS;
@@ -947,13 +947,45 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
     userIdentity: context.userIdentity || (() => {
       try { return { openid: cloud.getWXContext().OPENID }; } catch { return {}; }
     })(),
-    loadCandidatePoolForIdentity: context.loadCandidatePoolForIdentity
-      || ((request) => loadCandidatePool({ database: db, ...request })),
+    loadInputSnapshot: async (normalized) => {
+      const requestParseStartedAt = diagnostics.startedAt;
+      diagnostics.stage = 'loadWardrobe';
+      recordServerPhase(diagnostics, 'requestParse', requestParseStartedAt);
+      const authStartedAt = Date.now();
+      const openid = readString(context?.userIdentity?.openid) || cloud.getWXContext().OPENID;
+      diagnostics.openid = openid;
+      recordServerPhase(diagnostics, 'authContext', authStartedAt);
+      const snapshot = await loadRecommendationInputSnapshot(normalized, { database: db, openid });
+      diagnostics.timings.dataLoadMs = snapshot.metrics.dataLoadMs;
+      diagnostics.timings.identityMs = snapshot.metrics.identityMs;
+      diagnostics.databaseOps.reads += snapshot.metrics.databaseReadCount;
+      diagnostics.workCounts.wardrobeRead += snapshot.metrics.wardrobeReadCount;
+      diagnostics.workCounts.preferenceRead += 1;
+      diagnostics.workCounts.weatherRead += 1;
+      recordServerPhase(diagnostics, 'userAndWardrobeRead', Date.now() - snapshot.metrics.dataLoadMs);
+      recordServerPhase(diagnostics, 'candidatePoolIdentity', Date.now() - snapshot.metrics.identityMs);
+      recordRecommendationStage(diagnostics, 'runtime:inputReady');
+      recordRecommendationStage(diagnostics, 'INPUT_READY');
+      return snapshot;
+    },
+    resolveRecommendationCache: async (snapshot) => {
+      const startedAt = Date.now();
+      const resolution = await resolveRecommendationCache(snapshot, {
+        loadCandidatePoolForIdentity: context.loadCandidatePoolForIdentity
+          || ((request) => loadCandidatePool({ database: db, timings: diagnostics.timings, ...request })),
+      });
+      diagnostics.timings.candidatePoolLoadMs = Date.now() - startedAt;
+      diagnostics.databaseOps.reads += diagnostics.timings.poolDbReadCount || 0;
+      if (resolution.attempted) {
+        diagnostics.workCounts.candidateLoad += 1;
+        recordServerPhase(diagnostics, 'candidatePoolLoad', startedAt);
+      }
+      return resolution;
+    },
     computeRecommendation: async (normalized, runtimeContext) => {
       return computeProductionRecommendationCore(normalized, diagnostics, {
-        ...context,
-        ...runtimeContext,
-        lifecycleHooks: runtimeHooks,
+        handlerOrigin: runtimeContext.handlerOrigin,
+        onFirstCardReady: runtimeContext.onFirstCardReady,
       });
     },
     prepareRecommendationWork: async (core) => prepareProductionRecommendationWork(core, diagnostics, {
@@ -1007,72 +1039,34 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
   return runtime;
 }
 
-async function computeProductionRecommendationCore(event, diagnostics = createRecommendationDiagnostics(event), scfContext = {}) {
-  const requestParseStartedAt = diagnostics.startedAt;
-  diagnostics.stage = 'loadWardrobe';
-  recordServerPhase(diagnostics, 'requestParse', requestParseStartedAt);
-  const authStartedAt = Date.now();
-  const OPENID = readString(scfContext?.userIdentity?.openid) || cloud.getWXContext().OPENID;
-  diagnostics.openid = OPENID;
-  recordServerPhase(diagnostics, 'authContext', authStartedAt);
-  const inputScene = typeof event.scene === 'string' ? event.scene.trim() : '';
-  const scene = inputScene || undefined;
-  const sceneContract = createRecommendationSceneContract(inputScene);
-  const targetDate = event.date || new Date().toISOString().slice(0, 10);
-  const now = new Date().toISOString();
-  const requestedCount = normalizeRequestedBatchSize(event.maxResults || 8);
-  const requestedCandidatePoolId = readString(event.recommendationBatchId);
+async function computeProductionRecommendationCore(snapshot, diagnostics = createRecommendationDiagnostics(snapshot?.event), scfContext = {}) {
+  const {
+    event,
+    openid: OPENID,
+    scene,
+    sceneContract,
+    targetDate,
+    now,
+    requestedCount,
+    requestedCandidatePoolId,
+    clothes,
+    recommendationProfile,
+    excludeClothingIdSets: exclude,
+    excludedOutfitKeys,
+    isRefreshRequest,
+    weather,
+    weatherMode,
+    weatherSnapshot,
+    debugRecommendationAudit,
+    candidatePoolIdentity,
+    cacheResolution,
+  } = snapshot;
+  if (!event || !OPENID || !candidatePoolIdentity || !Array.isArray(clothes)) {
+    throw new Error('RECOMMENDATION_INPUT_SNAPSHOT_INVALID');
+  }
   diagnostics.requestedCandidatePoolIdPresent = Boolean(requestedCandidatePoolId);
   diagnostics.requestedCandidatePoolIdLength = requestedCandidatePoolId.length;
   let recommendationBatchId = requestedCandidatePoolId || createRecommendationBatchId(now);
-  const dataLoadStartedAt = Date.now();
-  let wardrobeReadCount = 0;
-  const [clothes, userRes] = await Promise.all([
-    loadActiveWardrobe({
-      database: db,
-      openid: OPENID,
-      onRead: () => {
-        wardrobeReadCount += 1;
-      },
-    }),
-    db.collection('users').where({ _openid: OPENID }).limit(1).get(),
-  ]);
-  diagnostics.timings.dataLoadMs = Date.now() - dataLoadStartedAt;
-  recordServerPhase(diagnostics, 'userAndWardrobeRead', dataLoadStartedAt);
-  diagnostics.databaseOps.reads += wardrobeReadCount + 1;
-  const recommendationProfile = normalizeRecommendationProfile(userRes.data?.[0]?.styleProfile);
-  diagnostics.workCounts.wardrobeRead += wardrobeReadCount;
-  diagnostics.workCounts.preferenceRead += 1;
-  const exclude = Array.isArray(event.excludeClothingIdSets) ? event.excludeClothingIdSets : [];
-  const excludedOutfitKeys = readStringArray(event.excludedOutfitKeys);
-  const requestTrigger = readString(event.trigger);
-  const isRefreshRequest = requestTrigger === 'refresh'
-    || excludedOutfitKeys.length > 0
-    || exclude.length > 0
-    || Boolean(requestedCandidatePoolId);
-  const weather = normalizeRecommendationWeather(event.weather, event.weatherMode);
-  diagnostics.workCounts.weatherRead += 1;
-  const weatherMode = weather.mode;
-  const weatherSnapshot = toWeatherSnapshot(weather);
-  recordRecommendationStage(diagnostics, 'runtime:inputReady');
-  recordRecommendationStage(diagnostics, 'INPUT_READY');
-  const debugRecommendationAudit = isRecommendationQaAuditEnabled(
-    event.debugRecommendationAudit,
-    process.env.RECOMMENDATION_QA_AUDIT_ENABLED,
-  );
-  const identityStartedAt = Date.now();
-  const candidatePoolIdentity = buildCandidatePoolIdentity({
-    openid: OPENID,
-    clothes,
-    sceneKey: sceneContract.sceneKey,
-    weather,
-    weatherMode,
-    recommendationProfile,
-    timeOfDay: event.timeOfDay || 'all_day',
-    engineVersion: CANDIDATE_POOL_ENGINE_VERSION,
-  });
-  diagnostics.timings.identityMs = Date.now() - identityStartedAt;
-  recordServerPhase(diagnostics, 'candidatePoolIdentity', identityStartedAt);
   let recommendations;
   let executionMode = 'full_compute';
   let candidatePoolAgeMs = 0;
@@ -1089,21 +1083,8 @@ async function computeProductionRecommendationCore(event, diagnostics = createRe
   });
 
   if (requestedCandidatePoolId) {
-    diagnostics.workCounts.candidateLoad += 1;
-    const candidatePoolLoadStartedAt = Date.now();
-    const loadCandidatePoolForIdentity = scfContext.loadCandidatePoolForIdentity;
-    if (typeof loadCandidatePoolForIdentity !== 'function') {
-      throw new Error('RECOMMENDATION_CACHE_ADAPTER_REQUIRED');
-    }
-    const poolResult = await loadCandidatePoolForIdentity({
-      candidatePoolId: requestedCandidatePoolId,
-      identity: candidatePoolIdentity,
-      now: Date.now(),
-      timings: diagnostics.timings,
-    });
-    diagnostics.timings.candidatePoolLoadMs = Date.now() - candidatePoolLoadStartedAt;
-    recordServerPhase(diagnostics, 'candidatePoolLoad', candidatePoolLoadStartedAt);
-    diagnostics.databaseOps.reads += diagnostics.timings.poolDbReadCount || 0;
+    const poolResult = cacheResolution;
+    if (!poolResult?.attempted) throw new Error('RECOMMENDATION_CACHE_RESOLUTION_REQUIRED');
     if (poolResult.hit) {
       try {
         recommendations = generateCandidatePoolRecommendations({
@@ -1263,7 +1244,7 @@ async function computeProductionRecommendationCore(event, diagnostics = createRe
   diagnostics.batchId = v2BatchId;
   recordNarrativePlansReady(diagnostics, recommendations, stylingPlans);
   recordRecommendationStage(diagnostics, 'runtime:c2', { batchId: v2BatchId });
-  return {
+  return createRecommendationResult({
     identity: candidatePoolIdentity,
     executionState: {
       executionMode,
@@ -1298,7 +1279,7 @@ async function computeProductionRecommendationCore(event, diagnostics = createRe
       narrativePlanStatus: stylingPlans?.diagnostics?.status,
       firstCardRendererEntry,
     },
-  };
+  });
 }
 
 async function prepareProductionRecommendationWork(core, diagnostics, context = {}) {
@@ -4880,7 +4861,11 @@ function generateRuleRecommendations({
     Number(searchResult.diagnostics?.budget?.reservoirCapacity) || 8,
   );
   const reservoir = selectDiversityReservoir(sortedScored, reservoirCapacity, searchResult.diagnostics);
-  const available = reservoir.filter((rec) => !excluded.has(rec.outfitKey));
+  // Scene admission and evidence authorization are intentionally separate.
+  // A wearable outfit may have no registered, fact-backed explanation, but it
+  // cannot enter a user-visible batch or the refresh pool without one.
+  const evidenceAuthorizedReservoir = reservoir.filter(hasEvidenceAuthorizedEligibility);
+  const available = evidenceAuthorizedReservoir.filter((rec) => !excluded.has(rec.outfitKey));
   const sortedAvailable = sortCandidatesStable(available);
   recordRecommendationStage(diagnostics, 'STABLE_SORT_DONE', {
     fields: { availableCount: sortedAvailable.length },
@@ -4971,7 +4956,7 @@ function generateRuleRecommendations({
     timings.materializationMs = Date.now() - materializationStartedAt;
     recordInstrumentationTiming(testInstrumentation, 'materializationMs', timings.materializationMs);
 
-    const exclusionStats = getExclusionStats(reservoir, excludedOutfitKeys, excludeClothingIdSets);
+    const exclusionStats = getExclusionStats(evidenceAuthorizedReservoir, excludedOutfitKeys, excludeClothingIdSets);
     results.debug = {
     candidateCount: candidates.length,
     generatedCount: candidates.length,
@@ -4980,6 +4965,7 @@ function generateRuleRecommendations({
     guardRejectedCount: guardResult.debug.guardRejectedCount,
     weatherRejectedCount: guardResult.debug.weatherRejectedCount,
     sceneRejectedCount: guardResult.debug.sceneRejectedCount,
+    evidenceAuthorizationRejectedCount: reservoir.length - evidenceAuthorizedReservoir.length,
     weatherMode: candidates.debug?.weatherMode || normalizedWeather.mode,
     hasUsableWeather: candidates.debug?.hasUsableWeather ?? hasRealWeather,
     temperatureBandApplied: candidates.debug?.temperatureBandApplied ?? hasRealWeather,
@@ -5013,7 +4999,7 @@ function generateRuleRecommendations({
     results.limited = results.countContract.expectedCardCount < results.countContract.requestedBatchSize;
     results.exhausted = results.countContract.poolExhaustedAfterConsume;
     Object.defineProperty(results, 'candidatePoolCandidates', {
-      value: reservoir,
+      value: evidenceAuthorizedReservoir,
       enumerable: false,
       configurable: false,
     });
@@ -5202,6 +5188,17 @@ function removeWeatherInfluence(candidate) {
     scoreExplanations: (candidate.scoreExplanations || []).filter((entry) => entry.dimension !== 'weatherAdaptation'),
     reasoning: '',
   };
+}
+
+function hasEvidenceAuthorizedEligibility(candidate) {
+  const reasons = Array.isArray(candidate?.eligibilityReasonCandidates)
+    ? candidate.eligibilityReasonCandidates
+    : [];
+  return reasons.some((reason) => Boolean(reason?.code)
+    && Array.isArray(reason.subjectItemIds) && reason.subjectItemIds.length > 0
+    && Array.isArray(reason.supportingFactIds) && reason.supportingFactIds.length > 0
+    && Array.isArray(reason.sourceRuleReasons) && reason.sourceRuleReasons.length > 0
+    && Boolean(reason.sourceRule));
 }
 
 function assertEligibilityReasons(candidates, { node, scene, weather } = {}) {
@@ -5893,23 +5890,6 @@ function first(items) {
   return items[0] || null;
 }
 
-function normalizeRecommendationProfile(styleProfile) {
-  const profile = styleProfile || {};
-  const recommendationProfile = profile.recommendationProfile || {};
-  return {
-    genderPreference: readEnum(recommendationProfile.genderPreference, ['male_style', 'female_style', 'neutral_style', 'all', 'unknown'], 'unknown'),
-    styleTags: Array.isArray(recommendationProfile.styleTags)
-      ? recommendationProfile.styleTags
-      : Array.isArray(profile.preferredStyles)
-        ? profile.preferredStyles
-        : [],
-    fitPreference: readEnum(recommendationProfile.fitPreference, ['loose', 'regular', 'slim', 'oversize', 'unknown'], 'unknown'),
-    colorPreference: Array.isArray(recommendationProfile.colorPreference) ? recommendationProfile.colorPreference : [],
-    avoidTags: Array.isArray(recommendationProfile.avoidTags) ? recommendationProfile.avoidTags : [],
-    temperatureSensitivity: readEnum(recommendationProfile.temperatureSensitivity, ['cold_sensitive', 'normal', 'heat_sensitive'], 'normal'),
-  };
-}
-
 function scorePreferenceMatch(items, profile) {
   const text = items
     .flatMap((item) => [
@@ -6149,6 +6129,7 @@ if (process.env.NODE_ENV === 'test') {
     buildSceneEvidenceAcceptanceDiagnostics,
     buildRankingScore,
     scoreCandidate,
+    hasEvidenceAuthorizedEligibility,
     assertEligibilityReasons,
     toEligibilityReasonDiagnostic,
     toTempOutfit,

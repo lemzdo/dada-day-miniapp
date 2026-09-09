@@ -6,6 +6,36 @@ const { runRecommendationOrchestrator } = require('./recommendationOrchestrator'
 const { renderFirstCardCanonical } = require('../services/recommendationFirstCardRenderer');
 const { createXiaodaAI, createFailureEnvelope } = require('@d1d/ai-core');
 
+test('orchestrator resolves snapshot and cache before invoking the pure core boundary', async () => {
+  const events = [];
+  const snapshot = { scene: 'work', marker: 'snapshot' };
+  const cacheResolution = { attempted: true, hit: false, reason: 'not_found' };
+  const core = {
+    identity: {}, executionState: {}, outfits: [], narrativePlans: [], evidence: {}, metadata: { batchId: 'boundary' },
+  };
+  const result = await runRecommendationOrchestrator({ scene: ' work ' }, {
+    loadInputSnapshot: async (input) => {
+      events.push('snapshot');
+      assert.equal(input.scene, 'work');
+      return snapshot;
+    },
+    resolveRecommendationCache: async (input) => {
+      events.push('cache');
+      assert.equal(input, snapshot);
+      return cacheResolution;
+    },
+    computeRecommendation: async (input) => {
+      events.push('core');
+      assert.equal(input.marker, 'snapshot');
+      assert.equal(input.cacheResolution, cacheResolution);
+      return core;
+    },
+    persistAndAssembleRecommendation: async () => ({ batch: { batchId: 'boundary', countContract: {} } }),
+  });
+  assert.deepEqual(events, ['snapshot', 'cache', 'core']);
+  assert.equal(result.batchId, 'boundary');
+});
+
 test('orchestrator announces core before ready and does not await renderer', async () => {
   const events = [];
   let release;

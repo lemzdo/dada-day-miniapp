@@ -44,6 +44,24 @@ function loadGenerateOutfitInternals() {
   }
 }
 
+test('user-visible selection requires a fact-backed eligibility reason without changing scene admission', () => {
+  const internals = loadGenerateOutfitInternals();
+  const authorized = {
+    eligibilityReasonCandidates: [{
+      code: 'AUTHORIZED',
+      subjectItemIds: ['top-1'],
+      supportingFactIds: ['fact-1'],
+      sourceRuleReasons: ['rule-reason'],
+      sourceRule: 'scene-evidence-v4',
+    }],
+  };
+  assert.equal(internals.hasEvidenceAuthorizedEligibility(authorized), true);
+  assert.equal(internals.hasEvidenceAuthorizedEligibility({ eligibilityReasonCandidates: [] }), false);
+  assert.equal(internals.hasEvidenceAuthorizedEligibility({
+    eligibilityReasonCandidates: [{ ...authorized.eligibilityReasonCandidates[0], supportingFactIds: [] }],
+  }), false);
+});
+
 function rawSportItem(id, category, subcategory) {
   return {
     _id: id,

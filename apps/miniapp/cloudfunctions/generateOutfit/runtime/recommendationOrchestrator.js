@@ -261,7 +261,17 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
   let core;
   let prepared;
   try {
-    core = await runRecommendationCore(normalized, orchestrationContext);
+    const inputSnapshot = typeof context.loadInputSnapshot === 'function'
+      ? await context.loadInputSnapshot(normalized, orchestrationContext)
+      : normalized;
+    void safeCall(lifecycleHooks.onInputSnapshotReady, { snapshot: inputSnapshot });
+    const cacheResolution = typeof context.resolveRecommendationCache === 'function'
+      ? await context.resolveRecommendationCache(inputSnapshot, orchestrationContext)
+      : undefined;
+    const coreInput = cacheResolution === undefined
+      ? inputSnapshot
+      : { ...inputSnapshot, cacheResolution };
+    core = await runRecommendationCore(coreInput, orchestrationContext);
     coreFinished = true;
     auditStage(context, 'FULL_BATCH_READY');
     setDiagnostic(context, 'FULL_BATCH_READY', elapsedMs(handlerOrigin));

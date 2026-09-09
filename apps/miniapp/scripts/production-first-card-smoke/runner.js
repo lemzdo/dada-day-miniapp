@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
+const { ensureDevToolsDirectSession } = require('../devtools-direct-session');
 const { readContext, requestInput, requestFirstCard } = require('./wechat');
 const { createCleanupPlan, validateCleanupPlan, hash, TERMINAL_STATUSES } = require('./safety');
 const { extractAudit, verifyInvocation } = require('./evidence');
@@ -50,7 +51,10 @@ async function runProductionSmoke({ admin, mini, directory, progress = () => {},
   const runId = `production-smoke-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
   const report = { schemaVersion: 'production-first-card-smoke/v1', runId, environmentId: ENV_ID,
     sourceCommit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim(),
-    toolSha256: Object.fromEntries(['runner.js', 'admin.js', 'wechat.js', 'safety.js', 'evidence.js'].map((name) => [name, hash(fs.readFileSync(path.join(__dirname, name)))])),
+    toolSha256: {
+      ...Object.fromEntries(['runner.js', 'admin.js', 'wechat.js', 'safety.js', 'evidence.js'].map((name) => [name, hash(fs.readFileSync(path.join(__dirname, name)))])),
+      'devtools-direct-session.js': hash(fs.readFileSync(path.join(__dirname, '..', 'devtools-direct-session.js'))),
+    },
     userSha256: hash(context.openid), appId: context.appId, input: { date, scene: '居家', weatherMode: 'disabled', timeOfDay: 'all_day' },
     transport: 'wx.cloud.callHTTPFunction/recommendationStream', deployed: false, deletedCacheDocuments: 0,
     protectedDataDeleted: false, requests: [], status: 'RUNNING' };
@@ -184,8 +188,8 @@ async function main() {
     fs.mkdirSync(directory);
     const { createAdmin } = require('./admin');
     const admin = createAdmin({ envId: ENV_ID });
-    const automator = require('miniprogram-automator');
-    mini = await automator.connect({ wsEndpoint: process.env.AUTOMATOR_WS_ENDPOINT || 'ws://127.0.0.1:9420' });
+    const session = await ensureDevToolsDirectSession({ endpoint: process.env.AUTOMATOR_WS_ENDPOINT });
+    mini = session.mini;
     const report = await runProductionSmoke({ admin, mini, directory, date, hitSamples,
       progress: (phase) => console.log(JSON.stringify({ phase })) });
     console.log(JSON.stringify({ status: report.status, errorCode: report.errorCode, deletedCacheDocuments: report.deletedCacheDocuments,

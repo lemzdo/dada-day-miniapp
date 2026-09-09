@@ -1,29 +1,40 @@
 # PROBLEM_LIST.md - 搭搭 day 当前存在的问题
 
-> 最后更新：2026-05-22  
+> 最后更新：2026-09-10
 > 用途：记录还未解决的问题。
 
-## Recommendation Runtime 2.2 Phase 1 baseline (2026-09-09)
+## Recommendation Runtime 2.2 状态（2026-09-09）
 
-- 当前 legacy 推荐核心按 `top × (bottom + skirt) × shoes + onepiece × shoes`
-  物化候选；100 件 fixture 已产生 11,616 个候选，eligibility P50/P95 为
-  2,769.220ms。300/500 件 count-only 估算分别为 311,904 / 1,442,400，
-  worst-case 估算分别为 850,500 / 3,937,500；禁止把这些规模直接交给旧的
-  full materialization。
-- Candidate Pool 当前仍为 V2 compact cache，serializer 仅覆盖有限 role/slot；
-  完整 outerwear/socks/gloves/scarf/hat/bag 等参与 outfit identity、eligibility
-  和 scoring 的合同尚未建立，optional-item correctness 与 schema/version bump
-  仍是风险。
-- refresh no-repeat 依赖客户端 `seenOutfitKeysRef` 累积传入；服务端没有同一
-  input identity 的 durable seen ledger。客户端状态丢失、并发 refresh 或跨端
-  恢复仍可能重复展示。
-- Candidate Pool save 仍以后台 Promise 启动并在 SSE response 后等待 tail，尚未
-  按显式 foreground cache budget 做 save/fail-open 决策；pool 写入可能与首卡、
-  required batch persistence 竞争资源。
-- `prepareProductionRecommendationWork` 仍同步构建 cards1–7 renderer entries，
-  且 card0 entry/fingerprint 存在首次 materialization 后的重建路径。
+- 已解决旧 Core 的无界 O(N³) 候选物化：生产 bounded engine 在 30/100/300/500
+  件 fixture 上最多完整验收与评分 768 个候选，reservoir 为 96；旧 500 件
+  1,442,400（worst-case 3,937,500）仅保留为 count-only 风险基线。
+- 已建立 Legacy Core 与 Small Full-Ensemble 双 Oracle；outerwear、功能性单品与
+  accessory 均进入最终 identity、eligibility、score、evidence 和 materialization，
+  Candidate Pool 已升级到 V3，旧 schema 安全 miss。
+- 已实现显式、lazy、可测量、fail-open 的 cache-fill policy；未真实保存时始终
+  返回 `candidatePoolId: null`，required batch persistence 先于可选 cache write。
+- 已消除 card0 renderer entry 重建，并把 cards1–7 renderer preparation 与非首屏
+  overlay 读取移出首卡同步路径。
+- 生产验证已恢复并完成：两个函数均通过远端 artifact contract；3 个 canonical HIT
+  样本均 HTTP 200、同一 fingerprint、provider added calls=0。完整 smoke 还验证了
+  精确删除 1 个 canonical cache 后的 MISS、batch completed 与 canonical cache 重建。
+  但 `SERVER_RESPONSE_READY` 三样本中位为 6,013.856ms（历史权威中位
+  4,856.585ms），明显未达到产品目标；HTTP smoke 不具备页面 paint observer，
+  `FIRST_CARD_VISIBLE <3000ms` 仍不能宣称，Today cold telemetry 的 `coldTtuiMs`
+  为 3,026ms。
+- 最大生产瓶颈已定位在 CloudBase full-compute：候选构造/hydrate、最终 eligibility
+  和 batch persistence 发生在首卡 response 前，HIT 也需要完整 Core。按冻结合同，
+  本轮不自动启动第三次性能微优化；下一轮需单独评估 CPU/搜索预算耦合，不能降低质量
+  或绕过完整配饰 eligibility。
+- 正常生产请求在尚未获得可审计的生产 pool-save stage、且未配置实测
+  `RECOMMENDATION_CANDIDATE_POOL_SAVE_P95_MS` 时会
+  正确跳过 pool fill；这保证 correctness，但会减少 pool HIT，必须在生产 smoke
+  得到数据后配置预算。
+- 同一活跃客户端/input identity 的连续换批已由累计 `excludedOutfitKeys` 验证
+  48 套无重复；客户端状态丢失、并发跨端或重装后的 durable seen ledger 仍未实现，
+  是独立的跨会话一致性风险。
 
-Phase 1 真实指标详见 `docs/performance/recommendation-baseline.md`。
+真实指标与证据边界详见 `docs/performance/recommendation-baseline.md`。
 
 
 
@@ -98,3 +109,15 @@ ready / needs_review / failed
 - hierarchical bounded-search 已完成真实生产 Core 的 30/100/300/500 full benchmark：500 件只进入 768 次完整 eligibility/scoring、96 个 reservoir entries，旧 legacy raw estimate 为 1,442,400；300→500 的组合阶段计数保持不变。
 - Legacy Core Oracle、Small Full-Ensemble Exhaustive Oracle、home/work/date/sport、完整配饰 identity/evidence 和连续 5 次 refresh（48 套无重复且与 full recompute 等价）均已通过。
 - Candidate Pool 已升级为 V3 full-ensemble cache schema；旧 V2 直接视为 cache miss，不做错误 hydrate。Pool 显式 cache-fill budget 与 runtime critical-path 收口属于 Phase 3。
+
+## Recommendation Runtime 2.2 Phase 3/4 收口（2026-09-09）
+
+- compact pool 本地实测 96 candidates、175,148 bytes（原执行对象 7,230,290
+  bytes 的 2.42%），serialization P50/P95 约 1.462/1.462ms；CloudBase DB save
+  不得由该数字推断。
+- Runtime 已形成 `InputSnapshotService -> Cache Coordinator -> Recommendation Core
+  -> Recommendation Result` 边界；Core 不再读取 user/wardrobe 或 candidate-pool DB，
+  且输出收紧为六字段合同。HTTP/SSE、AI provider lifecycle、cache policy、required
+  persistence 与 response assembly 仍由同一 deployment unit 内 Orchestrator 管理。
+- 当前唯一架构真源为 `docs/architecture/recommendation-runtime.md`；五份 ADR 已记录
+  runtime boundary、bounded search、full outfit、candidate-pool refresh 与 scaling 合同。

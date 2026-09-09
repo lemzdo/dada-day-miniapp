@@ -64,13 +64,31 @@ async function requestFirstCard(mini, context, input) {
     } catch { fail(); }
   }), { ...context, input });
   const events = [];
-  const parser = createSseParser({ onEvent: (frame) => events.push(frame) });
+  const malformed = [];
+  const parser = createSseParser({
+    onEvent: (frame) => events.push(frame),
+    onMalformed: (frame) => malformed.push(frame),
+  });
   for (const chunk of result.chunks) parser.push(typeof chunk === 'string' ? chunk : Uint8Array.from(chunk));
   parser.finish();
   const ready = events.find((frame) => frame.event === 'recommendation.ready')?.data;
   const complete = events.find((frame) => frame.event === 'complete')?.data;
   if (!ready?.identity?.userIdentityVerified || !ready.response?.light?.cards?.[0] || !complete) {
-    throw new Error('WECHAT_SMOKE_SSE_INCOMPLETE');
+    throw Object.assign(new Error('WECHAT_SMOKE_SSE_INCOMPLETE'), { smokeEvidence: {
+      httpStatus: result.statusCode,
+      chunkCount: result.chunks.length,
+      chunkByteLengths: result.chunks.map((chunk) => typeof chunk === 'string'
+        ? Buffer.byteLength(chunk, 'utf8')
+        : chunk.length),
+      eventTypes: events.map((frame) => frame.event),
+      malformedFrameCount: malformed.length,
+      readyObserved: Boolean(ready),
+      readyIdentityVerified: ready?.identity?.userIdentityVerified === true,
+      readyFirstCardObserved: Boolean(ready?.response?.light?.cards?.[0]),
+      completeObserved: Boolean(complete),
+      completeReason: typeof complete?.reason === 'string' ? complete.reason : null,
+      completeErrorCode: typeof complete?.errorCode === 'string' ? complete.errorCode : null,
+    } });
   }
   if (result.statusCode !== null && result.statusCode !== 200) throw new Error('WECHAT_SMOKE_HTTP_STATUS');
   if (ready.batchId !== input.v2BatchId || complete.batchId !== input.v2BatchId) throw new Error('WECHAT_SMOKE_BATCH_MISMATCH');

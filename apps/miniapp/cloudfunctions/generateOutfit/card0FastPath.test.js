@@ -8,6 +8,8 @@ const Module = require('node:module');
 const path = require('node:path');
 const test = require('node:test');
 const { runRecommendationOrchestrator } = require('./runtime/recommendationOrchestrator');
+const { loadRecommendationInputSnapshot } = require('./runtime/inputSnapshotService');
+const { resolveRecommendationCache } = require('./runtime/recommendationCacheCoordinator');
 const { buildProductionRendererEntry } = require('./services/recommendationVoiceRendererProductionV2');
 const { createCandidatePoolRecord } = require('./services/candidatePool');
 const narrative = require('./services/recommendationNarrativePlanV2');
@@ -108,7 +110,7 @@ function loadCore({ failPlanIndex, failEntry = false, remainingCardCpuMs = 0, re
     if (previous === undefined) delete process.env.NODE_ENV;
     else process.env.NODE_ENV = previous;
   }
-  return { internals, events, attempts, styling, get materializations() { return materializations; } };
+  return { database, internals, events, attempts, styling, get materializations() { return materializations; } };
 }
 
 function structuredClothes() { return JSON.parse(JSON.stringify(CLOTHES)); }
@@ -121,7 +123,14 @@ async function compute(harness, overrides = {}, hook) {
   const input = { ...INPUT, ...overrides.input };
   const diagnostics = harness.internals.createRecommendationDiagnostics({ ...input, auditId: 'phase1a-audit' });
   diagnostics.stageLogger = () => {};
-  return harness.internals.computeProductionRecommendationCore(input, diagnostics, {
+  const snapshot = await loadRecommendationInputSnapshot(input, {
+    database: harness.database,
+    openid: 'fast-path-user',
+  });
+  const cacheResolution = await resolveRecommendationCache(snapshot, {
+    loadCandidatePoolForIdentity: overrides.context?.loadCandidatePoolForIdentity,
+  });
+  return harness.internals.computeProductionRecommendationCore({ ...snapshot, cacheResolution }, diagnostics, {
     userIdentity: { openid: 'fast-path-user' },
     ...overrides.context,
     onFirstCardReady: hook,

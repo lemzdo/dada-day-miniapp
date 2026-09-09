@@ -9,7 +9,7 @@
     "build": "taro build --type weapp",
     "build:weapp": "taro build --type weapp",
     "build:h5": "taro build --type h5",
-    "lint": "eslint .",
+    "lint": "node ../../node_modules/eslint/bin/eslint.js --config eslint.config.mjs .",
     "typecheck": "tsc --noEmit",
     "clean": "rimraf dist"
   },
