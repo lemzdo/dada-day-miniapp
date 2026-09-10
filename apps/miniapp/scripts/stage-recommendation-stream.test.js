@@ -65,6 +65,7 @@ test('HTTP staging creates a private Node 20 deployment config from an environme
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     assert.equal(config.envId, 'cloud-test-environment');
     assert.equal(config.functions[0].runtime, 'Nodejs20.19');
+    assert.equal(config.functions[0].memorySize, 1024);
     assert.equal(config.functions[0].timeout, 10);
     assert.equal(config.functions[0].envVariables.BAILIAN_API_KEY, 'test-only-key');
     assert.equal(config.functions[0].envVariables.BAILIAN_MODEL, 'qwen-test');

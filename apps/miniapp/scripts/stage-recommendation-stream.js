@@ -43,6 +43,7 @@ if (environmentFile) {
     functions: [{
       name: 'recommendationStream',
       runtime: 'Nodejs20.19',
+      memorySize: 1024,
       timeout: 10,
       handler: 'index.main',
       envVariables,
