@@ -170,6 +170,33 @@ interface RecommendationRequestContext {
   requestedAt: number
 }
 
+interface RecommendationVisibleTiming {
+  auditId: string;
+  seq: number;
+  sceneKey: SceneKey;
+  batchId: string;
+  outfitKey: string;
+  requestStart: number;
+  clientResponseReceivedMs: number;
+  stateCommitMs?: number;
+  contentVisibleMs?: number;
+  imageLoadMs?: number;
+  imageVisibleMs?: number;
+  contentProbeStarted?: boolean;
+  imageProbeStarted?: boolean;
+  logged?: boolean;
+}
+
+type RecommendationVisibleTimingSnapshot = Omit<RecommendationVisibleTiming,
+  'contentProbeStarted' | 'imageProbeStarted' | 'logged'> & { complete: boolean };
+
+function clientMonotonicNow() {
+  const perf = (globalThis as typeof globalThis & {
+    performance?: { now?: () => number };
+  }).performance;
+  return typeof perf?.now === 'function' ? perf.now() : Date.now();
+}
+
 interface ClientImageTiming {
   auditId: string;
   cloudRoundTripMs: number;
@@ -251,6 +278,7 @@ interface TodayDiagnosticsBridge {
     canFavorite: boolean;
     canOpenDetail: boolean;
   };
+  readRecommendationVisibleTimings: () => RecommendationVisibleTimingSnapshot[];
 }
 
 function isTodayDiagnosticsRuntime() {
@@ -352,6 +380,8 @@ export default function TodayPage() {
   const currentIndexRef = useRef(0);
   const selectedSceneKeyRef = useRef<SceneKey>('home');
   const recommendationBatchIdRef = useRef<string | undefined>(undefined);
+  const visibleTimingByBatchRef = useRef<Map<string, RecommendationVisibleTiming>>(new Map());
+  const visibleTimingHistoryRef = useRef<RecommendationVisibleTiming[]>([]);
   const hasRecommendationsRef = useRef(true);
   const batchLimitedRef = useRef(false);
   const batchExhaustedRef = useRef(false);
@@ -389,6 +419,100 @@ export default function TodayPage() {
   batchExhaustedRef.current = batchExhausted;
   recommendationNoticeRef.current = recommendationNotice;
   selectedSceneRef.current = selectedScene;
+
+  function snapshotVisibleTiming(record: RecommendationVisibleTiming): RecommendationVisibleTimingSnapshot {
+    return {
+      auditId: record.auditId,
+      seq: record.seq,
+      sceneKey: record.sceneKey,
+      batchId: record.batchId,
+      outfitKey: record.outfitKey,
+      requestStart: record.requestStart,
+      clientResponseReceivedMs: record.clientResponseReceivedMs,
+      stateCommitMs: record.stateCommitMs,
+      contentVisibleMs: record.contentVisibleMs,
+      imageLoadMs: record.imageLoadMs,
+      imageVisibleMs: record.imageVisibleMs,
+      complete: record.stateCommitMs !== undefined
+        && record.contentVisibleMs !== undefined
+        && record.imageLoadMs !== undefined
+        && record.imageVisibleMs !== undefined,
+    };
+  }
+
+  function publishVisibleTiming(record: RecommendationVisibleTiming) {
+    const complete = record.stateCommitMs !== undefined
+      && record.contentVisibleMs !== undefined
+      && record.imageLoadMs !== undefined
+      && record.imageVisibleMs !== undefined;
+    if (!complete || record.logged) return;
+    record.logged = true;
+    console.log('[RecommendationVisibleTiming]', {
+      auditId: record.auditId,
+      seq: record.seq,
+      batchId: record.batchId,
+      outfitKey: record.outfitKey,
+      requestStart: record.requestStart,
+      clientResponseReceivedMs: record.clientResponseReceivedMs,
+      stateCommitMs: record.stateCommitMs,
+      contentVisibleMs: record.contentVisibleMs,
+      imageLoadMs: record.imageLoadMs,
+      imageVisibleMs: record.imageVisibleMs,
+    });
+  }
+
+  function probeVisibleNode(
+    selector: string,
+    identity: { batchId: string; outfitKey: string },
+    onVisible: (visibleAt: number) => void,
+    attempt = 0,
+  ) {
+    Taro.nextTick(() => {
+      const query = Taro.createSelectorQuery();
+      query.select(selector).boundingClientRect((result: unknown) => {
+        const node = (Array.isArray(result) ? result[0] : result) as {
+          width?: number;
+          height?: number;
+          dataset?: Record<string, unknown>;
+        } | null;
+        const currentFirstCard = v2SnapshotRef.current?.cards[0];
+        const dataset = node?.dataset;
+        const matches = v2SnapshotRef.current?.batchId === identity.batchId
+          && currentFirstCard?.outfitKey === identity.outfitKey
+          && dataset?.recommendationBatchId === identity.batchId
+          && dataset?.outfitKey === identity.outfitKey
+          && Number(node?.width) > 0
+          && Number(node?.height) > 0;
+        if (matches) {
+          onVisible(clientMonotonicNow());
+          return;
+        }
+        if (attempt < 4) {
+          setTimeout(() => probeVisibleNode(selector, identity, onVisible, attempt + 1), 16);
+        }
+      }).exec();
+    });
+  }
+
+  function handleFirstCardImageLoad(identity: { batchId: string; outfitKey: string }) {
+    const record = visibleTimingByBatchRef.current.get(identity.batchId);
+    if (!record || record.outfitKey !== identity.outfitKey
+      || v2SnapshotRef.current?.batchId !== identity.batchId
+      || v2SnapshotRef.current.cards[0]?.outfitKey !== identity.outfitKey) return;
+    if (record.imageLoadMs === undefined) {
+      record.imageLoadMs = Math.max(0, clientMonotonicNow() - record.requestStart);
+    }
+    if (record.imageProbeStarted) {
+      publishVisibleTiming(record);
+      return;
+    }
+    record.imageProbeStarted = true;
+    probeVisibleNode('.qa-first-card-main-image', identity, (visibleAt) => {
+      if (record.imageVisibleMs !== undefined) return;
+      record.imageVisibleMs = Math.max(0, visibleAt - record.requestStart);
+      publishVisibleTiming(record);
+    });
+  }
 
   const commitCanonicalSnapshotForRender = async (canonicalSnapshot: TodayV2Snapshot, isOwner: () => boolean, persistCanonical?: () => void, traceContext?: { generation: string | number; batchId?: string }) => {
     const context = traceContext || renderTraceContextRef.current || { generation: 'pending', batchId: canonicalSnapshot.batchId };
@@ -585,6 +709,21 @@ export default function TodayPage() {
         FIRST_AI_APPLIED_MINUS_RENDER: 0,
       });
     }
+  }, [v2Snapshot]);
+
+  useEffect(() => {
+    const firstCard = v2Snapshot?.cards[0];
+    if (!v2Snapshot || !firstCard) return;
+    const record = visibleTimingByBatchRef.current.get(v2Snapshot.batchId);
+    if (!record || record.outfitKey !== firstCard.outfitKey
+      || record.contentVisibleMs !== undefined || record.contentProbeStarted) return;
+    record.contentProbeStarted = true;
+    const identity = { batchId: v2Snapshot.batchId, outfitKey: firstCard.outfitKey };
+    probeVisibleNode('.qa-first-card-visible-target', identity, (visibleAt) => {
+      if (record.contentVisibleMs !== undefined) return;
+      record.contentVisibleMs = Math.max(0, visibleAt - record.requestStart);
+      publishVisibleTiming(record);
+    });
   }, [v2Snapshot]);
 
   useEffect(() => {
@@ -1017,6 +1156,7 @@ export default function TodayPage() {
     const authContext = captureAuthContext();
     if (!authContext) return false;
     const traceGeneration = intent.generation;
+    const requestStart = requestContext.requestedAt;
     logRecommendationStart(requestContext, trigger, Boolean(weather));
 
     if (!silent) {
@@ -1061,6 +1201,7 @@ export default function TodayPage() {
                 && isRecommendationInputIdentityCurrent(effectiveInput.identity, authContext),
             }),
             requestOverrides: {
+              auditId,
               requestKind: passiveColdTelemetry ? 'cold' : requestKind,
               ...(telemetryCorrelationId ? { telemetryCorrelationId } : {}),
               ...(passiveColdTelemetry ? { performanceDiagnostics: true } : {}),
@@ -1077,6 +1218,7 @@ export default function TodayPage() {
           traceTodayRuntime('recommendation:error', traceGeneration, undefined, { error: String(error) });
           throw error;
         }
+        const clientResponseReceivedMs = Math.max(0, clientMonotonicNow() - requestStart);
         const responseBatchId = toTodayV2Snapshot(rawResponse, effectiveInput.identity).batchId;
         traceTodayRuntime('recommendation:done', traceGeneration, responseBatchId, { requestKind, trigger });
         if (telemetryCorrelationId) {
@@ -1113,6 +1255,22 @@ export default function TodayPage() {
           markAcceptanceClientMilestone(acceptanceDiagnostics, 'v2MediaResolutionRejectedAt');
           return false;
         }
+        const firstCard = canonicalSnapshot.cards[0];
+        if (!firstCard) return false;
+        const visibleTiming: RecommendationVisibleTiming = {
+          auditId,
+          seq,
+          sceneKey: requestContext.sceneKey,
+          batchId: canonicalSnapshot.batchId,
+          outfitKey: firstCard.outfitKey,
+          requestStart,
+          clientResponseReceivedMs,
+        };
+        visibleTimingByBatchRef.current.set(canonicalSnapshot.batchId, visibleTiming);
+        visibleTimingHistoryRef.current = [
+          visibleTiming,
+          ...visibleTimingHistoryRef.current.filter((entry) => entry.batchId !== canonicalSnapshot.batchId),
+        ].slice(0, 10);
         const committed = await commitCanonicalSnapshotForRender(canonicalSnapshot,
           () => isRecommendationIntentCurrent(intent)
             && isAuthContextCurrent(authContext)
@@ -1120,9 +1278,14 @@ export default function TodayPage() {
           () => setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, canonicalSnapshot, { authContext }),
           { generation: traceGeneration, batchId: canonicalSnapshot.batchId });
         if (!committed) {
+          visibleTimingByBatchRef.current.delete(canonicalSnapshot.batchId);
+          visibleTimingHistoryRef.current = visibleTimingHistoryRef.current
+            .filter((entry) => entry.batchId !== canonicalSnapshot.batchId);
           markAcceptanceClientMilestone(acceptanceDiagnostics, 'v2MediaResolutionRejectedAt');
           return false;
         }
+        visibleTiming.stateCommitMs = Math.max(0, clientMonotonicNow() - requestStart);
+        publishVisibleTiming(visibleTiming);
         const nextSnapshot = committed;
         flushPendingInteractiveCopies(nextSnapshot.batchId, traceGeneration, authContext);
         setLoading(false);
@@ -1438,7 +1601,7 @@ export default function TodayPage() {
       sceneKey,
       sceneLabel: SCENE_TAGS[sceneKey],
       weatherMode,
-      requestedAt: Date.now(),
+      requestedAt: clientMonotonicNow(),
     };
   }
 
@@ -1456,6 +1619,7 @@ export default function TodayPage() {
       scene: requestContext.sceneLabel,
       weatherMode: requestContext.weatherMode,
       hasWeather,
+      requestStart: requestContext.requestedAt,
     });
   }
 
@@ -1543,6 +1707,8 @@ export default function TodayPage() {
           canOpenDetail: Boolean(card),
         };
       },
+      readRecommendationVisibleTimings: () => visibleTimingHistoryRef.current
+        .map(snapshotVisibleTiming),
       releaseCaptureLock: () => {
         copyAcceptanceCaptureLockRef.current = false;
       },
@@ -1623,9 +1789,11 @@ export default function TodayPage() {
                 <SwiperItem key={card.outfitKey} className="outfit-slide">
                   <HomeLightCardV2
                     card={card}
+                    batchId={v2Snapshot.batchId}
                     position={card.position}
                     total={v2Snapshot.cards.length}
                     onDetail={openV2Detail}
+                    onFirstImageLoad={handleFirstCardImageLoad}
                   />
                 </SwiperItem>
               ))}

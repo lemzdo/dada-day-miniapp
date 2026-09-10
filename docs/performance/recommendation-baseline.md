@@ -231,9 +231,42 @@ Evidence:
 The earlier `serverTotalMs=1831` / `coldTtuiMs=3026` observation is retained as
 a different request and timing boundary; it is not mixed into this acceptance.
 Because the required content threshold and image-visible range were not
-measured, `PRODUCT_PERFORMANCE_RESULT=FAIL` means **acceptance incomplete**, not
-a demonstrated user-visible regression. The performance project is
-`CLIENT_FOLLOWUP_REQUIRED`: run exactly three normal-network warm Today manual
-samples, recording content-visible and primary-image-visible min/median/max.
-If content is below 3,000ms and image timing is product-acceptable, close the
-special project without changing Recommendation Runtime 2.2.
+measured, the earlier `PRODUCT_PERFORMANCE_RESULT=FAIL` was semantically wrong:
+the correct result was `PENDING_MANUAL_ACCEPTANCE`, not a demonstrated
+user-visible regression.
+
+### Automated visible-timing follow-up (2026-09-10)
+
+The client now retains diagnostic-only instrumentation for one correlated
+monotonic timeline per request: `REQUEST_START`, `CLIENT_RESPONSE_RECEIVED`,
+`STATE_COMMIT`, `FIRST_CARD_CONTENT_VISIBLE`, `FIRST_CARD_IMAGE_LOAD`, and
+`FIRST_CARD_IMAGE_VISIBLE`. Content visibility requires `wx.nextTick`, a real
+SelectorQuery result, matching batchId/outfitKey, and non-zero dimensions. The
+image milestone additionally starts from the first card's first rendered
+garment Image `onLoad` and repeats the same nextTick/node validation. A single
+low-noise `[RecommendationVisibleTiming]` record is emitted only after the full
+timeline is complete. No visual or server behavior changed.
+
+The narrow `today-first-card-visible-acceptance` script reuses the existing
+DevTools automator and the existing CLS audit reader so each client auditId can
+be joined to its actual server `SERVER_RESPONSE_READY`. The Taro watcher
+compiled successfully at 2026-09-10 15:29:13 Asia/Shanghai and remained in
+watch mode; `build:weapp` was not run.
+
+Two bounded runs both stopped before sending any sample request because the
+DevTools automator page continued to expose the pre-build diagnostics bridge,
+including after one forced Today reLaunch. Per the two-failure stop rule, no
+third attempt or alternate runner was started:
+
+- `artifacts/today-first-card-visible-acceptance/visible-20260910072944-5dc9cec5/report.json`
+- `artifacts/today-first-card-visible-acceptance/visible-20260910073106-4fa1a938/report.json`
+- stop reason: `VISIBLE_TIMING_BRIDGE_UNAVAILABLE`
+- `STATUS=TEST_INFRA_BLOCKED`
+- valid samples: 0; all requested timing statistics remain `NOT_OBSERVED`
+
+This is an infrastructure block, not a client performance failure.
+`PRODUCT_PERFORMANCE_RESULT=PENDING_MANUAL_ACCEPTANCE`, but no human timing,
+recording, or manual second counting is requested. The next admissible action
+is to restore DevTools loading of the watcher-produced bundle and rerun the
+same automatic three-sample acceptance. Architecture 2.2 and the server remain
+frozen; `PERFORMANCE_PROJECT=OPEN`.

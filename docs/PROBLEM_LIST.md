@@ -22,13 +22,17 @@
   的五样本 `SERVER_RESPONSE_READY` P50 从 5,765.054ms 降到 1,661.491ms，
   `PURE_CORE_PROD` P50 从 5,001.287ms 降到 1,062.614ms；架构、搜索预算、质量与
   canonical correctness join 均未改变。服务端产品性能判定转为 PASS。
-- 最终用户可见验收复用了现有 DevTools TTUI automation；第 1 个 warm 样本因
-  `TTUI_SCENARIO_INVARIANT_FAILED` 停止，未取得关联 transport 或 native paint。
-  页面状态虽已切到新的 8 卡 batch，仍不能把状态存在冒充首卡内容/图片已绘制。
-  当前 `FIRST_CARD_CONTENT_VISIBLE` 与 `FIRST_CARD_IMAGE_VISIBLE` 均为
-  `FIRST_CARD_VISIBLE_MANUAL_ACCEPTANCE_REQUIRED`，自动化为 NO，产品性能验收结果为
-  FAIL（表示验收未完成，不表示已证明页面性能回退）。只需 3 次正常网络 warm Today
-  人工样本；不解冻 Architecture 2.2，不修改服务器。
+- 最终用户可见验收已补齐同一客户端 monotonic clock 下的请求、响应、state commit、
+  `wx.nextTick + SelectorQuery` 首卡内容可见、首图 `onLoad` 与图片节点可见埋点；节点按
+  batchId/outfitKey 和非零尺寸校验，UI 与业务行为不变。新窄验收器复用既有 DevTools
+  automator 和 CLS audit，不清缓存、不修改服务端。
+- DevTools watcher 已成功编译，但当前 automator 会话在普通进入与一次强制 reLaunch 后
+  仍暴露旧 diagnostics bridge。两次均在发出样本请求前以
+  `VISIBLE_TIMING_BRIDGE_UNAVAILABLE` 停止，按上限判定 `TEST_INFRA_BLOCKED`；没有有效
+  warm 样本，不能判定产品 PASS 或 FAIL。当前正确语义为
+  `PRODUCT_PERFORMANCE_RESULT=PENDING_MANUAL_ACCEPTANCE`，但不得要求用户人工计时；恢复
+  DevTools 对 watcher bundle 的加载后，只需重新运行 3 样本自动验收。Architecture 2.2、
+  1024MB/0.8CPU 服务规格与推荐服务端均继续冻结。
 - Today `coldTtuiMs=3026` 属于不同请求/客户端计时边界，不能与最终服务端 response
   指标混用。CloudBase 在五请求中调度了两个新实例，严格 reused-warm 样本仅 3 个，
   已按采样上限如实保留该证据限制；其 `SERVER_RESPONSE_READY` 中位数为 1,398.155ms。
@@ -50,7 +54,7 @@
 | **2**  | **AI Voice 正式生产化 + 精细缓存**                      | P0                 | 原型通过后做                         |
 | **3**  | **统一 AI Gateway / AI 调用基础设施**                   | P0/P1              | 与 Voice 正式集成一起落第一版        |
 | **4**  | **Storage 10MB 容量治理**                               | P1                 | 已确认真实 Bug                       |
-| **5**  | **Today 首卡可见性人工验收（3 次 warm）**               | P1                 | 自动 paint 不可靠；只验收，不改服务端 |
+| **5**  | **Today 首卡可见性自动验收（3 次 warm）**               | P1                 | TEST_INFRA_BLOCKED；待 DevTools 加载新 bridge |
 | **6**  | **图片资产 Pipeline：标准化、完整性检查、展示资产治理** | P1                 | 为现有推荐和以后 AI 效果图打基础     |
 | **7**  | **个人衣橱关系链 / 衣橱知识图谱**                       | **P1，产品级重点** | 新增，长期壁垒很强                   |
 | **8**  | **用户行为学习 + 个人推荐权重**                         | P1/P2              | 与关系链 V3 合并建设                 |

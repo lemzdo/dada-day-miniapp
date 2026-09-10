@@ -775,6 +775,7 @@ export async function generateCloudOutfit(params: RecommendRequest = {}) {
 }
 
 export interface RecommendationV2Request {
+  auditId?: string;
   scene?: string;
   date?: string;
   timeOfDay?: string;
