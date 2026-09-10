@@ -1,5 +1,20 @@
 # 搭搭day 近期核心改造部署与人工测试清单
 
+## PRE_LAUNCH_SECURITY
+
+- [ ] 轮换曾被 CloudBase function detail 输出到执行记录的生产 API key / access
+  token，并验证旧凭据已失效。当前仅登记，不立即执行、不阻塞开发；正式发布前必须完成。
+
+## Recommendation Runtime 2.2 最终可见性验收
+
+- [ ] 正常网络下执行恰好 3 次 warm Today 人工验收，分别记录
+  `FIRST_CARD_CONTENT_VISIBLE` 与 `FIRST_CARD_IMAGE_VISIBLE` 的 min / median / max。
+- [ ] 确认首卡标题、理由、结构实际进入可见状态，而不是仅存在于 React/client state。
+- [ ] 内容可见均低于 3,000ms，且主衣物图片时间达到当前产品可接受范围后，将
+  `PRODUCT_PERFORMANCE_RESULT` 从验收未完成的 FAIL 更新为 PASS 并关闭性能专项。
+- Architecture 2.2 保持冻结；该人工验收不触发 Recommendation Core、Candidate
+  Pool、AI、CloudBase 规格或服务器路径优化。
+
 ## 衣橱容量权益 V1 补充
 
 - 当前容量强制 `free=200`；`member=500`、`premium=1000` 仅为未来可信权益预留。

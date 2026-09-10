@@ -22,10 +22,16 @@
   的五样本 `SERVER_RESPONSE_READY` P50 从 5,765.054ms 降到 1,661.491ms，
   `PURE_CORE_PROD` P50 从 5,001.287ms 降到 1,062.614ms；架构、搜索预算、质量与
   canonical correctness join 均未改变。服务端产品性能判定转为 PASS。
-- HTTP smoke 仍不具备页面 paint observer，`FIRST_CARD_VISIBLE <3000ms` 不能宣称；
-  Today `coldTtuiMs=3026` 属于不同请求/客户端计时边界，不能与最终服务端 response
+- 最终用户可见验收复用了现有 DevTools TTUI automation；第 1 个 warm 样本因
+  `TTUI_SCENARIO_INVARIANT_FAILED` 停止，未取得关联 transport 或 native paint。
+  页面状态虽已切到新的 8 卡 batch，仍不能把状态存在冒充首卡内容/图片已绘制。
+  当前 `FIRST_CARD_CONTENT_VISIBLE` 与 `FIRST_CARD_IMAGE_VISIBLE` 均为
+  `FIRST_CARD_VISIBLE_MANUAL_ACCEPTANCE_REQUIRED`，自动化为 NO，产品性能验收结果为
+  FAIL（表示验收未完成，不表示已证明页面性能回退）。只需 3 次正常网络 warm Today
+  人工样本；不解冻 Architecture 2.2，不修改服务器。
+- Today `coldTtuiMs=3026` 属于不同请求/客户端计时边界，不能与最终服务端 response
   指标混用。CloudBase 在五请求中调度了两个新实例，严格 reused-warm 样本仅 3 个，
-  已按采样上限如实保留该证据限制。
+  已按采样上限如实保留该证据限制；其 `SERVER_RESPONSE_READY` 中位数为 1,398.155ms。
 - 正常生产请求在尚未获得可审计的生产 pool-save stage、且未配置实测
   `RECOMMENDATION_CANDIDATE_POOL_SAVE_P95_MS` 时会
   正确跳过 pool fill；这保证 correctness，但会减少 pool HIT，必须在生产 smoke
@@ -44,7 +50,7 @@
 | **2**  | **AI Voice 正式生产化 + 精细缓存**                      | P0                 | 原型通过后做                         |
 | **3**  | **统一 AI Gateway / AI 调用基础设施**                   | P0/P1              | 与 Voice 正式集成一起落第一版        |
 | **4**  | **Storage 10MB 容量治理**                               | P1                 | 已确认真实 Bug                       |
-| **5**  | **图片首屏 first-visible 性能优化**                     | P1                 | 当前主要体验速度短板                 |
+| **5**  | **Today 首卡可见性人工验收（3 次 warm）**               | P1                 | 自动 paint 不可靠；只验收，不改服务端 |
 | **6**  | **图片资产 Pipeline：标准化、完整性检查、展示资产治理** | P1                 | 为现有推荐和以后 AI 效果图打基础     |
 | **7**  | **个人衣橱关系链 / 衣橱知识图谱**                       | **P1，产品级重点** | 新增，长期壁垒很强                   |
 | **8**  | **用户行为学习 + 个人推荐权重**                         | P1/P2              | 与关系链 V3 合并建设                 |
@@ -54,6 +60,11 @@
 | **12** | **云端集合 / 索引 / 权限 / 环境变量发布核验**           | P2工程债           | 上线前必须完整闭环                   |
 | **13** | **AI 真人穿搭效果预览**                                 | P2/P3              | 新增，值得做但不应现在抢主线         |
 | **14** | **严格虚拟试衣 VTON**                                   | P3                 | 长期，不提前绑定架构                 |
+
+## PRE_LAUNCH_SECURITY
+
+- 上线前轮换曾被 CloudBase function detail 输出到执行记录的生产 API key / access
+  token，并核对旧凭据已失效。当前只记录，不立即轮换，不阻塞开发；发布前必须关闭。
 
 
 

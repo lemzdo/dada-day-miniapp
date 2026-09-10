@@ -191,3 +191,49 @@ without changing Architecture 2.2 or candidate budgets reduced
 1,062.614ms. Five-sample min/max were 1,304.206/1,865.156ms; max is a sample-max
 proxy, not a statistical P95. Full phase, DB, duplicate-work, warm-instance and
 commit attribution is recorded in `production-6s-attribution.md`.
+
+## Final user-visible Today acceptance (2026-09-10)
+
+Architecture 2.2 remains frozen. The final acceptance reused the existing
+`today-ttui-runtime-v2` DevTools automator and stopped after its first bounded
+warm attempt failed, as required by the acceptance contract; no replacement
+paint harness or server optimization was started.
+
+The attempt did complete a real Today refresh and moved from batch
+`v2-batch:2026-09-10T06:34:50.258Z:vbvh283r` to a new eight-card batch. The
+diagnostics bridge observed a first-card title and reason in client state, but
+the correlated transport record was absent and `observedUsableAt` remained
+zero. The source ledger declares `firstCardMounted`, `firstImageLoadStart` and
+`firstImageLoaded`, but the current Today renderer does not emit those stages.
+Consequently neither state presence nor an image node may be reported as a
+native paint measurement.
+
+Evidence:
+
+- bounded attempt:
+  `artifacts/today-ttui-runtime-v2/B/ttui-B-failed-20260910063518-592aa296/measurement.json`
+- command:
+  `node apps/miniapp/scripts/today-ttui-runtime-v2.js --scenario=B --samples=3 --skip-build=true --expect-runtime-v2=true`
+- stop reason: `TTUI_SCENARIO_INVARIANT_FAILED` on sample 1; samples 2 and 3
+  were intentionally not attempted.
+
+| metric | final accepted value |
+|---|---|
+| `SERVER_RESPONSE_READY` | five-sample min / P50 / max = 1,304.206 / 1,661.491 / 1,865.156ms; strict reused-warm median = 1,398.155ms |
+| `CLIENT_RESPONSE_RECEIVED` | `NOT_OBSERVED` for the bounded Today attempt |
+| `STATE_COMMIT` | `NOT_OBSERVED`; the new batch was present in client state, but no correlated commit timestamp was emitted |
+| `FIRST_CARD_CONTENT_VISIBLE` | `FIRST_CARD_VISIBLE_MANUAL_ACCEPTANCE_REQUIRED`; min / median / max = `NOT_OBSERVED` |
+| `IMAGE_READY` | `NOT_OBSERVED` |
+| `FIRST_CARD_IMAGE_VISIBLE` | `FIRST_CARD_VISIBLE_MANUAL_ACCEPTANCE_REQUIRED`; min / median / max = `NOT_OBSERVED` |
+| automated paint | `NO` |
+| client primary bottleneck | `NOT_DETERMINED`; the failed observer cannot distinguish state/render, image resolver, download/cache, hydration or React rerender |
+
+The earlier `serverTotalMs=1831` / `coldTtuiMs=3026` observation is retained as
+a different request and timing boundary; it is not mixed into this acceptance.
+Because the required content threshold and image-visible range were not
+measured, `PRODUCT_PERFORMANCE_RESULT=FAIL` means **acceptance incomplete**, not
+a demonstrated user-visible regression. The performance project is
+`CLIENT_FOLLOWUP_REQUIRED`: run exactly three normal-network warm Today manual
+samples, recording content-visible and primary-image-visible min/median/max.
+If content is below 3,000ms and image timing is product-acceptable, close the
+special project without changing Recommendation Runtime 2.2.
