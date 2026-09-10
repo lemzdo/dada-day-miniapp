@@ -115,6 +115,16 @@ import type {
 } from '@starter-template/types';
 import './index.scss';
 import { HomeLightCardV2 } from './HomeLightCardV2';
+import {
+  FAILURE_REASONS,
+  classifyVisibleNode,
+  createRecommendationVisibleTimingRecorder,
+} from './recommendationVisibleTimingCore';
+import type {
+  RecommendationVisibleTimingIdentity,
+  RecommendationVisibleTimingRecorder,
+  RecommendationVisibleTimingSnapshot,
+} from './recommendationVisibleTimingCore';
 import { commitCanonicalSnapshotForRender as commitRenderBoundary } from './todayRenderCommit';
 const TODAY_TIME_OF_DAY: TimeOfDay = 'all_day';
 import {
@@ -169,26 +179,6 @@ interface RecommendationRequestContext {
   weatherMode: WeatherMode
   requestedAt: number
 }
-
-interface RecommendationVisibleTiming {
-  auditId: string;
-  seq: number;
-  sceneKey: SceneKey;
-  batchId: string;
-  outfitKey: string;
-  requestStart: number;
-  clientResponseReceivedMs: number;
-  stateCommitMs?: number;
-  contentVisibleMs?: number;
-  imageLoadMs?: number;
-  imageVisibleMs?: number;
-  contentProbeStarted?: boolean;
-  imageProbeStarted?: boolean;
-  logged?: boolean;
-}
-
-type RecommendationVisibleTimingSnapshot = Omit<RecommendationVisibleTiming,
-  'contentProbeStarted' | 'imageProbeStarted' | 'logged'> & { complete: boolean };
 
 function clientMonotonicNow() {
   const perf = (globalThis as typeof globalThis & {
@@ -380,8 +370,18 @@ export default function TodayPage() {
   const currentIndexRef = useRef(0);
   const selectedSceneKeyRef = useRef<SceneKey>('home');
   const recommendationBatchIdRef = useRef<string | undefined>(undefined);
-  const visibleTimingByBatchRef = useRef<Map<string, RecommendationVisibleTiming>>(new Map());
-  const visibleTimingHistoryRef = useRef<RecommendationVisibleTiming[]>([]);
+  const visibleTimingRecorderRef = useRef<RecommendationVisibleTimingRecorder | null>(null);
+  if (!visibleTimingRecorderRef.current) {
+    visibleTimingRecorderRef.current = createRecommendationVisibleTimingRecorder({
+      now: clientMonotonicNow,
+      emit: (label, payload) => {
+        if (!isTodayDiagnosticsRuntime()) return;
+        if (label === '[RecommendationVisibleTiming:failure]') console.warn(label, payload);
+        else console.log(label, payload);
+      },
+    });
+  }
+  const visibleTimingRecorder = visibleTimingRecorderRef.current;
   const hasRecommendationsRef = useRef(true);
   const batchLimitedRef = useRef(false);
   const batchExhaustedRef = useRef(false);
@@ -420,50 +420,10 @@ export default function TodayPage() {
   recommendationNoticeRef.current = recommendationNotice;
   selectedSceneRef.current = selectedScene;
 
-  function snapshotVisibleTiming(record: RecommendationVisibleTiming): RecommendationVisibleTimingSnapshot {
-    return {
-      auditId: record.auditId,
-      seq: record.seq,
-      sceneKey: record.sceneKey,
-      batchId: record.batchId,
-      outfitKey: record.outfitKey,
-      requestStart: record.requestStart,
-      clientResponseReceivedMs: record.clientResponseReceivedMs,
-      stateCommitMs: record.stateCommitMs,
-      contentVisibleMs: record.contentVisibleMs,
-      imageLoadMs: record.imageLoadMs,
-      imageVisibleMs: record.imageVisibleMs,
-      complete: record.stateCommitMs !== undefined
-        && record.contentVisibleMs !== undefined
-        && record.imageLoadMs !== undefined
-        && record.imageVisibleMs !== undefined,
-    };
-  }
-
-  function publishVisibleTiming(record: RecommendationVisibleTiming) {
-    const complete = record.stateCommitMs !== undefined
-      && record.contentVisibleMs !== undefined
-      && record.imageLoadMs !== undefined
-      && record.imageVisibleMs !== undefined;
-    if (!complete || record.logged) return;
-    record.logged = true;
-    console.log('[RecommendationVisibleTiming]', {
-      auditId: record.auditId,
-      seq: record.seq,
-      batchId: record.batchId,
-      outfitKey: record.outfitKey,
-      requestStart: record.requestStart,
-      clientResponseReceivedMs: record.clientResponseReceivedMs,
-      stateCommitMs: record.stateCommitMs,
-      contentVisibleMs: record.contentVisibleMs,
-      imageLoadMs: record.imageLoadMs,
-      imageVisibleMs: record.imageVisibleMs,
-    });
-  }
-
   function probeVisibleNode(
     selector: string,
-    identity: { batchId: string; outfitKey: string },
+    identity: RecommendationVisibleTimingIdentity,
+    stage: 'content' | 'image',
     onVisible: (visibleAt: number) => void,
     attempt = 0,
   ) {
@@ -475,42 +435,38 @@ export default function TodayPage() {
           height?: number;
           dataset?: Record<string, unknown>;
         } | null;
-        const currentFirstCard = v2SnapshotRef.current?.cards[0];
-        const dataset = node?.dataset;
-        const matches = v2SnapshotRef.current?.batchId === identity.batchId
-          && currentFirstCard?.outfitKey === identity.outfitKey
-          && dataset?.recommendationBatchId === identity.batchId
-          && dataset?.outfitKey === identity.outfitKey
-          && Number(node?.width) > 0
-          && Number(node?.height) > 0;
-        if (matches) {
+        const current = {
+          batchId: v2SnapshotRef.current?.batchId,
+          outfitKey: v2SnapshotRef.current?.cards[0]?.outfitKey,
+        };
+        if (current.batchId !== identity.batchId) {
+          visibleTimingRecorder.reportFailure(identity, stage, FAILURE_REASONS.STALE_BATCH, { selector, attempt });
+          return;
+        }
+        const classification = classifyVisibleNode({ stage, node, expected: identity, current });
+        if (classification.ok) {
           onVisible(clientMonotonicNow());
           return;
         }
         if (attempt < 4) {
-          setTimeout(() => probeVisibleNode(selector, identity, onVisible, attempt + 1), 16);
+          setTimeout(() => probeVisibleNode(selector, identity, stage, onVisible, attempt + 1), 16);
+          return;
         }
+        visibleTimingRecorder.reportFailure(identity, stage, classification.reason, { selector, attempt });
       }).exec();
     });
   }
 
-  function handleFirstCardImageLoad(identity: { batchId: string; outfitKey: string }) {
-    const record = visibleTimingByBatchRef.current.get(identity.batchId);
-    if (!record || record.outfitKey !== identity.outfitKey
-      || v2SnapshotRef.current?.batchId !== identity.batchId
-      || v2SnapshotRef.current.cards[0]?.outfitKey !== identity.outfitKey) return;
-    if (record.imageLoadMs === undefined) {
-      record.imageLoadMs = Math.max(0, clientMonotonicNow() - record.requestStart);
-    }
-    if (record.imageProbeStarted) {
-      publishVisibleTiming(record);
-      return;
-    }
-    record.imageProbeStarted = true;
-    probeVisibleNode('.qa-first-card-main-image', identity, (visibleAt) => {
-      if (record.imageVisibleMs !== undefined) return;
-      record.imageVisibleMs = Math.max(0, visibleAt - record.requestStart);
-      publishVisibleTiming(record);
+  function handleFirstCardImageLoad(identity: RecommendationVisibleTimingIdentity) {
+    if (!visibleTimingRecorder.imageLoad(identity, clientMonotonicNow())) return;
+    probeVisibleNode('.qa-first-card-main-image', identity, 'image', (visibleAt) => {
+      visibleTimingRecorder.imageVisible(identity, visibleAt);
+    });
+  }
+
+  function handleFirstCardImageError(identity: RecommendationVisibleTimingIdentity) {
+    visibleTimingRecorder.reportFailure(identity, 'image-load', FAILURE_REASONS.IMAGE_ONLOAD_NOT_FIRED, {
+      source: 'image-onError',
     });
   }
 
@@ -714,17 +670,12 @@ export default function TodayPage() {
   useEffect(() => {
     const firstCard = v2Snapshot?.cards[0];
     if (!v2Snapshot || !firstCard) return;
-    const record = visibleTimingByBatchRef.current.get(v2Snapshot.batchId);
-    if (!record || record.outfitKey !== firstCard.outfitKey
-      || record.contentVisibleMs !== undefined || record.contentProbeStarted) return;
-    record.contentProbeStarted = true;
+    if (!visibleTimingRecorder.getByBatch(v2Snapshot.batchId)) return;
     const identity = { batchId: v2Snapshot.batchId, outfitKey: firstCard.outfitKey };
-    probeVisibleNode('.qa-first-card-visible-target', identity, (visibleAt) => {
-      if (record.contentVisibleMs !== undefined) return;
-      record.contentVisibleMs = Math.max(0, visibleAt - record.requestStart);
-      publishVisibleTiming(record);
+    probeVisibleNode('.qa-first-card-visible-target', identity, 'content', (visibleAt) => {
+      visibleTimingRecorder.content(identity, visibleAt);
     });
-  }, [v2Snapshot]);
+  }, [v2Snapshot, visibleTimingRecorder]);
 
   useEffect(() => {
     const pending = pendingCanonicalAppliedRef.current;
@@ -849,6 +800,7 @@ export default function TodayPage() {
       activeRequestSeqRef.current = null;
       recommendationIntentRegistryRef.current?.reset();
       requestContextByIntentGenerationRef.current = {};
+      visibleTimingRecorder.reset();
     }
     seenOutfitKeysRef.current = new Set();
     seenInputIdentityRef.current = null;
@@ -892,7 +844,7 @@ export default function TodayPage() {
     setBatchExhausted(false);
     canonicalSnapshotRef.current = null;
     setV2Snapshot(null);
-  }, []);
+  }, [visibleTimingRecorder]);
 
   useUnload(() => {
     canonicalRefreshEpochRef.current += 1;
@@ -905,6 +857,7 @@ export default function TodayPage() {
     loadingOwnerSeqRef.current = null;
     operationOwnerSeqRef.current = null;
     imagePreloadGenerationRef.current += 1;
+    visibleTimingRecorder.reset();
   });
 
   usePullDownRefresh(() => {
@@ -1157,6 +1110,13 @@ export default function TodayPage() {
     if (!authContext) return false;
     const traceGeneration = intent.generation;
     const requestStart = requestContext.requestedAt;
+    visibleTimingRecorder.create({
+      auditId,
+      seq,
+      sceneKey: requestContext.sceneKey,
+      trigger,
+      requestStart,
+    });
     logRecommendationStart(requestContext, trigger, Boolean(weather));
 
     if (!silent) {
@@ -1240,6 +1200,11 @@ export default function TodayPage() {
         if (v2AuthCurrent) markAcceptanceClientMilestone(acceptanceDiagnostics, 'v2AuthContextCurrentAt');
         const v2InputCurrent = isRecommendationInputIdentityCurrent(effectiveInput.identity, authContext);
         if (!v2IntentCurrent || !v2AuthCurrent || !v2InputCurrent) {
+          visibleTimingRecorder.reportFailure({ auditId }, 'response', FAILURE_REASONS.STALE_SEQ, {
+            v2IntentCurrent,
+            v2AuthCurrent,
+            v2InputCurrent,
+          });
           markAcceptanceClientMilestone(acceptanceDiagnostics, 'v2ApplyRejectedAt');
           return false;
         }
@@ -1257,20 +1222,15 @@ export default function TodayPage() {
         }
         const firstCard = canonicalSnapshot.cards[0];
         if (!firstCard) return false;
-        const visibleTiming: RecommendationVisibleTiming = {
-          auditId,
-          seq,
-          sceneKey: requestContext.sceneKey,
+        const visibleTimingIdentity = {
           batchId: canonicalSnapshot.batchId,
           outfitKey: firstCard.outfitKey,
-          requestStart,
-          clientResponseReceivedMs,
         };
-        visibleTimingByBatchRef.current.set(canonicalSnapshot.batchId, visibleTiming);
-        visibleTimingHistoryRef.current = [
-          visibleTiming,
-          ...visibleTimingHistoryRef.current.filter((entry) => entry.batchId !== canonicalSnapshot.batchId),
-        ].slice(0, 10);
+        visibleTimingRecorder.response({
+          auditId,
+          ...visibleTimingIdentity,
+          at: requestStart + clientResponseReceivedMs,
+        });
         const committed = await commitCanonicalSnapshotForRender(canonicalSnapshot,
           () => isRecommendationIntentCurrent(intent)
             && isAuthContextCurrent(authContext)
@@ -1278,14 +1238,11 @@ export default function TodayPage() {
           () => setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, canonicalSnapshot, { authContext }),
           { generation: traceGeneration, batchId: canonicalSnapshot.batchId });
         if (!committed) {
-          visibleTimingByBatchRef.current.delete(canonicalSnapshot.batchId);
-          visibleTimingHistoryRef.current = visibleTimingHistoryRef.current
-            .filter((entry) => entry.batchId !== canonicalSnapshot.batchId);
+          visibleTimingRecorder.reportFailure(visibleTimingIdentity, 'commit', FAILURE_REASONS.STALE_BATCH);
           markAcceptanceClientMilestone(acceptanceDiagnostics, 'v2MediaResolutionRejectedAt');
           return false;
         }
-        visibleTiming.stateCommitMs = Math.max(0, clientMonotonicNow() - requestStart);
-        publishVisibleTiming(visibleTiming);
+        visibleTimingRecorder.commit(visibleTimingIdentity, clientMonotonicNow());
         const nextSnapshot = committed;
         flushPendingInteractiveCopies(nextSnapshot.batchId, traceGeneration, authContext);
         setLoading(false);
@@ -1351,6 +1308,15 @@ export default function TodayPage() {
     requestSeq.current = refreshSeq;
     activeRequestSeqRef.current = refreshSeq;
     const traceGeneration = refreshSeq;
+    const refreshAuditId = createRecommendationAuditId(String(refreshSeq));
+    const refreshRequestStart = clientMonotonicNow();
+    visibleTimingRecorder.create({
+      auditId: refreshAuditId,
+      seq: refreshSeq,
+      sceneKey: selectedSceneKeyRef.current,
+      trigger: 'refresh',
+      requestStart: refreshRequestStart,
+    });
     setOperationForRequest(refreshSeq, 'refresh');
     setError('');
     try {
@@ -1376,12 +1342,15 @@ export default function TodayPage() {
               && activeRequestSeqRef.current === refreshSeq
               && isRecommendationInputIdentityCurrent(effectiveInput.identity, authContext),
           }),
-          requestOverrides: acceptanceDiagnostics ? {
-            performanceDiagnostics: true,
-            acceptanceRunId: acceptanceDiagnostics.acceptanceRunId,
-            captureId: acceptanceDiagnostics.captureId,
-            clientMilestones: acceptanceDiagnostics.clientMilestones,
-          } : undefined,
+          requestOverrides: {
+            auditId: refreshAuditId,
+            ...(acceptanceDiagnostics ? {
+              performanceDiagnostics: true,
+              acceptanceRunId: acceptanceDiagnostics.acceptanceRunId,
+              captureId: acceptanceDiagnostics.captureId,
+              clientMilestones: acceptanceDiagnostics.clientMilestones,
+            } : {}),
+          },
         }).promise;
         if (nextRun.source === 'next-exhausted') {
           setRecommendationNotice('这一轮暂时没有更多新搭配了');
@@ -1402,23 +1371,41 @@ export default function TodayPage() {
         traceTodayRuntime('recommendation:error', traceGeneration, undefined, { error: String(error) });
         throw error;
       }
-      const responseBatchId = toTodayV2Snapshot(response, effectiveInput.identity).batchId;
-      traceTodayRuntime('recommendation:done', traceGeneration, responseBatchId, { requestKind: 'refresh', trigger: 'refresh' });
+      const refreshResponseAt = clientMonotonicNow();
+      const canonicalSnapshot = toTodayV2Snapshot(response, effectiveInput.identity);
+      traceTodayRuntime('recommendation:done', traceGeneration, canonicalSnapshot.batchId, { requestKind: 'refresh', trigger: 'refresh' });
       if (!isAuthContextCurrent(authContext)
         || activeRequestSeqRef.current !== refreshSeq
-        || !isRecommendationInputIdentityCurrent(effectiveInput.identity, authContext)) return false;
-      const canonicalSnapshot = toTodayV2Snapshot(response, effectiveInput.identity);
+        || !isRecommendationInputIdentityCurrent(effectiveInput.identity, authContext)) {
+        visibleTimingRecorder.reportFailure({ auditId: refreshAuditId }, 'response', FAILURE_REASONS.STALE_SEQ);
+        return false;
+      }
       if (canonicalSnapshot.cards.length === 0) {
         setRecommendationNotice('这一轮暂时没有更多新搭配了');
         return false;
       }
+      const firstCard = canonicalSnapshot.cards[0];
+      if (!firstCard) return false;
+      const visibleTimingIdentity = {
+        batchId: canonicalSnapshot.batchId,
+        outfitKey: firstCard.outfitKey,
+      };
+      visibleTimingRecorder.response({
+        auditId: refreshAuditId,
+        ...visibleTimingIdentity,
+        at: refreshResponseAt,
+      });
       const committed = await commitCanonicalSnapshotForRender(canonicalSnapshot,
         () => isAuthContextCurrent(authContext)
           && activeRequestSeqRef.current === refreshSeq
           && isRecommendationInputIdentityCurrent(effectiveInput.identity, authContext),
         () => setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, canonicalSnapshot, { authContext }),
         { generation: traceGeneration, batchId: canonicalSnapshot.batchId });
-      if (!committed) return false;
+      if (!committed) {
+        visibleTimingRecorder.reportFailure(visibleTimingIdentity, 'commit', FAILURE_REASONS.STALE_BATCH);
+        return false;
+      }
+      visibleTimingRecorder.commit(visibleTimingIdentity, clientMonotonicNow());
       const next = committed;
       flushPendingInteractiveCopies(next.batchId, traceGeneration, authContext);
       next.cards.forEach((card) => seenOutfitKeysRef.current.add(card.outfitKey));
@@ -1707,8 +1694,7 @@ export default function TodayPage() {
           canOpenDetail: Boolean(card),
         };
       },
-      readRecommendationVisibleTimings: () => visibleTimingHistoryRef.current
-        .map(snapshotVisibleTiming),
+      readRecommendationVisibleTimings: () => visibleTimingRecorder.read(),
       releaseCaptureLock: () => {
         copyAcceptanceCaptureLockRef.current = false;
       },
@@ -1794,6 +1780,7 @@ export default function TodayPage() {
                     total={v2Snapshot.cards.length}
                     onDetail={openV2Detail}
                     onFirstImageLoad={handleFirstCardImageLoad}
+                    onFirstImageError={handleFirstCardImageError}
                   />
                 </SwiperItem>
               ))}

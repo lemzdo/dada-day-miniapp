@@ -9,9 +9,10 @@ export interface HomeLightCardV2Props {
   total?: number;
   onDetail?: (card: HomeLightCardV2) => void;
   onFirstImageLoad?: (identity: { batchId: string; outfitKey: string }) => void;
+  onFirstImageError?: (identity: { batchId: string; outfitKey: string }) => void;
 }
 
-export function HomeLightCardV2({ card, batchId, position, total, onDetail, onFirstImageLoad }: HomeLightCardV2Props) {
+export function HomeLightCardV2({ card, batchId, position, total, onDetail, onFirstImageLoad, onFirstImageError }: HomeLightCardV2Props) {
   const isFirstCard = position === 0;
   return (
     <View
@@ -38,6 +39,9 @@ export function HomeLightCardV2({ card, batchId, position, total, onDetail, onFi
                 mode="aspectFit"
                 onLoad={isFirstCard && itemIndex === 0
                   ? () => onFirstImageLoad?.({ batchId, outfitKey: card.outfitKey })
+                  : undefined}
+                onError={isFirstCard && itemIndex === 0
+                  ? () => onFirstImageError?.({ batchId, outfitKey: card.outfitKey })
                   : undefined}
               />
             </View>

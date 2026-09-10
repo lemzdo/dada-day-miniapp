@@ -7,7 +7,7 @@ const cardSource = fs.readFileSync(path.join(__dirname, 'HomeLightCardV2.tsx'), 
 const styleSource = fs.readFileSync(path.join(__dirname, 'index.scss'), 'utf8');
 
 test('HomeLightCardV2 resolves card images through the shared TODAY_CARD policy', () => {
-  assert.match(cardSource, /<View className="collage-item" key=\{item\.clothingId\}>[\s\S]*<View className="image-stage">[\s\S]*<Image className="item-image" src=\{resolveGarmentAsset\([\s\S]*'CARD',[\s\S]*compatProfile: 'TODAY_CARD'[\s\S]*\} mode="aspectFit" \/>/);
+  assert.match(cardSource, /<View className="collage-item" key=\{item\.clothingId\}>[\s\S]*<View className="image-stage">[\s\S]*<Image[\s\S]*className=\{`item-image[\s\S]*src=\{resolveGarmentAsset\([\s\S]*'CARD',[\s\S]*compatProfile: 'TODAY_CARD'[\s\S]*mode="aspectFit"/);
   assert.match(cardSource, /garmentAssetResolution/);
   assert.doesNotMatch(cardSource, /Full Outfit|snapshotItems|outfit\.xxx/);
 });
@@ -20,13 +20,13 @@ test('Today item images are visible without unreachable loaded state', () => {
 });
 
 test('two-item layout uses the first item as the spanning left subject and second as right auto-placement', () => {
-  assert.match(cardSource, /card\.items\.map\(\(item\) => \([\s\S]*collage-item/);
+  assert.match(cardSource, /card\.items\.map\(\(item, itemIndex\) => \([\s\S]*collage-item/);
   assert.match(styleSource, /\.outfit-collage[\s\S]*grid-auto-rows: 168rpx[\s\S]*gap: 16rpx/);
   assert.match(styleSource, /&:first-child \{[\s\S]*grid-row: span 2/);
 });
 
 test('three-item layout keeps the spanning first subject and auto-places two right cells', () => {
-  assert.match(cardSource, /card\.items\.map\(\(item\) => \([\s\S]*collage-item/);
+  assert.match(cardSource, /card\.items\.map\(\(item, itemIndex\) => \([\s\S]*collage-item/);
   assert.match(styleSource, /grid-template-columns: 1\.4fr 0\.8fr/);
   assert.match(styleSource, /grid-auto-rows: 168rpx/);
   assert.doesNotMatch(cardSource, /positioning|layoutVariant/);

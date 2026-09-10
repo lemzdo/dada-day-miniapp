@@ -22,5 +22,5 @@ test('recommendation done is logged after server await and before media/commit',
   const done = source.indexOf("traceTodayRuntime('recommendation:done'");
   const commit = source.indexOf('commitCanonicalSnapshotForRender(', done);
   assert.ok(done >= 0 && commit > done);
-  assert.match(source.slice(done - 1200, done), /await generateCloudOutfitV2/);
+  assert.match(source.slice(done - 1600, done), /rawResponse = await acquisition\.promise/);
 });

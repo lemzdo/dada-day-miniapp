@@ -243,9 +243,12 @@ monotonic timeline per request: `REQUEST_START`, `CLIENT_RESPONSE_RECEIVED`,
 `FIRST_CARD_IMAGE_VISIBLE`. Content visibility requires `wx.nextTick`, a real
 SelectorQuery result, matching batchId/outfitKey, and non-zero dimensions. The
 image milestone additionally starts from the first card's first rendered
-garment Image `onLoad` and repeats the same nextTick/node validation. A single
-low-noise `[RecommendationVisibleTiming]` record is emitted only after the full
-timeline is complete. No visual or server behavior changed.
+garment Image `onLoad` and repeats the same nextTick/node validation. Each
+milestone emits a `[RecommendationVisibleTiming:<stage>]` record, completion
+also emits the legacy `[RecommendationVisibleTiming]` record, and every bounded
+failure path emits `[RecommendationVisibleTiming:failure]` with a stable reason.
+The diagnostics bridge only reads retained records and is not required for
+collection or console output. No visual or server behavior changed.
 
 The narrow `today-first-card-visible-acceptance` script reuses the existing
 DevTools automator and the existing CLS audit reader so each client auditId can
