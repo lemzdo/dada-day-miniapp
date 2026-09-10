@@ -19,6 +19,8 @@ async function loadRecommendationInputSnapshot(event = {}, {
   database,
   openid,
   qaAuditEnabled = process.env.RECOMMENDATION_QA_AUDIT_ENABLED,
+  onStage,
+  onDatabaseOperation,
 } = {}) {
   if (!database?.collection || !readString(openid)) throw new Error('RECOMMENDATION_INPUT_SNAPSHOT_ADAPTER_REQUIRED');
   const inputScene = readString(event.scene);
@@ -28,13 +30,32 @@ async function loadRecommendationInputSnapshot(event = {}, {
   const now = new Date().toISOString();
   let wardrobeReadCount = 0;
   const dataLoadStartedAt = Date.now();
+  emitStage(onStage, 'CLOTHES_DB_START');
+  emitStage(onStage, 'PROFILE_DB_START');
+  const profileStartedAt = process.hrtime.bigint();
+  const clothesPromise = loadActiveWardrobe({
+    database,
+    openid,
+    onRead: () => { wardrobeReadCount += 1; },
+    onQuery: (operation) => emitDatabaseOperation(onDatabaseOperation, operation),
+  }).then((value) => {
+    emitStage(onStage, 'CLOTHES_DB_DONE', { rowCount: value.length, queryCount: wardrobeReadCount });
+    return value;
+  });
+  const profilePromise = database.collection('users').where({ _openid: openid }).limit(1).get()
+    .then((value) => {
+      const rows = Array.isArray(value.data) ? value.data : [];
+      emitDatabaseOperation(onDatabaseOperation, {
+        collection: 'users', action: 'query',
+        durationMs: Number(process.hrtime.bigint() - profileStartedAt) / 1e6,
+        rowCount: rows.length,
+      });
+      emitStage(onStage, 'PROFILE_DB_DONE', { rowCount: rows.length, queryCount: 1 });
+      return value;
+    });
   const [clothes, userRes] = await Promise.all([
-    loadActiveWardrobe({
-      database,
-      openid,
-      onRead: () => { wardrobeReadCount += 1; },
-    }),
-    database.collection('users').where({ _openid: openid }).limit(1).get(),
+    clothesPromise,
+    profilePromise,
   ]);
   const dataLoadMs = Date.now() - dataLoadStartedAt;
   const recommendationProfile = normalizeRecommendationProfile(userRes.data?.[0]?.styleProfile);
@@ -114,6 +135,16 @@ function readStringArray(value) {
 
 function readString(value) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function emitStage(observer, stage, fields = {}) {
+  if (typeof observer !== 'function') return;
+  try { observer(stage, fields); } catch { /* Observability must remain fail-open. */ }
+}
+
+function emitDatabaseOperation(observer, operation) {
+  if (typeof observer !== 'function') return;
+  try { observer(operation); } catch { /* Observability must remain fail-open. */ }
 }
 
 module.exports = { loadRecommendationInputSnapshot, normalizeRecommendationProfile };

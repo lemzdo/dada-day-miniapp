@@ -23,14 +23,17 @@ function hierarchicalOutfitSearch({
   clothes = [], scene = 'home', weather = {}, itemFactsContext,
   targetBatchSize = 8, targetQualifiedBatches = 3,
   scoreCandidate, evaluateEligibility, compatibility,
-  maxReservoir, diagnostics: suppliedDiagnostics,
+  maxReservoir, diagnostics: suppliedDiagnostics, onStage,
 } = {}) {
   const diagnostics = suppliedDiagnostics || createDiagnostics();
   const buckets = buildRoleBuckets(clothes, itemFactsContext, diagnostics);
   const budget = deriveSearchBudget({ buckets, targetBatchSize, targetQualifiedBatches, maxReservoir });
   diagnostics.budget = budget;
   const filtered = prefilterBuckets(buckets, { scene, weather, itemFactsContext, diagnostics });
+  emitStage(onStage, 'SKELETON_GENERATION_START');
   const skeletons = boundedSkeletonSearch(filtered, { scene, budget, diagnostics, compatibility });
+  emitStage(onStage, 'SKELETON_GENERATION_DONE', { count: skeletons.length });
+  emitStage(onStage, 'STRUCTURAL_COMPLETION_START');
   const structurallyCompleted = [];
   for (const skeleton of skeletons) {
     if (structurallyCompleted.length >= budget.hardCandidateLimit
@@ -43,6 +46,10 @@ function hierarchicalOutfitSearch({
       structurallyCompleted.push(completion);
     }
   }
+  emitStage(onStage, 'STRUCTURAL_COMPLETION_DONE', {
+    count: structurallyCompleted.length,
+    expansionCount: diagnostics.structuralExpansionCount,
+  });
   const baseCapacity = Math.max(
     budget.targetBatchSize,
     budget.hardCandidateLimit - budget.accessoryExpansionBudget,
@@ -52,6 +59,7 @@ function hierarchicalOutfitSearch({
   ));
   const full = selectDiversityReservoir(dedupeCandidates(orderedBase), baseCapacity, diagnostics);
   const accessorySeeds = evenlySample(full, Math.min(budget.accessorySeedCount, full.length));
+  emitStage(onStage, 'ACCESSORY_COMPLETION_START');
   for (const candidate of accessorySeeds) {
     if (full.length >= budget.hardCandidateLimit
       || diagnostics.accessoryBeamExpansionCount >= budget.accessoryExpansionBudget) break;
@@ -67,6 +75,10 @@ function hierarchicalOutfitSearch({
       if (candidateKey(entry) !== candidateKey(candidate)) full.push(entry);
     }
   }
+  emitStage(onStage, 'ACCESSORY_COMPLETION_DONE', {
+    count: full.length,
+    expansionCount: diagnostics.accessoryBeamExpansionCount,
+  });
   diagnostics.fullCandidateLimitHit = full.length >= budget.hardCandidateLimit;
   const hasFinalEvaluation = typeof evaluateEligibility === 'function' || typeof scoreCandidate === 'function';
   if (!hasFinalEvaluation) {
@@ -100,6 +112,11 @@ function hierarchicalOutfitSearch({
   delete diagnostics._pairMemo;
   delete diagnostics._colorMemo;
   return { candidates: selected.map(compactCandidate), diagnostics, buckets };
+}
+
+function emitStage(observer, stage, fields = {}) {
+  if (typeof observer !== 'function') return;
+  try { observer(stage, fields); } catch { /* Observability must remain fail-open. */ }
 }
 
 function createDiagnostics() {

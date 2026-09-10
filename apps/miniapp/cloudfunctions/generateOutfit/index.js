@@ -1,3 +1,4 @@
+const MODULE_INIT_MONOTONIC_AT = process.hrtime.bigint();
 const cloud = require('wx-server-sdk');
 const crypto = require('crypto');
 const { isDeepStrictEqual } = require('node:util');
@@ -211,6 +212,7 @@ const CLIENT_VISIBLE_RESERVE_MS = FIRST_CARD_VISIBLE_TARGET_MS - SERVER_RESPONSE
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 
 const db = cloud.database();
+const MODULE_READY_MONOTONIC_AT = process.hrtime.bigint();
 const DELETED_STATUS = 'deleted';
 
 const RECOMMENDATION_OWNED_REFERENCE_FIELDS = [
@@ -426,10 +428,12 @@ async function generateRecommendationV2({
   // Status is deliberately projected from the selected candidates in parallel. It does not
   // invoke the Legacy enrichment/state/snapshot path and therefore cannot block its head.
   recordRecommendationStage(diagnostics, 'RESPONSE_STATUS_QUERIES_START', { batchId });
+  recordRecommendationStage(diagnostics, 'FAVORITE_WORN_START', { batchId });
   const [favoriteMap, wornMap] = await Promise.all([
-    findV2FavoriteKeys(openid, order),
-    findV2WornKeys(openid, order, targetDate),
+    findV2FavoriteKeys(openid, order, diagnostics),
+    findV2WornKeys(openid, order, targetDate, diagnostics),
   ]);
+  recordRecommendationStage(diagnostics, 'FAVORITE_WORN_DONE', { batchId });
   recordRecommendationStage(diagnostics, 'RESPONSE_STATUS_QUERIES_DONE', { batchId });
   const status = order.map((outfitKey, index) => ({
     isFavorite: Boolean(favoriteMap.get(outfitKey)) || recommendations[index].isFavorite === true,
@@ -441,6 +445,7 @@ async function generateRecommendationV2({
     .map((copy) => [copy.outfitKey, copy]));
   const copyMaterializing = copyJob?.dispatch?.accepted === true
     || ['pending', 'interactive', 'queued', 'dispatching', 'dispatched'].includes(copyJob?.status);
+  recordRecommendationStage(diagnostics, 'HOME_LIGHT_PROJECTION_START', { batchId });
   const light = projectHomeLightV2(recommendations.map((recommendation, index) => ({
     ...(() => {
       const canonical = initialCopiesByOutfitKey.get(order[index]);
@@ -468,6 +473,7 @@ async function generateRecommendationV2({
     }),
     ...status[index],
   })), batchId);
+  recordRecommendationStage(diagnostics, 'HOME_LIGHT_PROJECTION_DONE', { batchId });
   diagnostics.timings.cardCompilationMs = Date.now() - cardCompilationStartedAt;
   recordRecommendationStage(diagnostics, 'RESPONSE_PROJECTION_DONE', { batchId });
   const coreInput = {
@@ -517,6 +523,7 @@ async function generateRecommendationV2({
     },
     now,
     timing: batchPersistenceTiming,
+    onDatabaseOperation: (operation) => recordDatabaseOperation(diagnostics, operation),
   });
   diagnostics.timings.batchPersistenceMs = Date.now() - batchPersistenceStartedAt;
   diagnostics.timings.batchPersistence = persisted.timing;
@@ -647,7 +654,17 @@ function createRecommendationDiagnostics(event = {}, handlerStartAt = Date.now()
       batchAdmission: 0,
       batchPersistence: 0,
       candidatePoolPersistence: 0,
+      coreExecution: 0,
+      candidateGeneration: 0,
+      fullEligibilityPass: 0,
+      scoringPass: 0,
+      fullOutfitMaterialization: 0,
+      narrativePlanBuild: 0,
+      card0RendererEntryBuild: 0,
+      candidatePoolHydrate: 0,
+      cacheCoordinator: 0,
     },
+    databaseQueries: [],
   };
 }
 
@@ -663,6 +680,8 @@ function recordRecommendationStage(diagnostics, stage, {
     ...(fields && typeof fields === 'object' ? fields : {}),
     stage,
     elapsedMs: measuredElapsedMs === null ? null : Math.max(0, Math.round(measuredElapsedMs * 1000) / 1000),
+    monotonicMs: Math.round(Number(process.hrtime.bigint()) / 1e3) / 1000,
+    clockOrigin: 'process.hrtime',
     auditId: diagnostics.auditId,
     batchId: readString(batchId) || readString(diagnostics.batchId) || null,
     executionState: readString(executionState) || readString(diagnostics.executionMode) || 'pending',
@@ -702,8 +721,47 @@ function monotonicElapsedMs(diagnostics) {
   return Number(process.hrtime.bigint() - origin) / 1e6;
 }
 
+function recordDatabaseOperation(diagnostics, operation = {}) {
+  if (!diagnostics) return;
+  const durationMs = Math.max(0, Number(operation.durationMs) || 0);
+  diagnostics.databaseQueries.push({
+    collection: readString(operation.collection) || 'unknown',
+    action: readString(operation.action) || 'unknown',
+    durationMs: Math.round(durationMs * 1000) / 1000,
+    rowCount: Math.max(0, Number(operation.rowCount) || 0),
+    onCriticalPath: operation.onCriticalPath !== false,
+  });
+}
+
+function buildDatabaseSummary(diagnostics) {
+  const queries = Array.isArray(diagnostics?.databaseQueries) ? diagnostics.databaseQueries : [];
+  const byCollectionAction = {};
+  for (const query of queries) {
+    const key = `${query.collection}:${query.action}`;
+    const current = byCollectionAction[key] || { count: 0, totalMs: 0, maxMs: 0, rows: 0 };
+    current.count += 1;
+    current.totalMs += query.durationMs;
+    current.maxMs = Math.max(current.maxMs, query.durationMs);
+    current.rows += query.rowCount;
+    byCollectionAction[key] = current;
+  }
+  for (const value of Object.values(byCollectionAction)) {
+    value.totalMs = Math.round(value.totalMs * 1000) / 1000;
+    value.maxMs = Math.round(value.maxMs * 1000) / 1000;
+  }
+  const totalMs = queries.reduce((sum, query) => sum + query.durationMs, 0);
+  return {
+    DB_QUERY_COUNT: queries.length,
+    DB_QUERY_TOTAL_MS: Math.round(totalMs * 1000) / 1000,
+    DB_QUERY_MAX_MS: Math.round(Math.max(0, ...queries.map((query) => query.durationMs)) * 1000) / 1000,
+    byCollectionAction,
+  };
+}
+
 function emitRecommendationServerDone({ diagnostics, executionMode, response } = {}) {
   if (!diagnostics || !response) return null;
+  if (diagnostics.serverDoneEmitted === true) return diagnostics.serverDoneResult || null;
+  diagnostics.serverDoneEmitted = true;
   const responseReadyMs = monotonicElapsedMs(diagnostics);
   diagnostics.responseReadyMs = responseReadyMs;
   diagnostics.c4MinusC2Ms = diagnostics.narrativePlansReadyMs === null || responseReadyMs === null
@@ -715,6 +773,7 @@ function emitRecommendationServerDone({ diagnostics, executionMode, response } =
   diagnostics.executionMode = executionMode || 'unknown';
   diagnostics.timings.totalMs = totalMs;
   diagnostics.timings.serializationMs = Date.now() - serializationStartedAt;
+  const databaseSummary = buildDatabaseSummary(diagnostics);
   console.log('[RecommendationServerDone]', {
     executionMode: diagnostics.executionMode,
     timings: diagnostics.timings,
@@ -736,8 +795,29 @@ function emitRecommendationServerDone({ diagnostics, executionMode, response } =
     FIRST_CARD_AI_MS: diagnostics.FIRST_CARD_AI_MS,
     REQUEST_TO_RESPONSE_READY_MS: diagnostics.REQUEST_TO_RESPONSE_READY_MS,
     AI_LATE_DISCARDED: diagnostics.AI_LATE_DISCARDED === true,
+    databaseSummary,
+    workCounts: diagnostics.workCounts,
   });
-  return { executionMode: diagnostics.executionMode, timings: diagnostics.timings, totalMs, responseBytes };
+  if (diagnostics.diagnosticsRequested === true) {
+    recordRecommendationStage(diagnostics, 'DB_SUMMARY', { elapsedMs: responseReadyMs, fields: databaseSummary });
+    recordRecommendationStage(diagnostics, 'WORK_COUNTS', {
+      elapsedMs: responseReadyMs,
+      fields: {
+        CORE_EXECUTION_COUNT: diagnostics.workCounts.coreExecution,
+        CANDIDATE_GENERATION_COUNT: diagnostics.workCounts.candidateGeneration,
+        FULL_ELIGIBILITY_PASS_COUNT: diagnostics.workCounts.fullEligibilityPass,
+        SCORING_PASS_COUNT: diagnostics.workCounts.scoringPass,
+        FULL_OUTFIT_MATERIALIZATION_COUNT: diagnostics.workCounts.fullOutfitMaterialization,
+        NARRATIVE_PLAN_BUILD_COUNT: diagnostics.workCounts.narrativePlanBuild,
+        CARD0_RENDERER_ENTRY_BUILD_COUNT: diagnostics.workCounts.card0RendererEntryBuild,
+        CANDIDATE_POOL_HYDRATE_COUNT: diagnostics.workCounts.candidatePoolHydrate,
+        CACHE_COORDINATOR_COUNT: diagnostics.workCounts.cacheCoordinator,
+      },
+    });
+    recordRecommendationStage(diagnostics, 'SERVER_RESPONSE_READY', { elapsedMs: responseReadyMs });
+  }
+  diagnostics.serverDoneResult = { executionMode: diagnostics.executionMode, timings: diagnostics.timings, totalMs, responseBytes };
+  return diagnostics.serverDoneResult;
 }
 
 function recordServerPhase(diagnostics, name, startedAt, endedAt = Date.now()) {
@@ -875,6 +955,21 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
     ? context.handlerOrigin
     : process.hrtime.bigint();
   diagnostics.handlerOriginAt = handlerOrigin;
+  recordRecommendationStage(diagnostics, 'FUNCTION_INIT', {
+    elapsedMs: 0,
+    fields: {
+      observedMonotonicMs: Math.round(Number(MODULE_INIT_MONOTONIC_AT) / 1e3) / 1000,
+      relativeToHandlerMs: Math.round(Number(MODULE_INIT_MONOTONIC_AT - handlerOrigin) / 1e3) / 1000,
+    },
+  });
+  recordRecommendationStage(diagnostics, 'MODULE_READY', {
+    elapsedMs: 0,
+    fields: {
+      observedMonotonicMs: Math.round(Number(MODULE_READY_MONOTONIC_AT) / 1e3) / 1000,
+      relativeToHandlerMs: Math.round(Number(MODULE_READY_MONOTONIC_AT - handlerOrigin) / 1e3) / 1000,
+    },
+  });
+  recordRecommendationStage(diagnostics, 'HANDLER_START', { elapsedMs: 0 });
   let backgroundPromise = Promise.resolve([]);
   let firstCardCopyJobPromise = null;
   let firstCardCopyJobSettlementPromise = null;
@@ -928,6 +1023,7 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
   const runtime = await runRecommendationOrchestrator(input, {
     ...context,
     handlerOrigin,
+    onAttributionStage: ({ stage, fields }) => recordRecommendationStage(diagnostics, stage, { fields }),
     onTelemetry: context.onTelemetry || (({ key, value }) => {
       const elapsedStages = new Set([
         'requestStart', 'coreResultReady', 'firstCardAiStart', 'firstCardAiValidated',
@@ -948,6 +1044,7 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
       try { return { openid: cloud.getWXContext().OPENID }; } catch { return {}; }
     })(),
     loadInputSnapshot: async (normalized) => {
+      recordRecommendationStage(diagnostics, 'INPUT_SNAPSHOT_START');
       const requestParseStartedAt = diagnostics.startedAt;
       diagnostics.stage = 'loadWardrobe';
       recordServerPhase(diagnostics, 'requestParse', requestParseStartedAt);
@@ -955,7 +1052,12 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
       const openid = readString(context?.userIdentity?.openid) || cloud.getWXContext().OPENID;
       diagnostics.openid = openid;
       recordServerPhase(diagnostics, 'authContext', authStartedAt);
-      const snapshot = await loadRecommendationInputSnapshot(normalized, { database: db, openid });
+      const snapshot = await loadRecommendationInputSnapshot(normalized, {
+        database: db,
+        openid,
+        onStage: (stage, fields) => recordRecommendationStage(diagnostics, stage, { fields }),
+        onDatabaseOperation: (operation) => recordDatabaseOperation(diagnostics, operation),
+      });
       diagnostics.timings.dataLoadMs = snapshot.metrics.dataLoadMs;
       diagnostics.timings.identityMs = snapshot.metrics.identityMs;
       diagnostics.databaseOps.reads += snapshot.metrics.databaseReadCount;
@@ -966,9 +1068,15 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
       recordServerPhase(diagnostics, 'candidatePoolIdentity', Date.now() - snapshot.metrics.identityMs);
       recordRecommendationStage(diagnostics, 'runtime:inputReady');
       recordRecommendationStage(diagnostics, 'INPUT_READY');
+      recordRecommendationStage(diagnostics, 'INPUT_SNAPSHOT_DONE');
       return snapshot;
     },
     resolveRecommendationCache: async (snapshot) => {
+      diagnostics.workCounts.cacheCoordinator += 1;
+      recordRecommendationStage(diagnostics, 'CACHE_COORDINATOR_START');
+      recordRecommendationStage(diagnostics, 'CANDIDATE_POOL_LOOKUP_START', {
+        fields: { attempted: Boolean(snapshot.requestedCandidatePoolId) },
+      });
       const startedAt = Date.now();
       const resolution = await resolveRecommendationCache(snapshot, {
         loadCandidatePoolForIdentity: context.loadCandidatePoolForIdentity
@@ -980,21 +1088,39 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
         diagnostics.workCounts.candidateLoad += 1;
         recordServerPhase(diagnostics, 'candidatePoolLoad', startedAt);
       }
+      recordRecommendationStage(diagnostics, 'CANDIDATE_POOL_LOOKUP_DONE', {
+        fields: { attempted: resolution.attempted, hit: resolution.hit, reason: resolution.reason || null },
+      });
+      recordRecommendationStage(diagnostics, 'CACHE_COORDINATOR_DONE');
       return resolution;
     },
     computeRecommendation: async (normalized, runtimeContext) => {
-      return computeProductionRecommendationCore(normalized, diagnostics, {
+      diagnostics.workCounts.coreExecution += 1;
+      recordRecommendationStage(diagnostics, 'CORE_START');
+      const core = await computeProductionRecommendationCore(normalized, diagnostics, {
         handlerOrigin: runtimeContext.handlerOrigin,
         onFirstCardReady: runtimeContext.onFirstCardReady,
       });
+      recordRecommendationStage(diagnostics, 'CORE_DONE');
+      return core;
     },
-    prepareRecommendationWork: async (core) => prepareProductionRecommendationWork(core, diagnostics, {
-      ...context,
-      firstCardCopyJobPromise,
-      markFirstCardCopyJobRetryable,
-      settleFirstCardCopyJob,
-    }),
-    persistAndAssembleRecommendation: async (core, prepared) => persistAndAssembleProductionRecommendation(core, prepared, diagnostics),
+    prepareRecommendationWork: async (core) => {
+      recordRecommendationStage(diagnostics, 'PREPARE_WORK_START');
+      const prepared = await prepareProductionRecommendationWork(core, diagnostics, {
+        ...context,
+        firstCardCopyJobPromise,
+        markFirstCardCopyJobRetryable,
+        settleFirstCardCopyJob,
+      });
+      recordRecommendationStage(diagnostics, 'PREPARE_WORK_DONE');
+      return prepared;
+    },
+    persistAndAssembleRecommendation: async (core, prepared) => {
+      recordRecommendationStage(diagnostics, 'RESPONSE_ASSEMBLY_START');
+      const response = await persistAndAssembleProductionRecommendation(core, prepared, diagnostics);
+      recordRecommendationStage(diagnostics, 'RESPONSE_ASSEMBLY_DONE');
+      return response;
+    },
     renderFirstCardCanonical: context.renderFirstCardCanonical || renderFirstCardCanonical,
     prepareFirstCardInteractive: context.prepareFirstCardInteractive || (({
       entry,
@@ -1016,6 +1142,7 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
           batchId,
           fields,
         }),
+        onDatabaseOperation: (operation) => recordDatabaseOperation(diagnostics, operation),
       });
       return {
         entry,
@@ -1097,6 +1224,7 @@ async function computeProductionRecommendationCore(snapshot, diagnostics = creat
           excludeClothingIdSets: exclude,
           maxResults: requestedCount,
           timings: diagnostics.timings,
+          diagnostics,
         });
         assertCandidatePoolExclusions(recommendations, excludedOutfitKeys, exclude);
         executionMode = 'candidate_pool_hit';
@@ -1138,6 +1266,7 @@ async function computeProductionRecommendationCore(snapshot, diagnostics = creat
           fields: { cardIndex: 0, ...fields },
         });
       });
+      diagnostics.workCounts.card0RendererEntryBuild += 1;
       firstCardRendererEntry = entry;
       recordRecommendationStage(diagnostics, 'FINGERPRINT_READY', {
         batchId: v2BatchId,
@@ -1171,6 +1300,7 @@ async function computeProductionRecommendationCore(snapshot, diagnostics = creat
     } catch { /* Admission failure cannot invalidate a completed plan. */ }
   };
   if (!recommendations) {
+    diagnostics.workCounts.candidateGeneration += 1;
     const candidateGenerationStartedAt = Date.now();
     recommendations = await generateRuleRecommendations({
       clothes,
@@ -1244,6 +1374,7 @@ async function computeProductionRecommendationCore(snapshot, diagnostics = creat
   diagnostics.batchId = v2BatchId;
   recordNarrativePlansReady(diagnostics, recommendations, stylingPlans);
   recordRecommendationStage(diagnostics, 'runtime:c2', { batchId: v2BatchId });
+  diagnostics.workCounts.narrativePlanBuild += stylingPlans?.plans?.length || 0;
   return createRecommendationResult({
     identity: candidatePoolIdentity,
     executionState: {
@@ -1306,6 +1437,14 @@ async function prepareProductionRecommendationWork(core, diagnostics, context = 
     diagnostics.candidatePoolCacheFillDecision = decision;
     diagnostics.candidatePoolSaveStatus = 'not_started';
     diagnostics.candidatePoolSaveReason = decision.reason;
+    if (decision.decision !== 'await') {
+      recordRecommendationStage(diagnostics, 'POOL_SERIALIZE_DONE', {
+        fields: { status: 'NOT_ON_CRITICAL_PATH', reason: decision.reason },
+      });
+      recordRecommendationStage(diagnostics, 'POOL_SAVE_DONE', {
+        fields: { status: 'NOT_ON_CRITICAL_PATH', reason: decision.reason },
+      });
+    }
   }
   const responseCopyJob = { status: 'pending', initialCopies: [], dispatch: { accepted: false } };
   let copyJobPromise = Promise.resolve(null);
@@ -1377,6 +1516,7 @@ async function prepareProductionRecommendationWork(core, diagnostics, context = 
         batchId: metadata.batchId,
         fields,
       }),
+      onDatabaseOperation: (operation) => recordDatabaseOperation(diagnostics, operation),
     })
       .then((job) => { Object.assign(responseCopyJob, job || {}); return job; })
       .catch((error) => {
@@ -1389,11 +1529,25 @@ async function prepareProductionRecommendationWork(core, diagnostics, context = 
     copyOverlayPromise = copyJobPromise.then((job) => new Promise((resolve) => {
       setImmediate(async () => {
         if (!job?.jobId) { resolve(null); return; }
+        recordRecommendationStage(diagnostics, 'CANONICAL_OVERLAY_START', {
+          batchId: metadata.batchId,
+          fields: { onCriticalPath: false },
+        });
         try {
           const overlay = await readRecommendationCopyOverlay(db, metadata.openid, metadata.batchId, PRODUCTION_RENDERER_VERSION);
           if (overlay.copies.length > 0) responseCopyJob.initialCopies = overlay.copies;
+          recordRecommendationStage(diagnostics, 'CANONICAL_OVERLAY_DONE', {
+            batchId: metadata.batchId,
+            fields: { onCriticalPath: false, status: overlay.status },
+          });
           resolve(overlay);
-        } catch { resolve(null); }
+        } catch {
+          recordRecommendationStage(diagnostics, 'CANONICAL_OVERLAY_DONE', {
+            batchId: metadata.batchId,
+            fields: { onCriticalPath: false, status: 'failed_open' },
+          });
+          resolve(null);
+        }
       });
     }));
     firstCardInteractive = {
@@ -1804,6 +1958,7 @@ function replaceDocumentField(database, value) {
 exports.runProductionRecommendationRuntime = runProductionRecommendationRuntime;
 exports.createRecommendationDiagnostics = createRecommendationDiagnostics;
 exports.recordRecommendationStage = recordRecommendationStage;
+exports.emitRecommendationServerDone = emitRecommendationServerDone;
 
 function createRecommendationSceneContract(inputScene) {
   const normalizedSceneKey = normalizeScene(inputScene || 'home');
@@ -1826,6 +1981,7 @@ async function persistGeneratedCandidatePool({
 }) {
   const startedAt = Date.now();
   recordRecommendationStage(diagnostics, 'runtime:candidatePoolPersistenceStart');
+  recordRecommendationStage(diagnostics, 'POOL_SAVE_START');
   const poolPersist = await tryPersistCandidatePool({
     database: db,
     candidatePoolId,
@@ -1835,6 +1991,7 @@ async function persistGeneratedCandidatePool({
     auditId: diagnostics.auditId,
     debugRecommendationAudit,
     debugCandidatePoolProjection,
+    onStage: (stage, fields) => recordRecommendationStage(diagnostics, stage, { fields }),
   });
   diagnostics.timings.candidatePoolSaveMs = Date.now() - startedAt;
   diagnostics.candidatePoolPayloadBytes = Math.max(
@@ -1874,6 +2031,9 @@ async function persistGeneratedCandidatePool({
       }
     : null;
   recordRecommendationStage(diagnostics, 'runtime:candidatePoolPersistenceDone', {
+    fields: { status: poolPersist.status || 'unknown' },
+  });
+  recordRecommendationStage(diagnostics, 'POOL_SAVE_DONE', {
     fields: { status: poolPersist.status || 'unknown' },
   });
   return poolPersist;
@@ -3852,14 +4012,23 @@ async function findFavoritesByKeys(openid, outfitKeys, diagnostics) {
   return map;
 }
 
-async function findV2FavoriteKeys(openid, outfitKeys) {
+async function findV2FavoriteKeys(openid, outfitKeys, diagnostics) {
   const keys = uniqueStrings(outfitKeys);
   if (!keys.length) return new Map();
   const query = db.collection('favorite_outfits').where({ _openid: openid, outfitKey: db.command.in(keys) });
   const projected = typeof query.field === 'function'
     ? query.field({ outfitKey: true, deletedAt: true, createdAt: true, favoritedAt: true })
     : query;
+  recordRecommendationStage(diagnostics, 'FAVORITE_DB_START');
+  const startedAt = process.hrtime.bigint();
   const result = await projected.limit(100).get();
+  const rows = Array.isArray(result.data) ? result.data : [];
+  recordDatabaseOperation(diagnostics, {
+    collection: 'favorite_outfits', action: 'query',
+    durationMs: Number(process.hrtime.bigint() - startedAt) / 1e6,
+    rowCount: rows.length,
+  });
+  recordRecommendationStage(diagnostics, 'FAVORITE_DB_DONE', { fields: { rowCount: rows.length } });
   return new Map((result.data || [])
     .filter((item) => item.outfitKey && !item.deletedAt)
     .map((item) => [item.outfitKey, item]));
@@ -3900,14 +4069,23 @@ async function findTodayHistoryByKeys(openid, outfitKeys, targetDate, database =
   return map;
 }
 
-async function findV2WornKeys(openid, outfitKeys, targetDate) {
+async function findV2WornKeys(openid, outfitKeys, targetDate, diagnostics) {
   const keys = uniqueStrings(outfitKeys);
   if (!keys.length) return new Map();
   const query = db.collection('outfit_history').where({ _openid: openid, outfitKey: db.command.in(keys) });
   const projected = typeof query.field === 'function'
     ? query.field({ outfitKey: true, wornAt: true, wornDate: true, wearDate: true, targetDate: true, createdAt: true })
     : query;
+  recordRecommendationStage(diagnostics, 'WORN_DB_START');
+  const startedAt = process.hrtime.bigint();
   const result = await projected.limit(500).get();
+  const rows = Array.isArray(result.data) ? result.data : [];
+  recordDatabaseOperation(diagnostics, {
+    collection: 'outfit_history', action: 'query',
+    durationMs: Number(process.hrtime.bigint() - startedAt) / 1e6,
+    rowCount: rows.length,
+  });
+  recordRecommendationStage(diagnostics, 'WORN_DB_DONE', { fields: { rowCount: rows.length } });
   return new Map((result.data || [])
     .filter((item) => item.outfitKey && isHistoryOnDate(item, targetDate))
     .map((item) => [item.outfitKey, item]));
@@ -4732,6 +4910,7 @@ function generateRuleRecommendations({
     .filter((item) => !hasRealWeather || matchesSeason(item, tempConfig));
   const sourceItemById = new Map(filtered.map((item) => [item._id, item]));
   const itemFactsStartedAt = Date.now();
+  recordRecommendationStage(diagnostics, 'ITEM_FACTS_START');
   const itemFactsContext = disableItemFactsContext
     ? null
     : buildItemFactsContext({
@@ -4740,8 +4919,10 @@ function generateRuleRecommendations({
         instrumentation: testInstrumentation,
       });
   timings.candidateFactPreparationMs = Date.now() - itemFactsStartedAt;
+  recordRecommendationStage(diagnostics, 'ITEM_FACTS_DONE');
   recordRecommendationStage(diagnostics, 'CANDIDATE_FACTS_DONE');
   const candidateConstructionStartedAt = Date.now();
+  recordRecommendationStage(diagnostics, 'GENERATION_START');
   const searchResult = hierarchicalOutfitSearch({
     clothes: filtered,
     scene,
@@ -4751,6 +4932,7 @@ function generateRuleRecommendations({
     // Initial batch plus five refreshes is the existing production quality
     // contract; reservoir capacity is derived from this batch target.
     targetQualifiedBatches: 6,
+    onStage: (stage, fields) => recordRecommendationStage(diagnostics, stage, { fields }),
   });
   const compositionCandidates = searchResult.candidates;
   compositionCandidates.debug = {
@@ -4765,6 +4947,13 @@ function generateRuleRecommendations({
     limitedReason: compositionCandidates.length === 0 ? 'NO_BOUNDED_SKELETON' : '',
   };
   timings.candidateConstructionMs = Date.now() - candidateConstructionStartedAt;
+  recordRecommendationStage(diagnostics, 'GENERATION_DONE', {
+    fields: {
+      skeletonCount: searchResult.diagnostics?.fullSkeletonCount || 0,
+      structuralExpansionCount: searchResult.diagnostics?.structuralExpansionCount || 0,
+      accessoryExpansionCount: searchResult.diagnostics?.accessoryBeamExpansionCount || 0,
+    },
+  });
   recordRecommendationStage(diagnostics, 'CANDIDATE_CONSTRUCTION_DONE', {
     fields: { candidateCount: compositionCandidates.length },
   });
@@ -4774,6 +4963,7 @@ function generateRuleRecommendations({
   });
   if (diagnostics) diagnostics.stage = 'canonicalize';
   const candidateCoreStartedAt = Date.now();
+  recordRecommendationStage(diagnostics, 'CANDIDATE_CORE_BUILD_START');
   let candidates = compositionCandidates.map((candidate) => createCandidateCore(candidate, {
     scene,
     weather: normalizedWeather,
@@ -4793,11 +4983,16 @@ function generateRuleRecommendations({
   }
   candidates.debug = compositionCandidates.debug;
   timings.canonicalizeMs = Date.now() - candidateCoreStartedAt;
+  recordRecommendationStage(diagnostics, 'CANDIDATE_CORE_BUILD_DONE', {
+    fields: { candidateCount: candidates.length },
+  });
   recordRecommendationStage(diagnostics, 'CANDIDATE_HYDRATE_DONE', {
     fields: { candidateCount: candidates.length },
   });
   if (diagnostics) diagnostics.stage = 'eligibility';
+  if (diagnostics) diagnostics.workCounts.fullEligibilityPass += 1;
   const eligibilityStartedAt = Date.now();
+  recordRecommendationStage(diagnostics, 'FULL_ELIGIBILITY_START');
   const guardResult = applyWearabilityAndSceneEligibility(candidates, {
     scene,
     weather: normalizedWeather,
@@ -4810,6 +5005,9 @@ function generateRuleRecommendations({
   recordRecommendationStage(diagnostics, 'ELIGIBILITY_DONE', {
     fields: { acceptedCount: guardResult.accepted.length },
   });
+  recordRecommendationStage(diagnostics, 'FULL_ELIGIBILITY_DONE', {
+    fields: { acceptedCount: guardResult.accepted.length },
+  });
   timings.wearabilitySceneEligibilityMs = timings.eligibilityMs;
   const exclusionStartedAt = Date.now();
   const excluded = new Set([
@@ -4819,7 +5017,9 @@ function generateRuleRecommendations({
   const limit = Math.min(Math.max(Number(maxResults || 8), 1), 8);
 
   if (diagnostics) diagnostics.stage = 'scoring';
+  if (diagnostics) diagnostics.workCounts.scoringPass += 1;
   const scoringStartedAt = Date.now();
+  recordRecommendationStage(diagnostics, 'SCORING_PASS_START');
   const scored = guardResult.accepted;
   for (const candidate of scored) {
       const scoreInput = candidate.derivedFacts || resolveCandidateSourceItems(candidate, itemFactsContext, sourceItemById);
@@ -4849,12 +5049,16 @@ function generateRuleRecommendations({
   recordRecommendationStage(diagnostics, 'SCORING_DONE', {
     fields: { scoredCandidateCount: scored.length },
   });
+  recordRecommendationStage(diagnostics, 'SCORING_PASS_DONE', {
+    fields: { scoredCandidateCount: scored.length },
+  });
   timings.scoringPreparationMs = timings.scoringMs;
   recordRecommendationStage(diagnostics, 'SCORING', {
     fields: { scoredCandidateCount: scored.length },
   });
   if (diagnostics) diagnostics.stage = 'batchSelection';
   const filteringStartedAt = Date.now();
+  recordRecommendationStage(diagnostics, 'RESERVOIR_START');
   const sortedScored = sortCandidatesStable(scored);
   const reservoirCapacity = Math.max(
     8,
@@ -4869,6 +5073,9 @@ function generateRuleRecommendations({
   const sortedAvailable = sortCandidatesStable(available);
   recordRecommendationStage(diagnostics, 'STABLE_SORT_DONE', {
     fields: { availableCount: sortedAvailable.length },
+  });
+  recordRecommendationStage(diagnostics, 'RESERVOIR_DONE', {
+    fields: { reservoirCount: reservoir.length, availableCount: sortedAvailable.length },
   });
   timings.filteringMs = Date.now() - filteringStartedAt;
   timings.exclusionMs = Date.now() - exclusionStartedAt;
@@ -4886,6 +5093,7 @@ function generateRuleRecommendations({
     });
   }
   const materializationStartedAt = Date.now();
+  recordRecommendationStage(diagnostics, 'FULL_MATERIALIZATION_START');
   const materialize = (candidate) => materializeSelectedCandidate(candidate, {
     scene,
     weather: normalizedWeather,
@@ -4954,6 +5162,10 @@ function generateRuleRecommendations({
       results.push(materialize(selectedCandidateCores[index]));
     }
     timings.materializationMs = Date.now() - materializationStartedAt;
+    if (diagnostics) diagnostics.workCounts.fullOutfitMaterialization += results.length;
+    recordRecommendationStage(diagnostics, 'FULL_MATERIALIZATION_DONE', {
+      fields: { materializedCount: results.length },
+    });
     recordInstrumentationTiming(testInstrumentation, 'materializationMs', timings.materializationMs);
 
     const exclusionStats = getExclusionStats(evidenceAuthorizedReservoir, excludedOutfitKeys, excludeClothingIdSets);
@@ -5017,16 +5229,22 @@ function generateCandidatePoolRecommendations({
   excludeClothingIdSets,
   maxResults,
   timings = createRecommendationDiagnostics().timings,
+  diagnostics,
 } = {}) {
   const hasRealWeather = hasRealRecommendationWeather(weather);
   const tempConfig = hasRealWeather
     ? getTemperatureConfig(Number(weather?.temp ?? weather?.temperature))
     : getWeatherIndependentTemperatureConfig();
   const hydrateStartedAt = Date.now();
+  if (diagnostics) diagnostics.workCounts.candidatePoolHydrate += 1;
+  recordRecommendationStage(diagnostics, 'CANDIDATE_POOL_HYDRATE_START');
   const candidateCores = (Array.isArray(pool?.candidates) ? pool.candidates : []).map((entry) => hydrateCandidateCore(entry, {
     reasonDescriptorForCode: (code) => getReasonSelectionDescriptor(code, ELIGIBILITY_REASON_CATALOG),
   }));
   timings.poolHydrateMs = Date.now() - hydrateStartedAt;
+  recordRecommendationStage(diagnostics, 'CANDIDATE_POOL_HYDRATE_DONE', {
+    fields: { candidateCount: candidateCores.length },
+  });
   const sourceItemById = new Map((Array.isArray(clothes) ? clothes : [])
     .filter((item) => item?._id)
     .map((item) => [item._id, item]));
@@ -5077,6 +5295,7 @@ function generateCandidatePoolRecommendations({
   }
   assertEligibilityReasons(selectedCanonicalCandidates, { node: 'candidatePoolSelection', scene, weather });
   const materializationStartedAt = Date.now();
+  recordRecommendationStage(diagnostics, 'FULL_MATERIALIZATION_START');
   const results = selectedCanonicalCandidates.map((candidate) => materializeSelectedCandidate(candidate, {
     scene,
     weather,
@@ -5086,6 +5305,10 @@ function generateCandidatePoolRecommendations({
     sourceItemById,
   }));
   const materializationMs = Date.now() - materializationStartedAt;
+  if (diagnostics) diagnostics.workCounts.fullOutfitMaterialization += results.length;
+  recordRecommendationStage(diagnostics, 'FULL_MATERIALIZATION_DONE', {
+    fields: { materializedCount: results.length },
+  });
   timings.materializationMs = materializationMs;
   const exclusionStats = getExclusionStats(candidateCores, excludedOutfitKeys, excludeClothingIdSets);
   results.debug = {

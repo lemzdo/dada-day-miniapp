@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { extractAudit, parseObject, verifyInvocation, buildTimeline } = require('./evidence');
+const { extractAudit, parseObject, verifyInvocation, buildTimeline, buildAttribution } = require('./evidence');
 const { hash } = require('./safety');
 const {
   buildCacheIdentity,
@@ -101,6 +101,33 @@ test('timeline combines correlated performance logs and execution end without fa
   assert.equal(legacy.PLAN0_READY, null);
   assert.equal(legacy.AI_COMPLETE, null);
   assert.equal(buildTimeline({ stages: [stage('CACHE_LOOKUP_DONE', 'hit')] }).CANONICAL_READY, 1);
+});
+
+test('attribution reports mutually exclusive wall time without summing overlaps', () => {
+  const performanceStages = [
+    ['INPUT_SNAPSHOT_START', 1], ['INPUT_SNAPSHOT_DONE', 11],
+    ['CACHE_COORDINATOR_START', 11], ['CACHE_COORDINATOR_DONE', 12],
+    ['CORE_START', 12], ['CANONICAL_CACHE_LOOKUP_START', 30],
+    ['CANONICAL_CACHE_LOOKUP_DONE', 40], ['COPY_JOB_RESERVATION_START', 40],
+    ['COPY_JOB_RESERVATION_DONE', 50], ['CORE_DONE', 70],
+    ['PREPARE_WORK_START', 70], ['PREPARE_WORK_DONE', 72],
+    ['RESPONSE_ASSEMBLY_START', 72], ['FAVORITE_WORN_START', 73],
+    ['FAVORITE_WORN_DONE', 80], ['runtime:batchPersistenceStart', 80],
+    ['runtime:batchPersistenceDone', 95], ['RESPONSE_ASSEMBLY_DONE', 96],
+    ['CANONICAL_CORRECTNESS_JOIN_START', 72], ['CANONICAL_CORRECTNESS_JOIN_DONE', 96],
+    ['SERVER_RESPONSE_READY', 100],
+  ].map(([stageName, elapsedMs]) => ({ stage: stageName, elapsedMs }));
+  const result = buildAttribution({ performanceStages });
+  assert.equal(result.serverResponseReadyMs, 100);
+  assert.equal(result.pureCoreProdMs, 38);
+  assert.equal(result.canonicalOverlapWithCoreMs, 20);
+  assert.equal(result.accountedWallTimeMs, 95);
+  assert.equal(result.unaccountedMs, 5);
+  assert.equal(result.accountedWallTimePercent, 95);
+  assert.equal(result.mutuallyExclusiveMs.CANONICAL_CACHE_LOOKUP, 10);
+  assert.equal(result.mutuallyExclusiveMs.COPY_JOB_RESERVATION, 10);
+  assert.equal(result.mutuallyExclusiveMs.FAVORITE_WORN, 7);
+  assert.equal(result.mutuallyExclusiveMs.BATCH_PERSIST, 15);
 });
 
 test('parseObject accepts JSON and Node console literal objects', () => {

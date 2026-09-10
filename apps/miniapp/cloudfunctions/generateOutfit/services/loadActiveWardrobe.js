@@ -7,6 +7,7 @@ async function loadActiveWardrobe({
   pageSize = DEFAULT_PAGE_SIZE,
   maxItems = DEFAULT_MAX_ITEMS,
   onRead,
+  onQuery,
 }) {
   if (!database) throw new Error('database is required');
   if (!openid) throw new Error('openid is required');
@@ -17,6 +18,7 @@ async function loadActiveWardrobe({
 
   for (let skip = 0; skip < safeMaxItems; skip += safePageSize) {
     const limit = Math.min(safePageSize, safeMaxItems - skip);
+    const queryStartedAt = process.hrtime.bigint();
     const res = await database
       .collection('clothes')
       .where({ _openid: openid, status: 'active' })
@@ -26,6 +28,14 @@ async function loadActiveWardrobe({
       .get();
     if (typeof onRead === 'function') onRead();
     const page = Array.isArray(res.data) ? res.data : [];
+    if (typeof onQuery === 'function') {
+      onQuery({
+        collection: 'clothes',
+        action: 'query',
+        durationMs: Number(process.hrtime.bigint() - queryStartedAt) / 1e6,
+        rowCount: page.length,
+      });
+    }
 
     for (const item of page) {
       if (!item || item._openid !== openid || item.status === 'deleted' || item.status !== 'active') continue;

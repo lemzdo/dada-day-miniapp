@@ -173,6 +173,11 @@ function recordExecution(context, status, failure) {
   if (audit?.responseSummary) auditSummary(context, { snapshot: 'execution' });
 }
 
+function attributionStage(context, stage, fields = {}) {
+  if (typeof context.onAttributionStage !== 'function') return;
+  try { context.onAttributionStage({ stage, fields }); } catch { /* Observability must remain fail-open. */ }
+}
+
 async function runRecommendationOrchestrator(input = {}, context = {}, lifecycleHooks = {}) {
   const normalized = normalizeInput(input);
   void safeCall(lifecycleHooks.onInputNormalized, { input: normalized });
@@ -327,6 +332,7 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
     // The early adapter only admits/renders card0. Canonical persistence and
     // retry hooks are completed by the prepared adapter in the normal path.
     const activeInteractive = prepared.firstCardInteractive || interactive;
+    attributionStage(context, 'CANONICAL_CORRECTNESS_JOIN_START');
     const remainingMs = Math.max(0, Number(deadlineAt - monotonicNow()) / 1e6);
     let timer;
     const deadlinePromise = new Promise((resolve) => {
@@ -344,6 +350,7 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
       }, remainingMs);
     });
     const first = await Promise.race([cardPromise, deadlinePromise]);
+    attributionStage(context, 'CANONICAL_CORRECTNESS_READY', { status: first?.status || 'unknown' });
     if (timer) clearTimeout(timer);
     const response = await requiredPromise;
     let finalResponse = response;
@@ -398,6 +405,7 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
         outcome = { status: 'FAIL', reason: 'PERSIST_FAIL', error, failure };
       }
     }
+    attributionStage(context, 'CANONICAL_CORRECTNESS_JOIN_DONE', { status: outcome?.status || 'unknown' });
     // A first-card timeout is a response barrier, not an AI cancellation point.
     // Keep the already-admitted provider promise alive and settle it server-side
     // after returning the safe response.  This deliberately does not dispatch

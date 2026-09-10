@@ -117,8 +117,8 @@ test('acceptance metadata only observes the same light runtime', () => {
 });
 
 test('V2 status queries and immutable action seed remain projected', () => {
-  assert.match(source, /findV2FavoriteKeys\(openid, order\)/);
-  assert.match(source, /findV2WornKeys\(openid, order, targetDate\)/);
+  assert.match(source, /findV2FavoriteKeys\(openid, order, diagnostics\)/);
+  assert.match(source, /findV2WornKeys\(openid, order, targetDate, diagnostics\)/);
   assert.match(source, /const core = storedBatch\.envelope\.core/);
   assert.match(source, /const reason = canonicalCopy\?\.text \|\| envelopeCard\.todayReason/);
   assert.match(source, /todayReason: reason/);

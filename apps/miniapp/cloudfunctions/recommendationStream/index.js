@@ -17,6 +17,7 @@ function loadProductionDiagnostics() {
   return {
     createDiagnostics: module.createRecommendationDiagnostics,
     recordStage: module.recordRecommendationStage,
+    emitServerDone: module.emitRecommendationServerDone,
   };
 }
 
@@ -121,6 +122,7 @@ function createRecommendationStreamHandler({
       : null;
     const diagnosticsFactory = createDiagnostics || productionDiagnostics?.createDiagnostics;
     const stageRecorder = recordStage || productionDiagnostics?.recordStage;
+    const emitServerDone = productionDiagnostics?.emitServerDone;
     const diagnostics = typeof diagnosticsFactory === 'function'
       ? diagnosticsFactory(input, handlerStartedAt, requestOrigin)
       : null;
@@ -203,6 +205,9 @@ function createRecommendationStreamHandler({
         onInputNormalized: () => stage('normalization:done'),
         onRecommendationReady: ({ batchId, response, countContract }) => {
           readyBatchId = response?.batch?.batchId || batchId;
+          if (typeof emitServerDone === 'function') {
+            emitServerDone({ diagnostics, executionMode: diagnostics?.executionMode, response });
+          }
           stage('recommendationReady', {
             batchId: readyBatchId,
             fields: diagnostics?.workCounts ? { workCounts: { ...diagnostics.workCounts } } : undefined,

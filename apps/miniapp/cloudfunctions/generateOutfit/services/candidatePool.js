@@ -400,6 +400,7 @@ async function tryPersistCandidatePool({
   debugRecommendationAudit = false,
     debugCandidatePoolProjection,
   logger = console,
+  onStage,
 } = {}) {
   const phaseRecorder = createCandidatePoolPhaseRecorder();
   const poolId = readString(candidatePoolId);
@@ -410,6 +411,7 @@ async function tryPersistCandidatePool({
     return finalizePersistenceTiming(persistenceFailure('storage_unavailable'), phaseRecorder);
   }
   const serializationStartedAt = Date.now();
+  emitStage(onStage, 'POOL_SERIALIZE_START');
   let pool;
   let plan;
   try {
@@ -431,6 +433,7 @@ async function tryPersistCandidatePool({
     );
   }
   const serializationMs = Date.now() - serializationStartedAt;
+  emitStage(onStage, 'POOL_SERIALIZE_DONE', { durationMs: serializationMs });
   const planStartedAt = Date.now();
   try {
     plan = buildCandidatePoolStoragePlan(pool, { phaseRecorder });
@@ -721,6 +724,11 @@ async function tryPersistCandidatePool({
     dbReadCount: 0,
     dbWriteCount: plan.chunks.length + 1,
   }, phaseRecorder, chunkWriteTimings);
+}
+
+function emitStage(observer, stage, fields = {}) {
+  if (typeof observer !== 'function') return;
+  try { observer(stage, fields); } catch { /* Observability must remain fail-open. */ }
 }
 
 function buildCandidatePoolProjectionProfile({

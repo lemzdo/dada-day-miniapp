@@ -26,8 +26,15 @@ function databaseFixture() {
 
 test('input snapshot loads user and wardrobe once and creates stable normalized identity', async () => {
   const database = databaseFixture();
+  const stages = [];
+  const databaseOperations = [];
   const event = { scene: 'work', date: '2026-09-09', weatherMode: 'disabled', maxResults: 8 };
-  const first = await loadRecommendationInputSnapshot(event, { database, openid: 'user-1' });
+  const first = await loadRecommendationInputSnapshot(event, {
+    database,
+    openid: 'user-1',
+    onStage: (stage) => stages.push(stage),
+    onDatabaseOperation: (operation) => databaseOperations.push(operation),
+  });
   const second = await loadRecommendationInputSnapshot(event, { database: databaseFixture(), openid: 'user-1' });
   assert.equal(first.sceneContract.sceneKey, 'work');
   assert.equal(first.sceneContract.scene, '上班');
@@ -37,6 +44,12 @@ test('input snapshot loads user and wardrobe once and creates stable normalized 
   assert.equal(first.metrics.wardrobeReadCount, 1);
   assert.equal(first.metrics.databaseReadCount, 2);
   assert.equal(database.reads.some((entry) => entry.name === 'candidate_pools'), false);
+  assert.deepEqual(new Set(stages), new Set(['CLOTHES_DB_START', 'PROFILE_DB_START', 'CLOTHES_DB_DONE', 'PROFILE_DB_DONE']));
+  assert.deepEqual(databaseOperations.map(({ collection, action }) => ({ collection, action })), [
+    { collection: 'clothes', action: 'query' },
+    { collection: 'users', action: 'query' },
+  ]);
+  assert.ok(databaseOperations.every((operation) => operation.durationMs >= 0));
 });
 
 test('input snapshot binds refresh exclusions but performs no pool persistence', async () => {

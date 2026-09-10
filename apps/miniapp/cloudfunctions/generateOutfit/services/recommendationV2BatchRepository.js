@@ -46,8 +46,15 @@ function assertV2Envelope(envelope, batch, openid) {
   });
 }
 
-async function findBatch(database, openid, batchId) {
+async function findBatch(database, openid, batchId, onDatabaseOperation) {
+  const startedAt = process.hrtime.bigint();
   const result = await database.collection(BATCH_COLLECTION).where({ _openid: openid, batchId }).limit(1).get();
+  emitDatabaseOperation(onDatabaseOperation, {
+    collection: BATCH_COLLECTION,
+    action: 'query',
+    durationMs: Number(process.hrtime.bigint() - startedAt) / 1e6,
+    rowCount: Array.isArray(result.data) ? result.data.length : 0,
+  });
   return result.data?.[0] || null;
 }
 
@@ -83,7 +90,7 @@ function createBatchPersistenceTiming(timing = {}) {
   return target;
 }
 
-async function persistRecommendationBatchV2({ database, openid, batch, envelope, now = new Date().toISOString(), timing } = {}) {
+async function persistRecommendationBatchV2({ database, openid, batch, envelope, now = new Date().toISOString(), timing, onDatabaseOperation } = {}) {
   if (!openid) throw new Error('V2_BATCH_OPENID_REQUIRED');
   if (!envelope) throw new Error('V2_BATCH_ENVELOPE_REQUIRED');
   assertBatchInput(batch);
@@ -99,7 +106,7 @@ async function persistRecommendationBatchV2({ database, openid, batch, envelope,
     persistenceTiming.transactionBeginMs += Math.max(0, attemptStartedAt - attemptBoundaryAt);
     try {
       const readsStartedAt = Date.now();
-      const existingBatch = await findBatch(transaction, openid, batch.batchId);
+      const existingBatch = await findBatch(transaction, openid, batch.batchId, onDatabaseOperation);
       persistenceTiming.readCount += 1;
       persistenceTiming.preconditionReadMs += Math.max(0, Date.now() - readsStartedAt);
       if (existingBatch) {
@@ -110,8 +117,15 @@ async function persistRecommendationBatchV2({ database, openid, batch, envelope,
       const batchRecord = { ...batch, envelope, _openid: openid, createdAt: now, updatedAt: now };
       const batchWriteStartedAt = Date.now();
       await transaction.collection(BATCH_COLLECTION).add({ data: batchRecord });
-      persistenceTiming.batchWriteMs += Math.max(0, Date.now() - batchWriteStartedAt);
+      const batchWriteMs = Math.max(0, Date.now() - batchWriteStartedAt);
+      persistenceTiming.batchWriteMs += batchWriteMs;
       persistenceTiming.writeCount += 1;
+      emitDatabaseOperation(onDatabaseOperation, {
+        collection: BATCH_COLLECTION,
+        action: 'add',
+        durationMs: batchWriteMs,
+        rowCount: 1,
+      });
       result = { idempotent: false, batch: batchRecord, writes: 1 };
     } finally {
       const attemptFinishedAt = Date.now();
@@ -127,6 +141,11 @@ async function persistRecommendationBatchV2({ database, openid, batch, envelope,
   if (!result) throw new Error('V2_BATCH_COMMIT_RESULT_MISSING');
   assertStoredBatchComplete(result.batch, batch, openid);
   return { ...result, timing: persistenceTiming };
+}
+
+function emitDatabaseOperation(observer, operation) {
+  if (typeof observer !== 'function') return;
+  try { observer(operation); } catch { /* Observability must remain fail-open. */ }
 }
 
 module.exports = { BATCH_COLLECTION, stableReferenceId, assertBatchInput, assertV2Envelope, findBatch, resolveV2BatchEnvelopeCard, persistRecommendationBatchV2, createBatchPersistenceTiming };

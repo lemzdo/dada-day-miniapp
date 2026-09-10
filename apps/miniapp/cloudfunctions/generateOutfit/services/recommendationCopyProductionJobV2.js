@@ -101,6 +101,7 @@ async function prepareRecommendationCopyJob({
   executionMode = 'event',
   now = new Date(),
   onPreparationStage,
+  onDatabaseOperation,
 } = {}) {
   const interactive = executionMode === 'interactive';
   if (!database || !openid || !batchId || !rendererVersion
@@ -111,7 +112,7 @@ async function prepareRecommendationCopyJob({
   emitPreparationStage(onPreparationStage, 'CANONICAL_CACHE_LOOKUP_START', {
     entryCount: normalizedEntries.length,
   });
-  const cached = await readCachedCopies(database, openid, rendererVersion, normalizedEntries);
+  const cached = await readCachedCopies(database, openid, rendererVersion, normalizedEntries, onDatabaseOperation);
   emitPreparationStage(onPreparationStage, 'CANONICAL_CACHE_LOOKUP_DONE', {
     entryCount: normalizedEntries.length,
     cacheHitCount: cached.length,
@@ -141,7 +142,7 @@ async function prepareRecommendationCopyJob({
     updatedAt: timestamp,
   };
   emitPreparationStage(onPreparationStage, 'COPY_JOB_RESERVATION_START', { jobId });
-  const reservation = await reserveJob(database, draft);
+  const reservation = await reserveJob(database, draft, onDatabaseOperation);
   emitPreparationStage(onPreparationStage, 'COPY_JOB_RESERVATION_DONE', {
     jobId,
     created: reservation.created === true,
@@ -268,11 +269,18 @@ async function markDispatchAccepted(database, jobId, dispatchToken, requestId, n
   });
 }
 
-async function reserveJob(database, draft) {
+async function reserveJob(database, draft, onDatabaseOperation) {
   let result;
   await database.runTransaction(async (transaction) => {
     const reference = transaction.collection(JOB_COLLECTION).doc(draft.jobId);
+    const readStartedAt = process.hrtime.bigint();
     const current = await readDocument(reference);
+    emitDatabaseOperation(onDatabaseOperation, {
+      collection: JOB_COLLECTION,
+      action: 'doc_get',
+      durationMs: Number(process.hrtime.bigint() - readStartedAt) / 1e6,
+      rowCount: current ? 1 : 0,
+    });
     if (current) {
       if (current._openid !== draft._openid
         || current.batchId !== draft.batchId
@@ -289,7 +297,14 @@ async function reserveJob(database, draft) {
       result = { created: false, job: current };
       return;
     }
+    const writeStartedAt = process.hrtime.bigint();
     await reference.set({ data: draft });
+    emitDatabaseOperation(onDatabaseOperation, {
+      collection: JOB_COLLECTION,
+      action: 'doc_set',
+      durationMs: Number(process.hrtime.bigint() - writeStartedAt) / 1e6,
+      rowCount: 1,
+    });
     result = { created: true, job: draft };
   });
   return result;
@@ -549,12 +564,20 @@ async function readRecommendationCopyOverlay(database, openid, batchId, renderer
   };
 }
 
-async function readCachedCopies(database, openid, rendererVersion, entries) {
+async function readCachedCopies(database, openid, rendererVersion, entries, onDatabaseOperation) {
   const cacheIds = (Array.isArray(entries) ? entries : []).map((entry) => entry.cacheId).filter(Boolean);
   if (cacheIds.length === 0) return [];
-  const copies = await Promise.all(cacheIds.map((cacheId) => (
-    readDocument(database.collection(CACHE_COLLECTION).doc(cacheId))
-  )));
+  const copies = await Promise.all(cacheIds.map(async (cacheId) => {
+    const startedAt = process.hrtime.bigint();
+    const copy = await readDocument(database.collection(CACHE_COLLECTION).doc(cacheId));
+    emitDatabaseOperation(onDatabaseOperation, {
+      collection: CACHE_COLLECTION,
+      action: 'doc_get',
+      durationMs: Number(process.hrtime.bigint() - startedAt) / 1e6,
+      rowCount: copy ? 1 : 0,
+    });
+    return copy;
+  }));
   return copies.filter((copy) => (
     copy
       && copy._openid === openid
@@ -563,6 +586,11 @@ async function readCachedCopies(database, openid, rendererVersion, entries) {
       && cacheIds.includes(copy.cacheId)
       && readText(copy.text)
   ));
+}
+
+function emitDatabaseOperation(observer, operation) {
+  if (typeof observer !== 'function') return;
+  try { observer(operation); } catch { /* Observability must remain fail-open. */ }
 }
 
 async function markDispatchFailure(database, jobId, dispatchToken, error, now = new Date()) {
