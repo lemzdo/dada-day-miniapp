@@ -179,3 +179,15 @@ started automatically. Existing Today cold telemetry also recorded
 `serverTotalMs=1831` and `coldTtuiMs=3026`; the current smoke has no page paint
 observer, so `FIRST_CARD_VISIBLE<3000ms` is not claimed (and the observed cold
 TTUI is slightly above target).
+
+## Production 6s attribution and allocation fix (2026-09-10)
+
+The follow-up five-sample attribution covered 99.935% of the 256 MB production
+wall time. It proved one Core/generation/eligibility/scoring execution per
+request and measured `PURE_CORE_PROD=5,001.287ms` P50. The function was then
+found to have only 0.2 CPU at 256 MB. Raising the allocation to 1024 MB / 0.8 CPU
+without changing Architecture 2.2 or candidate budgets reduced
+`SERVER_RESPONSE_READY` P50 from 5,765.054ms to 1,661.491ms and pure Core P50 to
+1,062.614ms. Five-sample min/max were 1,304.206/1,865.156ms; max is a sample-max
+proxy, not a statistical P95. Full phase, DB, duplicate-work, warm-instance and
+commit attribution is recorded in `production-6s-attribution.md`.

@@ -3,7 +3,7 @@
 > 最后更新：2026-09-10
 > 用途：记录还未解决的问题。
 
-## Recommendation Runtime 2.2 状态（2026-09-09）
+## Recommendation Runtime 2.2 状态（2026-09-10）
 
 - 已解决旧 Core 的无界 O(N³) 候选物化：生产 bounded engine 在 30/100/300/500
   件 fixture 上最多完整验收与评分 768 个候选，reservoir 为 96；旧 500 件
@@ -15,17 +15,17 @@
   返回 `candidatePoolId: null`，required batch persistence 先于可选 cache write。
 - 已消除 card0 renderer entry 重建，并把 cards1–7 renderer preparation 与非首屏
   overlay 读取移出首卡同步路径。
-- 生产验证已恢复并完成：两个函数均通过远端 artifact contract；3 个 canonical HIT
-  样本均 HTTP 200、同一 fingerprint、provider added calls=0。完整 smoke 还验证了
-  精确删除 1 个 canonical cache 后的 MISS、batch completed 与 canonical cache 重建。
-  但 `SERVER_RESPONSE_READY` 三样本中位为 6,013.856ms（历史权威中位
-  4,856.585ms），明显未达到产品目标；HTTP smoke 不具备页面 paint observer，
-  `FIRST_CARD_VISIBLE <3000ms` 仍不能宣称，Today cold telemetry 的 `coldTtuiMs`
-  为 3,026ms。
-- 最大生产瓶颈已定位在 CloudBase full-compute：候选构造/hydrate、最终 eligibility
-  和 batch persistence 发生在首卡 response 前，HIT 也需要完整 Core。按冻结合同，
-  本轮不自动启动第三次性能微优化；下一轮需单独评估 CPU/搜索预算耦合，不能降低质量
-  或绕过完整配饰 eligibility。
+- Production 6s 归因已覆盖 99.935% wall time，并证明每请求 Core、候选生成、完整
+  eligibility 与 scoring 均只运行一次。主因是 `recommendationStream` 长期使用
+  256MB / 0.2CPU 默认规格，而不是 Architecture 2.2 重复工作。
+- 仅将规格提升到 1024MB / 0.8CPU 后，同 fingerprint、canonical HIT、Provider=0
+  的五样本 `SERVER_RESPONSE_READY` P50 从 5,765.054ms 降到 1,661.491ms，
+  `PURE_CORE_PROD` P50 从 5,001.287ms 降到 1,062.614ms；架构、搜索预算、质量与
+  canonical correctness join 均未改变。服务端产品性能判定转为 PASS。
+- HTTP smoke 仍不具备页面 paint observer，`FIRST_CARD_VISIBLE <3000ms` 不能宣称；
+  Today `coldTtuiMs=3026` 属于不同请求/客户端计时边界，不能与最终服务端 response
+  指标混用。CloudBase 在五请求中调度了两个新实例，严格 reused-warm 样本仅 3 个，
+  已按采样上限如实保留该证据限制。
 - 正常生产请求在尚未获得可审计的生产 pool-save stage、且未配置实测
   `RECOMMENDATION_CANDIDATE_POOL_SAVE_P95_MS` 时会
   正确跳过 pool fill；这保证 correctness，但会减少 pool HIT，必须在生产 smoke
