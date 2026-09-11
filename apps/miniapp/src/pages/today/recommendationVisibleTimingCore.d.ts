@@ -50,12 +50,31 @@ export interface RecommendationVisibleTimingRecorder {
 
 export const FAILURE_REASONS: Readonly<Record<RecommendationVisibleTimingFailureReason, RecommendationVisibleTimingFailureReason>>;
 
+export function buildVisibleTimingSelectorClass(
+  identity: Partial<RecommendationVisibleTimingIdentity>,
+  stage: 'content' | 'image',
+): string;
+
 export function classifyVisibleNode(input: {
   stage: 'content' | 'image';
   node: { width?: number; height?: number; dataset?: Record<string, unknown> } | null;
   expected: RecommendationVisibleTimingIdentity;
   current?: Partial<RecommendationVisibleTimingIdentity> | null;
+  selectorIdentityMatched?: boolean;
 }): { ok: true } | { ok: false; reason: RecommendationVisibleTimingFailureReason };
+
+export function findVisibleNode(input: {
+  stage: 'content' | 'image';
+  nodes: { width?: number; height?: number; dataset?: Record<string, unknown> } | Array<{
+    width?: number;
+    height?: number;
+    dataset?: Record<string, unknown>;
+  }> | null;
+  expected: RecommendationVisibleTimingIdentity;
+  current?: Partial<RecommendationVisibleTimingIdentity> | null;
+  selectorIdentityMatched?: boolean;
+}): ({ ok: true; node: { width?: number; height?: number; dataset?: Record<string, unknown> } }
+  | { ok: false; reason: RecommendationVisibleTimingFailureReason }) & { nodeCount: number };
 
 export function createRecommendationVisibleTimingRecorder(options?: {
   now?: () => number;

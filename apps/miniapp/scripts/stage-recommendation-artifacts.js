@@ -138,9 +138,15 @@ function stageRecommendationStream(destination, options = {}) {
   fs.mkdirSync(resolvedDestination, { recursive: true });
   const nestedDestination = path.join(resolvedDestination, 'generateOutfit');
   const nestedManifest = stageGenerateOutfit(nestedDestination, { deploymentMarker: options.deploymentMarker, reset: false });
-  for (const name of ['index.js', 'package.json', 'scf_bootstrap']) {
+  for (const name of ['index.js', 'package.json']) {
     copyFile(path.join(recommendationStreamSource, name), path.join(resolvedDestination, name), options.deploymentMarker);
   }
+  const bootstrap = fs.readFileSync(path.join(recommendationStreamSource, 'scf_bootstrap'), 'utf8')
+    .replace(/\r\n?/g, '\n');
+  fs.writeFileSync(path.join(resolvedDestination, 'scf_bootstrap'), bootstrap, {
+    encoding: 'utf8',
+    mode: 0o755,
+  });
   if (options.cloudbaseConfig) {
     fs.writeFileSync(path.join(resolvedDestination, 'cloudbaserc.json'), `${JSON.stringify(options.cloudbaseConfig, null, 2)}\n`, { mode: 0o600 });
   }

@@ -48,6 +48,22 @@ test('first image reports both load and failure lifecycle to Today', () => {
   assert.match(todaySource, /IMAGE_ONLOAD_NOT_FIRED/);
 });
 
+test('an unchanged rendered first image is measured for the new batch without requiring duplicate onLoad', () => {
+  assert.match(cardSource, /onFirstImageLoad\?\.\([\s\S]*visibleTimingIdentity,[\s\S]*resolveGarmentAsset\(/);
+  assert.match(todaySource, /loadedFirstImageSourceRef\.current = imageSource/);
+  assert.match(todaySource, /loadedFirstImageSourceRef\.current !== firstCard\.items\[0\]\?\.displayImageUrl/);
+  assert.match(todaySource, /visibleTimingRecorder\.imageLoad\(identity, visibleAt\)/);
+  assert.match(todaySource, /visibleTimingRecorder\.imageVisible\(identity, visibleAt\)/);
+});
+
+test('visibility probes query the current batch identity instead of the first stale node', () => {
+  assert.match(cardSource, /buildVisibleTimingSelectorClass\(visibleTimingIdentity, 'content'\)/);
+  assert.match(cardSource, /buildVisibleTimingSelectorClass\(visibleTimingIdentity, 'image'\)/);
+  assert.match(todaySource, /query\.selectAll\(selector\)\.boundingClientRect/);
+  assert.match(todaySource, /selectorIdentityMatched: true/);
+  assert.match(todaySource, /if \(current\.batchId !== identity\.batchId\) \{[\s\S]*?return;[\s\S]*?\}/);
+});
+
 test('diagnostics bridge is read-only and not a timing prerequisite', () => {
   const requestBody = functionBody('async function fetchRecommendations', 'async function handleV2Refresh');
   assert.doesNotMatch(requestBody, /__d1dTodayDiagnostics|readRecommendationVisibleTimings/);

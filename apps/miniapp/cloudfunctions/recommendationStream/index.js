@@ -1,9 +1,23 @@
 'use strict';
 
 let runtimeRunner = null;
+let productionRuntimeModule = null;
 
 function loadGenerateOutfitModule() {
-  return require('./generateOutfit');
+  productionRuntimeModule ??= require('./generateOutfit');
+  return productionRuntimeModule;
+}
+
+// The deployment bundle contains ./generateOutfit. Load it during container
+// initialization so a warm request does not pay the Runtime module bootstrap
+// cost inside requestStart -> firstWrite. The source checkout intentionally
+// omits that staged directory, so injected unit-test runners remain supported.
+try {
+  loadGenerateOutfitModule();
+} catch (error) {
+  const missingStagedRuntime = error?.code === 'MODULE_NOT_FOUND'
+    && String(error?.message || '').includes("'./generateOutfit'");
+  if (!missingStagedRuntime) throw error;
 }
 
 function loadProductionRunner() {

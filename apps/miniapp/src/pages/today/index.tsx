@@ -60,15 +60,6 @@ import {
 } from '@/utils/recommendationAvailability';
 import { getOutfitStyleTags } from '@/utils/outfitContextText';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
-import {
-  getImageSessionDiagnostics,
-  isImageSessionReady,
-  markImageSessionFailed,
-  markImageSessionReady,
-  preloadImageSession,
-  recordImageSessionMount,
-  subscribeImageSession,
-} from '@/utils/imageSessionCache';
 import { prewarmGarmentAssets } from '@/utils/garmentAssetResolution';
 import { getRecommendationWeatherFingerprint, type RecommendationWeatherFingerprint } from '@/utils/weather';
 import {
@@ -117,8 +108,9 @@ import './index.scss';
 import { HomeLightCardV2 } from './HomeLightCardV2';
 import {
   FAILURE_REASONS,
-  classifyVisibleNode,
+  buildVisibleTimingSelectorClass,
   createRecommendationVisibleTimingRecorder,
+  findVisibleNode,
 } from './recommendationVisibleTimingCore';
 import type {
   RecommendationVisibleTimingIdentity,
@@ -247,7 +239,7 @@ function consumeHardInvalidAcceptanceRequest(
 interface TodayDiagnosticsBridge {
   marker: 'd1d-today-production-handler-v1';
   copyAcceptanceBuild: 'today-copy-naturalness-v3';
-  bundleRevision: 'today-v2-client-4b51368';
+  bundleRevision: 'today-v2-client-20260912-warm-visible-final3';
   ready: boolean;
   sceneKey: SceneKey;
   triggerFullCompute: (request: TodayFullComputeAcceptanceRequest) => Promise<boolean>;
@@ -403,6 +395,7 @@ export default function TodayPage() {
   const operationTargetRef = useRef<{ operation: OutfitOperation; outfitKey: string } | null>(null);
   const behaviorTrackerRef = useRef(createOutfitBehaviorExposureTracker());
   const copyAcceptanceCaptureLockRef = useRef(false);
+  const loadedFirstImageSourceRef = useRef<string | null>(null);
   const todayV2EntryAtRef = useRef<number | null>(null);
   const todayV2EntryColdEligibleRef = useRef(false);
   const todayV2ColdCorrelationRef = useRef<string | null>(null);
@@ -421,45 +414,58 @@ export default function TodayPage() {
   selectedSceneRef.current = selectedScene;
 
   function probeVisibleNode(
-    selector: string,
     identity: RecommendationVisibleTimingIdentity,
     stage: 'content' | 'image',
     onVisible: (visibleAt: number) => void,
     attempt = 0,
   ) {
     Taro.nextTick(() => {
+      const selector = `.${buildVisibleTimingSelectorClass(identity, stage)}`;
       const query = Taro.createSelectorQuery();
-      query.select(selector).boundingClientRect((result: unknown) => {
-        const node = (Array.isArray(result) ? result[0] : result) as {
+      query.selectAll(selector).boundingClientRect((result: unknown) => {
+        const nodes = result as Array<{
           width?: number;
           height?: number;
           dataset?: Record<string, unknown>;
-        } | null;
+        }> | null;
         const current = {
           batchId: v2SnapshotRef.current?.batchId,
           outfitKey: v2SnapshotRef.current?.cards[0]?.outfitKey,
         };
         if (current.batchId !== identity.batchId) {
-          visibleTimingRecorder.reportFailure(identity, stage, FAILURE_REASONS.STALE_BATCH, { selector, attempt });
+          // A newer recommendation owns the card now. The superseded probe is
+          // expected during overlapping weather/bootstrap requests, not a
+          // visibility failure for the active recommendation.
           return;
         }
-        const classification = classifyVisibleNode({ stage, node, expected: identity, current });
-        if (classification.ok) {
+        const selection = findVisibleNode({
+          stage,
+          nodes,
+          expected: identity,
+          current,
+          selectorIdentityMatched: true,
+        });
+        if (selection.ok) {
           onVisible(clientMonotonicNow());
           return;
         }
         if (attempt < 4) {
-          setTimeout(() => probeVisibleNode(selector, identity, stage, onVisible, attempt + 1), 16);
+          setTimeout(() => probeVisibleNode(identity, stage, onVisible, attempt + 1), 16);
           return;
         }
-        visibleTimingRecorder.reportFailure(identity, stage, classification.reason, { selector, attempt });
+        visibleTimingRecorder.reportFailure(identity, stage, selection.reason, {
+          selector,
+          attempt,
+          nodeCount: selection.nodeCount,
+        });
       }).exec();
     });
   }
 
-  function handleFirstCardImageLoad(identity: RecommendationVisibleTimingIdentity) {
+  function handleFirstCardImageLoad(identity: RecommendationVisibleTimingIdentity, imageSource: string) {
+    loadedFirstImageSourceRef.current = imageSource;
     if (!visibleTimingRecorder.imageLoad(identity, clientMonotonicNow())) return;
-    probeVisibleNode('.qa-first-card-main-image', identity, 'image', (visibleAt) => {
+    probeVisibleNode(identity, 'image', (visibleAt) => {
       visibleTimingRecorder.imageVisible(identity, visibleAt);
     });
   }
@@ -672,8 +678,11 @@ export default function TodayPage() {
     if (!v2Snapshot || !firstCard) return;
     if (!visibleTimingRecorder.getByBatch(v2Snapshot.batchId)) return;
     const identity = { batchId: v2Snapshot.batchId, outfitKey: firstCard.outfitKey };
-    probeVisibleNode('.qa-first-card-visible-target', identity, 'content', (visibleAt) => {
+    probeVisibleNode(identity, 'content', (visibleAt) => {
       visibleTimingRecorder.content(identity, visibleAt);
+      if (loadedFirstImageSourceRef.current !== firstCard.items[0]?.displayImageUrl) return;
+      if (!visibleTimingRecorder.imageLoad(identity, visibleAt)) return;
+      visibleTimingRecorder.imageVisible(identity, visibleAt);
     });
   }, [v2Snapshot, visibleTimingRecorder]);
 
@@ -843,6 +852,7 @@ export default function TodayPage() {
     setBatchLimited(false);
     setBatchExhausted(false);
     canonicalSnapshotRef.current = null;
+    loadedFirstImageSourceRef.current = null;
     setV2Snapshot(null);
   }, [visibleTimingRecorder]);
 
@@ -1664,7 +1674,7 @@ export default function TodayPage() {
     const bridge: TodayDiagnosticsBridge = {
       marker: 'd1d-today-production-handler-v1',
       copyAcceptanceBuild: 'today-copy-naturalness-v3',
-      bundleRevision: 'today-v2-client-4b51368',
+      bundleRevision: 'today-v2-client-20260912-warm-visible-final3',
       ready: Boolean(isAuthenticated && runtimeKey && !loading && !operation),
       sceneKey: selectedSceneKeyRef.current,
       readCopyAcceptanceState: () => ({

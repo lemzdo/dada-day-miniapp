@@ -15,6 +15,7 @@ test('interactive recommendation transport excludes client-only timing objects',
     performanceDiagnostics: true,
     acceptanceRunId: 'ttui-v2-human-retake',
     captureId: 'ttui-v2-human-retake-capture',
+    auditId: 'rec_19_transport-correlation',
     telemetryCorrelationId: 'cold-correlation-not-for-runtime',
     clientMilestones: Object.fromEntries(Array.from(
       { length: 10 },
@@ -32,5 +33,6 @@ test('interactive recommendation transport excludes client-only timing objects',
   assert.equal('telemetryCorrelationId' in after, false);
   assert.equal(after.scene, '约会');
   assert.equal(after.performanceDiagnostics, true);
+  assert.equal(after.auditId, 'rec_19_transport-correlation');
   assert.ok(Buffer.byteLength(JSON.stringify(after)) < Buffer.byteLength(JSON.stringify(before)));
 });

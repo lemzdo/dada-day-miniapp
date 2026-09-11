@@ -47,7 +47,17 @@ function snapshot(record) {
   };
 }
 
-function classifyVisibleNode({ stage, node, expected, current }) {
+function buildVisibleTimingSelectorClass(identity, stage) {
+  const source = `${stage}|${identity?.batchId || ''}|${identity?.outfitKey || ''}`;
+  let hash = 2166136261;
+  for (let index = 0; index < source.length; index += 1) {
+    hash ^= source.charCodeAt(index);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return `qa-visible-timing-${stage}-${hash.toString(36)}`;
+}
+
+function classifyVisibleNode({ stage, node, expected, current, selectorIdentityMatched = false }) {
   const isImage = stage === 'image';
   if (!node) {
     return { ok: false, reason: isImage ? FAILURE_REASONS.IMAGE_SELECTOR_EMPTY : FAILURE_REASONS.CONTENT_SELECTOR_EMPTY };
@@ -58,11 +68,25 @@ function classifyVisibleNode({ stage, node, expected, current }) {
   const dataset = node.dataset || {};
   if (current?.batchId !== expected.batchId
     || current?.outfitKey !== expected.outfitKey
-    || dataset.recommendationBatchId !== expected.batchId
-    || dataset.outfitKey !== expected.outfitKey) {
+    || (!selectorIdentityMatched && (dataset.recommendationBatchId !== expected.batchId
+      || dataset.outfitKey !== expected.outfitKey))) {
     return { ok: false, reason: FAILURE_REASONS.CONTENT_IDENTITY_MISMATCH };
   }
   return { ok: true };
+}
+
+function findVisibleNode({ stage, nodes, expected, current, selectorIdentityMatched = false }) {
+  const candidates = (Array.isArray(nodes) ? nodes : [nodes]).filter(Boolean);
+  if (candidates.length === 0) {
+    return { ...classifyVisibleNode({ stage, node: null, expected, current }), nodeCount: 0 };
+  }
+  let fallback = null;
+  for (const node of candidates) {
+    const classification = classifyVisibleNode({ stage, node, expected, current, selectorIdentityMatched });
+    if (classification.ok) return { ok: true, node, nodeCount: candidates.length };
+    if (!fallback || fallback.reason === FAILURE_REASONS.CONTENT_IDENTITY_MISMATCH) fallback = classification;
+  }
+  return { ...fallback, nodeCount: candidates.length };
 }
 
 function createRecommendationVisibleTimingRecorder({
@@ -154,6 +178,13 @@ function createRecommendationVisibleTimingRecorder({
     if (latestSeq !== null && input.seq < latestSeq) {
       failure(null, 'create', FAILURE_REASONS.STALE_SEQ, { seq: input.seq, latestSeq });
       return null;
+    }
+    if (latestSeq === null || input.seq > latestSeq) {
+      for (const previous of history) {
+        if (previous.seq >= input.seq || previous.imageLoadTimer === undefined) continue;
+        cancel(previous.imageLoadTimer);
+        previous.imageLoadTimer = undefined;
+      }
     }
     latestSeq = input.seq;
     const record = {
@@ -259,6 +290,8 @@ function createRecommendationVisibleTimingRecorder({
 
 module.exports = {
   FAILURE_REASONS,
+  buildVisibleTimingSelectorClass,
   classifyVisibleNode,
   createRecommendationVisibleTimingRecorder,
+  findVisibleNode,
 };

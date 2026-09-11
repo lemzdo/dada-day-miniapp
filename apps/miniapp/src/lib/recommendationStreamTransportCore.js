@@ -15,6 +15,7 @@ function buildRecommendationStreamTransportInput(params = {}, generation, runtim
     performanceDiagnostics: params.performanceDiagnostics,
     acceptanceRunId: params.acceptanceRunId,
     captureId: params.captureId,
+    auditId: params.auditId,
     trigger: params.trigger,
     excludedOutfitKeys: params.excludedOutfitKeys,
     requestKind: params.requestKind,

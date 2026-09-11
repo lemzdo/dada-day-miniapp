@@ -7,7 +7,8 @@ const source = fs.readFileSync(path.join(__dirname, 'index.tsx'), 'utf8');
 
 test('Today has one light runtime and no V1/V2 selector', () => {
   assert.doesNotMatch(source, /isTodayV2Enabled|TARO_APP_RECOMMENDATION_V2_ENABLED|todayV2Enabled|v2MemoryOnly/);
-  assert.match(source, /generateCloudOutfitV2/);
+  assert.match(source, /acquireRecommendationForInput/);
+  assert.match(source, /HomeLightCardV2/);
   assert.match(source, /toTodayV2Snapshot/);
 });
 

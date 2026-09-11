@@ -15,6 +15,9 @@ test('HTTP staging contains one deploy-local copy of the canonical generateOutfi
     execFileSync(process.execPath, [path.join(__dirname, 'stage-recommendation-stream.js'), stage], { stdio: 'pipe' });
     assert.ok(fs.existsSync(path.join(stage, 'index.js')));
     assert.ok(fs.existsSync(path.join(stage, 'scf_bootstrap')));
+    const bootstrap = fs.readFileSync(path.join(stage, 'scf_bootstrap'));
+    assert.equal(bootstrap.includes(13), false);
+    assert.equal(bootstrap.toString('utf8'), '#!/bin/bash\nnode index.js\n');
     assert.ok(fs.existsSync(path.join(stage, 'generateOutfit', 'runtime', 'recommendationCore.js')));
     assert.ok(fs.existsSync(path.join(stage, 'generateOutfit', 'runtime', 'recommendationOrchestrator.js')));
     assert.equal(fs.existsSync(path.join(stage, 'generateOutfit', 'runtime', 'recommendationRuntime.js')), false);
@@ -36,6 +39,9 @@ test('HTTP staging contains one deploy-local copy of the canonical generateOutfi
     const generatePackageJson = JSON.parse(fs.readFileSync(path.join(stage, 'generateOutfit', 'package.json'), 'utf8'));
     assert.equal(generatePackageJson.dependencies['@d1d/ai-core'], 'file:vendor/ai-core');
     assert.ok(fs.existsSync(path.join(stage, 'generateOutfit', 'vendor', 'ai-core', 'src', 'index.js')));
+    const stagedIndex = fs.readFileSync(path.join(stage, 'index.js'), 'utf8');
+    const preloadCall = stagedIndex.indexOf('  loadGenerateOutfitModule();');
+    assert.ok(preloadCall > 0 && preloadCall < stagedIndex.indexOf('const handler = createRecommendationStreamHandler();'));
     const vendorProbe = [
       "const resolver = require('./generateOutfit/services/deployPackageResolver');",
       "const core = resolver.loadDeployPackage('@d1d/ai-core', ['..', 'vendor', 'ai-core']);",

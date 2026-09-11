@@ -4,8 +4,10 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   FAILURE_REASONS,
+  buildVisibleTimingSelectorClass,
   classifyVisibleNode,
   createRecommendationVisibleTimingRecorder,
+  findVisibleNode,
 } = require('./recommendationVisibleTimingCore');
 const { commitCanonicalSnapshotForRender } = require('./todayRenderCommit');
 
@@ -99,6 +101,41 @@ test('selector diagnostics distinguish empty, zero-size, and identity mismatch',
   assert.deepEqual(classifyVisibleNode({ stage: 'image', node: { width: 20, height: 20, dataset: { recommendationBatchId: 'batch-1', outfitKey: 'outfit-1' } }, expected, current }), { ok: true });
 });
 
+test('identity-scoped selector skips stale batch nodes during render replacement', () => {
+  const expected = { batchId: 'batch-new', outfitKey: 'outfit-new' };
+  const current = { ...expected };
+  const selectorClass = buildVisibleTimingSelectorClass(expected, 'content');
+  assert.match(selectorClass, /^qa-visible-timing-content-[a-z0-9]+$/);
+  assert.notEqual(selectorClass, buildVisibleTimingSelectorClass({ batchId: 'batch-old', outfitKey: 'outfit-old' }, 'content'));
+
+  const selection = findVisibleNode({
+    stage: 'content',
+    nodes: [
+      { width: 20, height: 20, dataset: { recommendationBatchId: 'batch-old', outfitKey: 'outfit-old' } },
+      { width: 20, height: 20, dataset: { recommendationBatchId: 'batch-new', outfitKey: 'outfit-new' } },
+    ],
+    expected,
+    current,
+  });
+  assert.equal(selection.ok, true);
+  assert.equal(selection.nodeCount, 2);
+});
+
+test('identity-scoped selector remains valid when Taro omits dataset fields', () => {
+  const expected = { batchId: 'batch-new', outfitKey: 'outfit-new' };
+  assert.deepEqual(findVisibleNode({
+    stage: 'image',
+    nodes: [{ width: 20, height: 20, dataset: {} }],
+    expected,
+    current: expected,
+    selectorIdentityMatched: true,
+  }), {
+    ok: true,
+    node: { width: 20, height: 20, dataset: {} },
+    nodeCount: 1,
+  });
+});
+
 test('image load lifecycle cancels timeout and missing onLoad is diagnostic', () => {
   const complete = fixture();
   const identity = { batchId: 'batch-image', outfitKey: 'outfit-image' };
@@ -115,6 +152,23 @@ test('image load lifecycle cancels timeout and missing onLoad is diagnostic', ()
   missing.recorder.commit(identity);
   missing.timers[0]();
   assert.equal(missing.events.at(-1).payload.reason, FAILURE_REASONS.IMAGE_ONLOAD_NOT_FIRED);
+});
+
+test('a newer request cancels the superseded image timeout without a failure', () => {
+  const run = fixture();
+  const oldIdentity = { batchId: 'batch-old', outfitKey: 'outfit-old' };
+  run.recorder.create({ auditId: 'audit-old', seq: 1, sceneKey: 'home', requestStart: 100 });
+  run.recorder.response({ auditId: 'audit-old', ...oldIdentity });
+  run.recorder.commit(oldIdentity);
+  assert.equal(run.timers.length, 1);
+
+  run.recorder.create({ auditId: 'audit-new', seq: 2, sceneKey: 'home', requestStart: 120 });
+
+  assert.equal(run.timers.length, 0);
+  assert.equal(
+    run.events.some((event) => event.label === '[RecommendationVisibleTiming:failure]'),
+    false,
+  );
 });
 
 test('missing audit id is never silently ignored', () => {

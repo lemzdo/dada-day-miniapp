@@ -78,6 +78,7 @@ test('bounded refresh stops without applying when generation becomes stale', asy
   const result = await runBoundedCanonicalCopyRefresh({
     batchId: 'batch-1',
     offsetsMs: [0, 1],
+    now: () => 0,
     sleep: async () => { current = false; },
     read: async () => ({ batchId: 'batch-1', status: 'pending', copies: [] }),
     isCurrent: () => current,

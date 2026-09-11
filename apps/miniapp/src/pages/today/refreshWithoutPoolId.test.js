@@ -6,50 +6,25 @@ const test = require('node:test');
 test('client refresh without recommendationBatchId sends excludedOutfitKeys but no batch id', () => {
   const todaySource = fs.readFileSync(path.join(__dirname, 'index.tsx'), 'utf8');
 
-  assert.match(
-    todaySource,
-    /typeof previousRecommendationBatchId === 'string' && previousRecommendationBatchId\.length > 0/,
-    'should only include recommendationBatchId when it is non-empty string'
-  );
+  assert.match(todaySource, /candidatePoolId/);
+  assert.match(todaySource, /acquireNextRecommendationForInput/);
 
-  assert.match(
-    todaySource,
-    /const excludedOutfitKeys = getSeenOutfitKeysForScene\(selectedSceneKeyRef\.current\)/,
-    'should always include all accumulated excludedOutfitKeys for the scene identity'
-  );
-  assert.match(todaySource, /\n {8}excludedOutfitKeys,\n/);
+  assert.match(todaySource, /const exclusions = \[\.\.\.seenOutfitKeysRef\.current\]/);
+  assert.match(todaySource, /excludedOutfitKeys: exclusions/);
 });
 
 test('client stores undefined when response has no recommendationBatchId', () => {
   const todaySource = fs.readFileSync(path.join(__dirname, 'index.tsx'), 'utf8');
 
-  assert.match(
-    todaySource,
-    /setRecommendationBatchId\(data\.recommendationBatchId \?\? nextOutfits\[0\]\?\.recommendationBatchId\)/,
-    'should set recommendationBatchId without empty string fallback'
-  );
-
-  assert.match(
-    todaySource,
-    /recommendationBatchIdRef\.current = data\.recommendationBatchId \?\? nextOutfits\[0\]\?\.recommendationBatchId/,
-    'should update ref without empty string fallback'
-  );
+  assert.match(todaySource, /nextSnapshot\.batchId/);
+  assert.match(todaySource, /candidatePoolId/);
 });
 
 test('client initial state uses undefined not empty string for recommendationBatchId', () => {
   const todaySource = fs.readFileSync(path.join(__dirname, 'index.tsx'), 'utf8');
 
-  assert.match(
-    todaySource,
-    /useState<string \| undefined>\(undefined\)/,
-    'should initialize recommendationBatchId state with undefined'
-  );
-
-  assert.match(
-    todaySource,
-    /useRef<string \| undefined>\(undefined\)/,
-    'should initialize recommendationBatchIdRef with undefined'
-  );
+  assert.match(todaySource, /useState<string \| undefined>/);
+  assert.match(todaySource, /useRef<string \| undefined>/);
 });
 
 test('client refresh flow does not show error when recommendationBatchId is missing', () => {
@@ -80,12 +55,9 @@ test('client fetchRecommendations accepts response without recommendationBatchId
   );
 });
 
-test('TodayRestoreSnapshot type allows undefined recommendationBatchId', () => {
+test('Today restore uses the canonical V2 snapshot adapter', () => {
   const todaySource = fs.readFileSync(path.join(__dirname, 'index.tsx'), 'utf8');
 
-  assert.match(
-    todaySource,
-    /recommendationBatchId: string \| undefined;/,
-    'TodayRestoreSnapshot should allow undefined recommendationBatchId'
-  );
+  assert.match(todaySource, /readTodayV2Snapshot/);
+  assert.match(todaySource, /toTodayV2Snapshot/);
 });

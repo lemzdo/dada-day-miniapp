@@ -1,6 +1,4 @@
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const test = require('node:test');
 
 const { buildOutfitCardViewModel } = require('./cardViewModel');
@@ -27,13 +25,9 @@ test('card view model caps four and five item homepage cards at three previews',
   assert.equal(five.layoutVariant, 'preview-3-plus');
 });
 
-test('today page renders previewItems without owning recommendation fallback copy', () => {
-  const source = fs.readFileSync(path.join(__dirname, 'index.tsx'), 'utf8');
-  const helper = fs.readFileSync(path.join(__dirname, 'cardViewModel.js'), 'utf8');
-
-  assert.match(source, /buildOutfitCardViewModel/);
-  assert.match(helper, /cardViewModel/);
-  assert.match(helper, /source\?\.previewItems/);
-  assert.match(source, /hiddenItemCount/);
-  assert.match(source, /previewItems\.map/);
+test('Today card view model is the render data boundary', () => {
+  const card = buildOutfitCardViewModel({ items: [item('a'), item('b'), item('c'), item('d')] });
+  assert.deepEqual(card.previewItems.map((entry) => entry.clothingId), ['a', 'b', 'c']);
+  assert.equal(card.totalItemCount, 4);
+  assert.equal(card.layoutVariant, 'preview-3-plus');
 });

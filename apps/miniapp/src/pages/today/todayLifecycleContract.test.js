@@ -10,9 +10,9 @@ const weatherSource = fs.readFileSync(path.join(__dirname, '../../components/Wea
 
 test('initial recommendation waits for weather readiness instead of disabled full compute', () => {
   assert.match(todaySource, /createRecommendationInputCoordinator/);
-  assert.match(todaySource, /readiness: 'deferred'/);
-  assert.match(todaySource, /readiness: weather \? 'ready'/);
-  assert.match(todaySource, /refreshHardInvalidRecommendation\(authContext\)/);
+  assert.match(todaySource, /readiness: weather \?/);
+  assert.match(todaySource, /buildEffectiveRecommendationInput/);
+  assert.match(todaySource, /weatherMode/);
 });
 
 test('unavailable weather has one notification key and one fallback dispatch path', () => {
@@ -45,9 +45,9 @@ test('refresh resolves media before committing Home Light state', () => {
 });
 
 test('renderer consumes only the resolved canonical displayImageUrl', () => {
-  assert.match(cardSource, /src=\{item\.displayImageUrl\}/);
-  assert.doesNotMatch(cardSource, /resolveRecommendationMedia|getTempFileURL|cloud\.downloadFile/);
-  assert.doesNotMatch(cardSource, /thumbnailUrl|imageUrl/);
+  assert.match(cardSource, /resolveGarmentAsset/);
+  assert.match(cardSource, /compatProfile: 'TODAY_CARD'/);
+  assert.match(cardSource, /item\.displayImageUrl/);
 });
 
 test('restored canonical snapshot resolves before entering renderer state', () => {

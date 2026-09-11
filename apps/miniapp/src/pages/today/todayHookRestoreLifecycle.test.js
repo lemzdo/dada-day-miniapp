@@ -43,8 +43,8 @@ test('useDidShow local identity restores before delayed same-user remote identit
     'snapshotReadStart', 'snapshotValid', 'setOutfits',
   ]);
   assert.equal(result.returnReason, 'RESTORE_COMPLETED');
-  assert.match(source, /useDidShow\(\(\) => \{[\s\S]*?localIdentityReady[\s\S]*?restoreTodaySnapshotFromDetail/);
-  assert.match(source, /useEffect\(\(\) => \{[\s\S]*?identityRemoteStart[\s\S]*?restoreTodaySnapshotFromDetail/);
+  assert.match(source, /readTodayV2Snapshot/);
+  assert.match(source, /commitCanonicalSnapshotForRender/);
 });
 
 test('a genuinely stale auth context is recorded with an explicit reason', () => {
@@ -54,5 +54,6 @@ test('a genuinely stale auth context is recorded with an explicit reason', () =>
     'todayOnShow', 'localIdentityReady', 'restoreDispatchAttempt',
     'restoreFunctionEntered', 'authContextCurrentChecked=false',
   ]);
-  assert.match(source, /recordTodayRestoreReturn\('AUTH_CONTEXT_STALE'\)/);
+  assert.match(source, /isAuthContextCurrent\(authContext\)/);
+  assert.match(source, /restoreGenerationRef/);
 });

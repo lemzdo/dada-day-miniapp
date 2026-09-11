@@ -11,7 +11,8 @@ test('client sends explicit weather mode and has no Shanghai 22 degree business 
   assert.match(cloudSource, /const requestPayload: Record<string, unknown> = \{\s*\.\.\.params,/);
   assert.doesNotMatch(cloudSource, /function getFallbackWeather/);
   assert.doesNotMatch(cloudSource, /temp:\s*22/);
-  assert.match(todaySource, /generateCloudOutfit\(\{[\s\S]{0,500}weatherMode,/);
+  assert.match(todaySource, /weatherMode: currentWeatherModeRef\.current/);
+  assert.match(todaySource, /acquireRecommendationForInput/);
 });
 
 test('WeatherCard distinguishes live cached disabled and unavailable', () => {

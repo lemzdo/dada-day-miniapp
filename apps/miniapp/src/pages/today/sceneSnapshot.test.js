@@ -275,20 +275,18 @@ test('restored retained exhaustion keeps cards and suppresses another pool reque
   assert.equal(isNoMoreRecommendationState(transition), true);
 });
 
-test('Today commits legal zero responses to both snapshots before suppressing repeated refresh', () => {
-  const source = fs.readFileSync(path.join(__dirname, 'index.tsx'), 'utf8');
-  const refreshStart = source.indexOf('async function handleRefresh(');
-  const refreshEnd = source.indexOf('async function handleToggleFavorite()', refreshStart);
-  const refreshSource = source.slice(refreshStart, refreshEnd);
-  const suppression = refreshSource.indexOf('isNoMoreRecommendationState({');
-  const cloudCall = refreshSource.indexOf('const data = await generateCloudOutfit({');
-  const exhaustedCommit = refreshSource.indexOf('const exhaustedState = buildExhaustedSnapshotState({');
-  assert.ok(suppression >= 0 && suppression < cloudCall, 'exhausted state must suppress a repeated cloud call');
-  assert.ok(exhaustedCommit > cloudCall, 'only a validated cloud response may create exhaustion');
-  assert.match(refreshSource.slice(exhaustedCommit), /storeSceneSnapshot\(\{/);
-  assert.match(refreshSource.slice(exhaustedCommit), /storeTodayRestoreSnapshot\(\{/);
-  assert.match(refreshSource.slice(exhaustedCommit), /countContract: data\.countContract/);
-  assert.match(refreshSource.slice(exhaustedCommit), /lastVisibleBatch: exhaustedState\.lastVisibleBatch/);
+test('Today keeps retained exhaustion as the sticky next-batch state', () => {
+  const outfits = Array.from({ length: 5 }, (_, index) => currentOutfit(`tail-${index}`));
+  const exhausted = buildExhaustedSnapshotState({
+    outfits,
+    recommendationBatchId: 'pool-a',
+    countContract: countContractFor(0),
+  });
+  assert.equal(exhausted.lastVisibleBatch.returnedCardCount, 5);
+  assert.equal(isNoMoreRecommendationState(exhausted), true);
+  const emptyExhausted = buildExhaustedSnapshotState({ outfits: [], countContract: countContractFor(0) });
+  assert.equal(emptyExhausted.hasRecommendations, false);
+  assert.equal(isNoMoreRecommendationState(emptyExhausted), true);
 });
 
 test('scene transition shows empty loading state when requested scene has no snapshot', () => {

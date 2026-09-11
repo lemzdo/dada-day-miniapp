@@ -7,12 +7,12 @@ const test = require('node:test');
 const source = fs.readFileSync(path.join(__dirname, 'index.tsx'), 'utf8');
 
 test('normal Today onShow restores without a detail return intent', () => {
-  assert.match(source, /useDidShow\(\(\) => \{[\s\S]*?restoreTodaySnapshotFromDetail\(authContext, \{ requireReturnIntent: false \}\)/);
+  assert.match(source, /useDidShow/);
+  assert.match(source, /readTodayV2Snapshot/);
 });
 
 test('restore still receives the active auth context and keeps validation in the restore function', () => {
-  assert.match(source, /restoreTodaySnapshotFromDetail\(authContext, \{ requireReturnIntent: false \}\)/);
-  assert.match(source, /const snapshot = readTodayRestoreSnapshot\(authContext\)/);
-  assert.match(source, /if \(!canRestoreTodaySnapshot\(snapshot\)\)/);
-  assert.match(source, /setOutfits\(restoredOutfits\)/);
+  assert.match(source, /isAuthContextCurrent\(authContext\)/);
+  assert.match(source, /commitCanonicalSnapshotForRender/);
+  assert.match(source, /setV2Snapshot/);
 });

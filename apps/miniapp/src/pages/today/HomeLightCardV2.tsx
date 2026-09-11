@@ -1,6 +1,7 @@
 import { Image, Text, View } from '@tarojs/components';
 import type { HomeLightCardV2 } from '@starter-template/types';
 import { resolveGarmentAsset } from '@/utils/garmentAssetResolution';
+import { buildVisibleTimingSelectorClass } from './recommendationVisibleTimingCore';
 
 export interface HomeLightCardV2Props {
   card: HomeLightCardV2;
@@ -8,15 +9,18 @@ export interface HomeLightCardV2Props {
   position?: number;
   total?: number;
   onDetail?: (card: HomeLightCardV2) => void;
-  onFirstImageLoad?: (identity: { batchId: string; outfitKey: string }) => void;
+  onFirstImageLoad?: (identity: { batchId: string; outfitKey: string }, imageSource: string) => void;
   onFirstImageError?: (identity: { batchId: string; outfitKey: string }) => void;
 }
 
 export function HomeLightCardV2({ card, batchId, position, total, onDetail, onFirstImageLoad, onFirstImageError }: HomeLightCardV2Props) {
   const isFirstCard = position === 0;
+  const visibleTimingIdentity = { batchId, outfitKey: card.outfitKey };
   return (
     <View
-      className={`outfit-card home-light-card-v2 ${isFirstCard ? 'qa-first-card-visible-target' : ''}`}
+      className={`outfit-card home-light-card-v2 ${isFirstCard
+        ? `qa-first-card-visible-target ${buildVisibleTimingSelectorClass(visibleTimingIdentity, 'content')}`
+        : ''}`}
       data-recommendation-batch-id={batchId}
       data-outfit-key={card.outfitKey}
       onClick={() => onDetail?.(card)}
@@ -32,16 +36,21 @@ export function HomeLightCardV2({ card, batchId, position, total, onDetail, onFi
           <View className="collage-item" key={item.clothingId}>
             <View className="image-stage">
               <Image
-                className={`item-image ${isFirstCard && itemIndex === 0 ? 'qa-first-card-main-image' : ''}`}
+                className={`item-image ${isFirstCard && itemIndex === 0
+                  ? `qa-first-card-main-image ${buildVisibleTimingSelectorClass(visibleTimingIdentity, 'image')}`
+                  : ''}`}
                 data-recommendation-batch-id={batchId}
                 data-outfit-key={card.outfitKey}
                 src={resolveGarmentAsset(item as unknown as Record<string, unknown>, 'CARD', { compatProfile: 'TODAY_CARD' }) || item.displayImageUrl}
                 mode="aspectFit"
                 onLoad={isFirstCard && itemIndex === 0
-                  ? () => onFirstImageLoad?.({ batchId, outfitKey: card.outfitKey })
+                  ? () => onFirstImageLoad?.(
+                    visibleTimingIdentity,
+                    resolveGarmentAsset(item as unknown as Record<string, unknown>, 'CARD', { compatProfile: 'TODAY_CARD' }) || item.displayImageUrl,
+                  )
                   : undefined}
                 onError={isFirstCard && itemIndex === 0
-                  ? () => onFirstImageError?.({ batchId, outfitKey: card.outfitKey })
+                  ? () => onFirstImageError?.(visibleTimingIdentity)
                   : undefined}
               />
             </View>
