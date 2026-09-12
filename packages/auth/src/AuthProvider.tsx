@@ -1,3 +1,5 @@
+'use client';
+
 import type React from 'react';
 import { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import type { AuthState, LoginParams, User } from '@starter-template/types';
