@@ -49,7 +49,9 @@
 ## 当前交付 Goal
 
 - `Homepage AI-First Reason`：AI-first critical path、1,605ms budget-aware wait、
-  fallback taxonomy、模型竞速 runner 与本地回归已完成；真实 Max/Fast 调用、生产部署和
+  fallback taxonomy、模型竞速 runner，以及 real Today 的三样本 HIT/MISS 自动验收器已完成；
+  MISS 仅允许在私有备份、精确身份复核、关联任务终态和 CAS 删除全部通过后清理一个缓存文档，
+  页面 copy source/AI state 还必须与服务端决策一致。真实 Max/Fast 调用、生产部署和
   real Today HIT/MISS paint 验收仍待执行，因此本项尚未关闭。外部模型竞速两次均被执行
   环境以“需用户明确授权发送目标和内容”拒绝，当前标记 `TEST_INFRA_BLOCKED`；不得以
   stub 结果选模型或声称生产 PASS。

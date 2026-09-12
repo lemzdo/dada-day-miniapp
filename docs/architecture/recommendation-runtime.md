@@ -110,6 +110,12 @@ and fingerprint route while retaining the real Narrative Plans, production promp
 validator. A faster route may replace Max on the homepage only when real latency and quality gates pass;
 Max remains available for Detail and deeper AI work. No model is selected from local stubs.
 
+Real page acceptance uses the Today diagnostics bridge and the same correlated server audit. Its explicit
+`hit` mode warms the canonical record before three counted Provider-zero samples. Its explicit `miss` mode
+uses the production smoke safety contract to remove only the exact first-card cache document after a private
+backup and fresh ownership/terminal-state checks; it never accepts a request flag or alternate cache identity
+as proof of MISS. Each counted page source and AI state must agree with the server `COPY_DECISION`.
+
 ## Evidence and verification
 
 The Phase 1 baseline is in [`../performance/recommendation-baseline.md`](../performance/recommendation-baseline.md).

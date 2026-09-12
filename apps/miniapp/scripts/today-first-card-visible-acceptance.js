@@ -7,12 +7,19 @@ const { ensureDevToolsDirectSession } = require('./devtools-direct-session');
 const { createAdmin } = require('./production-first-card-smoke/admin');
 const { readContext } = require('./production-first-card-smoke/wechat');
 const { extractAudit, buildAttribution } = require('./production-first-card-smoke/evidence');
+const {
+  TERMINAL_STATUSES,
+  createCleanupPlan,
+  hash,
+  validateCleanupPlan,
+} = require('./production-first-card-smoke/safety');
 
 const ENV_ID = 'cloud1-d8gl3k1vkdf0b7f05';
 const ROOT = path.resolve(__dirname, '../../..');
 const ARTIFACT_ROOT = path.join(ROOT, 'artifacts/today-first-card-visible-acceptance');
 const SAMPLE_COUNT = 3;
 const MAX_ATTEMPTS = 5;
+const ACCEPTANCE_MODES = new Set(['observed', 'hit', 'miss']);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function runId(prefix) {
@@ -26,7 +33,67 @@ function round(value) {
 function summarize(values) {
   const ordered = values.map(Number).filter(Number.isFinite).sort((left, right) => left - right);
   if (ordered.length !== SAMPLE_COUNT) throw new Error('VISIBLE_SAMPLE_COUNT_INVALID');
-  return { min: round(ordered[0]), median: round(ordered[1]), max: round(ordered[2]) };
+  return { min: round(ordered[0]), median: round(ordered[1]), p95: round(ordered[2]), max: round(ordered[2]) };
+}
+
+function rate(samples, predicate) {
+  return samples.length ? round(samples.filter(predicate).length / samples.length) : null;
+}
+
+function auditTime(audit, stage) {
+  const runtime = (audit.performanceStages || []).find((entry) => entry.stage === stage
+    && Number.isFinite(entry.elapsedMs));
+  if (runtime) return round(runtime.elapsedMs);
+  const firstCard = (audit.stages || []).find((entry) => entry.stage === stage
+    && Number.isFinite(entry.elapsedFromHandlerMs));
+  return firstCard ? round(firstCard.elapsedFromHandlerMs) : null;
+}
+
+function summarizeAiFirst(samples) {
+  const missSamples = samples.filter((sample) => sample.copySource === 'PROVIDER_FRESH');
+  const planToProvider = missSamples.filter((sample) => Number.isFinite(sample.plan0ReadyMs)
+    && Number.isFinite(sample.providerStartMs));
+  const providerToValidated = missSamples.filter((sample) => Number.isFinite(sample.providerStartMs)
+    && Number.isFinite(sample.firstValidatedMs));
+  return {
+    AI_REASON_FIRST_VISIBLE_RATE: rate(samples, (sample) => ['CANONICAL_HIT', 'PROVIDER_FRESH'].includes(sample.copySource)),
+    SAFE_COPY_FALLBACK_RATE: rate(samples, (sample) => sample.copySource === 'SAFE_COPY'),
+    CANONICAL_HIT_RATE_IN_TEST: rate(samples, (sample) => sample.copySource === 'CANONICAL_HIT'),
+    PROVIDER_FRESH_RATE: rate(samples, (sample) => sample.copySource === 'PROVIDER_FRESH'),
+    SAFE_DEADLINE_RATE: rate(samples, (sample) => sample.fallbackReason === 'SAFE_DEADLINE'),
+    SAFE_PROVIDER_ERROR_RATE: rate(samples, (sample) => sample.fallbackReason === 'SAFE_PROVIDER_ERROR'),
+    SAFE_VALIDATION_FAILED_RATE: rate(samples, (sample) => sample.fallbackReason === 'SAFE_VALIDATION_FAILED'),
+    PLAN0_TO_PROVIDER_START: planToProvider.length === SAMPLE_COUNT
+      ? summarize(planToProvider.map((sample) => sample.providerStartMs - sample.plan0ReadyMs))
+      : null,
+    PROVIDER_START_TO_FIRST_VALIDATED: providerToValidated.length === SAMPLE_COUNT
+      ? summarize(providerToValidated.map((sample) => sample.firstValidatedMs - sample.providerStartMs))
+      : null,
+  };
+}
+
+function parseCliArgs(args) {
+  let mode = 'observed';
+  let valid = args.shift() === '--live';
+  while (valid && args.length > 0) {
+    const option = args.shift();
+    const value = args.shift();
+    if (option === '--mode' && ACCEPTANCE_MODES.has(value)) mode = value;
+    else valid = false;
+  }
+  return { valid, mode };
+}
+
+function validateExpectedMode(mode, server) {
+  if (!ACCEPTANCE_MODES.has(mode)) throw new Error('VISIBLE_ACCEPTANCE_MODE_INVALID');
+  const providerStarts = (server?.audit?.stages || [])
+    .filter((entry) => entry.stage === 'PROVIDER_START' && entry.status === 'started').length;
+  if (mode === 'hit' && (server?.summary?.copySource !== 'CANONICAL_HIT' || providerStarts !== 0)) {
+    throw new Error('VISIBLE_EXPECTED_CANONICAL_HIT');
+  }
+  if (mode === 'miss' && (server?.summary?.copySource === 'CANONICAL_HIT' || providerStarts !== 1)) {
+    throw new Error('VISIBLE_EXPECTED_CANONICAL_MISS');
+  }
 }
 
 async function waitForBridge(mini, timeoutMs = 30000) {
@@ -78,12 +145,92 @@ async function waitForServerReady(admin, auditId, startTime, timeoutMs = 90000) 
     });
     const audit = extractAudit(logs, auditId);
     const attribution = buildAttribution(audit);
-    if (Number.isFinite(attribution.serverResponseReadyMs)) {
-      return { serverResponseReadyMs: round(attribution.serverResponseReadyMs), requestId: logs[0]?.requestId || null };
+    const summary = audit.summaries.find((entry) => entry.snapshot === 'response') || audit.summaries.at(-1);
+    if (Number.isFinite(attribution.serverResponseReadyMs) && summary?.copySource) {
+      return {
+        audit,
+        summary,
+        serverResponseReadyMs: round(attribution.serverResponseReadyMs),
+        requestId: logs[0]?.requestId || null,
+      };
     }
     await sleep(4000);
   } while (Date.now() < deadline);
   throw new Error('SERVER_RESPONSE_READY_NOT_OBSERVED');
+}
+
+async function waitForTerminalJob(admin, openid, batchId, timeoutMs = 90000) {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    const job = await admin.getJob({ openid, batchId });
+    if (job && TERMINAL_STATUSES.has(job.status)) return job;
+    await sleep(2000);
+  } while (Date.now() < deadline);
+  throw new Error('VISIBLE_JOB_NOT_TERMINAL');
+}
+
+async function prepareExactMiss({ admin, context, mini, observation, directory, resetIndex }) {
+  const job = await waitForTerminalJob(admin, context.openid, observation.record.batchId);
+  const firstEntry = job.entries?.find((entry) => entry.position === 0);
+  if (!firstEntry) throw new Error('VISIBLE_FIRST_JOB_ENTRY_MISSING');
+  const cache = await admin.getCache({ openid: context.openid, cacheId: firstEntry.cacheId });
+  const jobs = await admin.listRelatedJobs({ openid: context.openid, cacheId: firstEntry.cacheId });
+  const planInput = {
+    openid: context.openid,
+    batchId: observation.record.batchId,
+    rendererVersion: job.rendererVersion,
+    firstOutfitKey: observation.record.outfitKey,
+    job,
+    cache,
+    jobs,
+  };
+  const plan = createCleanupPlan(planInput);
+  const backup = { environmentId: ENV_ID, plan, document: cache };
+  const backupName = `cache-backup-${resetIndex}.private.json`;
+  fs.writeFileSync(path.join(directory, backupName), `${JSON.stringify(backup, null, 2)}\n`, {
+    flag: 'wx',
+    mode: 0o600,
+  });
+  const currentContext = await readContext(mini, ENV_ID);
+  if (currentContext.openid !== context.openid) throw new Error('VISIBLE_WECHAT_USER_CHANGED');
+  const current = await admin.getCache({ openid: context.openid, cacheId: plan.target._id });
+  const freshJob = await admin.getJob({ openid: context.openid, batchId: observation.record.batchId });
+  const freshJobs = await admin.listRelatedJobs({ openid: context.openid, cacheId: plan.target._id });
+  createCleanupPlan({ ...planInput, job: freshJob, cache: current, jobs: freshJobs });
+  const validation = validateCleanupPlan(plan, { cache: current });
+  let deleted = 0;
+  if (validation.remove) {
+    deleted = await admin.removeSingleCache({
+      openid: context.openid,
+      cacheId: plan.target._id,
+      expectedDoc: current,
+    });
+    if (deleted !== 1) throw new Error('VISIBLE_CACHE_DELETE_NOT_EXACTLY_ONE');
+  }
+  if (await admin.getCache({ openid: context.openid, cacheId: plan.target._id })) {
+    throw new Error('VISIBLE_CACHE_REAPPEARED_BEFORE_SAMPLE');
+  }
+  return {
+    action: plan.action,
+    backup: backupName,
+    backupSha256: hash(JSON.stringify(backup)),
+    deleted,
+    verifiedAbsent: true,
+  };
+}
+
+function validateCopyObservation(firstCard, summary) {
+  const source = summary?.copySource;
+  if (!['CANONICAL_HIT', 'PROVIDER_FRESH', 'SAFE_COPY'].includes(source)) {
+    throw new Error('VISIBLE_COPY_SOURCE_INVALID');
+  }
+  const fallback = summary?.fallbackReason || null;
+  if (source === 'SAFE_COPY') {
+    if (!['SAFE_DEADLINE', 'SAFE_PROVIDER_ERROR', 'SAFE_VALIDATION_FAILED'].includes(fallback)
+      || firstCard?.copySource !== 'safe') throw new Error('VISIBLE_SAFE_COPY_MISMATCH');
+  } else if (fallback !== null || firstCard?.copySource !== 'ai_cache' || firstCard?.aiState !== 'ready') {
+    throw new Error('VISIBLE_AI_COPY_MISMATCH');
+  }
 }
 
 function validateTiming(record) {
@@ -103,7 +250,8 @@ function validateTiming(record) {
   }
 }
 
-async function runAcceptance() {
+async function runAcceptance({ mode = 'observed' } = {}) {
+  if (!ACCEPTANCE_MODES.has(mode)) throw new Error('VISIBLE_ACCEPTANCE_MODE_INVALID');
   const session = await ensureDevToolsDirectSession();
   const mini = session.mini;
   const directory = path.join(ARTIFACT_ROOT, runId('visible'));
@@ -112,6 +260,7 @@ async function runAcceptance() {
     schemaVersion: 'today-first-card-visible-acceptance/v1',
     status: 'RUNNING',
     startedAt: new Date().toISOString(),
+    mode,
     method: 'real Today + performance.now + wx.nextTick + SelectorQuery + Image.onLoad + correlated CLS audit',
     samples: [],
   };
@@ -119,24 +268,25 @@ async function runAcceptance() {
     if (typeof mini.reLaunch !== 'function') throw new Error('DEVTOOLS_RELAUNCH_UNAVAILABLE');
     await mini.reLaunch('/pages/today/index');
     let bridge = await waitForBridge(mini);
-    await readContext(mini, ENV_ID);
+    const context = await readContext(mini, ENV_ID);
     const admin = createAdmin({ envId: ENV_ID });
     const sceneKey = bridge.snapshot?.sceneKey;
     const seenBatchIds = new Set();
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS && report.samples.length < SAMPLE_COUNT; attempt += 1) {
+    let latestObservation = null;
+    const observeRequest = async ({ attempt, counted }) => {
       bridge = await waitForBridge(mini);
       if (bridge.snapshot?.sceneKey !== sceneKey) throw new Error('VISIBLE_SCENE_CHANGED');
       const previousBatchId = bridge.snapshot?.recommendationBatchId || null;
-      const acceptanceRunId = runId(`visible-${attempt}`);
+      const acceptanceRunId = runId(`visible-${counted ? 'sample' : 'warmup'}-${attempt}`);
       const wallStart = Date.now();
       const clientStart = await mini.evaluate(() => {
         const perf = globalThis.performance;
         return typeof perf?.now === 'function' ? perf.now() : Date.now();
       });
       const triggered = await mini.evaluate(async (payload) => {
-        const bridge = globalThis.__d1dTodayDiagnostics;
-        if (!bridge?.ready || typeof bridge.triggerFullCompute !== 'function') return false;
-        return bridge.triggerFullCompute(payload);
+        const diagnostics = globalThis.__d1dTodayDiagnostics;
+        if (!diagnostics?.ready || typeof diagnostics.triggerFullCompute !== 'function') return false;
+        return diagnostics.triggerFullCompute(payload);
       }, {
         acceptanceRunId,
         captureId: `${acceptanceRunId}-capture`,
@@ -153,7 +303,32 @@ async function runAcceptance() {
         throw new Error('VISIBLE_BATCH_PRODUCT_STATE_INVALID');
       }
       const server = await waitForServerReady(admin, visible.record.auditId, wallStart);
+      validateCopyObservation(visible.snapshot.cards?.[0], server.summary);
       seenBatchIds.add(visible.record.batchId);
+      return { visible, server };
+    };
+
+    if (mode !== 'observed') {
+      latestObservation = (await observeRequest({ attempt: 0, counted: false })).visible;
+      if (mode === 'hit') await waitForTerminalJob(admin, context.openid, latestObservation.record.batchId);
+    }
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS && report.samples.length < SAMPLE_COUNT; attempt += 1) {
+      if (mode === 'miss') {
+        const reset = await prepareExactMiss({
+          admin,
+          context,
+          mini,
+          observation: latestObservation,
+          directory,
+          resetIndex: report.samples.length + 1,
+        });
+        report.cacheResets ||= [];
+        report.cacheResets.push(reset);
+      }
+      const observation = await observeRequest({ attempt, counted: true });
+      const { visible, server } = observation;
+      validateExpectedMode(mode, server);
+      latestObservation = visible;
       report.samples.push({
         sample: report.samples.length + 1,
         auditId: visible.record.auditId,
@@ -167,6 +342,19 @@ async function runAcceptance() {
         contentVisibleMs: round(visible.record.contentVisibleMs),
         imageLoadMs: round(visible.record.imageLoadMs),
         imageVisibleMs: round(visible.record.imageVisibleMs),
+        copySource: server.summary.copySource,
+        fallbackReason: server.summary.fallbackReason || null,
+        pageCopySource: visible.snapshot.cards[0].copySource,
+        pageAiState: visible.snapshot.cards[0].aiState,
+        firstVisibleReasonSha256: crypto.createHash('sha256')
+          .update(String(visible.snapshot.cards[0].todayReason || ''))
+          .digest('hex'),
+        plan0ReadyMs: auditTime(server.audit, 'PLAN0_READY'),
+        providerStartMs: auditTime(server.audit, 'PROVIDER_START'),
+        providerHeadersMs: auditTime(server.audit, 'PROVIDER_HEADERS'),
+        firstValidatedMs: auditTime(server.audit, 'FIRST_VALIDATED'),
+        providerCompleteMs: auditTime(server.audit, 'PROVIDER_COMPLETE'),
+        homeReadyMs: auditTime(server.audit, 'HOME_READY'),
         serverRequestId: server.requestId,
       });
     }
@@ -175,7 +363,7 @@ async function runAcceptance() {
     const image = summarize(report.samples.map((sample) => sample.imageVisibleMs));
     const serverToContent = summarize(report.samples.map((sample) => sample.contentVisibleMs - sample.serverResponseReadyMs));
     const contentToImage = summarize(report.samples.map((sample) => sample.imageVisibleMs - sample.contentVisibleMs));
-    report.summary = { content, image, serverToContent, contentToImage };
+    report.summary = { content, image, serverToContent, contentToImage, ...summarizeAiFirst(report.samples) };
     report.productPerformanceResult = content.max < 3000 && contentToImage.max < 1000 ? 'PASS' : 'FAIL';
     report.clientPrimaryBottleneck = content.max >= 3000
       ? 'STATE_RENDER_PATH'
@@ -195,13 +383,44 @@ async function runAcceptance() {
   }
 }
 
-if (require.main === module) {
-  runAcceptance()
-    .then((report) => process.stdout.write(`${JSON.stringify(report, null, 2)}\n`))
-    .catch((error) => {
-      process.stderr.write(`${error?.stack || error}\nEVIDENCE=${error?.evidence || 'NOT_WRITTEN'}\n`);
-      process.exitCode = 1;
-    });
+async function main() {
+  const cli = parseCliArgs(process.argv.slice(2));
+  if (!cli.valid) {
+    process.stdout.write('Usage: node today-first-card-visible-acceptance.js --live [--mode observed|hit|miss]\n');
+    process.exitCode = 2;
+    return;
+  }
+  fs.mkdirSync(ARTIFACT_ROOT, { recursive: true });
+  const lockPath = path.join(ARTIFACT_ROOT, 'run.lock');
+  const lock = fs.openSync(lockPath, 'wx');
+  try {
+    const report = await runAcceptance({ mode: cli.mode });
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  } finally {
+    fs.closeSync(lock);
+    fs.unlinkSync(lockPath);
+  }
 }
 
-module.exports = { MAX_ATTEMPTS, SAMPLE_COUNT, round, summarize, validateTiming, runAcceptance };
+if (require.main === module) main().catch((error) => {
+  process.stderr.write(`${error?.stack || error}\nEVIDENCE=${error?.evidence || 'NOT_WRITTEN'}\n`);
+  process.exitCode = 1;
+});
+
+module.exports = {
+  MAX_ATTEMPTS,
+  SAMPLE_COUNT,
+  ACCEPTANCE_MODES,
+  auditTime,
+  parseCliArgs,
+  prepareExactMiss,
+  rate,
+  round,
+  runAcceptance,
+  summarize,
+  summarizeAiFirst,
+  validateCopyObservation,
+  validateExpectedMode,
+  validateTiming,
+  waitForTerminalJob,
+};

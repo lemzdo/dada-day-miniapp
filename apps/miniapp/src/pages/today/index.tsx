@@ -248,7 +248,15 @@ interface TodayDiagnosticsBridge {
   readCopyAcceptanceState: () => {
     sceneKey: SceneKey;
     recommendationBatchId?: string;
-    cards: Array<{ outfitKey: string; displayTitle: string; todayReason: string; isFavorite: boolean; isWornToday: boolean }>;
+    cards: Array<{
+      outfitKey: string;
+      displayTitle: string;
+      todayReason: string;
+      copySource: string;
+      aiState: string;
+      isFavorite: boolean;
+      isWornToday: boolean;
+    }>;
   };
   readUsableCardState: () => {
     batchIndex: number;
@@ -1684,6 +1692,8 @@ export default function TodayPage() {
           outfitKey: card.outfitKey,
           displayTitle: card.displayTitle,
           todayReason: card.todayReason,
+          copySource: card.copySource || 'safe',
+          aiState: card.aiState || 'failed',
           isFavorite: card.isFavorite,
           isWornToday: card.isWornToday,
         })),
@@ -1698,7 +1708,7 @@ export default function TodayPage() {
           batchTotal: batch.length,
           hasOutfit: Boolean(card),
           copyTextPresent: Boolean(copyText.trim()),
-          copySource: 'safe',
+          copySource: card?.copySource || 'safe',
           canSwipe: batch.length > 1,
           canFavorite: Boolean(card) && operation !== 'favorite',
           canOpenDetail: Boolean(card),

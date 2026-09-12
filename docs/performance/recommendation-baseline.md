@@ -307,6 +307,23 @@ server audit by the same `auditId`, and retain at least these stages/fields:
 `SERVER_RESPONSE_READY`, `CLIENT_RESPONSE_RECEIVED`,
 `FIRST_CARD_CONTENT_VISIBLE`, `COPY_SOURCE`, and `FALLBACK_REASON`.
 
+The real Today runner is `pnpm today:ai-first:accept -- --mode <mode>`. It always
+collects exactly three valid counted samples and supports three explicit modes:
+
+- `observed` records the naturally occurring production source without mutation;
+- `hit` performs one uncounted warm-up, waits for its Copy Job to become terminal,
+  then requires every counted sample to be `CANONICAL_HIT` with Provider calls = 0;
+- `miss` establishes the exact first-card cache identity with one uncounted Today
+  request, then uses the existing fail-closed CAS cleanup for each counted sample.
+  Before removing at most one exact cache document it writes a private recovery
+  artifact, rechecks user/job/fingerprint ownership and all related terminal
+  states, and verifies absence. Every counted MISS must call Provider exactly once.
+
+The counted page card must also agree with the correlated server decision:
+`CANONICAL_HIT` and `PROVIDER_FRESH` require page `ai_cache/ready`; `SAFE_COPY`
+requires page `safe` plus exactly one permitted fallback reason. Reports retain
+only the first-visible reason SHA-256 rather than raw copy.
+
 Metric definitions:
 
 - `AI_REASON_FIRST_VISIBLE_RATE` = valid samples whose first painted reason came
@@ -329,6 +346,8 @@ reference was checked on 2026-09-12; actual billing still follows the account
 and deployment region. No production route change is valid until the live
 artifact and human language review are complete.
 
-Current working-tree gates: Recommendation Runtime tests 887/887 PASS; Today
-tests 177/177 PASS. Real model-race, deployed MISS/HIT and real Today paint
-values are intentionally left unclaimed until their artifacts exist.
+Current working-tree gates before this follow-up: Recommendation Runtime tests
+887/887 PASS; Today tests 177/177 PASS. The deterministic Today runner and its
+source-correlation tests were then added; their final gate counts belong in the
+delivery report. Real model-race, deployed MISS/HIT and real Today paint values
+are intentionally left unclaimed until their artifacts exist.
