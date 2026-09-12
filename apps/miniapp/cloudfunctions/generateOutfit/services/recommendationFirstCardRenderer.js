@@ -88,7 +88,7 @@ async function invokeRecommendationReason({ entry, rendererConfig, request, sign
     ...rendererConfig.aiOptions,
     request,
     signal,
-    model: 'qwen3.7-max',
+    model: request.model,
     promptVariant: 'compressed-v2',
     promptVersion: 'voice-contract-v2.0-compressed-v2-production-1',
     rawResponse: true,
@@ -98,9 +98,10 @@ async function invokeRecommendationReason({ entry, rendererConfig, request, sign
   try {
     const result = await xiaodaAI.execute('recommendation_reason', entry.preparedEntry.input, options);
     emitAudit(rendererConfig.onAuditStage, 'RESPONSE_HEADERS', 'received');
+    emitAudit(rendererConfig.onAuditStage, 'PROVIDER_HEADERS', 'received');
     return responseFromCoreResult(result);
   } catch (error) {
-    const failure = describeFailure(error, rendererConfig.failureContext || {}, { stage: 'request', provider: { name: 'dashscope', model: 'qwen3.7-max' } });
+    const failure = describeFailure(error, rendererConfig.failureContext || {}, { stage: 'request', provider: { name: 'dashscope', model: request.model } });
     emitAudit(rendererConfig.onAuditStage, 'PROVIDER_COMPLETE', 'failed', { failure });
     throw error;
   }
@@ -176,7 +177,7 @@ async function renderFirstCardCanonical({ entry, rendererConfig = {} } = {}) {
         invoke: (options) => invokeRecommendationReason({
           entry,
           rendererConfig,
-          request: buildProductionRequest([entry.preparedEntry]),
+          request: buildProductionRequest([entry.preparedEntry], { model: rendererConfig.model }),
           signal: options.signal,
         }),
       } : {}),
@@ -184,6 +185,7 @@ async function renderFirstCardCanonical({ entry, rendererConfig = {} } = {}) {
       // allowed to persist or dispatch while the interactive render is live.
       onValidated: async () => {},
       onInvalid: async () => {},
+      stopAfterAllValidated: true,
       failureContext: rendererConfig.failureContext || {},
     });
   } catch (error) {

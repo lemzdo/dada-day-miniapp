@@ -30,11 +30,19 @@ function runtimeAuditUpdate(value) {
       ? Math.round(timing * 1000) / 1000
       : null];
   }));
+  const copySource = ['CANONICAL_HIT', 'PROVIDER_FRESH', 'SAFE_COPY'].includes(source.copySource)
+    ? source.copySource
+    : null;
+  const fallbackReason = ['SAFE_DEADLINE', 'SAFE_PROVIDER_ERROR', 'SAFE_VALIDATION_FAILED'].includes(source.fallbackReason)
+    ? source.fallbackReason
+    : null;
   return {
     runtimeAuditV1: {
       firstCardAiCriticalPath: {
         schemaVersion: 1,
         origin: 'handler_monotonic',
+        ...(copySource ? { copySource } : {}),
+        ...(fallbackReason ? { fallbackReason } : {}),
         timingsMs,
       },
     },
@@ -100,6 +108,7 @@ async function prepareRecommendationCopyJob({
   dispatch,
   executionMode = 'event',
   now = new Date(),
+  onCanonicalResolution,
   onPreparationStage,
   onDatabaseOperation,
 } = {}) {
@@ -112,14 +121,31 @@ async function prepareRecommendationCopyJob({
   emitPreparationStage(onPreparationStage, 'CANONICAL_CACHE_LOOKUP_START', {
     entryCount: normalizedEntries.length,
   });
+  emitPreparationStage(onPreparationStage, 'CANONICAL_LOOKUP_START', {
+    entryCount: normalizedEntries.length,
+  });
   const cached = await readCachedCopies(database, openid, rendererVersion, normalizedEntries, onDatabaseOperation);
   emitPreparationStage(onPreparationStage, 'CANONICAL_CACHE_LOOKUP_DONE', {
+    entryCount: normalizedEntries.length,
+    cacheHitCount: cached.length,
+  });
+  emitPreparationStage(onPreparationStage, 'CANONICAL_LOOKUP_END', {
     entryCount: normalizedEntries.length,
     cacheHitCount: cached.length,
   });
   const cachedById = new Map(cached.map((copy) => [copy.cacheId, copy]));
   const misses = normalizedEntries.filter((entry) => !cachedById.has(entry.cacheId));
   const jobId = buildJobIdentity({ openid, batchId, rendererVersion });
+  if (typeof onCanonicalResolution === 'function') {
+    try {
+      onCanonicalResolution({
+        entries: normalizedEntries,
+        cachedCopies: cached,
+        missEntries: misses,
+        jobId,
+      });
+    } catch { /* Early admission observation cannot alter durable preparation. */ }
+  }
   const timestamp = now.toISOString();
   const draft = {
     version: JOB_VERSION,

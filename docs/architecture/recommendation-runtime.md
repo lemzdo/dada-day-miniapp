@@ -72,9 +72,43 @@ fill cannot fail the current recommendation response or leak an unsaved pool id.
 ## First-card and Home Light
 
 Home Light is the minimal renderer boundary. Card 0 identity and selected items are fixed before first-card
-AI admission. AI provider/model/prompt contracts are outside Core and remain frozen by the current runtime
-implementation. Canonical copy coordination and required persistence remain orchestrator concerns; a
-canonical hit must preserve its provider-zero-call contract.
+AI admission. The homepage critical path is:
+
+```text
+FINAL_OUTFIT_READY -> PLAN0_READY -> FINGERPRINT_READY
+  -> CANONICAL_LOOKUP_START/END
+    -> HIT: CANONICAL_HIT, Provider calls = 0
+    -> MISS: PROVIDER_START -> PROVIDER_HEADERS -> FIRST_VALIDATED
+```
+
+The final outfit boundary is deliberately before Narrative Plan creation: outerwear, accessories and every
+other displayed item are already part of identity and evidence. Card 0 renderer-entry and fingerprint work
+is performed once. Cards 1–7 Narrative Plans/renderer preparation, candidate-pool save, optional overlay,
+detail payload, optional persistence and analytics are not first-card AI admission prerequisites.
+
+Canonical lookup is the MISS admission boundary. On MISS the Provider may run concurrently with the durable
+Copy Job reservation, but a fresh copy is not authoritative until the existing canonical-correctness join
+confirms its plan id and render-input fingerprint. On HIT the durable result is joined before returning the
+copy, preserving the provider-zero-call contract. Canonical persistence after a validated fresh result is a
+bounded server-tail concern and does not replace an already valid first-visible AI copy with Safe Copy.
+
+The first-visible source precedence is fixed:
+
+1. `CANONICAL_HIT`;
+2. `PROVIDER_FRESH`;
+3. `SAFE_COPY` only with `SAFE_DEADLINE`, `SAFE_PROVIDER_ERROR`, or `SAFE_VALIDATION_FAILED`.
+
+`HOME_READY` is not a fallback reason. After Home Light is ready, the orchestrator waits only for the
+remaining absolute server-response budget. The current deadline is **1,605ms from request start**, derived
+from the accepted real Today samples: 3,000ms visible budget − 1,295ms measured worst client/transport tail
+− 100ms explicit safety margin. The derivation and metric definitions live in
+[`../performance/recommendation-baseline.md`](../performance/recommendation-baseline.md).
+
+The production homepage renderer remains `qwen3.7-max` until the fixed production-contract model race has
+real Provider evidence. `apps/miniapp/scripts/homepage-first-card-model-race/runner.js` changes only model
+and fingerprint route while retaining the real Narrative Plans, production prompt, streaming parser and
+validator. A faster route may replace Max on the homepage only when real latency and quality gates pass;
+Max remains available for Detail and deeper AI work. No model is selected from local stubs.
 
 ## Evidence and verification
 

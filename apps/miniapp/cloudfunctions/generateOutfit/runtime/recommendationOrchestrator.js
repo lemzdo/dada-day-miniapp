@@ -1,8 +1,23 @@
 'use strict';
 
 const DEFAULT_AI_WINDOW_MS = 6000;
-const SERVER_RESPONSE_DEADLINE_MS = 2300;
+const USER_VISIBLE_BUDGET_MS = 3000;
+const MEASURED_CLIENT_VISIBLE_TAIL_BUDGET_MS = 1295;
+const SERVER_RESPONSE_SAFETY_MARGIN_MS = 100;
+const SERVER_RESPONSE_DEADLINE_MS = USER_VISIBLE_BUDGET_MS
+  - MEASURED_CLIENT_VISIBLE_TAIL_BUDGET_MS
+  - SERVER_RESPONSE_SAFETY_MARGIN_MS;
 const SERVER_TAIL_TIMEOUT_MS = 6000;
+const COPY_SOURCES = Object.freeze({
+  CANONICAL_HIT: 'CANONICAL_HIT',
+  PROVIDER_FRESH: 'PROVIDER_FRESH',
+  SAFE_COPY: 'SAFE_COPY',
+});
+const FALLBACK_REASONS = Object.freeze({
+  DEADLINE: 'SAFE_DEADLINE',
+  PROVIDER_ERROR: 'SAFE_PROVIDER_ERROR',
+  VALIDATION_FAILED: 'SAFE_VALIDATION_FAILED',
+});
 const { normalizeInput, runRecommendationCore } = require('./recommendationCore');
 const { createFailureEnvelope, getFailure, sanitizeFailure } = require('../services/firstCardObservability');
 
@@ -39,6 +54,21 @@ function setDiagnostic(context, key, value) {
     context.diagnostics[key] = normalized;
   }
   void safeCall(context?.onTelemetry, { key, value: normalized });
+}
+
+function recordCopyDecision(context, copySource, fallbackReason = null) {
+  setDiagnostic(context, 'COPY_SOURCE', copySource);
+  setDiagnostic(context, 'FALLBACK_REASON', fallbackReason);
+  auditStage(context, 'COPY_DECISION', copySource, {
+    copySource,
+    fallbackReason,
+  });
+}
+
+function fallbackReasonFor(outcome) {
+  if (outcome?.status === 'TIMEOUT') return FALLBACK_REASONS.DEADLINE;
+  if (outcome?.reason === 'VALIDATOR_FAIL') return FALLBACK_REASONS.VALIDATION_FAILED;
+  return FALLBACK_REASONS.PROVIDER_ERROR;
 }
 
 function newAttemptId() {
@@ -82,6 +112,8 @@ function auditStage(context, stage, status = 'completed', extra = {}) {
     elapsedFromHandlerMs: elapsed === null ? null : Math.round(elapsed * 1000) / 1000,
     remainingDeadlineMs: remaining === null ? null : Math.round(remaining * 1000) / 1000,
     status,
+    ...(typeof extra?.copySource === 'string' ? { copySource: extra.copySource } : {}),
+    ...(typeof extra?.fallbackReason === 'string' ? { fallbackReason: extra.fallbackReason } : {}),
     ...(safeFailure ? { failure: safeFailure } : {}),
     ...(typeof extra?.attemptId === 'string' && /^[\w.-]+$/.test(extra.attemptId) ? { attemptId: extra.attemptId.slice(0, 128) } : {}),
   };
@@ -145,14 +177,18 @@ function auditSummary(context, extra = {}) {
     tailWaitExpired: audit.tailWaitExpired === true,
     executionOutcome: audit.executionOutcome || 'not_started',
     failure: sanitizeFailure(audit.failure),
+    copySource: diagnostics.COPY_SOURCE || null,
+    fallbackReason: diagnostics.FALLBACK_REASON || null,
+    serverResponseDeadlineMs: SERVER_RESPONSE_DEADLINE_MS,
     snapshot: extra.snapshot || 'response',
     stageStatus: Object.fromEntries([
       'HANDLER_ENTRY', 'FULL_BATCH_READY', 'CORE_READY', 'NARRATIVE_PLAN_READY', 'CACHE_LOOKUP_DONE',
-      'FIRST_CARD_AI_ADMITTED', 'PROVIDER_START', 'RESPONSE_HEADERS',
+      'FIRST_CARD_AI_ADMITTED', 'PROVIDER_START', 'RESPONSE_HEADERS', 'PROVIDER_HEADERS',
       'FIRST_COMPLETE_CANDIDATE', 'FIRST_VALIDATED', 'PROVIDER_COMPLETE',
       'VALIDATOR_COMPLETE', 'CANONICAL_WRITE_START', 'CANONICAL_WRITE_DONE',
       'CANONICAL_PERSISTED', 'BACKGROUND_DISPATCHED',
-      'DEADLINE_REACHED',
+      'DEADLINE_REACHED', 'HOME_READY', 'AI_WAIT_START', 'AI_WAIT_END',
+      'COPY_DECISION', 'SERVER_RESPONSE_READY',
     ].map((stage) => [stage, has(stage) ? 'occurred' : 'not_occurred'])),
   };
   diagnostics.firstCardAudit.summary = summary;
@@ -188,6 +224,7 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
   const deadlineAt = handlerOrigin + globalThis.BigInt(SERVER_RESPONSE_DEADLINE_MS) * 1000000n;
   context.deadlineAt = deadlineAt;
   auditStage(context, 'HANDLER_ENTRY', 'entered');
+  auditStage(context, 'REQUEST_START', 'started');
   setDiagnostic(context, 'requestStart', 0);
   setDiagnostic(context, 'AI_LATE_DISCARDED', false);
   // The owner is created at admission time and is the single handle shared by
@@ -320,7 +357,10 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
     }
     const requiredPromise = asPromise(
       context.persistAndAssembleRecommendation(core, prepared, normalized),
-    );
+    ).then((response) => {
+      auditStage(context, 'HOME_READY', 'ready');
+      return response;
+    });
     // Observe assembler failures immediately; the response path still awaits
     // this same promise and preserves its existing failure semantics.
     void requiredPromise.catch(() => undefined);
@@ -329,81 +369,70 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
         status: 'FAIL', reason: 'PROVIDER_FAIL', error,
         failure: failureFor(context, error, { stage: 'runtime', code: 'RUNTIME_FAILED' }),
       }));
+    let settledCardOutcome;
+    const observedCardPromise = Promise.resolve(cardPromise).then((value) => {
+      settledCardOutcome = value;
+      return value;
+    });
     // The early adapter only admits/renders card0. Canonical persistence and
     // retry hooks are completed by the prepared adapter in the normal path.
     const activeInteractive = prepared.firstCardInteractive || interactive;
+    const response = await requiredPromise;
     attributionStage(context, 'CANONICAL_CORRECTNESS_JOIN_START');
-    const remainingMs = Math.max(0, Number(deadlineAt - monotonicNow()) / 1e6);
+    auditStage(context, 'AI_WAIT_START', settledCardOutcome ? 'already_ready' : 'waiting');
+    let first = settledCardOutcome;
     let timer;
-    const deadlinePromise = new Promise((resolve) => {
-      timer = setTimeout(() => {
-        auditStage(context, 'DEADLINE_REACHED', 'timeout', { attemptId: context.attemptId });
-        if (context?.diagnostics?.firstCardAudit) {
-          context.diagnostics.firstCardAudit.deadlineReason = deadlineReasonAt(
-            context.diagnostics.firstCardAudit,
-          );
-        }
-        setDiagnostic(context, 'deadlineReached', elapsedMs(handlerOrigin));
-        if (context?.diagnostics?.firstCardAudit) context.diagnostics.firstCardAudit.responseDeadlineReached = true;
-        setDiagnostic(context, 'FIRST_CARD_AI_RESULT', 'TIMEOUT');
-        resolve({ status: 'TIMEOUT' });
-      }, remainingMs);
-    });
-    const first = await Promise.race([cardPromise, deadlinePromise]);
+    if (!first) {
+      const remainingMs = Math.max(0, Number(deadlineAt - monotonicNow()) / 1e6);
+      const deadlinePromise = new Promise((resolve) => {
+        timer = setTimeout(() => {
+          auditStage(context, 'DEADLINE_REACHED', 'timeout', { attemptId: context.attemptId });
+          if (context?.diagnostics?.firstCardAudit) {
+            context.diagnostics.firstCardAudit.deadlineReason = deadlineReasonAt(
+              context.diagnostics.firstCardAudit,
+            );
+          }
+          setDiagnostic(context, 'deadlineReached', elapsedMs(handlerOrigin));
+          if (context?.diagnostics?.firstCardAudit) context.diagnostics.firstCardAudit.responseDeadlineReached = true;
+          setDiagnostic(context, 'FIRST_CARD_AI_RESULT', 'TIMEOUT');
+          resolve({ status: 'TIMEOUT' });
+        }, remainingMs);
+      });
+      first = await Promise.race([observedCardPromise, deadlinePromise]);
+    }
+    auditStage(context, 'AI_WAIT_END', first?.status || 'unknown');
     attributionStage(context, 'CANONICAL_CORRECTNESS_READY', { status: first?.status || 'unknown' });
     if (timer) clearTimeout(timer);
-    const response = await requiredPromise;
     let finalResponse = response;
     let outcome = first;
     let firstCardPersistPromise = null;
     if (first.status === 'SUCCESS' || first.status === 'CACHE_HIT') {
       try {
-        let persisted = first.copy;
-        if (first.status !== 'CACHE_HIT') {
-          // Persistence and job completion share one promise across the UI
-          // race and server tail. Never issue a second canonical write.
-          firstCardPersistPromise = persistAndCompleteFirstCard(activeInteractive, first.copy, context);
-          // Tail takeover may outlive the response race. Mark this promise as
-          // observed immediately, including when the response deadline wins.
-          void firstCardPersistPromise.catch(() => undefined);
-          const persistRemainingMs = Math.max(0, Number(deadlineAt - monotonicNow()) / 1e6);
-          if (persistRemainingMs <= 0) {
-            outcome = { status: 'TIMEOUT', reason: 'POST_VALIDATION' };
-          } else {
-            let persistTimer;
-            const persistDeadline = new Promise((resolve) => {
-              persistTimer = setTimeout(() => resolve({ timedOut: true }), persistRemainingMs);
-            });
-            let persistResult;
-            try {
-              persistResult = await Promise.race([
-                firstCardPersistPromise.then((value) => ({ value })),
-                persistDeadline,
-              ]);
-            } finally {
-              if (persistTimer) clearTimeout(persistTimer);
-            }
-            if (persistResult?.timedOut) {
-              outcome = { status: 'TIMEOUT', reason: 'POST_VALIDATION' };
-            } else {
-              persisted = persistResult.value || first.copy;
-              auditStage(context, 'CANONICAL_PERSISTED');
-              setDiagnostic(context, 'firstCardCanonicalPersisted', elapsedMs(handlerOrigin));
-              setDiagnostic(context, 'CANONICAL_READY', elapsedMs(handlerOrigin));
-            }
-          }
-        }
-        if (outcome.status !== 'TIMEOUT' && typeof activeInteractive.applyCanonicalToResponse === 'function') {
+        if (typeof activeInteractive.applyCanonicalToResponse === 'function') {
           finalResponse = await activeInteractive.applyCanonicalToResponse(
             response,
-            persisted || first.copy,
+            first.copy,
           );
         }
+        recordCopyDecision(
+          context,
+          first.status === 'CACHE_HIT' ? COPY_SOURCES.CANONICAL_HIT : COPY_SOURCES.PROVIDER_FRESH,
+        );
+        if (first.status !== 'CACHE_HIT') {
+          // Persistence and job completion share one promise across the UI
+          // response and server tail. A validated, identity-bound fresh copy
+          // is user-visible immediately; storage latency cannot turn it back
+          // into safe copy or consume the visible deadline.
+          firstCardPersistPromise = persistAndCompleteFirstCard(activeInteractive, first.copy, context);
+          void firstCardPersistPromise.catch(() => undefined);
+        }
       } catch (error) {
-        const failure = failureFor(context, error, { stage: 'persistence', code: 'PERSISTENCE_FAILED' });
-        auditStage(context, 'CANONICAL_PERSISTED', 'failed', { attemptId: context.attemptId, failure });
-        outcome = { status: 'FAIL', reason: 'PERSIST_FAIL', error, failure };
+        const failure = failureFor(context, error, { stage: 'runtime', code: 'RUNTIME_FAILED' });
+        outcome = { status: 'FAIL', reason: 'PROVIDER_FAIL', error, failure };
       }
+    }
+    if (outcome.status !== 'SUCCESS' && outcome.status !== 'CACHE_HIT') {
+      recordCopyDecision(context, COPY_SOURCES.SAFE_COPY, fallbackReasonFor(outcome));
     }
     attributionStage(context, 'CANONICAL_CORRECTNESS_JOIN_DONE', { status: outcome?.status || 'unknown' });
     // A first-card timeout is a response barrier, not an AI cancellation point.
@@ -420,9 +449,9 @@ async function runRecommendationOrchestrator(input = {}, context = {}, lifecycle
     }
     auditSummary(context);
     let tailDone = Promise.resolve(outcome);
-    if (outcome.status === 'TIMEOUT') {
+    if (first.status === 'SUCCESS' || outcome.status === 'TIMEOUT') {
       tailDone = settleFirstCardTail({
-        cardPromise,
+        cardPromise: observedCardPromise,
         persistPromise: firstCardPersistPromise,
         interactive: activeInteractive,
         context,
@@ -677,7 +706,7 @@ async function runFirstCard(interactive, context, origin, deadlineAt, onAdmissio
     const providerRemainingMs = Math.max(0, Number(deadlineAt - monotonicNow()) / 1e6);
     // The UI deadline only gates the race. Once admitted, the provider
     // promise must remain alive for the server tail; use the existing bounded
-    // provider timeout rather than aborting it at 2300ms.
+    // provider timeout rather than aborting it at the response deadline.
     const providerTimeoutMs = Math.max(
       providerRemainingMs,
       Number(context.firstCardProviderTimeoutMs) || SERVER_TAIL_TIMEOUT_MS,
@@ -717,13 +746,22 @@ async function runFirstCard(interactive, context, origin, deadlineAt, onAdmissio
       recordExecution(context, 'failed', failure);
       return { status: 'FAIL', reason, result, ...(failure ? { failure } : {}) };
     }
+    const copy = {
+      ...(result.copy || result.canonicalCopy),
+      outfitKey: admission.entry.outfitKey,
+      cardIndex: admission.entry.position,
+      source: 'ai_fresh',
+    };
+    if (typeof interactive.confirmCanonicalCorrectness === 'function') {
+      await interactive.confirmCanonicalCorrectness(copy);
+    }
     setDiagnostic(context, 'FIRST_CARD_AI_RESULT', 'SUCCESS');
     if (context?.diagnostics?.firstCardAudit) context.diagnostics.firstCardAudit.executionOutcome = 'succeeded';
     recordExecution(context, 'succeeded');
     setDiagnostic(context, 'firstCardAiValidated', elapsedMs(origin));
     return {
       status: 'SUCCESS',
-      copy: result.copy || result.canonicalCopy,
+      copy,
       metadata: result.metadata,
       aiMs,
     };
@@ -752,6 +790,7 @@ function buildResult({
   const batchId = response?.batch?.batchId || prepared.batchId || core.metadata.batchId;
   const countContract = response?.batch?.countContract || core.executionState.countContract;
   setDiagnostic(context, 'recommendationReady', elapsedMs(handlerOrigin));
+  auditStage(context, 'SERVER_RESPONSE_READY', 'ready');
   void safeCall(lifecycleHooks.onRecommendationReady, {
     batchId,
     response,
@@ -829,4 +868,14 @@ async function finishLegacy({
   };
 }
 
-module.exports = { DEFAULT_AI_WINDOW_MS, SERVER_RESPONSE_DEADLINE_MS, SERVER_TAIL_TIMEOUT_MS, runRecommendationOrchestrator };
+module.exports = {
+  COPY_SOURCES,
+  DEFAULT_AI_WINDOW_MS,
+  FALLBACK_REASONS,
+  MEASURED_CLIENT_VISIBLE_TAIL_BUDGET_MS,
+  SERVER_RESPONSE_DEADLINE_MS,
+  SERVER_RESPONSE_SAFETY_MARGIN_MS,
+  SERVER_TAIL_TIMEOUT_MS,
+  USER_VISIBLE_BUDGET_MS,
+  runRecommendationOrchestrator,
+};

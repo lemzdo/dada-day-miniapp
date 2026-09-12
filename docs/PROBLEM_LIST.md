@@ -1,6 +1,6 @@
 # PROBLEM_LIST.md - 搭搭 day 当前存在的问题
 
-> 最后更新：2026-09-10
+> 最后更新：2026-09-12
 > 用途：记录还未解决的问题。
 
 ## Recommendation Runtime 2.2 状态（2026-09-10）
@@ -46,6 +46,14 @@
 
 真实指标与证据边界详见 `docs/performance/recommendation-baseline.md`。
 
+## 当前交付 Goal
+
+- `Homepage AI-First Reason`：AI-first critical path、1,605ms budget-aware wait、
+  fallback taxonomy、模型竞速 runner 与本地回归已完成；真实 Max/Fast 调用、生产部署和
+  real Today HIT/MISS paint 验收仍待执行，因此本项尚未关闭。外部模型竞速两次均被执行
+  环境以“需用户明确授权发送目标和内容”拒绝，当前标记 `TEST_INFRA_BLOCKED`；不得以
+  stub 结果选模型或声称生产 PASS。
+
 
 
 | 顺序   | 需求                                                    | 优先级             | 当前判断                             |
@@ -64,6 +72,7 @@
 | **12** | **云端集合 / 索引 / 权限 / 环境变量发布核验**           | P2工程债           | 上线前必须完整闭环                   |
 | **13** | **AI 真人穿搭效果预览**                                 | P2/P3              | 新增，值得做但不应现在抢主线         |
 | **14** | **严格虚拟试衣 VTON**                                   | P3                 | 长期，不提前绑定架构                 |
+| **15** | **搭搭day 全项目 Cloud Runtime 性能体检**                | P1 工程专项        | Homepage AI-First Reason 交付后另行开展；本 Goal 不展开 |
 
 ## PRE_LAUNCH_SECURITY
 

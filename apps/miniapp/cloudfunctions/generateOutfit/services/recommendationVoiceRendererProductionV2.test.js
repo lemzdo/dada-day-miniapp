@@ -31,6 +31,20 @@ test('8-plan uses one qwen compressed-v2 streaming request', async () => {
   assert.match(calls[0].messages[0].content, /逐项独立按 id 对应/); assert.equal(PROMPT_VARIANT, 'compressed-v2');
 });
 
+test('fixed model race can override only the model while retaining the production prompt and validator', async () => {
+  const input = entries(1); const calls = [];
+  const result = await renderRecommendationVoiceRendererProductionV2({
+    preparedEntries: input,
+    model: 'qwen-flash',
+    modelRouteVersion: 'voice-renderer-model-route-v2-flash-race',
+    fetchImpl: provider(input, calls),
+  });
+  assert.equal(result.status, 'completed');
+  assert.equal(calls[0].model, 'qwen-flash');
+  assert.match(calls[0].messages[0].content, /只返回 JSON 对象/);
+  assert.equal(result.validatedCount, 1);
+});
+
 for (const count of [1, 3, 7]) test(`partial ${count}-plan input remains one call`, async () => {
   const input = entries(count); const calls = []; const result = await renderRecommendationVoiceRendererProductionV2({ preparedEntries: input, fetchImpl: provider(input, calls) });
   assert.equal(result.validatedCount, count); assert.equal(calls.length, 1); assert.equal(JSON.parse(calls[0].messages[1].content).length, count);

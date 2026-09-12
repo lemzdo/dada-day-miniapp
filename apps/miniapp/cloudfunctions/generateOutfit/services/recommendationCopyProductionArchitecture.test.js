@@ -37,13 +37,15 @@ test('C2 starts pure card0 rendering while the orchestrator owns deadline and pe
   assert.match(prepareBody, /materializeFirstCard/);
   assert.match(prepareBody, /settleInteractiveRecommendationCopyJob/);
   assert.doesNotMatch(prepareBody, /dispatchPreparedRecommendationCopyJob|dispatchScfEvent/);
-  assert.match(orchestratorSource, /SERVER_RESPONSE_DEADLINE_MS = 2300/);
+  assert.match(orchestratorSource, /USER_VISIBLE_BUDGET_MS = 3000/);
+  assert.match(orchestratorSource, /MEASURED_CLIENT_VISIBLE_TAIL_BUDGET_MS = 1295/);
+  assert.match(orchestratorSource, /SERVER_RESPONSE_SAFETY_MARGIN_MS = 100/);
   assert.match(orchestratorSource, /renderFirstCardCanonical/);
   assert.match(orchestratorSource, /persistCanonicalCopy/);
   assert.doesNotMatch(streamSource, /consumeProductionRendererStream|persistCanonicalCopy\(copy\)/);
 });
 
-test('first-card provider admission waits for the durable card0 job reservation', () => {
+test('first-card provider admission starts after canonical MISS and joins durable reservation before authority', () => {
   const runtimeBody = bodyBetween(
     'async function runProductionRecommendationRuntime',
     'async function computeProductionRecommendationCore',
@@ -52,8 +54,10 @@ test('first-card provider admission waits for the durable card0 job reservation'
     'async function prepareProductionRecommendationWork',
     'async function persistAndAssembleProductionRecommendation',
   );
-  assert.match(runtimeBody, /firstCardCopyJobPromise \|\|= prepareRecommendationCopyJob/);
-  assert.match(runtimeBody, /resolveAdmission: async \(\) => \{[\s\S]*await firstCardCopyJobPromise/);
+  assert.match(runtimeBody, /if \(!firstCardCopyJobPromise\)[\s\S]*firstCardCopyJobPromise = prepareRecommendationCopyJob/);
+  assert.match(runtimeBody, /onCanonicalResolution: resolveCanonicalResolution/);
+  assert.match(runtimeBody, /resolveAdmission: async \(\) => \{[\s\S]*await firstCardCanonicalResolutionPromise/);
+  assert.match(runtimeBody, /confirmCanonicalCorrectness: async \(copy\) => \{[\s\S]*await firstCardCopyJobPromise/);
   const firstCardBody = orchestratorSource.slice(
     orchestratorSource.indexOf('async function runFirstCard'),
     orchestratorSource.indexOf('function buildResult'),
@@ -61,6 +65,10 @@ test('first-card provider admission waits for the durable card0 job reservation'
   assert.ok(
     firstCardBody.indexOf('await interactive.resolveAdmission()')
       < firstCardBody.indexOf('await context.renderFirstCardCanonical'),
+  );
+  assert.ok(
+    firstCardBody.indexOf('await context.renderFirstCardCanonical')
+      < firstCardBody.indexOf('await interactive.confirmCanonicalCorrectness(copy)'),
   );
   assert.match(runtimeBody, /markCopyJobRetryable: markFirstCardCopyJobRetryable/);
   assert.match(runtimeBody, /firstCardCopyJobSettlementPromise/);

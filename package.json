@@ -21,7 +21,9 @@
     "first-card:smoke:test": "node --test apps/miniapp/scripts/first-card-ai-smoke/runner.test.js",
     "first-card:production-smoke": "node apps/miniapp/scripts/production-first-card-smoke/runner.js --live",
     "first-card:production-smoke:test": "node --test apps/miniapp/scripts/production-first-card-smoke/*.test.js",
-    "first-card:production-smoke:compare": "node apps/miniapp/scripts/production-first-card-smoke/compare.js"
+    "first-card:production-smoke:compare": "node apps/miniapp/scripts/production-first-card-smoke/compare.js",
+    "first-card:model-race": "node apps/miniapp/scripts/homepage-first-card-model-race/runner.js --live",
+    "first-card:model-race:test": "node --test apps/miniapp/scripts/homepage-first-card-model-race/runner.test.js"
   },
   "devDependencies": {
     "@cloudbase/cli": "3.8.1",

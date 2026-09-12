@@ -793,6 +793,8 @@ function emitRecommendationServerDone({ diagnostics, executionMode, response } =
     responseReady: diagnostics.responseReady,
     FIRST_CARD_AI_RESULT: diagnostics.FIRST_CARD_AI_RESULT,
     FIRST_CARD_AI_MS: diagnostics.FIRST_CARD_AI_MS,
+    COPY_SOURCE: diagnostics.COPY_SOURCE || null,
+    FALLBACK_REASON: diagnostics.FALLBACK_REASON || null,
     REQUEST_TO_RESPONSE_READY_MS: diagnostics.REQUEST_TO_RESPONSE_READY_MS,
     AI_LATE_DISCARDED: diagnostics.AI_LATE_DISCARDED === true,
     databaseSummary,
@@ -927,21 +929,35 @@ function buildFirstCardRuntimeAudit(diagnostics) {
       && !['not_occurred', 'not_reached', 'not_admitted', 'skipped'].includes(candidate?.status));
     return Number.isFinite(entry?.elapsedFromHandlerMs) ? entry.elapsedFromHandlerMs : null;
   };
+  const runtimeStageMs = (stage) => {
+    const entry = (Array.isArray(diagnostics?.stageDiagnostics) ? diagnostics.stageDiagnostics : [])
+      .find((candidate) => candidate?.stage === stage);
+    return Number.isFinite(entry?.elapsedMs) ? entry.elapsedMs : null;
+  };
   const plan0ReadyMs = Number.isFinite(diagnostics?.plan0ReadyAt)
     ? diagnostics.plan0ReadyAt
     : Number.isFinite(diagnostics?.PLAN0_READY) ? diagnostics.PLAN0_READY : null;
   return {
     firstCardAiCriticalPath: {
+      copySource: diagnostics?.COPY_SOURCE || null,
+      fallbackReason: diagnostics?.FALLBACK_REASON || null,
       timingsMs: {
+        requestStartMs: stageMs('REQUEST_START'),
+        finalOutfitReadyMs: runtimeStageMs('FINAL_OUTFIT_READY'),
         plan0ReadyMs,
+        fingerprintReadyMs: runtimeStageMs('FINGERPRINT_READY'),
+        canonicalLookupStartMs: runtimeStageMs('CANONICAL_LOOKUP_START'),
+        canonicalLookupEndMs: runtimeStageMs('CANONICAL_LOOKUP_END'),
         providerStartMs: stageMs('PROVIDER_START'),
-        providerHeadersMs: stageMs('RESPONSE_HEADERS'),
+        providerHeadersMs: stageMs('PROVIDER_HEADERS') ?? stageMs('RESPONSE_HEADERS'),
         firstCompleteCandidateMs: stageMs('FIRST_COMPLETE_CANDIDATE'),
         firstValidatedMs: stageMs('FIRST_VALIDATED'),
         providerCompleteMs: stageMs('PROVIDER_COMPLETE'),
         validatorCompleteMs: stageMs('VALIDATOR_COMPLETE'),
         canonicalWriteStartMs: stageMs('CANONICAL_WRITE_START'),
         canonicalWriteDoneMs: stageMs('CANONICAL_WRITE_DONE'),
+        homeReadyMs: stageMs('HOME_READY'),
+        serverResponseReadyMs: stageMs('SERVER_RESPONSE_READY'),
       },
     },
   };
@@ -972,6 +988,7 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
   recordRecommendationStage(diagnostics, 'HANDLER_START', { elapsedMs: 0 });
   let backgroundPromise = Promise.resolve([]);
   let firstCardCopyJobPromise = null;
+  let firstCardCanonicalResolutionPromise = null;
   let firstCardCopyJobSettlementPromise = null;
   const settleFirstCardCopyJob = (outcome = {}) => {
     // Success and failure share one first-call-wins settlement owner.  This
@@ -1127,34 +1144,61 @@ async function runProductionRecommendationRuntime(input, context = {}, lifecycle
       batchId,
       inputIdentityHash,
     }) => {
-      // Admission begins by durably reserving the card0 Copy Job. The provider
-      // cannot start until this promise resolves.
-      firstCardCopyJobPromise ||= prepareRecommendationCopyJob({
-        database: db,
-        openid: diagnostics.openid || context.userIdentity?.openid,
-        batchId,
-        inputIdentityHash,
-        rendererVersion: PRODUCTION_RENDERER_VERSION,
-        entries: [entry],
-        auditId: diagnostics.auditId,
-        executionMode: 'interactive',
-        onPreparationStage: (stage, fields) => recordRecommendationStage(diagnostics, stage, {
+      // Canonical lookup is the MISS decision boundary. The durable Copy Job
+      // reservation continues concurrently with Provider rendering; both are
+      // joined before a fresh copy becomes authoritative.
+      if (!firstCardCopyJobPromise) {
+        let resolveCanonicalResolution;
+        let rejectCanonicalResolution;
+        firstCardCanonicalResolutionPromise = new Promise((resolve, reject) => {
+          resolveCanonicalResolution = resolve;
+          rejectCanonicalResolution = reject;
+        });
+        firstCardCopyJobPromise = prepareRecommendationCopyJob({
+          database: db,
+          openid: diagnostics.openid || context.userIdentity?.openid,
           batchId,
-          fields,
-        }),
-        onDatabaseOperation: (operation) => recordDatabaseOperation(diagnostics, operation),
-      });
+          inputIdentityHash,
+          rendererVersion: PRODUCTION_RENDERER_VERSION,
+          entries: [entry],
+          auditId: diagnostics.auditId,
+          executionMode: 'interactive',
+          onCanonicalResolution: resolveCanonicalResolution,
+          onPreparationStage: (stage, fields) => recordRecommendationStage(diagnostics, stage, {
+            batchId,
+            fields,
+          }),
+          onDatabaseOperation: (operation) => recordDatabaseOperation(diagnostics, operation),
+        });
+        void firstCardCopyJobPromise.catch(rejectCanonicalResolution);
+      }
       return {
         entry,
         resolveAdmission: async () => {
+          const resolution = await firstCardCanonicalResolutionPromise;
+          const resolvedEntry = resolution?.entries?.[0] || entry;
+          const cached = resolution?.cachedCopies?.[0] || null;
+          if (cached) {
+            const job = await firstCardCopyJobPromise;
+            const jobEntry = job?.entries?.[0] || resolvedEntry;
+            const cachedCopy = job?.initialCopies?.find((copy) => copy.cardIndex === 0);
+            return { entry: jobEntry, cachedCopy: cachedCopy ? {
+              ...cachedCopy,
+              outfitKey: jobEntry.outfitKey,
+              cardIndex: jobEntry.position,
+            } : null };
+          }
+          return { entry: resolvedEntry, cachedCopy: null };
+        },
+        confirmCanonicalCorrectness: async (copy) => {
           const job = await firstCardCopyJobPromise;
-          const jobEntry = job?.entries?.[0] || entry;
-          const cachedCopy = job?.initialCopies?.find((copy) => copy.cardIndex === 0);
-          return { entry: jobEntry, cachedCopy: cachedCopy ? {
-            ...cachedCopy,
-            outfitKey: jobEntry.outfitKey,
-            cardIndex: jobEntry.position,
-          } : null };
+          const jobEntry = job?.entries?.[0];
+          if (!jobEntry
+            || jobEntry.preparedEntry?.plan?.planId !== copy?.planId
+            || jobEntry.renderInputFingerprint !== copy?.renderInputFingerprint) {
+            throw new Error('VOICE_RENDERER_OUTPUT_PLAN_BINDING');
+          }
+          return { entry: jobEntry };
         },
         markCopyJobRetryable: markFirstCardCopyJobRetryable,
         applyCanonicalToResponse: applyFirstCardCanonicalToResponse,
@@ -1258,6 +1302,18 @@ async function computeProductionRecommendationCore(snapshot, diagnostics = creat
   let firstCardPlanAttempted = false;
   const notifyFirstCard = ({ plan, recommendation, index = 0 }) => {
     if (index !== 0 || typeof scfContext.onFirstCardReady !== 'function') return;
+    if (diagnostics.plan0ReadyAt === undefined && plan && recommendation) {
+      // PLAN0_READY is the semantic-plan boundary. Fingerprint construction
+      // starts after it and is intentionally included in PLAN0 -> Provider.
+      diagnostics.plan0ReadyAt = typeof scfContext.handlerOrigin === 'bigint'
+        ? Number(process.hrtime.bigint() - scfContext.handlerOrigin) / 1e6
+        : monotonicElapsedMs(diagnostics);
+      recordRecommendationStage(diagnostics, 'PLAN0_READY', {
+        elapsedMs: diagnostics.plan0ReadyAt,
+        batchId: v2BatchId,
+        fields: { planId: plan.planId, cardIndex: 0 },
+      });
+    }
     let entry;
     try {
       entry = buildProductionRendererEntry(plan, recommendation, 0, recommendation?.outfitKey, (stage, fields) => {
@@ -1272,18 +1328,6 @@ async function computeProductionRecommendationCore(snapshot, diagnostics = creat
         batchId: v2BatchId,
         fields: { planId: plan.planId, cardIndex: 0 },
       });
-      if (diagnostics.plan0ReadyAt === undefined && plan && recommendation) {
-        // Use the same runtime origin as RecommendationAudit, including when
-        // the HTTP adapter created diagnostics before loading the runtime.
-        diagnostics.plan0ReadyAt = typeof scfContext.handlerOrigin === 'bigint'
-          ? Number(process.hrtime.bigint() - scfContext.handlerOrigin) / 1e6
-          : monotonicElapsedMs(diagnostics);
-        recordRecommendationStage(diagnostics, 'PLAN0_READY', {
-          elapsedMs: diagnostics.plan0ReadyAt,
-          batchId: v2BatchId,
-          fields: { planId: plan.planId, cardIndex: 0 },
-        });
-      }
     } catch { /* Observations cannot alter first-card admission. */ }
     try {
       if (!entry) return;
@@ -1316,6 +1360,10 @@ async function computeProductionRecommendationCore(snapshot, diagnostics = creat
       diagnostics,
       onFirstCardMaterialized: ({ recommendation }) => {
         firstCardPlanAttempted = true;
+        recordRecommendationStage(diagnostics, 'FINAL_OUTFIT_READY', {
+          batchId: v2BatchId,
+          fields: { outfitKey: recommendation.outfitKey },
+        });
         recordRecommendationStage(diagnostics, 'PLAN0_BUILD_START', {
           batchId: v2BatchId,
           fields: { outfitKey: recommendation.outfitKey },

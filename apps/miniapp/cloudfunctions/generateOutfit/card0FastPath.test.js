@@ -192,8 +192,8 @@ test('Phase1A moves admission before card1 materialization and reuses plan0/fing
   assert.ok(stageIndex('SELECTOR_CARD0_FIXED') < stageIndex('CARD0_MATERIALIZE_START'));
   assert.ok(stageIndex('CARD0_MATERIALIZE_DONE') < stageIndex('PLAN0_BUILD_START'));
   assert.ok(stageIndex('PLAN0_BUILD_DONE') < stageIndex('FINGERPRINT_READY'));
-  assert.ok(stageIndex('FINGERPRINT_READY') < stageIndex('PLAN0_READY'));
-  assert.ok(stageIndex('PLAN0_READY') < stageIndex('SELECTOR_FULL_BATCH_DONE'));
+  assert.ok(stageIndex('PLAN0_READY') < stageIndex('FINGERPRINT_READY'));
+  assert.ok(stageIndex('FINGERPRINT_READY') < stageIndex('SELECTOR_FULL_BATCH_DONE'));
   assert.ok(stageIndex('SELECTOR_FULL_BATCH_DONE') < stageIndex('ELIGIBILITY_REASON_FULL_BATCH_DONE'));
   t.diagnostic(`before: ${old.events.join(' -> ')}`);
   t.diagnostic(`after: ${fast.events.join(' -> ')}`);

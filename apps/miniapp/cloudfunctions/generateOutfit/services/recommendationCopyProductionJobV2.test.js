@@ -82,9 +82,14 @@ test('all cache hits do not dispatch', async () => {
   for (const entry of jobEntries) await persistValidatedCanonicalCopy(database, { _openid: 'openid-a', rendererVersion: 'renderer-v2' }, entry, { text: `copy-${entry.position}` }, now);
   const preparationStages = [];
   let calls = 0; const result = await prepareRecommendationCopyJob({ database, openid: 'openid-a', batchId: 'batch-a', rendererVersion: 'renderer-v2', entries: input, dispatch: async () => { calls += 1; }, now,
-    onPreparationStage: (stage) => preparationStages.push(stage) });
+    onPreparationStage: (stage) => preparationStages.push(stage),
+    onCanonicalResolution: ({ missEntries }) => {
+      assert.equal(missEntries.length, 0);
+      preparationStages.push('CANONICAL_RESOLUTION_CALLBACK');
+    } });
   assert.equal(calls, 0); assert.equal(result.status, 'ready_cache_hit'); assert.equal(result.initialCopies.length, 3);
-  assert.deepEqual(preparationStages, ['CANONICAL_CACHE_LOOKUP_START', 'CANONICAL_CACHE_LOOKUP_DONE',
+  assert.deepEqual(preparationStages, ['CANONICAL_CACHE_LOOKUP_START', 'CANONICAL_LOOKUP_START',
+    'CANONICAL_CACHE_LOOKUP_DONE', 'CANONICAL_LOOKUP_END', 'CANONICAL_RESOLUTION_CALLBACK',
     'COPY_JOB_RESERVATION_START', 'COPY_JOB_RESERVATION_DONE', 'INITIAL_COPIES_RESOLUTION_DONE']);
 });
 
@@ -140,8 +145,8 @@ test('provider stream validates, persists canonical, and next request is a cache
   });
   assert.equal(rendered.status, 'success');
   assert.equal(rendered.metadata.providerCalls, 1);
-  assert.equal(rendered.metadata.stream.finishReason, 'stop');
-  assert.equal(rendered.metadata.stream.doneReceived, true);
+  assert.equal(rendered.metadata.stream.finishReason, null);
+  assert.equal(rendered.metadata.stream.doneReceived, false);
   assert.ok(rendered.metadata.stream.firstChunkBytes > 0);
   assert.ok(rendered.metadata.stream.lastChunkBytes > 0);
   assert.ok(rendered.metadata.stream.rawLength > 0);
@@ -150,6 +155,7 @@ test('provider stream validates, persists canonical, and next request is a cache
   assert.deepEqual(auditStages, [
     { stage: 'PROVIDER_START', status: 'started' },
     { stage: 'RESPONSE_HEADERS', status: 'received' },
+    { stage: 'PROVIDER_HEADERS', status: 'received' },
     { stage: 'FIRST_COMPLETE_CANDIDATE', status: 'extracted' },
     { stage: 'FIRST_VALIDATED', status: 'accepted' },
     { stage: 'PROVIDER_COMPLETE', status: 'completed' },

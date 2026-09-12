@@ -2,7 +2,10 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { runRecommendationOrchestrator } = require('./recommendationOrchestrator');
+const {
+  SERVER_RESPONSE_DEADLINE_MS,
+  runRecommendationOrchestrator,
+} = require('./recommendationOrchestrator');
 const { renderFirstCardCanonical } = require('../services/recommendationFirstCardRenderer');
 const { createXiaodaAI, createFailureEnvelope } = require('@d1d/ai-core');
 
@@ -254,7 +257,7 @@ test('unrelated candidate persistence failure does not affect interactive AI', a
   assert.equal(result.response.light.cards[0].todayReason, 'AI despite persistence failure');
 });
 
-test('AI success persists canonical before the authoritative first response', async () => {
+test('AI success applies fresh copy before canonical persistence settles', async () => {
   const events = [];
   const context = interactiveContext({
     firstCardInteractive: {
@@ -274,7 +277,10 @@ test('AI success persists canonical before the authoritative first response', as
   });
   assert.equal(result.response.light.cards[0].todayReason, 'AI canonical');
   assert.equal(result.firstCardAi.status, 'SUCCESS');
-  assert.deepEqual(events, ['canonical-persisted', 'job-completed', 'response-assembled', 'ready']);
+  await result.tailDone;
+  assert.ok(events.indexOf('response-assembled') < events.indexOf('canonical-persisted'));
+  assert.ok(events.indexOf('canonical-persisted') < events.indexOf('job-completed'));
+  assert.ok(events.includes('ready'));
 });
 
 test('interactive audit records correlated first-card stages and a complete summary', async () => {
@@ -297,7 +303,8 @@ test('interactive audit records correlated first-card stages and a complete summ
       },
     },
   });
-  await runRecommendationOrchestrator({}, context);
+  const result = await runRecommendationOrchestrator({}, context);
+  await result.tailDone;
   const stages = new Set(audit.map((entry) => entry.stage));
   for (const stage of ['HANDLER_ENTRY', 'CORE_READY', 'NARRATIVE_PLAN_READY', 'CACHE_LOOKUP_DONE', 'BACKGROUND_DISPATCHED',
     'FIRST_CARD_AI_ADMITTED', 'PROVIDER_START', 'PROVIDER_COMPLETE', 'VALIDATOR_COMPLETE',
@@ -318,7 +325,7 @@ test('interactive audit records correlated first-card stages and a complete summ
   assert.ok(stageEntries.every((entry) => typeof entry.status === 'string'));
 });
 
-test('T+1000ms audit reports about 1000ms elapsed and 1300ms remaining', async () => {
+test('T+1000ms audit reports remaining time from the measured visible budget', async () => {
   const handlerOrigin = process.hrtime.bigint() - 1000n * 1000000n;
   const diagnostics = {
     auditId: 'audit-clock',
@@ -330,20 +337,21 @@ test('T+1000ms audit reports about 1000ms elapsed and 1300ms remaining', async (
   }));
   const handlerEntry = diagnostics.firstCardAudit.stages.find((entry) => entry.stage === 'HANDLER_ENTRY');
   assert.ok(handlerEntry.elapsedFromHandlerMs >= 995 && handlerEntry.elapsedFromHandlerMs < 1100);
-  assert.ok(handlerEntry.remainingDeadlineMs > 1200 && handlerEntry.remainingDeadlineMs <= 1305);
+  assert.ok(handlerEntry.remainingDeadlineMs > 500 && handlerEntry.remainingDeadlineMs <= 610);
   assert.ok(Math.abs(
-    handlerEntry.elapsedFromHandlerMs + handlerEntry.remainingDeadlineMs - 2300,
+    handlerEntry.elapsedFromHandlerMs + handlerEntry.remainingDeadlineMs - SERVER_RESPONSE_DEADLINE_MS,
   ) < 0.01);
 });
 
-test('T+2299ms audit reports about 1ms remaining', async () => {
-  const handlerOrigin = process.hrtime.bigint() - 2299n * 1000000n;
+test('audit reports about 1ms remaining immediately before the measured deadline', async () => {
+  const handlerOrigin = process.hrtime.bigint()
+    - globalThis.BigInt(SERVER_RESPONSE_DEADLINE_MS - 1) * 1000000n;
   const diagnostics = { auditId: 'audit-one-ms', stageLogger: () => {} };
   await runRecommendationOrchestrator({}, interactiveContext({
     context: { diagnostics, handlerOrigin },
   }));
   const handlerEntry = diagnostics.firstCardAudit.stages.find((entry) => entry.stage === 'HANDLER_ENTRY');
-  assert.ok(handlerEntry.elapsedFromHandlerMs >= 2299);
+  assert.ok(handlerEntry.elapsedFromHandlerMs >= SERVER_RESPONSE_DEADLINE_MS - 1);
   assert.ok(handlerEntry.remainingDeadlineMs >= 0 && handlerEntry.remainingDeadlineMs <= 1.1);
 });
 
@@ -408,16 +416,50 @@ test('card0 canonical cache hit skips the provider and marks AI stages not occur
   assert.equal(diagnostics.firstCardAudit.summary.stageStatus.CACHE_LOOKUP_DONE, 'occurred');
   assert.equal(diagnostics.firstCardAudit.summary.stageStatus.FIRST_CARD_AI_ADMITTED, 'not_occurred');
   assert.equal(diagnostics.firstCardAudit.summary.stageStatus.PROVIDER_START, 'not_occurred');
+  assert.equal(diagnostics.COPY_SOURCE, 'CANONICAL_HIT');
+  assert.equal(diagnostics.FALLBACK_REASON, null);
+});
+
+test('Home ready before AI waits for remaining budget and returns fresh provider copy', async () => {
+  let releaseProvider;
+  let settled = false;
+  const diagnostics = { auditId: 'audit-budget-wait', stageLogger: () => {} };
+  const context = interactiveContext({
+    context: {
+      diagnostics,
+      renderFirstCardCanonical: async ({ rendererConfig }) => {
+        rendererConfig.onAuditStage('PROVIDER_START', 'started');
+        return new Promise((resolve) => { releaseProvider = resolve; });
+      },
+    },
+  });
+  const pending = runRecommendationOrchestrator({}, context).then((result) => {
+    settled = true;
+    return result;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false, 'Home ready must not immediately choose safe copy');
+  releaseProvider({ status: 'success', copy: { planId: 'plan-1', text: 'AI in remaining budget' } });
+  const result = await pending;
+  assert.equal(result.response.light.cards[0].todayReason, 'AI in remaining budget');
+  assert.equal(diagnostics.COPY_SOURCE, 'PROVIDER_FRESH');
+  assert.equal(diagnostics.FALLBACK_REASON, null);
+  assert.equal(diagnostics.firstCardAudit.summary.stageStatus.HOME_READY, 'occurred');
+  assert.equal(diagnostics.firstCardAudit.summary.stageStatus.AI_WAIT_START, 'occurred');
+  assert.equal(diagnostics.firstCardAudit.summary.stageStatus.AI_WAIT_END, 'occurred');
+  await result.tailDone;
 });
 
 for (const failureType of ['PROVIDER_FAIL', 'VALIDATOR_FAIL']) {
   test(`${failureType} preserves safe recommendation and leaves the job retryable`, async () => {
     const outcomes = [];
+    const diagnostics = { auditId: `audit-${failureType.toLowerCase()}`, stageLogger: () => {} };
     const context = interactiveContext({
       firstCardInteractive: {
         markCopyJobRetryable: async (outcome) => { outcomes.push(outcome); },
       },
       context: {
+        diagnostics,
         renderFirstCardCanonical: async () => ({ status: 'failure', failureType }),
       },
     });
@@ -425,6 +467,11 @@ for (const failureType of ['PROVIDER_FAIL', 'VALIDATOR_FAIL']) {
     assert.equal(result.firstCardAi.status, 'FAIL');
     assert.equal(result.firstCardAi.reason, failureType);
     assert.equal(result.response.light.cards[0].todayReason, 'safe');
+    assert.equal(diagnostics.COPY_SOURCE, 'SAFE_COPY');
+    assert.equal(
+      diagnostics.FALLBACK_REASON,
+      failureType === 'VALIDATOR_FAIL' ? 'SAFE_VALIDATION_FAILED' : 'SAFE_PROVIDER_ERROR',
+    );
     await result.tailDone;
     assert.equal(outcomes.length, 1);
     assert.equal(outcomes[0].reason, failureType);
@@ -435,7 +482,8 @@ test('absolute deadline returns safe copy then persists the same late provider r
   let release;
   let providerCalls = 0;
   let persistenceCalls = 0;
-  const monotonicOriginAt = process.hrtime.bigint() - 2250n * 1000000n;
+  const monotonicOriginAt = process.hrtime.bigint()
+    - globalThis.BigInt(SERVER_RESPONSE_DEADLINE_MS - 50) * 1000000n;
   const diagnostics = { auditId: 'audit-provider', monotonicOriginAt, stageLogger: () => {} };
   const context = interactiveContext({
     firstCardInteractive: {
@@ -455,6 +503,8 @@ test('absolute deadline returns safe copy then persists the same late provider r
   const result = await runRecommendationOrchestrator({}, context);
   assert.equal(result.firstCardAi.status, 'TIMEOUT');
   assert.equal(result.response.light.cards[0].todayReason, 'safe');
+  assert.equal(diagnostics.COPY_SOURCE, 'SAFE_COPY');
+  assert.equal(diagnostics.FALLBACK_REASON, 'SAFE_DEADLINE');
   assert.equal(persistenceCalls, 0);
   release({ status: 'success', copy: { planId: 'plan-1', text: 'late canonical' } });
   await result.tailDone;
@@ -466,7 +516,7 @@ test('absolute deadline returns safe copy then persists the same late provider r
   assert.equal(diagnostics.firstCardAudit.summary.providerCalled, true);
 });
 
-test('canonical persistence failure keeps safe copy and marks the job retryable', async () => {
+test('canonical persistence failure keeps already validated fresh copy and marks the job retryable', async () => {
   const outcomes = [];
   const context = interactiveContext({
     firstCardInteractive: {
@@ -475,10 +525,9 @@ test('canonical persistence failure keeps safe copy and marks the job retryable'
     },
   });
   const result = await runRecommendationOrchestrator({}, context);
-  assert.equal(result.firstCardAi.status, 'FAIL');
-  assert.equal(result.firstCardAi.reason, 'PERSIST_FAIL');
-  assert.equal(result.response.light.cards[0].todayReason, 'safe');
-  await result.tailDone;
+  assert.equal(result.firstCardAi.status, 'SUCCESS');
+  assert.equal(result.response.light.cards[0].todayReason, 'AI canonical');
+  assert.equal((await result.tailDone).reason, 'PERSIST_FAIL');
   assert.equal(outcomes.length, 1);
   assert.equal(outcomes[0].reason, 'PERSIST_FAIL');
 });
@@ -486,7 +535,8 @@ test('canonical persistence failure keeps safe copy and marks the job retryable'
 test('deadline summary freezes pre-AI exhaustion at the absolute handler deadline', async () => {
   let providerCalls = 0;
   let persistenceCalls = 0;
-  const handlerOrigin = process.hrtime.bigint() - 2301n * 1000000n;
+  const handlerOrigin = process.hrtime.bigint()
+    - globalThis.BigInt(SERVER_RESPONSE_DEADLINE_MS + 1) * 1000000n;
   const diagnostics = {
     auditId: 'audit-pre-ai',
     monotonicOriginAt: process.hrtime.bigint() - 4860n * 1000000n,
@@ -523,7 +573,8 @@ test('deadline summary freezes pre-AI exhaustion at the absolute handler deadlin
 
 test('deadline summary distinguishes provider completion from validator completion', async () => {
   let release;
-  const handlerOrigin = process.hrtime.bigint() - 2250n * 1000000n;
+  const handlerOrigin = process.hrtime.bigint()
+    - globalThis.BigInt(SERVER_RESPONSE_DEADLINE_MS - 50) * 1000000n;
   const diagnostics = {
     auditId: 'audit-validator',
     monotonicOriginAt: process.hrtime.bigint() - 4800n * 1000000n,
@@ -636,7 +687,9 @@ for (const expireTail of [false, true]) test(`response deadline then actual prov
       markCopyJobRetryable: async (input) => retryInputs.push(input),
     },
     context: {
-      diagnostics, handlerOrigin: process.hrtime.bigint() - 2200n * 1000000n,
+      diagnostics,
+      handlerOrigin: process.hrtime.bigint()
+        - globalThis.BigInt(SERVER_RESPONSE_DEADLINE_MS - 100) * 1000000n,
       firstCardTailTimeoutMs: expireTail ? 10 : 1000,
       renderFirstCardCanonical: ({ entry, rendererConfig }) => renderFirstCardCanonical({ entry, rendererConfig: { ...rendererConfig, xiaodaAI: ai } }),
     },
@@ -759,6 +812,49 @@ test('Phase1A keeps the prepared adapter as the canonical persistence owner', as
   assert.equal(result.firstCardAi.status, 'SUCCESS');
   assert.equal(persisted, 1);
   assert.equal(result.response.light.cards[0].todayReason, 'early');
+});
+
+test('fresh provider copy remains non-authoritative until the canonical correctness join succeeds', async () => {
+  const core = interactiveCore();
+  const confirmation = deferredCardWork();
+  let providerCalls = 0;
+  let returned = false;
+  const diagnostics = { stageLogger: () => {} };
+  const entry = {
+    position: 0,
+    outfitKey: 'look-1',
+    renderInputFingerprint: 'fp-1',
+    preparedEntry: { plan: { planId: 'plan-1' } },
+  };
+  const interactive = {
+    entry,
+    resolveAdmission: async () => ({ entry }),
+    confirmCanonicalCorrectness: async () => confirmation.promise,
+    persistCanonicalCopy: async (copy) => copy,
+    applyCanonicalToResponse: (response, copy) => ({ ...response, light: { cards: [{ outfitKey: 'look-1', todayReason: copy.text }] } }),
+  };
+  const running = runRecommendationOrchestrator({}, {
+    diagnostics,
+    prepareFirstCardInteractive: () => interactive,
+    computeRecommendation: async (_input, runtimeContext) => {
+      runtimeContext.onFirstCardReady({ entry });
+      return core;
+    },
+    prepareRecommendationWork: async () => ({ batchId: core.metadata.batchId, tasks: [], narrativePlans: core.narrativePlans, rendererEntries: [entry], firstCardInteractive: interactive }),
+    persistAndAssembleRecommendation: async () => ({ batch: { batchId: core.metadata.batchId, countContract: {} }, light: { cards: [{ outfitKey: 'look-1', todayReason: 'safe' }] } }),
+    renderFirstCardCanonical: async () => {
+      providerCalls += 1;
+      return { status: 'success', copy: { planId: 'plan-1', renderInputFingerprint: 'fp-1', text: 'fresh' } };
+    },
+  }).then((value) => { returned = true; return value; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(providerCalls, 1);
+  assert.equal(returned, false);
+  confirmation.resolve({ entry });
+  const result = await running;
+  await result.tailDone;
+  assert.equal(result.response.light.cards[0].todayReason, 'fresh');
+  assert.equal(diagnostics.COPY_SOURCE, 'PROVIDER_FRESH');
 });
 
 test('Phase1A async setup rejection is absorbed and leaves no unhandled rejection', async () => {

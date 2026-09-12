@@ -273,3 +273,62 @@ recording, or manual second counting is requested. The next admissible action
 is to restore DevTools loading of the watcher-produced bundle and rerun the
 same automatic three-sample acceptance. Architecture 2.2 and the server remain
 frozen; `PERFORMANCE_PROJECT=OPEN`.
+
+## Homepage AI-first reason budget and ledger (2026-09-12)
+
+This section records the Homepage AI-first delivery boundary. It does not reopen
+Recommendation Core, Candidate Pool, the Beijing dedicated endpoint, or the
+closed Today Runtime 2.2 performance project.
+
+The accepted warm Today samples supplied at Goal start are:
+
+| sample | content visible | server ready | observed transport/client-render tail |
+|---:|---:|---:|---:|
+| 1 | 1,756.200ms | 748.647ms | 1,007.553ms |
+| 2 | 1,913.000ms | 936.562ms | 976.438ms |
+| 3 | 2,205.300ms | 910.505ms | 1,294.795ms |
+
+The tail budget is the observed maximum rounded up to 1,295ms. With a 100ms
+explicit safety margin, the absolute server response deadline is:
+
+```text
+SERVER_RESPONSE_DEADLINE = 3000 - 1295 - 100 = 1605ms
+```
+
+This is an absolute request-start deadline, not 1,605ms added after Home Light.
+When `HOME_READY` occurs first, the runtime waits for AI only until the remaining
+portion of that deadline. The previous fixed 2,300ms server deadline is removed.
+
+Every valid production sample must correlate one client observation and one
+server audit by the same `auditId`, and retain at least these stages/fields:
+`REQUEST_START`, `FINAL_OUTFIT_READY`, `PLAN0_READY`, `FINGERPRINT_READY`,
+`CANONICAL_LOOKUP_START/END`, `PROVIDER_START`, `PROVIDER_HEADERS`,
+`FIRST_VALIDATED`, `PROVIDER_COMPLETE`, `HOME_READY`, `AI_WAIT_START/END`,
+`SERVER_RESPONSE_READY`, `CLIENT_RESPONSE_RECEIVED`,
+`FIRST_CARD_CONTENT_VISIBLE`, `COPY_SOURCE`, and `FALLBACK_REASON`.
+
+Metric definitions:
+
+- `AI_REASON_FIRST_VISIBLE_RATE` = valid samples whose first painted reason came
+  from `CANONICAL_HIT` or `PROVIDER_FRESH` / all valid samples.
+- `SAFE_COPY_FALLBACK_RATE` = valid samples whose first painted reason came from
+  `SAFE_COPY` / all valid samples.
+- each Safe reason rate uses the same all-valid-sample denominator; the three
+  permitted reasons are `SAFE_DEADLINE`, `SAFE_PROVIDER_ERROR`, and
+  `SAFE_VALIDATION_FAILED`.
+- `PLAN0_TO_PROVIDER_START` and `PROVIDER_START_TO_FIRST_VALIDATED` are computed
+  only for correlated MISS samples where both endpoints exist.
+
+The fixed race runner is
+`apps/miniapp/scripts/homepage-first-card-model-race/runner.js`. It compares
+`qwen3.7-max` with the existing `qwen-flash` candidate using the same real
+Narrative Plans, production compressed-v2 request and production validator. It
+records First Validated and Complete P50/P95, validator/provider error rates,
+raw review copies, token use, and observed cost per call. Its public list-price
+reference was checked on 2026-09-12; actual billing still follows the account
+and deployment region. No production route change is valid until the live
+artifact and human language review are complete.
+
+Current working-tree gates: Recommendation Runtime tests 887/887 PASS; Today
+tests 177/177 PASS. Real model-race, deployed MISS/HIT and real Today paint
+values are intentionally left unclaimed until their artifacts exist.
