@@ -27,6 +27,7 @@ temp/
 /apps/web/.test/
 /apps/miniapp/dist/
 /artifacts/
+/_tmp_luna_*/
 
 # Generated evidence outside artifacts
 /apps/miniapp/scripts/screenshots/
