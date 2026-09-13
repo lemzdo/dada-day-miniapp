@@ -19,6 +19,16 @@ test('normal exact target creates removable plan', () => { const plan = createCl
 test('cross-user cache is rejected', () => { assert.throws(() => createCleanupPlan(planInput({ cache: cache({ _openid: 'other' }) })), /CACHE_DOCUMENT_INVALID/); });
 test('wrong fingerprint and cache id are rejected', () => { assert.throws(() => createCleanupPlan(planInput({ job: fixture({ entries: [{ position: 0, outfitKey: 'outfit-1', renderInputFingerprint: 'b'.repeat(64), cacheId }] }) })), /CACHE_IDENTITY_MISMATCH/); assert.throws(() => createCleanupPlan(planInput({ job: fixture({ entries: [{ position: 0, outfitKey: 'outfit-1', renderInputFingerprint: fingerprint, cacheId: 'wrong' }] }) })), /CACHE_IDENTITY_MISMATCH/); });
 test('active or unknown jobs and live leases reject', () => { for (const status of ['queued', 'interactive', 'dispatching', 'running', 'dispatched', 'unknown']) assert.throws(() => createCleanupPlan(planInput({ jobs: [fixture({ status })] })), /JOB_NOT_TERMINAL/); assert.throws(() => createCleanupPlan(planInput({ jobs: [fixture({ leaseUntil: new Date(now.getTime() + 1).toISOString() })] })), /JOB_LEASE_ACTIVE/); });
+test('only a stale related interactive job without a live lease is safe to ignore', () => {
+  const stale = new Date(now.getTime() - 5 * 60 * 1000).toISOString();
+  assert.doesNotThrow(() => createCleanupPlan(planInput({
+    jobs: [fixture({ status: 'interactive', updatedAt: stale })],
+  })));
+  assert.throws(() => createCleanupPlan(planInput({
+    jobs: [fixture({ status: 'interactive', updatedAt: stale,
+      leaseUntil: new Date(now.getTime() + 1).toISOString() })],
+  })), /JOB_LEASE_ACTIVE/);
+});
 test('stale plan and changed cache reject', () => { const plan = createCleanupPlan(planInput()); assert.throws(() => validateCleanupPlan(plan, { now: new Date(now.getTime() + 10 * 60 * 1000 + 1), cache: cache() }), /PLAN_STALE/); assert.throws(() => validateCleanupPlan(plan, { now, cache: cache({ text: 'changed' }) }), /CACHE_DOCUMENT_CHANGED/); });
 test('empty cache is an explicit already-miss plan', () => { const plan = createCleanupPlan(planInput({ cache: null })); assert.equal(plan.action, 'already_miss'); assert.equal(validateCleanupPlan(plan, { now }).remove, false); });
 test('invalid fingerprint and malformed lease fail closed', () => { assert.throws(() => createCleanupPlan(planInput({ job: fixture({ entries: [{ position: 0, outfitKey: 'outfit-1', renderInputFingerprint: 'short', cacheId }] }) })), /ENTRY_FINGERPRINT_INVALID/); assert.throws(() => createCleanupPlan(planInput({ jobs: [fixture({ leaseUntil: 'later' })] })), /JOB_LEASE_INVALID/); });

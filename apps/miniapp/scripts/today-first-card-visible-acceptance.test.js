@@ -152,4 +152,13 @@ test('visible timing requires one ordered monotonic client timeline', () => {
     clientResponseReceivedMs: 1400, stateCommitMs: 1300, contentVisibleMs: 1500,
     imageLoadMs: 1510, imageVisibleMs: 1520,
   }), /VISIBLE_TIMING_INVARIANT_FAILED/);
+  assert.doesNotThrow(() => validateTiming({
+    auditId: 'audit-2', seq: 2, batchId: 'batch-2', outfitKey: 'outfit-2',
+    clientResponseReceivedMs: 1400, stateCommitMs: 1450, contentVisibleMs: 1500,
+  }));
+  assert.throws(() => validateTiming({
+    auditId: 'audit-3', seq: 3, batchId: 'batch-3', outfitKey: 'outfit-3',
+    clientResponseReceivedMs: 1400, stateCommitMs: 1450, contentVisibleMs: 1500,
+    imageLoadMs: 1600,
+  }), /VISIBLE_TIMING_INVARIANT_FAILED/);
 });

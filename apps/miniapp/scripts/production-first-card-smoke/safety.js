@@ -12,6 +12,7 @@ const TERMINAL_STATUSES = new Set([
   'ready_cache_hit', 'completed', 'partially_completed', 'failed_open', 'dispatch_failed',
 ]);
 const PLAN_MAX_AGE_MS = 10 * 60 * 1000;
+const RELATED_INTERACTIVE_STALE_MS = 5 * 60 * 1000;
 
 function createCleanupPlan(input = {}) {
   const now = asDate(input.now, 'PLAN_NOW_INVALID');
@@ -51,7 +52,7 @@ function createCleanupPlan(input = {}) {
       || buildJobIdentity({ openid, batchId: candidate.batchId, rendererVersion }) !== text(candidate.jobId)) {
       throw new Error('RELATED_JOB_INVALID');
     }
-    rejectJobState(candidate, now);
+    rejectRelatedJobState(candidate, now);
   }
   return plan;
 }
@@ -80,6 +81,19 @@ function rejectJobState(job, now) {
   if (future(job.leaseUntil, now) || future(job.dispatchLeaseUntil, now)) throw new Error('JOB_LEASE_ACTIVE');
 }
 
+function rejectRelatedJobState(job, now) {
+  if (TERMINAL_STATUSES.has(job.status)) {
+    rejectJobState(job, now);
+    return;
+  }
+  if (job.status !== 'interactive') throw new Error(`JOB_NOT_TERMINAL:${text(job.status) || 'unknown'}`);
+  if (future(job.leaseUntil, now) || future(job.dispatchLeaseUntil, now)) throw new Error('JOB_LEASE_ACTIVE');
+  const updatedAt = Date.parse(text(job.updatedAt));
+  if (!Number.isFinite(updatedAt) || now.getTime() - updatedAt < RELATED_INTERACTIVE_STALE_MS) {
+    throw new Error('JOB_NOT_TERMINAL:interactive');
+  }
+}
+
 function cacheMetadata(cache, target) {
   const expectedId = target.expectedCacheId || target._id;
   if (text(cache._id || cache.cacheId) !== expectedId) throw new Error('CACHE_DOCUMENT_ID_MISMATCH');
@@ -100,4 +114,4 @@ function stable(value) { return JSON.stringify(sort(value)); }
 function sort(value) { if (Array.isArray(value)) return value.map(sort); if (value && typeof value === 'object') return Object.keys(value).sort().reduce((out, key) => { out[key] = sort(value[key]); return out; }, {}); return value; }
 function hash(value) { return crypto.createHash('sha256').update(value).digest('hex'); }
 
-module.exports = { CACHE_COLLECTION, PLAN_MAX_AGE_MS, TERMINAL_STATUSES, createCleanupPlan, validateCleanupPlan, hash };
+module.exports = { CACHE_COLLECTION, PLAN_MAX_AGE_MS, RELATED_INTERACTIVE_STALE_MS, TERMINAL_STATUSES, createCleanupPlan, validateCleanupPlan, hash };

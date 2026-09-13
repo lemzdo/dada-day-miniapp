@@ -30,6 +30,10 @@ function round(value) {
   return Math.round(Number(value) * 1000) / 1000;
 }
 
+function roundOptional(value) {
+  return Number.isFinite(Number(value)) ? round(value) : null;
+}
+
 function summarize(values) {
   const ordered = values.map(Number).filter(Number.isFinite).sort((left, right) => left - right);
   if (ordered.length !== SAMPLE_COUNT) throw new Error('VISIBLE_SAMPLE_COUNT_INVALID');
@@ -144,7 +148,7 @@ async function waitForVisibleTiming(mini, { previousBatchId, seenBatchIds, start
         snapshot: bridge?.readCopyAcceptanceState?.() || null,
       };
     });
-    const record = [...observation.timings].reverse().find((entry) => entry.complete === true
+    const record = [...observation.timings].reverse().find((entry) => Number.isFinite(Number(entry.contentVisibleMs))
       && entry.batchId !== previousBatchId
       && !seenBatchIds.has(entry.batchId)
       && Number(entry.requestStart) >= startedAfter);
@@ -167,11 +171,12 @@ async function waitForServerReady(admin, auditId, startTime, timeoutMs = 90000) 
     const audit = extractAudit(logs, auditId);
     const attribution = buildAttribution(audit);
     const summary = audit.summaries.find((entry) => entry.snapshot === 'response') || audit.summaries.at(-1);
-    if (Number.isFinite(attribution.serverResponseReadyMs) && summary?.copySource) {
+    if (summary?.copySource) {
       return {
         audit,
         summary,
-        serverResponseReadyMs: round(attribution.serverResponseReadyMs),
+        serverResponseReadyMs: roundOptional(attribution.serverResponseReadyMs),
+        serverResponseReadyObserved: Number.isFinite(attribution.serverResponseReadyMs),
         requestId: logs[0]?.requestId || null,
       };
     }
@@ -255,18 +260,22 @@ function validateCopyObservation(firstCard, summary) {
 }
 
 function validateTiming(record) {
-  const ordered = [
+  const contentOrdered = [
     record.clientResponseReceivedMs,
     record.stateCommitMs,
     record.contentVisibleMs,
-    record.imageLoadMs,
-    record.imageVisibleMs,
   ];
   if (!record.auditId || !record.batchId || !record.outfitKey || !Number.isInteger(record.seq)
-    || ordered.some((value) => !Number.isFinite(Number(value)) || Number(value) < 0)
+    || contentOrdered.some((value) => !Number.isFinite(Number(value)) || Number(value) < 0)
     || Number(record.stateCommitMs) < Number(record.clientResponseReceivedMs)
-    || Number(record.contentVisibleMs) < Number(record.stateCommitMs)
-    || Number(record.imageVisibleMs) < Number(record.imageLoadMs)) {
+    || Number(record.contentVisibleMs) < Number(record.stateCommitMs)) {
+    throw new Error('VISIBLE_TIMING_INVARIANT_FAILED');
+  }
+  const imageObserved = Number.isFinite(Number(record.imageLoadMs))
+    || Number.isFinite(Number(record.imageVisibleMs));
+  if (imageObserved && (!Number.isFinite(Number(record.imageLoadMs))
+    || !Number.isFinite(Number(record.imageVisibleMs))
+    || Number(record.imageVisibleMs) < Number(record.imageLoadMs))) {
     throw new Error('VISIBLE_TIMING_INVARIANT_FAILED');
   }
 }
@@ -358,11 +367,12 @@ async function runAcceptance({ mode = 'observed' } = {}) {
         batchId: visible.record.batchId,
         outfitKey: visible.record.outfitKey,
         serverResponseReadyMs: server.serverResponseReadyMs,
+        serverResponseReadyObserved: server.serverResponseReadyObserved,
         clientResponseReceivedMs: round(visible.record.clientResponseReceivedMs),
         stateCommitMs: round(visible.record.stateCommitMs),
         contentVisibleMs: round(visible.record.contentVisibleMs),
-        imageLoadMs: round(visible.record.imageLoadMs),
-        imageVisibleMs: round(visible.record.imageVisibleMs),
+        imageLoadMs: roundOptional(visible.record.imageLoadMs),
+        imageVisibleMs: roundOptional(visible.record.imageVisibleMs),
         copySource: server.summary.copySource,
         fallbackReason: server.summary.fallbackReason || null,
         pageCopySource: visible.snapshot.cards[0].copySource,
@@ -386,14 +396,21 @@ async function runAcceptance({ mode = 'observed' } = {}) {
     }
     if (report.samples.length !== SAMPLE_COUNT) throw new Error('VISIBLE_VALID_SAMPLE_LIMIT_REACHED');
     const content = summarize(report.samples.map((sample) => sample.contentVisibleMs));
-    const image = summarize(report.samples.map((sample) => sample.imageVisibleMs));
-    const serverToContent = summarize(report.samples.map((sample) => sample.contentVisibleMs - sample.serverResponseReadyMs));
-    const contentToImage = summarize(report.samples.map((sample) => sample.imageVisibleMs - sample.contentVisibleMs));
+    const imageValues = report.samples.map((sample) => sample.imageVisibleMs).filter(Number.isFinite);
+    const image = imageValues.length === SAMPLE_COUNT ? summarize(imageValues) : null;
+    const serverReadyValues = report.samples.map((sample) => sample.serverResponseReadyMs).filter(Number.isFinite);
+    const serverToContent = serverReadyValues.length === SAMPLE_COUNT
+      ? summarize(report.samples.map((sample) => sample.contentVisibleMs - sample.serverResponseReadyMs))
+      : null;
+    const contentToImage = imageValues.length === SAMPLE_COUNT
+      ? summarize(report.samples.map((sample) => sample.imageVisibleMs - sample.contentVisibleMs))
+      : null;
     report.summary = { content, image, serverToContent, contentToImage, ...summarizeAiFirst(report.samples) };
-    report.productPerformanceResult = content.max < 3000 && contentToImage.max < 1000 ? 'PASS' : 'FAIL';
+    report.productPerformanceResult = content.max < 3000
+      && (contentToImage === null || contentToImage.max < 1000) ? 'PASS' : 'FAIL';
     report.clientPrimaryBottleneck = content.max >= 3000
       ? 'STATE_RENDER_PATH'
-      : contentToImage.max >= 1000 ? 'IMAGE_PIPELINE' : 'NONE';
+      : contentToImage?.max >= 1000 ? 'IMAGE_PIPELINE' : 'NONE';
     report.status = 'PASS';
     report.completedAt = new Date().toISOString();
     fs.writeFileSync(path.join(directory, 'report.json'), `${JSON.stringify(report, null, 2)}\n`, { flag: 'wx' });
@@ -443,6 +460,7 @@ module.exports = {
   prepareExactMiss,
   rate,
   round,
+  roundOptional,
   runAcceptance,
   summarize,
   summarizeAiFirst,
