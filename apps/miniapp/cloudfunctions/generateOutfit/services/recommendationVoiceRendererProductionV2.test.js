@@ -27,7 +27,7 @@ function provider(items, calls, options = {}) {
 test('8-plan uses one qwen compressed-v2 streaming request', async () => {
   const input = entries(8); const calls = []; const result = await renderRecommendationVoiceRendererProductionV2({ preparedEntries: input, fetchImpl: provider(input, calls) });
   assert.equal(result.status, 'completed'); assert.equal(result.validatedCount, 8); assert.equal(calls.length, 1);
-  assert.equal(calls[0].model, 'qwen3.7-max'); assert.equal(calls[0].stream, true); assert.equal(calls[0].enable_thinking, false); assert.deepEqual(calls[0].stream_options, { include_usage: true });
+  assert.equal(calls[0].model, 'qwen-flash'); assert.equal(calls[0].stream, true); assert.equal(calls[0].enable_thinking, false); assert.deepEqual(calls[0].stream_options, { include_usage: true });
   assert.match(calls[0].messages[0].content, /逐项独立按 id 对应/); assert.equal(PROMPT_VARIANT, 'compressed-v2');
 });
 
@@ -35,12 +35,12 @@ test('fixed model race can override only the model while retaining the productio
   const input = entries(1); const calls = [];
   const result = await renderRecommendationVoiceRendererProductionV2({
     preparedEntries: input,
-    model: 'qwen-flash',
+    model: 'qwen3.7-max',
     modelRouteVersion: 'voice-renderer-model-route-v2-flash-race',
     fetchImpl: provider(input, calls),
   });
   assert.equal(result.status, 'completed');
-  assert.equal(calls[0].model, 'qwen-flash');
+  assert.equal(calls[0].model, 'qwen3.7-max');
   assert.match(calls[0].messages[0].content, /只返回 JSON 对象/);
   assert.equal(result.validatedCount, 1);
 });
@@ -172,8 +172,8 @@ test('cache-hit filtering accepts misses and isolates compressed-v2 request', as
 });
 
 test('request builder keeps contract version and exact generation route', () => {
-  const request = buildProductionRequest(entries(1)); assert.equal(request.model, 'qwen3.7-max'); assert.equal(request.top_p, 0.8); assert.equal(request.max_tokens, 1200); assert.equal(request.stream_options.include_usage, true);
-  assert.equal(PRODUCTION_PROMPT_VERSION, 'voice-contract-v2.0-compressed-v2-production-1');
+  const request = buildProductionRequest(entries(1)); assert.equal(request.model, 'qwen-flash'); assert.equal(request.top_p, 0.8); assert.equal(request.max_tokens, 1200); assert.equal(request.stream_options.include_usage, true);
+  assert.equal(PRODUCTION_PROMPT_VERSION, 'voice-contract-v2.0-compressed-v2-production-4');
   assert.notEqual(PRODUCTION_MODEL_ROUTE_VERSION, VOICE_RENDERER_MODEL_ROUTE_VERSION);
 });
 

@@ -56,6 +56,37 @@ test('audit discovery fetches complete request lines across CLS cursor pages', a
   assert.deepEqual(logs, [{ requestId: 'request-1', log: "[RecommendationAudit] {\nauditId: 'audit-1'\n}" }]);
 });
 
+test('audit discovery can target the generateOutfit background tail explicitly', async () => {
+  let calls = 0;
+  const admin = createAdmin({ envId: 'e', runCli: async (command) => {
+    calls += 1;
+    const row = (functionName, log) => ({ content: {
+      request_id: 'tail-request-1',
+      function_name: functionName,
+      log,
+    } });
+    return calls === 1
+      ? { data: { results: [
+        row('recommendationStream', "auditId: 'audit-tail',"),
+        row('generateOutfit', "auditId: 'audit-tail',"),
+      ] }, meta: { listOver: true } }
+      : { data: { results: [row('generateOutfit', '[RecommendationAudit] {}')] }, meta: { listOver: true } };
+  } });
+  const logs = await admin.getAuditLogs({
+    auditId: 'audit-tail',
+    startTime: '2026-09-13 10:00:00',
+    endTime: '2026-09-13 10:10:00',
+    functionName: 'generateOutfit',
+  });
+  assert.deepEqual(logs, [{ requestId: 'tail-request-1', log: '[RecommendationAudit] {}' }]);
+  await assert.rejects(() => admin.getAuditLogs({
+    auditId: 'audit-tail',
+    startTime: 0,
+    endTime: 1,
+    functionName: 'otherFunction',
+  }), /AUDIT_FUNCTION_INVALID/);
+});
+
 test('normalizeLogs preserves only parsed entries', () => {
   assert.equal(normalizeLogs({ data: [{ timestamp: 1788359729000 }] })[0].timestamp, 1788359729000);
 });

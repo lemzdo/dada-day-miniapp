@@ -7,7 +7,7 @@ test('local AI core module resolves and exposes recommendation task without netw
   const core = require('@d1d/ai-core');
   const task = core.getTask('recommendation_reason');
   assert.ok(task);
-  assert.equal(task.model, 'qwen3.7-max');
+  assert.equal(task.model, 'qwen-flash');
   assert.equal(task.promptVariant, 'compressed-v2');
   assert.equal(typeof core.xiaodaAI?.execute, 'function');
 });

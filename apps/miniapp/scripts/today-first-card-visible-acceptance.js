@@ -50,10 +50,10 @@ function auditTime(audit, stage) {
 }
 
 function summarizeAiFirst(samples) {
-  const missSamples = samples.filter((sample) => sample.copySource === 'PROVIDER_FRESH');
-  const planToProvider = missSamples.filter((sample) => Number.isFinite(sample.plan0ReadyMs)
+  const providerSamples = samples.filter((sample) => Number.isFinite(sample.providerStartMs));
+  const planToProvider = providerSamples.filter((sample) => Number.isFinite(sample.plan0ReadyMs)
     && Number.isFinite(sample.providerStartMs));
-  const providerToValidated = missSamples.filter((sample) => Number.isFinite(sample.providerStartMs)
+  const providerToValidated = providerSamples.filter((sample) => Number.isFinite(sample.providerStartMs)
     && Number.isFinite(sample.firstValidatedMs));
   return {
     AI_REASON_FIRST_VISIBLE_RATE: rate(samples, (sample) => ['CANONICAL_HIT', 'PROVIDER_FRESH'].includes(sample.copySource)),
@@ -69,6 +69,27 @@ function summarizeAiFirst(samples) {
     PROVIDER_START_TO_FIRST_VALIDATED: providerToValidated.length === SAMPLE_COUNT
       ? summarize(providerToValidated.map((sample) => sample.firstValidatedMs - sample.providerStartMs))
       : null,
+  };
+}
+
+function mergeJobTailTimings(sample, job) {
+  if (!sample || !job || sample.auditId !== job.auditId || sample.batchId !== job.batchId) {
+    throw new Error('VISIBLE_JOB_AUDIT_MISMATCH');
+  }
+  const path = job.runtimeAuditV1?.firstCardAiCriticalPath;
+  if (!path || path.origin !== 'handler_monotonic' || path.schemaVersion !== 1) {
+    throw new Error('VISIBLE_JOB_RUNTIME_AUDIT_MISSING');
+  }
+  const timings = path.timingsMs || {};
+  return {
+    ...sample,
+    plan0ReadyMs: Number.isFinite(timings.plan0ReadyMs) ? round(timings.plan0ReadyMs) : sample.plan0ReadyMs,
+    providerStartMs: Number.isFinite(timings.providerStartMs) ? round(timings.providerStartMs) : sample.providerStartMs,
+    providerHeadersMs: Number.isFinite(timings.providerHeadersMs) ? round(timings.providerHeadersMs) : sample.providerHeadersMs,
+    firstValidatedMs: Number.isFinite(timings.firstValidatedMs) ? round(timings.firstValidatedMs) : sample.firstValidatedMs,
+    providerCompleteMs: Number.isFinite(timings.providerCompleteMs) ? round(timings.providerCompleteMs) : sample.providerCompleteMs,
+    tailJobStatus: job.status,
+    tailRuntimeAuditObserved: true,
   };
 }
 
@@ -329,7 +350,7 @@ async function runAcceptance({ mode = 'observed' } = {}) {
       const { visible, server } = observation;
       validateExpectedMode(mode, server);
       latestObservation = visible;
-      report.samples.push({
+      let sample = {
         sample: report.samples.length + 1,
         auditId: visible.record.auditId,
         seq: visible.record.seq,
@@ -356,7 +377,12 @@ async function runAcceptance({ mode = 'observed' } = {}) {
         providerCompleteMs: auditTime(server.audit, 'PROVIDER_COMPLETE'),
         homeReadyMs: auditTime(server.audit, 'HOME_READY'),
         serverRequestId: server.requestId,
-      });
+      };
+      if (mode === 'miss') {
+        const job = await waitForTerminalJob(admin, context.openid, visible.record.batchId);
+        sample = mergeJobTailTimings(sample, job);
+      }
+      report.samples.push(sample);
     }
     if (report.samples.length !== SAMPLE_COUNT) throw new Error('VISIBLE_VALID_SAMPLE_LIMIT_REACHED');
     const content = summarize(report.samples.map((sample) => sample.contentVisibleMs));
@@ -412,6 +438,7 @@ module.exports = {
   SAMPLE_COUNT,
   ACCEPTANCE_MODES,
   auditTime,
+  mergeJobTailTimings,
   parseCliArgs,
   prepareExactMiss,
   rate,

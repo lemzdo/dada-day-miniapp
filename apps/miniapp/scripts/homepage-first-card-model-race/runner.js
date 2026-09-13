@@ -13,6 +13,9 @@ const {
 } = require('../../cloudfunctions/generateOutfit/services/recommendationNarrativePlanV2');
 const {
   buildProductionRendererEntry,
+  PRODUCTION_MODEL,
+  PRODUCTION_MODEL_ROUTE_VERSION,
+  PRODUCTION_PROMPT_VERSION,
   renderRecommendationVoiceRendererProductionV2,
 } = require('../../cloudfunctions/generateOutfit/services/recommendationVoiceRendererProductionV2');
 const {
@@ -24,11 +27,11 @@ const RACE_VERSION = 'homepage-first-card-model-race/v1';
 const MODEL_ROUTES = Object.freeze({
   max: Object.freeze({
     model: VOICE_RENDERER_MODEL,
-    modelRouteVersion: 'voice-renderer-model-route-v2-max-compressed-v2-stream',
+    modelRouteVersion: 'voice-renderer-model-route-v2-max-compressed-v2-prompt4-control',
   }),
   fast: Object.freeze({
-    model: VOICE_RENDERER_FLASH_MODEL,
-    modelRouteVersion: 'voice-renderer-model-route-v2-flash-compressed-v2-stream-race1',
+    model: PRODUCTION_MODEL,
+    modelRouteVersion: PRODUCTION_MODEL_ROUTE_VERSION,
   }),
 });
 const PRICING_REFERENCE = Object.freeze({
@@ -118,6 +121,7 @@ async function invokeProvider({ apiKey, baseUrl, request, signal }) {
 async function run({
   repetitions = 1,
   cases = buildRaceCases(),
+  caseLimitByModel,
   apiKey = process.env.BAILIAN_API_KEY || process.env.DASHSCOPE_API_KEY,
   baseUrl = process.env.BAILIAN_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
   invoke = invokeProvider,
@@ -126,10 +130,21 @@ async function run({
 } = {}) {
   if (invoke === invokeProvider && !apiKey) throw new Error('PROVIDER_KEY_MISSING');
   if (!Number.isInteger(repetitions) || repetitions < 1 || repetitions > 5) throw new Error('REPETITIONS_RANGE');
+  const limits = Object.fromEntries(Object.keys(MODEL_ROUTES).map((alias) => {
+    const limit = caseLimitByModel?.[alias] ?? cases.length;
+    if (!Number.isInteger(limit) || limit < 1 || limit > cases.length) {
+      throw new Error('MODEL_CASE_LIMIT_RANGE');
+    }
+    return [alias, limit];
+  }));
+  if (caseLimitByModel && Object.keys(caseLimitByModel).some((alias) => !MODEL_ROUTES[alias])) {
+    throw new Error('MODEL_CASE_LIMIT_ALIAS');
+  }
   const calls = [];
   for (const [modelAlias, route] of Object.entries(MODEL_ROUTES)) {
+    const selectedCases = cases.slice(0, limits[modelAlias]);
     for (let repetition = 1; repetition <= repetitions; repetition += 1) {
-      for (const raceCase of cases) {
+      for (const raceCase of selectedCases) {
         const entry = buildProductionRendererEntry(
           raceCase.plan,
           raceCase.recommendation,
@@ -175,12 +190,16 @@ async function run({
           validatedCount: result.validatedCount,
           invalidCount: result.invalidCount,
           failures: result.invalid?.flatMap((invalid) => invalid.failures || [invalid.error]).filter(Boolean) || [],
+          rejectedCopies: result.invalid?.map((invalid) => ({
+            text: invalid.copy?.text || null,
+            failures: invalid.failures || [invalid.error].filter(Boolean),
+          })) || [],
           providerError: result.status !== 'completed' && Number(result.invalidCount || 0) === 0,
           usage: result.usage || null,
           copy: result.validated?.[0]?.text || null,
           requestFingerprint: crypto.createHash('sha256').update(JSON.stringify({
             planHash: raceCase.plan.planHash,
-            prompt: 'compressed-v2-production-1',
+            prompt: PRODUCTION_PROMPT_VERSION,
             model: 'controlled-variable',
           })).digest('hex'),
         });
@@ -193,8 +212,10 @@ async function run({
     status: 'complete',
     repetitions,
     caseCount: cases.length,
+    caseCountByModel: limits,
+    raceMode: limits.max < limits.fast ? 'flash_focused_with_max_control' : 'full_pairwise',
     models: MODEL_ROUTES,
-    productionPrompt: 'voice-contract-v2.0-compressed-v2-production-1',
+    productionPrompt: PRODUCTION_PROMPT_VERSION,
     productionValidator: 'validateProductionCopy',
     pricingReference: PRICING_REFERENCE,
     pricingByModel,
@@ -208,11 +229,15 @@ async function run({
 }
 
 if (require.main === module) {
-  if (!process.argv.includes('--live')) {
-    process.stderr.write('Usage: node apps/miniapp/scripts/homepage-first-card-model-race/runner.js --live\n');
+  const args = process.argv.slice(2);
+  const reduced = args.includes('--reduced');
+  const valid = args.includes('--live')
+    && args.every((arg) => ['--live', '--reduced'].includes(arg));
+  if (!valid) {
+    process.stderr.write('Usage: node apps/miniapp/scripts/homepage-first-card-model-race/runner.js --live [--reduced]\n');
     process.exitCode = 1;
   } else {
-    run().then(({ artifact, target }) => {
+    run({ caseLimitByModel: reduced ? { max: 2, fast: 8 } : undefined }).then(({ artifact, target }) => {
       process.stdout.write(`${JSON.stringify({ target, summary: artifact.summary }, null, 2)}\n`);
     }).catch((error) => {
       process.stderr.write(`${error.message}\n`);

@@ -81,7 +81,7 @@ test('uses the shared AI core recommendation_reason entry point', async () => {
   assert.equal(calls.length, 1);
   assert.equal(calls[0][0], 'recommendation_reason');
   assert.deepEqual(calls[0][1], entry.preparedEntry.input);
-  assert.equal(calls[0][2].model, 'qwen3.7-max');
+  assert.equal(calls[0][2].model, 'qwen-flash');
   assert.equal(calls[0][2].promptVariant, 'compressed-v2');
   assert.equal(calls[0][2].rawResponse, true);
   assert.deepEqual(calls[0][2].request, buildProductionRequest([entry.preparedEntry]));

@@ -45,7 +45,7 @@ test('HTTP staging contains one deploy-local copy of the canonical generateOutfi
     const vendorProbe = [
       "const resolver = require('./generateOutfit/services/deployPackageResolver');",
       "const core = resolver.loadDeployPackage('@d1d/ai-core', ['..', 'vendor', 'ai-core']);",
-      "if (core.getTask('recommendation_reason')?.model !== 'qwen3.7-max') process.exit(1);",
+      "if (core.getTask('recommendation_reason')?.model !== 'qwen-flash') process.exit(1);",
       "const assets = resolver.loadDeployPackage('@d1d/garment-assets', ['..', 'vendor', 'garment-assets']);",
       "if (assets.getStableFactReference({ cleanImageUrl: 'cloud://clean' }) !== 'cloud://clean') process.exit(1);",
     ].join(' ');

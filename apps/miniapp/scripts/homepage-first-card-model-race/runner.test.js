@@ -45,6 +45,7 @@ test('model race uses identical real Narrative Plans with production streaming v
   assert.equal(artifact.calls[0].requestFingerprint, artifact.calls[2].requestFingerprint);
   assert.ok(artifact.calls.every((call) => Number.isFinite(call.responseHeadersMs)));
   assert.ok(artifact.calls.every((call) => Number.isFinite(call.firstValidatedMs)));
+  assert.ok(artifact.calls.every((call) => Array.isArray(call.rejectedCopies)));
   assert.ok(fs.existsSync(target));
 });
 
@@ -55,4 +56,33 @@ test('summary helpers use observed usage only', () => {
     outputCnyPerMillionTokens: 36,
   }), 0.0003);
   assert.equal(observedCostCny({ promptTokens: 10, completionTokens: 5 }), null);
+});
+
+test('reduced race runs all Flash cases with a bounded Max control cohort', async () => {
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homepage-model-race-reduced-'));
+  const cases = buildRaceCases().slice(0, 3);
+  const { artifact } = await run({
+    cases,
+    caseLimitByModel: { max: 1, fast: 3 },
+    outputDir,
+    invoke: async ({ request }) => responseFor(request),
+  });
+  assert.equal(artifact.raceMode, 'flash_focused_with_max_control');
+  assert.deepEqual(artifact.caseCountByModel, { max: 1, fast: 3 });
+  assert.equal(artifact.summary.max.calls, 1);
+  assert.equal(artifact.summary.fast.calls, 3);
+  assert.equal(artifact.calls.length, 4);
+  assert.equal(artifact.calls[0].caseId, artifact.calls[1].caseId);
+  assert.equal(artifact.calls[0].requestFingerprint, artifact.calls[1].requestFingerprint);
+});
+
+test('case limits reject unknown aliases and out-of-range cohorts', async () => {
+  const cases = buildRaceCases().slice(0, 2);
+  const invoke = async () => { throw new Error('SHOULD_NOT_CALL'); };
+  await assert.rejects(() => run({ cases, caseLimitByModel: { max: 0 }, invoke }), /MODEL_CASE_LIMIT_RANGE/);
+  await assert.rejects(() => run({
+    cases,
+    caseLimitByModel: { max: 1, fast: 2, other: 1 },
+    invoke,
+  }), /MODEL_CASE_LIMIT_ALIAS/);
 });

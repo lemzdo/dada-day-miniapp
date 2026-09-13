@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   SAMPLE_COUNT,
+  mergeJobTailTimings,
   parseCliArgs,
   summarize,
   summarizeAiFirst,
@@ -42,13 +43,13 @@ test('AI-first summary reports exact source and fallback rates from correlated v
   });
 });
 
-test('MISS timing metrics remain unobserved when any required audit endpoint is missing', () => {
+test('MISS timing metrics include provider work completed after a safe deadline response', () => {
   const complete = { copySource: 'PROVIDER_FRESH', fallbackReason: null,
     plan0ReadyMs: 100, providerStartMs: 120, firstValidatedMs: 700 };
   const summary = summarizeAiFirst([
     complete,
-    complete,
-    { ...complete, firstValidatedMs: null },
+    { ...complete, copySource: 'SAFE_COPY', fallbackReason: 'SAFE_DEADLINE' },
+    { ...complete, copySource: 'SAFE_COPY', fallbackReason: 'SAFE_DEADLINE' },
   ]);
   assert.deepEqual(summary.PLAN0_TO_PROVIDER_START, {
     min: 20,
@@ -56,7 +57,38 @@ test('MISS timing metrics remain unobserved when any required audit endpoint is 
     p95: 20,
     max: 20,
   });
-  assert.equal(summary.PROVIDER_START_TO_FIRST_VALIDATED, null);
+  assert.deepEqual(summary.PROVIDER_START_TO_FIRST_VALIDATED, {
+    min: 580,
+    median: 580,
+    p95: 580,
+    max: 580,
+  });
+});
+
+test('persisted terminal job supplies post-response provider timings without changing copy outcome', () => {
+  const sample = {
+    auditId: 'audit-1', batchId: 'batch-1', copySource: 'SAFE_COPY',
+    fallbackReason: 'SAFE_DEADLINE', plan0ReadyMs: 300, providerStartMs: 370,
+    providerHeadersMs: null, firstValidatedMs: null, providerCompleteMs: null,
+  };
+  const merged = mergeJobTailTimings(sample, {
+    auditId: 'audit-1', batchId: 'batch-1', status: 'completed',
+    runtimeAuditV1: { firstCardAiCriticalPath: {
+      origin: 'handler_monotonic', schemaVersion: 1,
+      timingsMs: {
+        plan0ReadyMs: 309.1354, providerStartMs: 375.5834,
+        providerHeadersMs: 1570.7794, firstValidatedMs: 1994.3574,
+        providerCompleteMs: 1997.5564,
+      },
+    } },
+  });
+  assert.equal(merged.copySource, 'SAFE_COPY');
+  assert.equal(merged.firstValidatedMs, 1994.357);
+  assert.equal(merged.tailJobStatus, 'completed');
+  assert.equal(merged.tailRuntimeAuditObserved, true);
+  assert.throws(() => mergeJobTailTimings(sample, {
+    auditId: 'other', batchId: 'batch-1', status: 'completed',
+  }), /VISIBLE_JOB_AUDIT_MISMATCH/);
 });
 
 test('visible source must agree with the server copy decision taxonomy', () => {

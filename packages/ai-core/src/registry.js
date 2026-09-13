@@ -5,8 +5,8 @@ const prompts = new Map();
 const validators = new Map();
 
 const recommendationReasonTask = Object.freeze({
-  name: 'recommendation_reason', model: 'qwen3.7-max', promptVariant: 'compressed-v2',
-  promptVersion: 'voice-contract-v2.0-compressed-v2-production-1',
+  name: 'recommendation_reason', model: 'qwen-flash', promptVariant: 'compressed-v2',
+  promptVersion: 'voice-contract-v2.0-compressed-v2-production-4',
   prompt: 'recommendation_reason', stream: true, retry: 0, timeoutMs: 25000,
   validator: 'recommendation_production',
 });

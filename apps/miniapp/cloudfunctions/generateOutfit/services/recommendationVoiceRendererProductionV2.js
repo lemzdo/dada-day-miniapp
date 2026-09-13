@@ -4,7 +4,7 @@ const { createFailureEnvelope, describeFailure, providerMetadata, emitAudit } = 
 const fetch = require('node-fetch');
 const { TextDecoder } = require('node:util');
 const {
-  VOICE_RENDERER_MODEL,
+  VOICE_RENDERER_FLASH_MODEL,
 } = require('./voiceRendererV2Contract');
 const {
   buildRenderInputFingerprint,
@@ -12,10 +12,11 @@ const {
   validateMeaningPreservation,
 } = require('./recommendationVoiceRendererShadowV2');
 
-const PRODUCTION_VERSION = 'recommendation-voice-renderer-production-v2.1';
+const PRODUCTION_VERSION = 'recommendation-voice-renderer-production-v2.2';
 const PROMPT_VARIANT = 'compressed-v2';
-const PRODUCTION_PROMPT_VERSION = 'voice-contract-v2.0-compressed-v2-production-1';
-const PRODUCTION_MODEL_ROUTE_VERSION = 'voice-renderer-model-route-v2-max-compressed-v2-stream';
+const PRODUCTION_PROMPT_VERSION = 'voice-contract-v2.0-compressed-v2-production-4';
+const PRODUCTION_MODEL = VOICE_RENDERER_FLASH_MODEL;
+const PRODUCTION_MODEL_ROUTE_VERSION = 'voice-renderer-model-route-v2-flash-compressed-v2-prompt4-stream';
 const GENERATION_PARAMETERS = Object.freeze({
   temperature: 0.3, top_p: 0.8, max_tokens: 1200, stream: true, enable_thinking: false,
 });
@@ -31,10 +32,11 @@ function compressedSystemPrompt() {
     '禁止推断身体效果、体感、材质、天气、偏好或便利性；禁止算法腔、报告腔、杂志腔、营销流行语。通常一句，最多两句短句。',
     '只返回 JSON 对象：{"copies":[{"id":"原样复制输入id","text":"中文文案"}]}。不得增加字段、Markdown 或解释。',
     '逐项独立按 id 对应：每条只依据自己的 m 和 g，不借用其他项；至少自然提及本项 g 中的一个衣物名。m=null 或证据弱时也要以本项衣物关系落地，不得只写泛化套话。',
+    'm 非空时须完整保留其中的核心关系，不得只改写一半；轮廓关系可直接写“上衣和下装一紧一松，轮廓有了对比”，不要写“上衣收紧”。m=null 时必须原样写出 g 中至少一个衣物名，禁止只写“这套简单日常”。每条写成完整句并以句号结尾。',
     '按输入顺序逐项完成输出，先完成 id=1 再继续其余项。',
   ].join('\n');
 }
-function buildProductionRequest(entries, { model = VOICE_RENDERER_MODEL } = {}) {
+function buildProductionRequest(entries, { model = PRODUCTION_MODEL } = {}) {
   const inputs = entries.map((entry, index) => ({
     id: String(index + 1),
     m: entry.input?.primary?.meaning || null,
@@ -114,7 +116,7 @@ function decodeStreamChunk(chunk, decoder, decoderState) {
   }
   return String(chunk);
 }
-async function renderRecommendationVoiceRendererProductionV2({ preparedEntries = [], misses, onValidated = async () => {}, onInvalid = async () => {}, failureContext = {}, onAuditStage, apiKey = process.env.BAILIAN_API_KEY || process.env.DASHSCOPE_API_KEY, baseUrl = process.env.BAILIAN_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1', fetchImpl = fetch, invoke, timeoutMs = 25000, stopAfterAllValidated = false, model = VOICE_RENDERER_MODEL, modelRouteVersion = PRODUCTION_MODEL_ROUTE_VERSION } = {}) {
+async function renderRecommendationVoiceRendererProductionV2({ preparedEntries = [], misses, onValidated = async () => {}, onInvalid = async () => {}, failureContext = {}, onAuditStage, apiKey = process.env.BAILIAN_API_KEY || process.env.DASHSCOPE_API_KEY, baseUrl = process.env.BAILIAN_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1', fetchImpl = fetch, invoke, timeoutMs = 25000, stopAfterAllValidated = false, model = PRODUCTION_MODEL, modelRouteVersion = PRODUCTION_MODEL_ROUTE_VERSION } = {}) {
   const entries = readArray(misses === undefined ? preparedEntries : misses);
   if (entries.length === 0) return { version: PRODUCTION_VERSION, status: 'noop', promptVariant: PROMPT_VARIANT, planCount: 0, providerCalls: 0, requestCount: 0, validatedCount: 0, invalidCount: 0 };
   if (entries.length > 8) throw new Error('VOICE_RENDERER_INPUT_COUNT');
@@ -234,7 +236,7 @@ function buildProductionRendererEntry(plan, recommendation, position, outfitKey,
   if (typeof observer === 'function') {
     try { observer('RENDERER_FINGERPRINT_START'); } catch { /* side-channel only */ }
   }
-  const model = rendererOptions.model || VOICE_RENDERER_MODEL;
+  const model = rendererOptions.model || PRODUCTION_MODEL;
   const modelRouteVersion = rendererOptions.modelRouteVersion || PRODUCTION_MODEL_ROUTE_VERSION;
   const renderInputFingerprint = buildRenderInputFingerprint(preparedEntry.input, { model, modelRouteVersion, generationParameters: GENERATION_PARAMETERS });
   if (typeof observer === 'function') {
@@ -248,7 +250,7 @@ async function consumeProductionRendererStream(options = {}) {
 module.exports = {
   PRODUCTION_VERSION, PRODUCTION_RENDERER_VERSION: PRODUCTION_VERSION,
   PROMPT_VARIANT, PRODUCTION_PROMPT_VERSION, PRODUCTION_MODEL_ROUTE_VERSION,
-  PRODUCTION_MODEL: VOICE_RENDERER_MODEL, GENERATION_PARAMETERS,
+  PRODUCTION_MODEL, GENERATION_PARAMETERS,
   buildProductionRequest, buildProductionRendererEntry, extractCompleteCopies,
   validateProductionCopy, buildRecommendationVoiceMaterializationEntry,
   renderRecommendationVoiceRendererProductionV2, consumeProductionRendererStream,

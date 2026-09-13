@@ -3,6 +3,8 @@
 const {
   consumeProductionRendererStream,
   buildProductionRequest,
+  PRODUCTION_MODEL,
+  PRODUCTION_PROMPT_VERSION,
   validateProductionCopy,
 } = require('./recommendationVoiceRendererProductionV2');
 const { loadDeployPackage } = require('./deployPackageResolver');
@@ -20,8 +22,8 @@ function defaultXiaodaAI(failureContext) {
     if (!registry.getPrompt?.('recommendation_reason')) {
       registry.registerPrompt?.('recommendation_reason', (input) => buildProductionRequest([{ input }]), {
         promptVariant: 'compressed-v2',
-        promptVersion: 'voice-contract-v2.0-compressed-v2-production-1',
-        model: 'qwen3.7-max',
+        promptVersion: PRODUCTION_PROMPT_VERSION,
+        model: PRODUCTION_MODEL,
       });
     }
     if (!registry.getValidator?.('recommendation_production')) {
@@ -90,7 +92,7 @@ async function invokeRecommendationReason({ entry, rendererConfig, request, sign
     signal,
     model: request.model,
     promptVariant: 'compressed-v2',
-    promptVersion: 'voice-contract-v2.0-compressed-v2-production-1',
+    promptVersion: PRODUCTION_PROMPT_VERSION,
     rawResponse: true,
     timeoutMs: Number(rendererConfig.timeoutMs || 25000),
     failureContext: rendererConfig.failureContext || {},

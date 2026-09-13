@@ -5,6 +5,7 @@ const path = require('node:path');
 
 const CACHE = 'recommendation_canonical_copy_cache_v2';
 const JOBS = 'recommendation_copy_jobs_v2';
+const AUDIT_FUNCTIONS = new Set(['recommendationStream', 'generateOutfit']);
 
 function createAdmin({ envId, cliPath, runCli = defaultRunCli } = {}) {
   if (!envId) throw new Error('CLOUDBASE_ENV_ID_REQUIRED');
@@ -44,8 +45,10 @@ function createAdmin({ envId, cliPath, runCli = defaultRunCli } = {}) {
       const result = await invoke({ TableName: CACHE, CommandType: 'DELETE', Command: JSON.stringify({ delete: CACHE, deletes: [{ q, limit: 1 }] }) });
       return deleteCount(result);
     },
-    async getAuditLogs({ auditId, startTime, endTime, limit = 100, maxPages = 30 }) {
+    async getAuditLogs({ auditId, startTime, endTime, limit = 100, maxPages = 30,
+      functionName = 'recommendationStream' }) {
       if (!/^[A-Za-z0-9_.:-]+$/.test(auditId || '')) throw new Error('AUDIT_ID_INVALID');
+      if (!AUDIT_FUNCTIONS.has(functionName)) throw new Error('AUDIT_FUNCTION_INVALID');
       const search = async (queryString) => {
         const logs = [];
         let context;
@@ -62,13 +65,13 @@ function createAdmin({ envId, cliPath, runCli = defaultRunCli } = {}) {
       // CloudBase splits console objects into individual CLS lines. Searching
       // for auditId alone returns only identifier lines, not their objects.
       const matches = await search(`"${auditId}"`);
-      const requestIds = [...new Set(matches.filter((row) => row.content?.function_name === 'recommendationStream')
+      const requestIds = [...new Set(matches.filter((row) => row.content?.function_name === functionName)
         .map((row) => row.content?.request_id).filter(Boolean))];
       if (requestIds.length === 0) return [];
       if (requestIds.length !== 1 || !/^[\w-]+$/.test(requestIds[0])) throw new Error('AUDIT_REQUEST_ID_AMBIGUOUS');
       const requestId = requestIds[0];
       const lines = await search(`request_id:"${requestId}"`);
-      if (lines.some((row) => row.content?.request_id !== requestId || row.content?.function_name !== 'recommendationStream')) throw new Error('AUDIT_REQUEST_ID_MISMATCH');
+      if (lines.some((row) => row.content?.request_id !== requestId || row.content?.function_name !== functionName)) throw new Error('AUDIT_REQUEST_ID_MISMATCH');
       // search uses ASC and pagination preserves equal-timestamp line order.
       return [{ requestId, log: lines.map((row) => row.content.log || '').join('\n') }];
     },
@@ -160,4 +163,4 @@ function formatDateTime(value) {
 }
 function defaultCliPath() { return path.resolve(__dirname, '../../../../node_modules/@cloudbase/cli/bin/tcb'); }
 
-module.exports = { CACHE, JOBS, createAdmin, decodeNumbers, extractDocuments, formatDateTime, normalizeLogs, sameDocument };
+module.exports = { AUDIT_FUNCTIONS, CACHE, JOBS, createAdmin, decodeNumbers, extractDocuments, formatDateTime, normalizeLogs, sameDocument };
