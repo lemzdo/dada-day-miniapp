@@ -55,6 +55,22 @@
   CAS 删除合同；页面 copy source/AI state 必须与服务端决策一致。最终图片 `onLoad` 指标为
   `NOT_EVALUATED_THIS_RUN`，未伪造图片可见性结论。
 
+## 产品主链断点（2026-09-13）
+
+- **P0：行为学习尚未进入下一次推荐。** 收藏、取消收藏、穿过、详情查看、曝光和换一批已有
+  事件基础，`refreshLearnedStyleProfile` 也能生成并持久化 shadow profile；但画像不会自动
+  刷新，Recommendation Input Snapshot 不读取 `learned_style_profiles`，eligibility、scoring
+  和 ranking 均不消费。用户正常使用后，下一次推荐不会因为这些行为产生可解释变化。
+- **P1：缺少 outfit 级显式负反馈。** 当前 `user_feedback` 是通用问题反馈，没有绑定
+  canonical outfit identity 的“不喜欢”“不适合”“不想穿”或跳过原因，也不会进入个人画像
+  或推荐。仅新增采集入口而不先建立 learned profile 生命周期和推荐消费方，仍无法形成闭环。
+- **P1：learned profile 仍是手动 shadow 产物。** 已有 profile builder、质量门控、幂等持久化
+  和用户隔离，但没有事件触发、调度或常规用户入口，也没有产品可见的刷新/重置边界。下一阶段
+  应先以已有高置信行为完成自动聚合、shadow 对照、受控权重接入和可回滚的生产闭环。
+
+完整 A～O 状态、证据边界和下一阶段候选 Goal 见
+`docs/product/product-main-journey-status.md`。
+
 
 
 | 顺序   | 需求                                                    | 优先级             | 当前判断                             |

@@ -376,6 +376,7 @@ interface RecommendationProfile {
 
 ## 相关文档
 
+- `docs/product/product-main-journey-status.md` - 当前产品主链状态与下一阶段开发真源
 - `docs/PROJECT_STATUS.md` - 项目状态和功能清单
 - `docs/WECHAT_CLOUD_MVP.md` - 云开发改造清单
 - `docs/cloudfunctions-env.md` - 云函数环境变量
