@@ -7,12 +7,15 @@
 
 ## Recommendation Runtime 2.2 最终可见性验收
 
-- [ ] 正常网络下执行恰好 3 次 warm Today 人工验收，分别记录
-  `FIRST_CARD_CONTENT_VISIBLE` 与 `FIRST_CARD_IMAGE_VISIBLE` 的 min / median / max。
-- [ ] 确认首卡标题、理由、结构实际进入可见状态，而不是仅存在于 React/client state。
-- [ ] 内容可见均低于 3,000ms，且主衣物图片时间达到当前产品可接受范围后，将
-  `PRODUCT_PERFORMANCE_RESULT` 从验收未完成的 FAIL 更新为 PASS 并关闭性能专项。
-- Architecture 2.2 保持冻结；该人工验收不触发 Recommendation Core、Candidate
+- [x] 已完成真实 Today Canonical HIT 与 deterministic MISS 各 3 个有效样本的自动验收。
+- [x] 已通过 `wx.nextTick + SelectorQuery` 确认首卡 AI 理由和正文进入可见状态，而不是
+  仅存在于 React/client state。HIT/MISS 的 `AI_REASON_FIRST_VISIBLE_RATE` 均为 100%。
+- [x] Homepage AI first reason/content visibility acceptance = PASS。HIT/MISS 的
+  `CONTENT_VISIBLE` 最大值分别为 2,030.8ms 和 2,531.4ms，均低于 3,000ms；两组
+  `SAFE_DEADLINE_RATE` 均为 0%。
+- [ ] `FIRST_CARD_IMAGE_VISIBLE` = `NOT_EVALUATED_THIS_RUN`。本轮微信开发者工具未触发图片
+  `onLoad`，因此不声明图片可见性 PASS；该项不阻塞本 Goal 的 AI 理由/正文验收结论。
+- Architecture 2.2 保持冻结；该验收不触发 Recommendation Core、Candidate
   Pool、AI、CloudBase 规格或服务器路径优化。
 
 ## 衣橱容量权益 V1 补充

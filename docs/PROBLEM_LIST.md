@@ -1,6 +1,6 @@
 # PROBLEM_LIST.md - 搭搭 day 当前存在的问题
 
-> 最后更新：2026-09-12
+> 最后更新：2026-09-13
 > 用途：记录还未解决的问题。
 
 ## Recommendation Runtime 2.2 状态（2026-09-10）
@@ -26,13 +26,14 @@
   `wx.nextTick + SelectorQuery` 首卡内容可见、首图 `onLoad` 与图片节点可见埋点；节点按
   batchId/outfitKey 和非零尺寸校验，UI 与业务行为不变。新窄验收器复用既有 DevTools
   automator 和 CLS audit，不清缓存、不修改服务端。
-- DevTools watcher 已成功编译，但当前 automator 会话在普通进入与一次强制 reLaunch 后
-  仍暴露旧 diagnostics bridge。两次均在发出样本请求前以
-  `VISIBLE_TIMING_BRIDGE_UNAVAILABLE` 停止，按上限判定 `TEST_INFRA_BLOCKED`；没有有效
-  warm 样本，不能判定产品 PASS 或 FAIL。当前正确语义为
-  `PRODUCT_PERFORMANCE_RESULT=PENDING_MANUAL_ACCEPTANCE`，但不得要求用户人工计时；恢复
-  DevTools 对 watcher bundle 的加载后，只需重新运行 3 样本自动验收。Architecture 2.2、
-  1024MB/0.8CPU 服务规格与推荐服务端均继续冻结。
+- Homepage AI-first reason 已完成真实生产验收。首页生产 renderer 已切换为
+  `qwen-flash + compressed-v2 production-4`；Canonical HIT 与 deterministic MISS 的
+  `AI_REASON_FIRST_VISIBLE_RATE` 均为 100%，`CONTENT_VISIBLE` 最大值分别为
+  2,030.8ms 和 2,531.4ms，`SAFE_DEADLINE_RATE` 均为 0%。Architecture 2.2、
+  1024MB/0.8CPU 服务规格与推荐 Core 继续冻结。
+- 本轮 Flash HIT/MISS 中微信开发者工具未触发图片 `onLoad`，最终 image timing 为
+  `NOT_EVALUATED_THIS_RUN`。该结果不影响已通过的 AI 首屏理由与正文可见性验收，也不应
+  被表述为图片可见性 PASS。
 - Today `coldTtuiMs=3026` 属于不同请求/客户端计时边界，不能与最终服务端 response
   指标混用。CloudBase 在五请求中调度了两个新实例，严格 reused-warm 样本仅 3 个，
   已按采样上限如实保留该证据限制；其 `SERVER_RESPONSE_READY` 中位数为 1,398.155ms。
@@ -48,13 +49,11 @@
 
 ## 当前交付 Goal
 
-- `Homepage AI-First Reason`：AI-first critical path、1,605ms budget-aware wait、
-  fallback taxonomy、模型竞速 runner，以及 real Today 的三样本 HIT/MISS 自动验收器已完成；
-  MISS 仅允许在私有备份、精确身份复核、关联任务终态和 CAS 删除全部通过后清理一个缓存文档，
-  页面 copy source/AI state 还必须与服务端决策一致。真实 Max/Fast 调用、生产部署和
-  real Today HIT/MISS paint 验收仍待执行，因此本项尚未关闭。外部模型竞速两次均被执行
-  环境以“需用户明确授权发送目标和内容”拒绝，当前标记 `TEST_INFRA_BLOCKED`；不得以
-  stub 结果选模型或声称生产 PASS。
+- `Homepage AI-First Reason` 已关闭：AI-first critical path、1,605ms budget-aware wait、
+  fallback taxonomy、真实 Max/Flash model race、Flash 生产路由，以及 real Today 三样本
+  HIT/MISS 正文可见性验收均已完成。MISS 继续遵守私有备份、精确身份复核、关联任务终态和
+  CAS 删除合同；页面 copy source/AI state 必须与服务端决策一致。最终图片 `onLoad` 指标为
+  `NOT_EVALUATED_THIS_RUN`，未伪造图片可见性结论。
 
 
 
@@ -64,7 +63,7 @@
 | **2**  | **AI Voice 正式生产化 + 精细缓存**                      | P0                 | 原型通过后做                         |
 | **3**  | **统一 AI Gateway / AI 调用基础设施**                   | P0/P1              | 与 Voice 正式集成一起落第一版        |
 | **4**  | **Storage 10MB 容量治理**                               | P1                 | 已确认真实 Bug                       |
-| **5**  | **Today 首卡可见性自动验收（3 次 warm）**               | P1                 | TEST_INFRA_BLOCKED；待 DevTools 加载新 bridge |
+| **5**  | **Today 首卡可见性自动验收（3 次 warm）**               | P1                 | AI 理由/正文 PASS；图片指标本轮未评估         |
 | **6**  | **图片资产 Pipeline：标准化、完整性检查、展示资产治理** | P1                 | 为现有推荐和以后 AI 效果图打基础     |
 | **7**  | **个人衣橱关系链 / 衣橱知识图谱**                       | **P1，产品级重点** | 新增，长期壁垒很强                   |
 | **8**  | **用户行为学习 + 个人推荐权重**                         | P1/P2              | 与关系链 V3 合并建设                 |

@@ -1,9 +1,9 @@
 # Recommendation Runtime Scaling Baseline
 
-> Architecture target: Recommendation Runtime 2.2  
+> Architecture target: Recommendation Runtime 2.2
 > Captured: 2026-09-10
 > Commit: `baca6aa` (Phase 4 boundary/runtime verification follow-up)
-> Node: `v24.15.0`  
+> Node: `v24.15.0`
 > Runtime: legacy `buildOutfitCandidatesV1` + `applyWearabilityAndSceneEligibility`; benchmark `recommendation-scaling-v1`.
 
 ## Scope and method
@@ -274,7 +274,7 @@ is to restore DevTools loading of the watcher-produced bundle and rerun the
 same automatic three-sample acceptance. Architecture 2.2 and the server remain
 frozen; `PERFORMANCE_PROJECT=OPEN`.
 
-## Homepage AI-first reason budget and ledger (2026-09-12)
+## Homepage AI-first reason budget and ledger pre-acceptance snapshot (2026-09-12)
 
 This section records the Homepage AI-first delivery boundary. It does not reopen
 Recommendation Core, Candidate Pool, the Beijing dedicated endpoint, or the
@@ -336,18 +336,45 @@ Metric definitions:
 - `PLAN0_TO_PROVIDER_START` and `PROVIDER_START_TO_FIRST_VALIDATED` are computed
   only for correlated MISS samples where both endpoints exist.
 
-The fixed race runner is
+At this pre-acceptance checkpoint, the fixed race runner was
 `apps/miniapp/scripts/homepage-first-card-model-race/runner.js`. It compares
 `qwen3.7-max` with the existing `qwen-flash` candidate using the same real
 Narrative Plans, production compressed-v2 request and production validator. It
 records First Validated and Complete P50/P95, validator/provider error rates,
 raw review copies, token use, and observed cost per call. Its public list-price
 reference was checked on 2026-09-12; actual billing still follows the account
-and deployment region. No production route change is valid until the live
-artifact and human language review are complete.
+and deployment region. At that checkpoint no production route change was valid
+until the live artifact and human language review were complete.
 
-Current working-tree gates before this follow-up: Recommendation Runtime tests
+The working-tree gates at that checkpoint were: Recommendation Runtime tests
 887/887 PASS; Today tests 177/177 PASS. The deterministic Today runner and its
 source-correlation tests were then added; their final gate counts belong in the
 delivery report. Real model-race, deployed MISS/HIT and real Today paint values
-are intentionally left unclaimed until their artifacts exist.
+were intentionally left unclaimed at this historical pre-acceptance checkpoint.
+
+## Final Homepage AI-first production acceptance (2026-09-13)
+
+The production homepage renderer is now `qwen-flash` with the
+`compressed-v2 production-4` prompt contract. Commit `c02df19` contains the
+production runtime switch; the following `b8c3016` commit adds only acceptance
+tests, safety tooling and the final QA report, without changing deployed runtime
+code.
+
+| metric | Flash canonical HIT | Flash deterministic MISS |
+|---|---:|---:|
+| `AI_REASON_FIRST_VISIBLE_RATE` | 100% | 100% |
+| `PROVIDER_FRESH_RATE` | 0% | 100% |
+| `SAFE_DEADLINE_RATE` | 0% | 0% |
+| `CONTENT_VISIBLE P50` | 1,797.6ms | 2,314.4ms |
+| `CONTENT_VISIBLE max` | 2,030.8ms | 2,531.4ms |
+
+For deterministic MISS, `PLAN0_TO_PROVIDER_START` P50 was 53.915ms and
+`PROVIDER_START_TO_FIRST_VALIDATED` P50 was 548.054ms. In the final model race,
+the Max control First Validated P50/P95 was 1,204.181/1,265.003ms, while Flash
+was 370.962/397.348ms. The current server performance and homepage AI-reason
+content-visibility result are PASS.
+
+Image `onLoad` did not fire in the Flash HIT/MISS acceptance, so the final image
+visibility metric is `NOT_EVALUATED_THIS_RUN`. No image-visible PASS is claimed.
+The authoritative evidence is
+[`../qa/homepage-ai-first-reason-acceptance.md`](../qa/homepage-ai-first-reason-acceptance.md).

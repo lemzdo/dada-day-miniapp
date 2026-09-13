@@ -104,11 +104,17 @@ from the accepted real Today samples: 3,000ms visible budget − 1,295ms measure
 − 100ms explicit safety margin. The derivation and metric definitions live in
 [`../performance/recommendation-baseline.md`](../performance/recommendation-baseline.md).
 
-The production homepage renderer remains `qwen3.7-max` until the fixed production-contract model race has
-real Provider evidence. `apps/miniapp/scripts/homepage-first-card-model-race/runner.js` changes only model
-and fingerprint route while retaining the real Narrative Plans, production prompt, streaming parser and
-validator. A faster route may replace Max on the homepage only when real latency and quality gates pass;
-Max remains available for Detail and deeper AI work. No model is selected from local stubs.
+The production homepage renderer is `qwen-flash` with the `compressed-v2 production-4` prompt contract.
+It is the low-latency renderer for the first-card AI reason and was selected only after the fixed
+production-contract model race and real Today HIT/MISS acceptance passed. The race retained the same
+Narrative Plans, production prompt, streaming parser and validator while changing only the model and
+fingerprint route. `qwen3.7-max` remains historical/control evidence from that race and is not the current
+homepage production model; it remains available for Detail and deeper AI work.
+
+The accepted Flash production results have 100% AI-reason-first-visible rates for both canonical HIT and
+deterministic MISS, with content-visible maxima of 2,030.8ms and 2,531.4ms respectively and a 0%
+`SAFE_DEADLINE` rate. Image `onLoad` timing was not observed in this acceptance and remains
+`NOT_EVALUATED_THIS_RUN`; no image-visible PASS is inferred.
 
 Real page acceptance uses the Today diagnostics bridge and the same correlated server audit. Its explicit
 `hit` mode warms the canonical record before three counted Provider-zero samples. Its explicit `miss` mode
