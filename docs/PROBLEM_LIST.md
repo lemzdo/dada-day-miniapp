@@ -191,18 +191,22 @@ PB-04 是 `TYPE=BUG`，PB-11 是 `TYPE=ENGINEERING_DEBT`，但两者也必须在
 - `TITLE=` 微信本地 Storage 10MB 容量治理
 - `ORIGINAL_SOURCE=` historical problem list + current repo
 - `STATUS=` OPEN
+- `AUDIT_STATUS=` CONFIRMED_OPEN
 - `TYPE=` BUG
 - `BUG_SEVERITY=` P1
 - `ROADMAP_PRIORITY=` NONE
 - `RELEASE_PRIORITY=` REQUIRED
-- `CURRENT_EVIDENCE=` miniapp 通过 `Taro.setStorageSync` 持续写入 userStorage、pageCache、Today/Detail/Favorite/History/upload task、outfit snapshot 和诊断数据；没有统一容量预算或 LRU。
-- `WHAT_IS_ALREADY_DONE=` 已按用户隔离 key，清理旧全局前缀；部分 page cache 有 TTL，性能 ledger 限 5 条，mutation 有定向 invalidation。
-- `WHAT_REMAINS=` 过期项主动清理、namespace 预算、snapshot 数量上限、TTL/LRU、quota failure 恢复、迁移与真实微信容量验证。
-- `USER_IMPACT=` 达到 quota 后缓存写入可能失败，Today/Detail 恢复和页面状态可能退化；后端衣橱数据不应丢失。
+- `ROOT_CAUSE=` `UNBOUNDED_CACHE + DUPLICATE_SNAPSHOTS + MISSING_EVICTION + MISSING_QUOTA_ERROR_HANDLING + WRONG_DATA_PLACEMENT`；另有 100 条完整 History 首页 payload 和 current scoped key migration 缺口。
+- `CURRENT_EVIDENCE=` [PB-04 专项审计](qa/storage-10mb-audit.md) 确认问题是微信小程序 `wx/Taro Storage` 同用户同小程序 aggregate 10 MB 配额，不是单 key、图片文件缓存或 Web Storage。`outfitDetailDraft:*` 按 outfit 以 1-4 个 alias 无 TTL 保存完整快照，动态 `pageCache:outfitDetail:*` 过期只 miss 不物理删除，abandoned `uploadBatchImages:<batchId>` 也无 startup sweep；没有统一预算或 LRU。
+- `AFFECTED_STORAGE_FAMILIES=` userStorage outfit detail/upload/Today state；pageCache Wardrobe/Profile/Favorite/History/Detail；direct identity/profile/weather/diagnostic keys。
+- `WHAT_IS_ALREADY_DONE=` 已按用户隔离 key，启动时清理少量旧全局前缀；部分 page cache 记录逻辑 TTL，Today/Favorite/History/ledger 有 entry count 上限，mutation 有定向 invalidation。
+- `WHAT_REMAINS=` Storage registry、2.5625 MiB global soft limit、分类/namespace budget、过期项物理删除、detail snapshot 单一 compact owner、max-entry LRU、quota 分类和清 C/D 后单次重试、选择性 migration、logout/version cleanup 与真实微信 `currentSize/limitSize` 验证。
+- `USER_IMPACT=` quota 满时多数 wrapper 静默丢弃持久化，Today/Detail/Favorite/History reopen 恢复退化；未捕获的身份 key 写入可把成功远端登录判为失败，天气 cache 写入可把成功天气请求判为服务失败。云端衣物、收藏和历史不应丢失，但短期本地状态可能丢失。
 - `MUST_FIX_BEFORE_NEW_FEATURE=` YES
 - `MUST_FIX_BEFORE_LAUNCH=` YES
-- `DEPENDENCIES=` `apps/miniapp/src/lib/userStorage.ts`、`pageCache.ts`、`utils/outfitSnapshot.ts`。
-- `NEXT_ACTION=` 先做 storage inventory/大小统计，再实现统一预算、清理和 quota recovery；不改业务数据语义。
+- `BLOCKS_BEHAVIOR_LEARNING=` YES；学习数据本身在云端，但闭环会提高 refresh/detail/favorite/wear/history 和长期使用频率，直接放大当前按已访问 outfit 增长的本地 cache 风险。
+- `DEPENDENCIES=` PB-11 共用 local cache lifecycle 根因；PB-34 的 200 件容量不会一次写满 Storage，但会增加可达筛选/组合/详情，发布 smoke 必须加入 Storage 起止量证据。
+- `NEXT_ACTION=` 按审计报告先实施 Storage Budget V1、detail cache 去重/有界化、物理 TTL/LRU、quota recovery 和白名单 migration，再用 200 件衣橱与长周期详情/历史访问做真实微信验证；不得使用 `clearStorage()`。
 
 ### PB-05 Today 首卡可见性自动验收
 
