@@ -1,5 +1,12 @@
 # 搭搭day 近期核心改造部署与人工测试清单
 
+> 状态说明（2026-09-14）：本文件保留发布动作与人工验收历史，不是 Master Backlog。
+> `docs/cloudbase-deployment-contract-v2-audit.md` 已记录 2026-09-02 的 26/26 生产函数
+> remote artifact verify；因此下文旧阶段的“需要部署”不能再解释为这些 artifact 从未部署。
+> 但该验收未调用业务函数、未做真人 smoke，也未证明当前 HEAD 的集合、索引、权限、环境变量、
+> 资源规格、Web migration 或体验版状态。所有未关闭任务和最新优先级以
+> `docs/PROBLEM_LIST.md` 为唯一总账。
+
 ## PRE_LAUNCH_SECURITY
 
 - [ ] 轮换曾被 CloudBase function detail 输出到执行记录的生产 API key / access

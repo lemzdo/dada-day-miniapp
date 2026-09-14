@@ -366,6 +366,10 @@ Detail 已有结构化 `aestheticEvaluation` / stylist evidence、主动 AI 深�
 
 `RECOMMENDED_NEXT_GOAL=Behavior-to-Recommendation Learning Loop V1`
 
+> 2026-09-14 总账校准：该项仍是下一产品 Goal；但开始新产品开发前，必须先关闭
+> `docs/PROBLEM_LIST.md` 的 PB-04 微信本地 Storage 10MB 容量治理。PB-04 是现存 Bug，
+> 不改变产品路线排序。
+
 - `WHY_THIS_FIRST=` 它直接修复唯一 P0，并把已有事件、收藏、穿着、历史和 learned-profile shadow 投资转化为用户能感知的价值。范围应从已有高置信信号开始，通过 quality gate、shadow 对比、小权重和回滚开关控制风险。
 - `WHY_NOT_GOAL_2=` 显式反馈很重要，但在 learned profile 和 recommendation consumer 尚未连通时先做，只会新增一类无法生效的数据。
 - `WHY_NOT_GOAL_3=` 知识图谱有长期差异化价值，但数据语义和学习消费边界尚未稳定；现在建设会把未验证的行为偏差固化成关系资产。
