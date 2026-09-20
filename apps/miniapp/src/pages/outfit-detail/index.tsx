@@ -23,6 +23,8 @@ import {
   removeFavoriteOutfit,
   renameCloudOutfit,
   saveFavoriteOutfit,
+  updateCloudOutfitFavoriteV2,
+  updateCloudOutfitWearV2,
 } from '@/lib/cloud';
 import {
   buildOutfitBehaviorSnapshot,
@@ -30,7 +32,7 @@ import {
   trackOutfitBehaviorEvent,
 } from '@/lib/outfitBehavior';
 import { getOutfitRefResolverId, readOutfitRefFromRoute } from '@/lib/outfitRef';
-import { readTodayBootstrapSnapshot } from '@/lib/todayBootstrapStore';
+import { readTodayBootstrapSnapshot, writeTodayBootstrapSnapshot } from '@/lib/todayBootstrapStore';
 import { buildPageCacheKey } from '@/lib/pageCache';
 import { getRuntimeQueryCache, setRuntimeQueryCache } from '@/lib/runtimeQueryCache';
 import {
@@ -58,9 +60,20 @@ import { buildAiReviewPresentation } from './aiReviewPresentation';
 import { getAiReviewPageState } from './aiReviewPageState';
 import { getAiCommentButtonBlockReason, getAiCommentButtonState, type AiCommentButtonState } from './aiCommentButtonState';
 import type { OutfitStatusPatch } from '@/stores/outfitStatusStore';
-import type { Outfit, OutfitAiReviewResponse, OutfitItemSummary, OutfitSnapshotItem, RecommendationDetailResponseV2 } from '@starter-template/types';
-import { readTodayV2Snapshot } from '@/pages/today/todayV2Adapter';
-import { applyOutfitDetailV2Load, beginOutfitDetailV2Load, createOutfitDetailV2State, type OutfitDetailV2State } from './outfitDetailV2';
+import type { Outfit, OutfitAiReviewResponse, OutfitItemSummary, OutfitSnapshotItem } from '@starter-template/types';
+import {
+  patchTodayV2CardStatus,
+  readTodayV2Snapshot,
+  type TodayV2Snapshot,
+} from '@/pages/today/todayV2Adapter';
+import {
+  applyOutfitDetailV2Load,
+  beginOutfitDetailV2Load,
+  createOutfitDetailV2State,
+  failOutfitDetailV2Load,
+  patchOutfitDetailV2Status,
+  type OutfitDetailV2State,
+} from './outfitDetailV2';
 import './index.scss';
 
 type DetailSource = 'recommendation' | 'favorite' | 'history';
@@ -197,6 +210,14 @@ function readCloudAiReviewErrorCode(error: unknown) {
     if (typeof data?.errorCode === 'string') return data.errorCode;
   }
   return 'AI_REVIEW_UNKNOWN';
+}
+
+function readV2DetailErrorCode(error: unknown) {
+  if (error instanceof CloudFunctionError) {
+    const data = error.data as { errorCode?: unknown } | undefined;
+    if (typeof data?.errorCode === 'string') return data.errorCode;
+  }
+  return 'V2_DETAIL_REMOTE_ERROR';
 }
 
 // 获取单品数据源（优先级：snapshotItems > itemsSnapshot > items）
@@ -376,73 +397,6 @@ function OutfitItemRow({
   );
 }
 
-function V2OutfitDetailView({ state }: { state: OutfitDetailV2State }) {
-  const detailItems = Array.isArray(state.detail?.items) ? state.detail.items : [];
-  return (
-    <View className="outfit-detail-page">
-      <View className="detail-scroll">
-        <View className="hero-card">
-          <Text className="hero-title">{state.shell.displayTitle}</Text>
-          <Text className="detail-v2-identity">{state.outfitKey}</Text>
-          <Text className="detail-v2-reason">{state.shell.todayReason}</Text>
-        </View>
-        <View className="visual-card">
-          <View className="visual-collage">
-            {state.shell.items.map((item) => (
-              <SafeImage key={item.clothingId} className="visual-image" src={getItemDetailImage(item as unknown as OutfitSnapshotItem | OutfitItemSummary)} cacheIdentity={item.clothingId} mode="aspectFit" lazyLoad />
-            ))}
-          </View>
-        </View>
-        {state.loading && <Text>正在加载搭配详情…</Text>}
-        {!state.loading && detailItems.length > 0 && (
-          <View className="detail-card">
-            <Text>详情已按需加载</Text>
-            {detailItems.map((item, index) => (
-              <Text key={typeof item === 'object' && item && '_id' in item ? String(item._id) : index}>已加入衣橱</Text>
-            ))}
-          </View>
-        )}
-      </View>
-    </View>
-  );
-}
-
-function applyRecoveredV2Detail(
-  state: OutfitDetailV2State,
-  response: RecommendationDetailResponseV2,
-): OutfitDetailV2State {
-  const loaded = applyOutfitDetailV2Load(state, response);
-  if (loaded === state) return state;
-  const detail = response.detail;
-  const displayTitle = typeof detail.displayTitle === 'string' && detail.displayTitle.trim()
-    ? detail.displayTitle
-    : loaded.shell.displayTitle;
-  const detailItems = Array.isArray(detail.items) ? detail.items : [];
-  const items = detailItems.flatMap((item) => {
-    if (!item || typeof item !== 'object') return [];
-    const record = item as Record<string, unknown>;
-    const clothingId = String(record._id || record.id || '').trim();
-    if (!clothingId) return [];
-    return [{
-      clothingId,
-      displayImageUrl: getItemDetailImage(record as unknown as OutfitSnapshotItem),
-      isDeleted: Boolean(record.isDeleted || record.deletedAt),
-    }];
-  });
-  const clothingIds = Array.isArray(detail.clothingIds)
-    ? detail.clothingIds.filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
-    : items.map((item) => item.clothingId);
-  return {
-    ...loaded,
-    shell: {
-      ...loaded.shell,
-      displayTitle,
-      clothingIds,
-      items,
-    },
-  };
-}
-
 export default function OutfitDetailPage() {
   const router = useRouter();
   const outfitRef = readOutfitRefFromRoute(router.params);
@@ -465,6 +419,7 @@ export default function OutfitDetailPage() {
   const [aiReviewMeta, setAiReviewMeta] = useState<AiReviewMeta | null>(null);
   const [aiCommentButtonState, setAiCommentButtonState] = useState<AiCommentButtonState>('idle');
   const [v2DetailState, setV2DetailState] = useState<OutfitDetailV2State | null>(null);
+  const [v2ReloadToken, setV2ReloadToken] = useState(0);
   const requestSeqRef = useRef(0);
   const aiCommentRequestSeqRef = useRef(0);
   const lastHandledRuntimeKeyRef = useRef<string | null>(null);
@@ -522,6 +477,9 @@ export default function OutfitDetailPage() {
     if (!isAuthenticated || !runtimeKey || !v2BatchId || !v2OutfitKey || !v2ReferenceId) return;
     const authContext = captureAuthContext();
     if (!authContext) return;
+    const requestSeq = requestSeqRef.current + 1;
+    requestSeqRef.current = requestSeq;
+    detailViewTrackedRef.current = false;
     const snapshot = readTodayV2Snapshot(
       () => readTodayBootstrapSnapshot(authContext),
     );
@@ -541,26 +499,45 @@ export default function OutfitDetailPage() {
           isFavorite: false,
           isWornToday: false,
         };
-    let state = createOutfitDetailV2State(shell);
+    let state = beginOutfitDetailV2Load(createOutfitDetailV2State(shell), v2BatchId);
     const cacheNamespace = `outfitDetail:${authContext.userScope}`;
     const cacheKey = `v2:${v2BatchId}:${v2OutfitKey}:${v2ReferenceId}`;
-    const cached = getRuntimeQueryCache<RecommendationDetailResponseV2>(cacheNamespace, cacheKey);
+    setV2DetailState(state);
+    const applyReadyState = (detail: Awaited<ReturnType<typeof getCloudOutfitDetailV2>>) => {
+      if (requestSeqRef.current !== requestSeq || !isCurrentAuthContext(authContext)) return;
+      const loaded = applyOutfitDetailV2Load(state, detail);
+      if (loaded.loadState !== 'READY' || !loaded.outfit) return;
+      const prepared = prepareOutfitForState(loaded.outfit, authContext);
+      state = { ...loaded, outfit: prepared };
+      setV2DetailState(state);
+      setOutfit(prepared);
+      trackDetailViewOnce(prepared, 'recommendation');
+      void loadCanonicalAiComment(prepared, requestSeq, authContext);
+    };
+    const cached = v2ReloadToken === 0
+      ? getRuntimeQueryCache<Awaited<ReturnType<typeof getCloudOutfitDetailV2>>>(cacheNamespace, cacheKey)
+      : null;
     if (cached) {
-      setV2DetailState(applyRecoveredV2Detail(state, cached.data));
+      applyReadyState(cached.data);
       return;
     }
-    state = beginOutfitDetailV2Load(state, v2BatchId);
-    setV2DetailState(state);
     void getCloudOutfitDetailV2({ batchId: v2BatchId, outfitKey: v2OutfitKey, referenceId: v2ReferenceId })
       .then((detail) => {
+        if (requestSeqRef.current !== requestSeq || !isCurrentAuthContext(authContext)) return;
         setRuntimeQueryCache(cacheNamespace, cacheKey, detail, {
           ttl: OUTFIT_DETAIL_CACHE_TTL,
           maxEntries: 16,
         });
-        setV2DetailState((current) => current ? applyRecoveredV2Detail(current, detail) : current);
+        applyReadyState(detail);
       })
-      .catch(() => setV2DetailState((current) => current ? { ...current, loading: false } : current));
-  }, [isAuthenticated, runtimeKey, v2BatchId, v2OutfitKey, v2ReferenceId]);
+      .catch((error: unknown) => {
+        if (requestSeqRef.current !== requestSeq || !isCurrentAuthContext(authContext)) return;
+        setOutfit(null);
+        setV2DetailState((current) => current
+          ? failOutfitDetailV2Load(current, readV2DetailErrorCode(error))
+          : current);
+      });
+  }, [isAuthenticated, runtimeKey, v2BatchId, v2OutfitKey, v2ReferenceId, v2ReloadToken]);
 
   async function fetchOutfit(outfitId: string) {
     const requestSeq = requestSeqRef.current + 1;
@@ -629,6 +606,36 @@ export default function OutfitDetailPage() {
     if (!authContext) return;
     setFavoriteOperating(true);
     try {
+      if (v2DetailState?.loadState === 'READY' && v2BatchId && v2OutfitKey && v2ReferenceId) {
+        const result = await updateCloudOutfitFavoriteV2({
+          batchId: v2BatchId,
+          outfitKey: v2OutfitKey,
+          referenceId: v2ReferenceId,
+          isFavorite: !outfit.isFavorite,
+        });
+        if (!isCurrentAuthContext(authContext)) return;
+        const nextOutfit = normalizeOutfitSnapshot({ ...outfit, isFavorite: result.isFavorite });
+        setV2DetailState((current) => current
+          ? patchOutfitDetailV2Status(current, { isFavorite: result.isFavorite })
+          : current);
+        patchV2TodayBootstrapStatus(authContext, result);
+        persistOutfitUpdate(nextOutfit, {
+          outfitKey: result.outfitKey,
+          isFavorite: result.isFavorite,
+          ...(result.isFavorite ? {} : { favoriteOutfitId: '' }),
+          updatedAt: Date.now(),
+        }, authContext);
+        trackExplicitOutfitBehavior(
+          result.isFavorite ? 'outfit_favorite' : 'outfit_unfavorite',
+          outfit,
+          'today',
+        );
+        await invalidateAfterOutfitFavoriteMutation({ authContext });
+        if (!isCurrentAuthContext(authContext)) return;
+        Taro.showToast({ title: result.isFavorite ? '已收藏' : '已取消收藏', icon: 'success' });
+        return;
+      }
+
       if (outfit.isFavorite) {
         const removed = await removeFavoriteOutfit(outfit.favoriteOutfitId || outfit.id, outfit.outfitKey);
         if (!isCurrentAuthContext(authContext)) return;
@@ -719,6 +726,30 @@ export default function OutfitDetailPage() {
     if (!authContext) return;
     setWearOperating(true);
     try {
+      if (v2DetailState?.loadState === 'READY' && v2BatchId && v2OutfitKey && v2ReferenceId) {
+        const result = await updateCloudOutfitWearV2({
+          batchId: v2BatchId,
+          outfitKey: v2OutfitKey,
+          referenceId: v2ReferenceId,
+          date: outfit.targetDate,
+        });
+        if (!isCurrentAuthContext(authContext)) return;
+        const nextOutfit = normalizeOutfitSnapshot({ ...outfit, isWornToday: result.isWornToday });
+        setV2DetailState((current) => current
+          ? patchOutfitDetailV2Status(current, { isWornToday: result.isWornToday })
+          : current);
+        patchV2TodayBootstrapStatus(authContext, result);
+        persistOutfitUpdate(nextOutfit, {
+          outfitKey: result.outfitKey,
+          isWornToday: result.isWornToday,
+          updatedAt: Date.now(),
+        }, authContext);
+        trackExplicitOutfitBehavior('outfit_wear', outfit, 'today');
+        void invalidateAfterOutfitWornMutation({ authContext });
+        Taro.showToast({ title: '已记录到穿搭历史', icon: 'success' });
+        return;
+      }
+
       const saved = await addOutfitHistory(normalizeOutfitSnapshot(outfit), {
         source: detailSource === 'favorite' || outfit.isFavorite ? 'favorite' : 'recommendation',
         sourceFavoriteOutfitId:
@@ -1103,8 +1134,35 @@ export default function OutfitDetailPage() {
     });
   }
 
-  if (v2DetailState) {
-    return <V2OutfitDetailView state={v2DetailState} />;
+  if (v2DetailState?.loadState === 'LOADING') {
+    return (
+      <View className="outfit-detail-page loading">
+        <View className="skeleton-title" />
+        <View className="skeleton-card" />
+        <View className="skeleton-card short" />
+      </View>
+    );
+  }
+
+  if (v2DetailState?.loadState === 'NOT_FOUND') {
+    return (
+      <View className="outfit-detail-page empty">
+        <Text className="empty-title">没有找到这套穿搭</Text>
+        <Text className="empty-desc">这条推荐可能已经过期，返回今日页再试试。</Text>
+      </View>
+    );
+  }
+
+  if (v2DetailState?.loadState === 'REMOTE_ERROR') {
+    return (
+      <View className="outfit-detail-page empty">
+        <Text className="empty-title">详情暂时没有加载出来</Text>
+        <Text className="empty-desc">网络恢复后可以重新加载，不会使用旧的本地快照。</Text>
+        <View className="detail-retry-btn" onClick={() => setV2ReloadToken((current) => current + 1)}>
+          <Text className="detail-retry-text">重新加载</Text>
+        </View>
+      </View>
+    );
   }
 
   if (loading) {
@@ -1138,7 +1196,15 @@ export default function OutfitDetailPage() {
   const displayItems = items.slice(0, showCount);
   const hasCanonicalAiComment = Boolean(aiReviewMeta?.hasCanonical && outfit.aiComment);
   const hasCurrentCopy = hasCurrentDefaultCopy(outfit);
-  const coreRecommendationReason = hasCurrentCopy ? outfit.copyContract?.todayReason ?? '' : '';
+  const normalizedRecommendationReason = hasCurrentCopy
+    ? outfit.copyContract?.todayReason || outfit.reasoning || outfit.reason || ''
+    : outfit.reasoning || outfit.reason || '';
+  const coreRecommendationReason = normalizedRecommendationReason
+    || (v2DetailState?.loadState === 'READY'
+      ? styleTags[0]
+        ? `${styleTags[0]}风格线索来自这套搭配的真实单品，整体组合清楚且适合当前场景。`
+        : `这套搭配由${items.length}件真实单品组成，详情保留当前推荐的完整组合。`
+      : '');
   const ruleDetailExplanation = hasCurrentCopy ? outfit.copyContract?.detailExplanation ?? '' : '';
   const narrativeContentPlan: Outfit['contentPlan'] = hasCurrentCopy
     ? {
@@ -1373,6 +1439,17 @@ export default function OutfitDetailPage() {
 function normalizeSource(value?: string): DetailSource {
   if (value === 'favorite' || value === 'history') return value;
   return 'recommendation';
+}
+
+function patchV2TodayBootstrapStatus(
+  authContext: ActiveAuthContext,
+  patch: { batchId: string; outfitKey: string; isFavorite?: boolean; isWornToday?: boolean },
+) {
+  const snapshot = readTodayV2Snapshot(
+    () => readTodayBootstrapSnapshot<TodayV2Snapshot>(authContext),
+  );
+  if (!snapshot || snapshot.batchId !== patch.batchId) return;
+  writeTodayBootstrapSnapshot(authContext, patchTodayV2CardStatus(snapshot, patch));
 }
 
 function getBehaviorSource(source: DetailSource): 'today' | 'favorites' | 'history' | 'other' {

@@ -2234,24 +2234,42 @@ async function loadV2OutfitPayload(event) {
   if (!Array.isArray(clothingIds) || clothingIds.length === 0) {
     throw createBusinessError('V2_OUTFIT_REFERENCE_NOT_FOUND', 'V2 outfit reference not found');
   }
-  const clothes = await loadClothesByIds(OPENID, clothingIds);
-  const itemsSnapshot = clothes.map((item) => snapshotFromClothing(item, null, item._id));
   const core = storedBatch.envelope.core;
-  const copyOverlay = await readRecommendationCopyOverlay(
-    db,
-    OPENID,
-    batchId,
-    PRODUCTION_RENDERER_VERSION,
-  );
+  const [clothes, copyOverlay, favoriteMap, wornMap, outfitAsset] = await Promise.all([
+    loadClothesByIds(OPENID, clothingIds),
+    readRecommendationCopyOverlay(db, OPENID, batchId, PRODUCTION_RENDERER_VERSION),
+    findV2FavoriteKeys(OPENID, [outfitKey]),
+    findV2WornKeys(OPENID, [outfitKey], core.targetDate),
+    findOutfitByKey(OPENID, outfitKey),
+  ]);
+  const itemsSnapshot = clothes.map((item) => snapshotFromClothing(item, null, item._id));
   const canonicalCopy = copyOverlay.copies.find((copy) => copy.outfitKey === outfitKey);
-  const reason = canonicalCopy?.text || envelopeCard.todayReason;
+  const regeneratedReason = compileRecommendationReasonsV2({
+    outfits: [{ items: clothes, scene: core.scene, weatherSnapshot: core.weatherSnapshot }],
+    scene: core.scene,
+    weather: core.weatherSnapshot,
+  })[0]?.reason;
+  const reason = canonicalCopy?.text
+    || readString(envelopeCard.todayReason)
+    || readString(outfitAsset?.reasoning)
+    || readString(outfitAsset?.reason)
+    || readString(regeneratedReason);
+  const envelopeStyleTags = readStringArray(envelopeCard.styleTags);
+  const assetStyleTags = readStringArray(outfitAsset?.styleTags);
+  const styleTags = envelopeStyleTags.length > 0
+    ? envelopeStyleTags
+    : assetStyleTags.length > 0
+      ? assetStyleTags
+      : readSnapshotStyleTags(itemsSnapshot);
+  const now = new Date().toISOString();
   return {
-    id: undefined,
+    id: outfitAsset?._id,
     title: envelopeCard.displayTitle,
-    displayTitle: envelopeCard.displayTitle,
+    userTitle: outfitAsset?.userTitle,
+    displayTitle: outfitAsset?.userTitle || outfitAsset?.displayTitle || envelopeCard.displayTitle,
     reason,
     todayReason: reason,
-    styleTags: envelopeCard.styleTags,
+    styleTags,
     outfitKey,
     clothingIds,
     itemsSnapshot,
@@ -2264,6 +2282,13 @@ async function loadV2OutfitPayload(event) {
     weatherMode: core.weatherMode,
     recommendationBatchId: core.batchId,
     batchId: core.batchId,
+    referenceId,
+    isFavorite: favoriteMap.has(outfitKey),
+    isWornToday: wornMap.has(outfitKey),
+    incomplete: itemsSnapshot.length !== clothingIds.length,
+    deletedItemCount: Math.max(0, clothingIds.length - itemsSnapshot.length),
+    createdAt: storedBatch.createdAt || core.generatedAt || now,
+    updatedAt: outfitAsset?.updatedAt || storedBatch.updatedAt || core.generatedAt || now,
     ...(canonicalCopy ? { canonicalCopy } : {}),
   };
 }
@@ -2275,14 +2300,32 @@ async function getOutfitDetailV2(event) {
     schemaVersion: RECOMMENDATION_V2_SCHEMA_VERSION,
     batchId: event.batchId,
     outfitKey: event.outfitKey,
+    referenceId: event.referenceId,
     detailIdentityReady: true,
     persistedDetailDocumentReady: false,
     ...(payload.canonicalCopy ? { canonicalCopy: payload.canonicalCopy } : {}),
     detail: {
       outfitKey: payload.outfitKey,
+      referenceId: payload.referenceId,
+      ...(payload.id ? { outfitId: payload.id } : {}),
       clothingIds: payload.clothingIds,
-      items: payload.items,
+      items: payload.itemsSnapshot,
       displayTitle: payload.displayTitle,
+      userTitle: payload.userTitle,
+      todayReason: payload.todayReason,
+      styleTags: payload.styleTags,
+      incomplete: payload.incomplete,
+      deletedItemCount: payload.deletedItemCount,
+      scene: payload.scene,
+      targetDate: payload.targetDate,
+      timeOfDay: payload.timeOfDay,
+      weatherSnapshot: payload.weatherSnapshot,
+      weatherMode: payload.weatherMode,
+      recommendationBatchId: payload.recommendationBatchId,
+      isFavorite: payload.isFavorite,
+      isWornToday: payload.isWornToday,
+      createdAt: payload.createdAt,
+      updatedAt: payload.updatedAt,
     },
   };
 }
@@ -3156,6 +3199,35 @@ function sanitizePlainObject(value) {
 async function findAuthoritativeAiCommentAsset(openid, event, payload, outfitKey, scene) {
   const detailSource = normalizeAiCommentDetailSource(event.detailSource || payload?.outfitKind);
   const detailId = normalizeOutfitKey(event.detailId || payload?.id);
+  const v2BatchId = readString(payload?.recommendationBatchId);
+  if (v2BatchId && detailId.startsWith('ref-')) {
+    const batchResult = await db.collection('recommendation_batches_v2')
+      .where({ _openid: openid, batchId: v2BatchId }).limit(1).get();
+    const storedBatch = batchResult.data?.[0];
+    const envelopeCard = resolveV2BatchEnvelopeCard(
+      storedBatch,
+      openid,
+      v2BatchId,
+      outfitKey,
+      detailId,
+    );
+    if (!envelopeCard) throw new Error('outfit detail asset not found');
+    const core = storedBatch.envelope.core;
+    return {
+      asset: {
+        ...payload,
+        clothingIds: envelopeCard.clothingIds,
+        outfitKey,
+        scene: core.scene || scene,
+        weatherSnapshot: core.weatherSnapshot,
+        targetDate: core.targetDate,
+        timeOfDay: core.timeOfDay,
+        recommendationBatchId: v2BatchId,
+        referenceId: detailId,
+      },
+      kind: 'recommendation',
+    };
+  }
   const collectionName = {
     recommendation: 'outfits',
     favorite: 'favorite_outfits',

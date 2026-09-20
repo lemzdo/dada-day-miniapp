@@ -120,7 +120,41 @@ test('V2 status queries and immutable action seed remain projected', () => {
   assert.match(source, /findV2FavoriteKeys\(openid, order, diagnostics\)/);
   assert.match(source, /findV2WornKeys\(openid, order, targetDate, diagnostics\)/);
   assert.match(source, /const core = storedBatch\.envelope\.core/);
-  assert.match(source, /const reason = canonicalCopy\?\.text \|\| envelopeCard\.todayReason/);
+  assert.match(source, /const reason = canonicalCopy\?\.text[\s\S]*readString\(envelopeCard\.todayReason\)[\s\S]*outfitAsset\?\.reasoning/);
   assert.match(source, /todayReason: reason/);
   assert.match(source, /recommendationBatchId: core\.batchId/);
+});
+
+test('V2 Detail lazily returns formal data and current relation state', () => {
+  const start = source.indexOf('async function loadV2OutfitPayload');
+  const end = source.indexOf('async function updateFavoriteV2', start);
+  const detail = source.slice(start, end);
+  assert.match(detail, /findV2FavoriteKeys\(OPENID, \[outfitKey\]\)/);
+  assert.match(detail, /findV2WornKeys\(OPENID, \[outfitKey\], core\.targetDate\)/);
+  assert.match(detail, /items: payload\.itemsSnapshot/);
+  assert.match(detail, /todayReason: payload\.todayReason/);
+  assert.match(detail, /outfitAsset\?\.reasoning/);
+  assert.match(detail, /compileRecommendationReasonsV2\(\{/);
+  assert.match(detail, /readSnapshotStyleTags\(itemsSnapshot\)/);
+  assert.match(detail, /weatherSnapshot: payload\.weatherSnapshot/);
+  assert.match(detail, /referenceId: event\.referenceId/);
+  assert.match(detail, /payload\.id \? \{ outfitId: payload\.id \}/);
+});
+
+test('V2 Detail AI commentary resolves the immutable batch envelope without a persisted outfit asset', () => {
+  const start = source.indexOf('async function findAuthoritativeAiCommentAsset');
+  const end = source.indexOf('function assertAiCommentAssetIdentity', start);
+  const resolver = source.slice(start, end);
+  assert.match(resolver, /payload\?\.recommendationBatchId/);
+  assert.match(resolver, /detailId\.startsWith\('ref-'\)/);
+  assert.match(resolver, /resolveV2BatchEnvelopeCard\(/);
+  assert.match(resolver, /clothingIds: envelopeCard\.clothingIds/);
+  assert.match(resolver, /weatherSnapshot: core\.weatherSnapshot/);
+});
+
+test('HomeLight response remains free of Detail deep fields', () => {
+  const start = source.indexOf('async function generateRecommendationV2');
+  const end = source.indexOf('function validateCandidatePoolAvailability', start);
+  const homeRuntime = source.slice(start, end);
+  assert.doesNotMatch(homeRuntime, /itemsSnapshot|snapshotItems|deletedItemCount/);
 });

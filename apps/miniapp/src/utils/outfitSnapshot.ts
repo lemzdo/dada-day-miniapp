@@ -8,6 +8,9 @@ import { getOutfitDisplayTitle } from './outfitTitle';
 import { stripStaleDefaultCopy } from './recommendationCopyContract';
 
 export function normalizeOutfitSnapshot(outfit: Outfit): Outfit {
+  const validatedV2DetailReason = outfit.reasonVersion === 'recommendation-detail-v2-safe-v1'
+    ? outfit.reasoning || outfit.reason || ''
+    : '';
   const safeOutfit = stripStaleDefaultCopy(outfit);
   const clothingIds = safeOutfit.clothingIds ?? [];
   const snapshots = buildSnapshots(safeOutfit);
@@ -37,6 +40,13 @@ export function normalizeOutfitSnapshot(outfit: Outfit): Outfit {
       isDeleted: Boolean(item.deletedAt || item.isDeleted),
       ...pickCopyEvidenceFields(item),
     })),
+    ...(validatedV2DetailReason
+      ? {
+          reason: validatedV2DetailReason,
+          reasoning: validatedV2DetailReason,
+          reasonVersion: 'recommendation-detail-v2-safe-v1',
+        }
+      : {}),
   };
 }
 

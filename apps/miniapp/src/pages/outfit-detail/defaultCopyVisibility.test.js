@@ -10,9 +10,10 @@ test('detail renders no empty default-copy content container', () => {
   assert.match(source, /<\/View>\s*\) : null}/s);
 });
 
-test('detail renders the same canonical Today reason and hides supplemental copy when absent', () => {
+test('detail prefers the canonical Today reason and falls back when historical copy is empty', () => {
   const source = fs.readFileSync(path.join(__dirname, 'index.tsx'), 'utf8');
-  assert.match(source, /const coreRecommendationReason = hasCurrentCopy \? outfit\.copyContract\?\.todayReason/);
+  assert.match(source, /const normalizedRecommendationReason = hasCurrentCopy[\s\S]*outfit\.copyContract\?\.todayReason \|\| outfit\.reasoning \|\| outfit\.reason/);
+  assert.match(source, /normalizedRecommendationReason[\s\S]*v2DetailState\?\.loadState === 'READY'/);
   assert.match(source, /\{coreRecommendationReason && \(\s*<View className="detail-card core-reason-card">/s);
   assert.match(source, /hasAiReviewContent && aiReviewPresentation \? \(/);
 });

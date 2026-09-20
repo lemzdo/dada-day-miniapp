@@ -1054,7 +1054,12 @@ export async function getCloudOutfitDetailV2(input: { batchId: string; outfitKey
   });
   if (!result || result.runtimeVersion !== RECOMMENDATION_V2_RUNTIME_VERSION
     || result.schemaVersion !== RECOMMENDATION_V2_SCHEMA_VERSION
-    || !('detailIdentityReady' in result) || result.detailIdentityReady !== true) {
+    || !('detailIdentityReady' in result) || result.detailIdentityReady !== true
+    || result.batchId !== input.batchId
+    || result.outfitKey !== input.outfitKey
+    || result.referenceId !== input.referenceId
+    || result.detail?.outfitKey !== input.outfitKey
+    || result.detail?.referenceId !== input.referenceId) {
     throw new Error('V2 detail response contract invalid');
   }
   return result as RecommendationDetailResponseV2;
@@ -1241,10 +1246,12 @@ export async function getOutfitHistoryDetail(id: string) {
 }
 
 function getOutfitAiCommentPayload(outfit: Outfit, forceRegenerate?: boolean) {
+  const authoritativeDetailId = outfit.outfitId
+    || (outfit.id.startsWith('ref-') ? undefined : outfit.id);
   return {
     outfitId: outfit.outfitId || outfit.id,
-    detailId: outfit.id,
-    detailSource: outfit.outfitKind,
+    ...(authoritativeDetailId ? { detailId: authoritativeDetailId } : {}),
+    ...(authoritativeDetailId && outfit.outfitKind ? { detailSource: outfit.outfitKind } : {}),
     outfitKey: outfit.outfitKey,
     outfit,
     weather: outfit.weatherSnapshot,

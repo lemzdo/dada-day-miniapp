@@ -1,5 +1,5 @@
 import type { SceneTag } from './clothes';
-import type { TimeOfDay } from './outfit';
+import type { OutfitSnapshotItem, TimeOfDay } from './outfit';
 import type { WeatherMode, WeatherSnapshot } from './weather';
 
 export const RECOMMENDATION_V2_RUNTIME_VERSION = 'today-runtime-v2' as const;
@@ -117,10 +117,35 @@ export interface RecommendationDetailResponseV2 {
   schemaVersion: typeof RECOMMENDATION_V2_SCHEMA_VERSION;
   batchId: string;
   outfitKey: string;
+  referenceId: string;
   detailIdentityReady: true;
   persistedDetailDocumentReady: boolean;
-  detail: Record<string, unknown>;
+  detail: RecommendationDetailDataV2;
   canonicalCopy?: RecommendationCanonicalOverlayCopyV2;
+}
+
+export interface RecommendationDetailDataV2 {
+  referenceId: string;
+  outfitId?: string;
+  outfitKey: string;
+  displayTitle: string;
+  userTitle?: string;
+  todayReason: string;
+  styleTags: string[];
+  clothingIds: string[];
+  items: OutfitSnapshotItem[];
+  incomplete: boolean;
+  deletedItemCount: number;
+  scene?: SceneTag;
+  targetDate?: string;
+  timeOfDay?: TimeOfDay;
+  weatherSnapshot?: WeatherSnapshot;
+  weatherMode?: WeatherMode;
+  recommendationBatchId: string;
+  isFavorite: boolean;
+  isWornToday: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export type RecommendationV2Response = RecommendationHomeLightResponseV2 | RecommendationDetailResponseV2;

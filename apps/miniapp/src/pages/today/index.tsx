@@ -53,7 +53,7 @@ import {
 import {
   getUserStorageSync,
 } from '@/lib/userStorage';
-import { applyOutfitStatuses, setOutfitStatus, setOutfitStatuses } from '@/stores/outfitStatusStore';
+import { applyOutfitStatuses, getOutfitStatus, setOutfitStatus, setOutfitStatuses } from '@/stores/outfitStatusStore';
 import {
   NO_MORE_NEW_OUTFITS_NOTICE,
   getRecommendationEmptyStateCopy,
@@ -181,6 +181,20 @@ function readTodayBootstrap(authContext: ActiveAuthContext | null) {
   return readTodayV2Snapshot(
     () => readTodayBootstrapSnapshot<TodayV2Snapshot>(authContext),
   );
+}
+
+function applyTodayV2RuntimeStatus(snapshot: TodayV2Snapshot, authContext: ActiveAuthContext) {
+  let changed = false;
+  const cards = snapshot.cards.map((card) => {
+    const status = getOutfitStatus(card.outfitKey, authContext);
+    if (!status) return card;
+    const isFavorite = status.isFavorite ?? card.isFavorite;
+    const isWornToday = status.isWornToday ?? card.isWornToday;
+    if (isFavorite === card.isFavorite && isWornToday === card.isWornToday) return card;
+    changed = true;
+    return { ...card, isFavorite, isWornToday };
+  });
+  return changed ? { ...snapshot, cards } : snapshot;
 }
 
 function clientMonotonicNow() {
@@ -947,6 +961,22 @@ export default function TodayPage() {
     markTodayPerformanceStage('todayOnShow');
     const authContext = captureAuthContext();
     if (!authContext) return;
+    const renderSnapshot = v2SnapshotRef.current;
+    if (renderSnapshot) {
+      const nextRender = applyTodayV2RuntimeStatus(renderSnapshot, authContext);
+      if (nextRender !== renderSnapshot) {
+        v2SnapshotRef.current = nextRender;
+        setV2Snapshot(nextRender);
+      }
+    }
+    const canonicalSnapshot = canonicalSnapshotRef.current;
+    if (canonicalSnapshot) {
+      const nextCanonical = applyTodayV2RuntimeStatus(canonicalSnapshot, authContext);
+      if (nextCanonical !== canonicalSnapshot) {
+        canonicalSnapshotRef.current = nextCanonical;
+        persistTodayBootstrap(nextCanonical, authContext);
+      }
+    }
     markTodayPerformanceStage('localIdentityReady');
     if (hasTodayRecommendationHardInvalid({ authContext })) {
       void refreshHardInvalidRecommendation(authContext, consumeHardInvalidAcceptanceRequest(authContext));

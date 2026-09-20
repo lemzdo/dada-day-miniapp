@@ -45,7 +45,7 @@
       margin-bottom: 16px;
     }
 
-    .empty-desc {
+.empty-desc {
       font-size: 26px;
       color: #999;
       text-align: center;
@@ -355,6 +355,19 @@
   font-weight: 600;
   color: #3b2c20;
   margin-bottom: 24px;
+}
+
+.detail-retry-btn {
+  margin-top: 32px;
+  padding: 20px 40px;
+  border-radius: 999px;
+  background: #5f5148;
+}
+
+.detail-retry-text {
+  color: #fff;
+  font-size: 28px;
+  font-weight: 600;
 }
 
 .core-reason-card {
