@@ -4,7 +4,7 @@
 - 审计基线：`main@a8fa942`
 - 审计范围：微信小程序本地数据缓存、相关生命周期及容量失败路径
 - 审计边界：第 1-12 节保留 2026-09-14 根因快照；第 13-15 节记录 2026-09-20 实施与验收状态
-- 结论：`PB04_STATUS=IMPLEMENTED_PARTIAL_DEVTOOLS_SMOKE`
+- 结论：`PB04_STATUS=CLOSED`
 
 ## 1. 平台与审计口径
 
@@ -305,25 +305,26 @@ free=200 不会把 200 件衣物一次写入本地：Wardrobe page cache 当前�
 
 ## 13. 状态与门禁
 
-`PB04_STATUS=IMPLEMENTED_PARTIAL_DEVTOOLS_SMOKE`
+`PB04_STATUS=CLOSED`
 
 代码级关闭门槛已完成：registry、容量上限、物理 TTL/驱逐、quota retry once、L0/L1 placement、
 OutfitRef、上传 workflow ref、版本化迁移和失败隔离均已落地并通过自动化检查。Favorite/History 的
 现象已归因到 CloudBase 列表查询/真实发布环境 smoke，而不是移除 L1 snapshot 后的 PB-04 回归；
 0/200、200/200 真实发布边界归 PB-34。2026-09-20 最终真实 smoke 已完成 Upload/Confirm 与
-Detail×10 的容量采集；Upload/Confirm 和 Detail Storage 有界性通过，但 V2 Detail 仍是不可用的占位
-展示，因此 PB-04 仍不标记 `CLOSED`。
+Detail×10 的容量采集；Upload/Confirm、terminal cleanup 和 Detail Storage 有界性均通过，PB-04 的
+Local Storage placement/lifecycle/capacity 合同已闭合。V2 Detail renderer 的产品问题归 PB-18，不再
+扩大 PB-04 的关闭条件。
 
 `CURRENT_REPRODUCIBILITY=代码级确定性增长模型 + deterministic quota fault injection + 微信开发者工具真实 migration/重启容量采集；没有物理填满 10 MB 的 hard-quota 撞限复现，也不要求该复现`
 
 `MIGRATION_REQUIRED=YES`：需要白名单迁移/启动 sweep 清理已安装用户的 expired page cache、重复
 detail aliases、abandoned upload keys 和旧诊断 key；不能无差别 clearStorage。
 
-`BLOCKS_BEHAVIOR_LEARNING=YES`：Storage 架构已经证明不随 Detail 访问次数增长，但学习闭环依赖
-可用的 Detail 行为入口。本轮真实 Detail×10 暴露 V2 页面只显示 shell/占位文案，尚不能作为正常产品
-详情承接行为信号；在该 UI gate 修复并复测前不恢复 Behavior Learning。
+`BLOCKS_BEHAVIOR_LEARNING=NO`：PB-04 已证明 Storage 不随 Detail 访问次数增长，后续 Behavior
+Learning 必须遵守 registry、512 KiB soft limit 和 bounded pending queue 合同，但不再被 PB-04 阻塞。
+当前新功能前置 blocker 是 PB-18 的生产 Detail 占位页面。
 
-`MUST_FIX_BEFORE_LAUNCH=YES`
+`MUST_FIX_BEFORE_LAUNCH=NO`
 
 ## 14. 修复验收证据要求
 
@@ -447,14 +448,15 @@ Detail 重入仍为 16 项，L1 始终为 16,027 bytes。该模型证明 Detail/
 - `DETAIL_UI=FAIL`：10 次均未出现可用的正式详情 UI。成功回源后页面只显示“详情已按需加载”和每件
   重复的“已加入衣橱”；另有访问只停留在 shell，没有错误/空态说明。
 
-### 15.7 Closure 判定
+### 15.7 Closure 判定与问题拆分
 
 - `NEW_PB04_STORAGE_REGRESSION=NO`：9de9760/fe611276 没有重新引入 L1 Detail 增长，最终真实容量与
   namespace 证据均稳定。
 - `DETAIL_UI_BLOCKER_INTRODUCED_BY_9de9760=NO`：占位 renderer 由 c9532c8 引入；`git blame` 和
   9de9760 diff 均表明第 379-404 行的 V2 占位展示不是本轮 Storage 重构新增。
-- 但 PB-04 明确 closure gate 要求 `DETAIL_UI=PASS`。因此
-  `PB04_STATUS=IMPLEMENTED_PARTIAL_DEVTOOLS_SMOKE`、`BLOCKS_BEHAVIOR_LEARNING=YES`，不得关闭。
-- 下一步只需把 V2 Detail 的已回源 payload 映射回可用产品详情，同时保持 OutfitRef + L0 bounded
-  cache；修复后仅重跑 Detail×10 UI/Storage。已通过的 Upload/Confirm 不再重复。
+- PB-04 的职责是 Local Storage architecture、placement、lifecycle、capacity、quota 和 migration。
+  Detail×10 已证明 OutfitRef 到达、persisted full snapshot 不回流、bytes/keys 不增长且 legacy keys=0，
+  因此 `PB04_STATUS=CLOSED`、`BLOCKS_BEHAVIOR_LEARNING=NO`。
+- `DETAIL_UI=FAIL` 不再作为 PB-04 gate；它归 PB-18。PB-18 修复必须保持 OutfitRef + L0 bounded cache，
+  但不重开已通过的 PB-04 或重复 Upload/Confirm。
 - Favorite/History 仍归 PB-12；0/200、200/200 仍归 PB-34，不因本轮 Detail UI blocker 改归属。
