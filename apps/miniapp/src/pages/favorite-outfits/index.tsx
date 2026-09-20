@@ -16,6 +16,7 @@ import {
   createOutfitBehaviorEventId,
   trackOutfitBehaviorEvent,
 } from '@/lib/outfitBehavior';
+import { buildOutfitDetailUrl, createOutfitRef } from '@/lib/outfitRef';
 import { buildPageCacheKey } from '@/lib/pageCache';
 import {
   captureAuthContext,
@@ -25,7 +26,7 @@ import {
   type ActiveAuthContext,
 } from '@/lib/userPageCache';
 import { applyOutfitStatuses, setOutfitStatus, setOutfitStatuses } from '@/stores/outfitStatusStore';
-import { normalizeOutfitSnapshot, storeOutfitDetailDraft, storeOutfitStateSync, updateTodayRestoreSnapshotOutfit } from '@/utils/outfitSnapshot';
+import { normalizeOutfitSnapshot } from '@/utils/outfitSnapshot';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
 import { getOutfitStyleTags, getOutfitWeatherSummary } from '@/utils/outfitContextText';
 import { getSavedSnapshotDefaultCopy } from '@/utils/recommendationCopyContract';
@@ -147,7 +148,9 @@ export default function FavoriteOutfitsPage() {
       return;
     }
     const isFirstPage = reset && pageNum === 1;
-    const cached = isFirstPage && !options.force ? await hydrateFavoritesFirstPageCache(authContext) : false;
+    if (isFirstPage && !options.force) {
+      await hydrateFavoritesFirstPageCache(authContext);
+    }
     if (!isCurrentAuthContext(authContext)) {
       fetchingRef.current = false;
       return;
@@ -208,8 +211,13 @@ export default function FavoriteOutfitsPage() {
     });
   }
 
-  function handleCardClick(outfitId: string) {
-    Taro.navigateTo({ url: `/pages/outfit-detail/index?id=${encodeURIComponent(outfitId)}&source=favorite` });
+  function handleCardClick(outfit: Outfit) {
+    const ref = createOutfitRef(outfit, 'favorite');
+    if (!ref) {
+      Taro.showToast({ title: '这条收藏缺少可恢复标识，请刷新后再试', icon: 'none' });
+      return;
+    }
+    Taro.navigateTo({ url: buildOutfitDetailUrl(ref) });
   }
 
   function toggleMenu(outfitId: string, event: TapEvent) {
@@ -357,7 +365,6 @@ export default function FavoriteOutfitsPage() {
           target.authContext,
         ),
       );
-      updateTodayRestoreSnapshotOutfit(nextOutfit, { authContext: target.authContext });
       void Promise.all([
         invalidateFavoritesCache({ authContext: target.authContext }),
         invalidateHistoryCache({ authContext: target.authContext }),
@@ -409,9 +416,7 @@ export default function FavoriteOutfitsPage() {
     if (statusPatch.outfitKey) {
       setOutfitStatus(statusPatch, authContext);
     }
-    const synced = applyFavoriteOutfitStatuses([normalized], authContext)[0] ?? normalized;
-    storeOutfitDetailDraft(synced, { authContext });
-    storeOutfitStateSync(synced, { authContext });
+    applyFavoriteOutfitStatuses([normalized], authContext);
   }
 
   return (
@@ -491,7 +496,7 @@ export default function FavoriteOutfitsPage() {
 
           <ScrollView scrollY className="favorite-list" enhanced showScrollbar={false}>
             {outfits.map((outfit) => (
-              <View key={outfit.id} className="outfit-card" onClick={() => handleCardClick(outfit.id)}>
+              <View key={outfit.id} className="outfit-card" onClick={() => handleCardClick(outfit)}>
                 <View className="card-images">
                   {outfit.items?.slice(0, 3).map((item) => (
                     <View key={item.clothingId} className={`card-img-wrap ${item.isDeleted ? 'deleted' : ''}`}>

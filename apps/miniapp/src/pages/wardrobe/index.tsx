@@ -28,11 +28,11 @@ import {
   type ActiveAuthContext,
 } from '@/lib/userPageCache';
 import {
-  buildUserStorageBusinessKey,
   getUserStorageSync,
   removeUserStorageSync,
-  setUserStorageSync,
 } from '@/lib/userStorage';
+import { reconcileUploadWorkflow, upsertUploadWorkflow } from '@/lib/uploadWorkflowStore';
+import { bootstrapProjectionStore } from '@/lib/localStorage';
 import { buildAuthRuntimeKey } from '@/lib/userRuntimeScope';
 import { filterTerminalBatches } from '@/lib/uploadTaskLocalCache';
 import { consumePendingWardrobeNotice } from '@/pages/upload-confirm/uploadTerminalDiscardFlow';
@@ -60,6 +60,10 @@ interface WardrobeFirstPageCacheData {
   pagination: WardrobeResponse['pagination'];
   capacity: WardrobeResponse['capacity'];
   hasMore: boolean;
+}
+
+interface WardrobeBootstrapData extends WardrobeFirstPageCacheData {
+  schemaVersion: 2;
 }
 
 function buildDeleteConfirmText(favoriteCount: number, historyCount: number) {
@@ -154,14 +158,22 @@ export default function WardrobePage() {
     setRecognizingIds([]);
   }, []);
 
-  const applyWardrobeFirstPageCache = useCallback(async (cacheKey: string, authContext: ActiveAuthContext | null) => {
+  const applyWardrobeFirstPageCache = useCallback(async (
+    cacheKey: string,
+    authContext: ActiveAuthContext | null,
+    allowBootstrap: boolean,
+  ) => {
     const cached = await getUserPageCache<WardrobeFirstPageCacheData>(cacheKey, { authContext });
-    if (!cached.hit || cached.expired || !cached.data) return false;
+    const bootstrap = allowBootstrap && authContext
+      ? bootstrapProjectionStore.readWardrobeBootstrap<WardrobeBootstrapData>({ scope: authContext.userScope })
+      : null;
+    const data = cached.hit && !cached.expired ? cached.data : bootstrap;
+    if (!data) return false;
     if (!isCurrentAuthContext(authContext)) return false;
 
-    setClothes(dedupeClothesById(cached.data.list));
-    setStats(readCapacityStats(cached.data.capacity));
-    setHasMore(cached.data.hasMore);
+    setClothes(dedupeClothesById(data.list));
+    setStats(readCapacityStats(data.capacity));
+    setHasMore(data.hasMore);
     setPage(1);
     lastFetchAtRef.current = cached.record?.createdAt ?? Date.now();
     return true;
@@ -188,7 +200,10 @@ export default function WardrobePage() {
         subcategoryIdParam,
       );
       const canUseFirstPageCache = pageNum === 1 && reset && !force;
-      const cacheApplied = canUseFirstPageCache ? await applyWardrobeFirstPageCache(cacheKey, authContext) : false;
+      const defaultQuery = category === 'all' && subcategoryParam === 'all' && !subcategoryIdParam;
+      const cacheApplied = canUseFirstPageCache
+        ? await applyWardrobeFirstPageCache(cacheKey, authContext, defaultQuery)
+        : false;
       if (!isCurrentAuthContext(authContext)) {
         loadingRef.current = false;
         return;
@@ -228,16 +243,24 @@ export default function WardrobePage() {
         setHasMore(nextHasMore);
         if (reset || pageNum === 1) lastFetchAtRef.current = Date.now();
         if (pageNum === 1 && reset) {
+          const firstPageData: WardrobeFirstPageCacheData = {
+            list: dedupeClothesById(res.list),
+            pagination: res.pagination,
+            capacity: res.capacity,
+            hasMore: nextHasMore,
+          };
           await setUserPageCache<WardrobeFirstPageCacheData>(
             cacheKey,
-            {
-              list: dedupeClothesById(res.list),
-              pagination: res.pagination,
-              capacity: res.capacity,
-              hasMore: nextHasMore,
-            },
+            firstPageData,
             { ttl: WARDROBE_FIRST_PAGE_CACHE_TTL, authContext },
           );
+          if (defaultQuery) {
+            bootstrapProjectionStore.writeWardrobeBootstrap<WardrobeBootstrapData>({
+              ...firstPageData,
+              schemaVersion: 2,
+              list: firstPageData.list.slice(0, 20).map(toWardrobeBootstrapClothing),
+            }, { scope: authContext.userScope });
+          }
         }
       } catch (err) {
         console.error('Fetch wardrobe error:', err);
@@ -261,6 +284,11 @@ export default function WardrobePage() {
     try {
       const result = await getRecoverableUploadBatches(10);
       if (!isCurrentAuthContext(authContext)) return;
+      reconcileUploadWorkflow(authContext, {
+        cloudAvailable: true,
+        serverBatches: result.list || [],
+        now: Date.now(),
+      });
       const filtered = filterTerminalBatches(buildAuthRuntimeKey(authContext), result.list || []) as RecoverableUploadBatch[];
       setRecoverableBatches(filtered.filter(isActiveRecoverableBatch));
     } catch (err) {
@@ -410,6 +438,14 @@ export default function WardrobePage() {
 
       const batch = await createUploadBatch(filePaths.length);
       const imageIds: string[] = [];
+      const createdWorkflow = upsertUploadWorkflow(authContext, {
+        batchId: batch.id,
+        phase: 'uploading',
+        cloudImageIds: [],
+      });
+      if (createdWorkflow.status === 'full') {
+        console.warn('[wardrobe] upload workflow ref set is full; cloud batch remains recoverable', { batchId: batch.id });
+      }
 
       for (let index = 0; index < filePaths.length; index += 1) {
         Taro.showLoading({ title: `上传 ${index + 1}/${filePaths.length}` });
@@ -419,12 +455,21 @@ export default function WardrobePage() {
         const fileID = await uploadBatchSourceImage(compressedPath);
         const uploadImage = await createUploadImage(batch.id, fileID);
         imageIds.push(uploadImage.id);
+        upsertUploadWorkflow(authContext, {
+          batchId: batch.id,
+          phase: 'uploading',
+          cloudImageIds: imageIds,
+        });
       }
 
       Taro.hideLoading();
       loadingVisible = false;
       if (!isCurrentAuthContext(authContext)) return;
-      setUserStorageSync(buildUserStorageBusinessKey('uploadBatchImages', batch.id), imageIds, { authContext });
+      upsertUploadWorkflow(authContext, {
+        batchId: batch.id,
+        phase: 'processing',
+        cloudImageIds: imageIds,
+      });
       Taro.navigateTo({ url: `/pages/upload-confirm/index?batchId=${batch.id}` });
     } catch (err) {
       console.error('Upload clothing error:', err);
@@ -890,6 +935,27 @@ function mergeUniqueClothes(prev: Clothing[], nextPage: Clothing[]) {
     return true;
   });
   return [...prev, ...uniqueNext];
+}
+
+function toWardrobeBootstrapClothing(item: Clothing): Clothing {
+  return {
+    id: item.id,
+    userId: item.userId,
+    category: item.category,
+    subcategory: item.subcategory,
+    subcategoryId: item.subcategoryId,
+    customName: item.customName,
+    displayImageUrl: item.displayImageUrl,
+    thumbnailUrl: item.thumbnailUrl,
+    imageUrl: item.imageUrl,
+    colorPalette: item.colorPalette?.slice(0, 3),
+    aiStatus: item.aiStatus,
+    capacityCost: item.capacityCost,
+    status: item.status,
+    usageCount: item.usageCount,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+  };
 }
 
 function buildWardrobeFirstPageCacheKey(

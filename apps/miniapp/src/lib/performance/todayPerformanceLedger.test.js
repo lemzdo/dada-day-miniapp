@@ -26,7 +26,8 @@ test('restore decisions use fixed privacy-safe reasons and preserve exceptions',
   }
   assert.match(source, /recordTodayRestoreException/);
   const today = require('node:fs').readFileSync(require('node:path').join(__dirname, '../../pages/today/index.tsx'), 'utf8');
-  assert.match(today, /recordTodayRestoreException\(error\);[\s\S]*?throw error/);
+  assert.match(today, /recordTodayRestoreException\(error\);[\s\S]*?recordTodayRestoreReturn\('SNAPSHOT_INVALID'\)/);
+  assert.doesNotMatch(today, /recordTodayRestoreException\([\s\S]{0,80}(userScope|confirmedOpenid|outfitId)/);
 });
 
 test('ledger does not add privacy fields to its schema', () => {

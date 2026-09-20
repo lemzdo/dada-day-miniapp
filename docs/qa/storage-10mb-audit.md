@@ -1,10 +1,10 @@
 # PB-04 微信本地 Storage 10MB 容量专项审计
 
-- 审计日期：2026-09-14
+- 审计日期：2026-09-14；实施证据更新：2026-09-20
 - 审计基线：`main@a8fa942`
 - 审计范围：微信小程序本地数据缓存、相关生命周期及容量失败路径
-- 审计边界：只查根因和设计修复方向；未实施 LRU、TTL 清理、迁移、schema 或业务逻辑修改
-- 结论：`PB04_STATUS=CONFIRMED_OPEN`
+- 审计边界：第 1-12 节保留 2026-09-14 根因快照；第 13-15 节记录 2026-09-20 实施与验收状态
+- 结论：`PB04_STATUS=IMPLEMENTED_PARTIAL_DEVTOOLS_SMOKE`
 
 ## 1. 平台与审计口径
 
@@ -305,12 +305,14 @@ free=200 不会把 200 件衣物一次写入本地：Wardrobe page cache 当前�
 
 ## 13. 状态与门禁
 
-`PB04_STATUS=CONFIRMED_OPEN`
+`PB04_STATUS=IMPLEMENTED_PARTIAL_DEVTOOLS_SMOKE`
 
-关闭门槛当前均未满足：没有明确容量上限治理、存在已知无界增长、quota failure 无合理恢复、
-200 件产品边界没有真实微信容量证据、当前 scoped 旧数据没有迁移策略。
+代码级关闭门槛已完成：registry、容量上限、物理 TTL/驱逐、quota retry once、L0/L1 placement、
+OutfitRef、上传 workflow ref、版本化迁移和失败隔离均已落地并通过自动化检查。真实微信开发者工具已
+取得 migration 与部分页面链路的 `currentSize/limitSize` 证据；PB-04 仍不标记 `CLOSED`，因为完整上传、
+Detail×N、Favorite/History 云端闭环和 0/200、200/200 发布边界尚未全部通过。
 
-`CURRENT_REPRODUCIBILITY=代码级确定性可复现增长模型；没有本次真机 hard-quota 撞限复现`
+`CURRENT_REPRODUCIBILITY=代码级确定性增长模型 + 微信开发者工具真实 migration/重启容量采集；没有本次 hard-quota 撞限复现`
 
 `MIGRATION_REQUIRED=YES`：需要白名单迁移/启动 sweep 清理已安装用户的 expired page cache、重复
 detail aliases、abandoned upload keys 和旧诊断 key；不能无差别 clearStorage。
@@ -331,3 +333,70 @@ detail aliases、abandoned upload keys 和旧诊断 key；不能无差别 clearS
 5. migration 只删白名单 C/D；保留身份与进行中的必要 B 类状态；失败可在下次启动幂等重试。
 6. logout、账号/环境切换、版本升级和 wardrobe mutation 均有 Storage lifecycle 测试。
 7. PB-34 smoke 记录 0/200、200/200、history/detail 浏览前后真实 `currentSize`。
+
+## 15. 2026-09-20 实施结果
+
+### 15.1 已落地的边界
+
+- `localStorage/registry.ts` 是生产 L1 deny-by-default 清单；高水位 384 KiB、全局软上限 512 KiB。
+- `localStorage/core.mjs` 对 UTF-8 bytes、namespace entries/bytes、物理 TTL、选择性驱逐和 quota
+  retry exactly once 执行统一合同；`authResume:v2` 与未终态 `uploadWorkflow:v2` 不参与普通 cache 驱逐。
+- 通用 `pageCache` 与 `userStorage` 已变为进程内 L0；动态 Wardrobe filter、Detail、Favorite、History
+  不再向微信 Storage 写完整页面对象。
+- L1 只保留版本化 auth/profile/weather/Today/Wardrobe bootstrap、单个 upload workflow envelope 和
+  migration meta。Detail 导航统一使用 `OutfitRefV1`，重启后从 CloudBase source identity 回源。
+- 上传恢复最多 10 个 active refs、每 ref 最多 9 个 cloud image IDs；terminal 立即移除，超过 24h
+  必须先查询云端状态，网络失败保留本地 ref。
+- migration namespace v2 / checkpoint v4 按 allowlist、用户 scope 和版本执行；Today 快照/控制状态/有效 OutfitRef 与 upload refs
+  均先写新 envelope、回读校验，再删除旧 key；不使用 `clearStorage()`。
+- 登录和天气先提交远端业务成功，再尝试本地 projection；本地写失败只影响下次恢复，不反转本次成功。
+- 旧 `legacyUserCacheCleanup` 已退役；剩余直接 Storage API 仅存在于 gateway、migration 和显式开发/验收
+  diagnostic fixed keys，生产默认路径不把诊断账本当业务缓存。
+
+### 15.2 自动化容量证据
+
+production-shaped workload 使用长 cloud URL、中文文案、Today 8 卡、Wardrobe 20 项、10 个上传 refs
+与迁移 meta，结果如下：
+
+| 场景 | UTF-8 序列化占用 |
+| --- | ---: |
+| 冷启动 | 0 bytes |
+| 正常 steady state | 16,027 bytes / 15.65 KiB |
+| 连续 20 次不同 Detail 导航后 | 16,027 bytes / 15.65 KiB |
+| History 流程后 | 16,027 bytes / 15.65 KiB |
+| 10 个上传 workflow refs 后 | 25,796 bytes / 25.19 KiB |
+| migration meta 后 | 26,129 bytes / 25.52 KiB |
+
+该模型证明 Detail/History 不再线性增加 L1，并远低于 384 KiB steady-state 目标；它与下一节的微信
+DevTools `currentSize` 采集相互独立，前者验证负载模型，后者验证真实迁移和运行时容量。
+
+### 15.3 已通过检查
+
+- `pnpm --filter @starter-template/miniapp typecheck`：通过。
+- PB-04 专项：37/37 通过，覆盖 deny-by-default、UTF-8 cap、TTL 物理删除、namespace/global budget、
+  quota retry once、登录/天气 fail-open、OutfitRef、上传 orphan、migration 和容量稳定性。
+- miniapp 全部 Node tests：351/351 通过。
+
+### 15.4 微信开发者工具真实证据
+
+- SDK 3.16.0、Local Storage 上限 10,240 KiB。迁移前真实运行态为 3,852 KiB / 46 keys；其中旧
+  scene snapshots 29 keys / 3,674,311 bytes，旧 return snapshot 115,786 bytes，detail drafts
+  36,746 bytes。该分布直接验证了第 5 节的重复快照与动态 key 根因。
+- checkpoint v4 首次冷启动后降为 20 KiB / 7 keys；L1 registry keys 6，旧 scene/return、旧
+  userStorage/pageCache 和 obsolete recommendation dirty key 均为 0。再次页面 relaunch 仍为
+  20 KiB / 7 keys，证明 allowlist migration 幂等且没有清空身份数据。
+- Today 可见 8 张卡；Wardrobe 与 Today 重入后 Storage 保持 28-29 KiB / 8 keys，legacy families=0。
+  一次 Favorite 与 Worn 操作后页面分别显示“已收藏”“今天穿过”，容量仅从 20 KiB 增至 29 KiB；
+  真实冷启动后仍为 29 KiB，后续页面重入为 28 KiB，没有回到迁移前的线性增长。
+- 自动化进入 Outfit Detail 的真实 page stack 已观察到；但连续 Detail×N 过程中微信 automator 在详情
+  初始化阶段出现超时，未取得完整 N 次通过证据。该工具时序问题不等同于业务通过或业务失败。
+- Favorite 独立页本次进入 error state，Worn 后 History 仍为空态；因此云端闭环验收未通过，不能用
+  Today 的局部按钮状态替代 Favorite/History 真源验证。
+
+### 15.5 尚缺的关闭证据
+
+- Upload/Confirm 需要微信原生媒体选择器；当前无可用 GUI 控制会话，未执行真实图片选择与上传确认。
+- 修复/澄清 Detail automator 超时，并完成连续 Detail×N；排查 Favorite error 与 History 空态后重跑
+  Favorite → Worn → History → 冷启动/重入同一链路。
+- 0/200、200/200 衣橱和 quota 注入仍属于发布候选 smoke；未取得这些真实证据前，
+  `PB04_STATUS` 保持 `IMPLEMENTED_PARTIAL_DEVTOOLS_SMOKE`。

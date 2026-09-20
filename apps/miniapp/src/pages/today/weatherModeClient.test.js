@@ -17,10 +17,13 @@ test('client sends explicit weather mode and has no Shanghai 22 degree business 
 
 test('WeatherCard distinguishes live cached disabled and unavailable', () => {
   const source = fs.readFileSync(path.join(ROOT, 'components/WeatherCard/index.tsx'), 'utf8');
+  const bootstrapSource = fs.readFileSync(path.join(ROOT, 'lib/localStorage/bootstrapProjection.ts'), 'utf8');
   assert.match(source, /data\.source === 'cache' \? 'cached' : 'live'/);
   assert.match(source, /notifyWeatherModeChange\('disabled'\)/);
   assert.match(source, /notifyWeatherModeChange\('unavailable'\)/);
-  assert.match(source, /Date\.now\(\) - cachedAt > 10 \* 60 \* 1000/);
+  assert.match(source, /readCachedWeather\(true\)/);
+  assert.match(bootstrapSource, /const WEATHER_FRESH_MS = 10 \* 60 \* 1000/);
+  assert.match(bootstrapSource, /!options\.allowStale && timestamp - result\.updatedAt > WEATHER_FRESH_MS/);
 });
 
 test('client cloud request always receives an audit id for V6 lifecycle correlation', () => {

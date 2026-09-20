@@ -49,3 +49,13 @@ test('does not remove cache when batchTerminal is false', () => {
 
   assert.deepEqual(getUploadTaskLocalCache({ authRuntimeKey: 'user-a' }), [{ id: 'batch-1' }]);
 });
+
+test('runtime upload list remains bounded to the cloud recovery contract', () => {
+  clearUploadTaskLocalCache();
+  writeUploadTaskLocalCache({
+    authRuntimeKey: 'user-a',
+    data: Array.from({ length: 25 }, (_, index) => ({ id: `batch-${index}` })),
+  });
+
+  assert.equal(getUploadTaskLocalCache({ authRuntimeKey: 'user-a' }).length, 10);
+});

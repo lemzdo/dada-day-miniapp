@@ -7,8 +7,8 @@ const todaySource = fs.readFileSync(path.join(__dirname, 'index.tsx'), 'utf8');
 const adapterSource = fs.readFileSync(path.join(__dirname, 'todayV2Adapter.ts'), 'utf8');
 
 test('Today restores a valid user snapshot during authenticated entry', () => {
-  const entry = todaySource.indexOf('if (!isAuthenticated) return;');
-  const restore = todaySource.indexOf('const snapshot = readTodayV2Snapshot(', entry);
+  const entry = todaySource.indexOf('if (!isAuthenticated) {');
+  const restore = todaySource.indexOf('const snapshot = readTodayBootstrap(authContext)', entry);
   const weather = todaySource.indexOf('<WeatherCard', entry);
 
   assert.ok(entry >= 0, 'authenticated entry must be present');
@@ -34,7 +34,7 @@ test('Today entry restore retains existing snapshot validity gates', () => {
 });
 
 test('A valid entry restore does not invoke recommendation generation', () => {
-  const entry = todaySource.indexOf('const snapshot = readTodayV2Snapshot(');
+  const entry = todaySource.indexOf('const snapshot = readTodayBootstrap(authContext)');
   const restore = todaySource.slice(
     entry,
     todaySource.indexOf('const resetUserState = useCallback(', entry),

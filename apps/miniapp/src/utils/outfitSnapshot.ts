@@ -4,27 +4,8 @@ import type {
   OutfitSnapshotItem,
   RecommendationCopyEvidenceCarrier,
 } from '@starter-template/types';
-import {
-  buildUserStorageBusinessKey,
-  getUserStorageSync,
-  removeUserStorageSync,
-  setUserStorageSync,
-  type ActiveAuthContext,
-} from '@/lib/userStorage';
 import { getOutfitDisplayTitle } from './outfitTitle';
 import { stripStaleDefaultCopy } from './recommendationCopyContract';
-
-const DETAIL_DRAFT_KEY = 'outfitDetailDraft:recommendation-copy-contract-v8';
-const OUTFIT_STATE_SYNC_KEY = 'outfitStateSync';
-const TODAY_RESTORE_SNAPSHOT_KEY = 'today:outfitReturnSnapshot:recommendation-copy-contract-v8';
-
-interface OutfitSnapshotStorageOptions {
-  authContext?: ActiveAuthContext | null;
-}
-
-interface TodayRestoreSnapshotStorage {
-  outfits?: Outfit[];
-}
 
 export function normalizeOutfitSnapshot(outfit: Outfit): Outfit {
   const safeOutfit = stripStaleDefaultCopy(outfit);
@@ -61,104 +42,6 @@ export function normalizeOutfitSnapshot(outfit: Outfit): Outfit {
 
 export function getOutfitKey(clothingIds: string[]) {
   return clothingIds.slice().sort().join('_');
-}
-
-export function getRecommendationOutfitId(outfit: Outfit) {
-  return `recommend:${getOutfitKey(outfit.clothingIds ?? [])}`;
-}
-
-export function storeOutfitDetailDraft(outfit: Outfit, options: OutfitSnapshotStorageOptions = {}) {
-  const normalized = normalizeOutfitSnapshot(outfit);
-  for (const id of getOutfitDraftStorageIds(normalized)) {
-    setUserStorageSync(getOutfitStorageKey(id), normalized, options);
-  }
-}
-
-export function storeOutfitStateSync(outfit: Outfit, options: OutfitSnapshotStorageOptions = {}) {
-  setUserStorageSync(OUTFIT_STATE_SYNC_KEY, normalizeOutfitSnapshot(outfit), options);
-}
-
-export function consumeOutfitStateSync(options: OutfitSnapshotStorageOptions = {}) {
-  try {
-    const value = getUserStorageSync<Outfit>(OUTFIT_STATE_SYNC_KEY, options);
-    removeUserStorageSync(OUTFIT_STATE_SYNC_KEY, options);
-    return value && typeof value === 'object' ? normalizeOutfitSnapshot(value) : null;
-  } catch {
-    return null;
-  }
-}
-
-export function clearTodayRestoreSnapshot(options: OutfitSnapshotStorageOptions = {}) {
-  removeUserStorageSync(TODAY_RESTORE_SNAPSHOT_KEY, options);
-}
-
-export function updateTodayRestoreSnapshotOutfit(outfit: Outfit, options: OutfitSnapshotStorageOptions = {}) {
-  try {
-    const value = getUserStorageSync<TodayRestoreSnapshotStorage>(TODAY_RESTORE_SNAPSHOT_KEY, options);
-    if (!value || typeof value !== 'object' || !Array.isArray(value.outfits)) return false;
-
-    const patch = normalizeOutfitSnapshot(outfit);
-    let changed = false;
-    const outfits = value.outfits.map((item) => {
-      if (!isSameOutfitIdentity(item, patch)) return item;
-      changed = true;
-      return normalizeOutfitSnapshot({
-        ...item,
-        userTitle: patch.userTitle,
-        displayTitle: patch.displayTitle,
-        title: patch.title,
-        updatedAt: patch.updatedAt,
-      });
-    });
-
-    if (!changed) return false;
-    setUserStorageSync(TODAY_RESTORE_SNAPSHOT_KEY, { ...value, outfits }, options);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export function readOutfitDetailDraft(id: string, options: OutfitSnapshotStorageOptions = {}) {
-  try {
-    const value = getUserStorageSync<Outfit>(getOutfitStorageKey(id), options);
-    return value && typeof value === 'object' ? normalizeOutfitSnapshot(value) : null;
-  } catch {
-    return null;
-  }
-}
-
-function getOutfitStorageKey(id: string) {
-  return buildUserStorageBusinessKey(DETAIL_DRAFT_KEY, id);
-}
-
-function getOutfitDraftStorageIds(outfit: Outfit) {
-  return uniqueStrings([
-    outfit.id,
-    outfit.outfitId,
-    outfit.favoriteOutfitId,
-    outfit.outfitKey ? getRecommendationOutfitId(outfit) : undefined,
-  ]);
-}
-
-function isSameOutfitIdentity(a: Outfit, b: Outfit) {
-  const aIds = getOutfitIdentityValues(a);
-  const bIds = getOutfitIdentityValues(b);
-  return aIds.some((id) => bIds.includes(id));
-}
-
-function getOutfitIdentityValues(outfit: Outfit) {
-  return uniqueStrings([
-    outfit.id,
-    outfit.outfitId,
-    outfit.favoriteOutfitId,
-    outfit.outfitKey,
-    outfit.outfitKey ? getRecommendationOutfitId(outfit) : undefined,
-  ]);
-}
-
-function uniqueStrings(values: Array<string | undefined>) {
-  return [...new Set(values.filter((value): value is string => Boolean(value)))];
 }
 
 function buildSnapshots(outfit: Outfit): OutfitSnapshotItem[] {

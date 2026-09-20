@@ -6,6 +6,7 @@ import { resolveGarmentAsset } from '@/utils/garmentAssetResolution';
 import { useAuthRuntime } from '@/hooks/useAuthRuntime';
 import { invalidateHistoryCache } from '@/lib/cacheInvalidation';
 import { listOutfitHistory } from '@/lib/cloud';
+import { buildOutfitDetailUrl, createOutfitRef } from '@/lib/outfitRef';
 import { buildPageCacheKey } from '@/lib/pageCache';
 import {
   captureAuthContext,
@@ -251,7 +252,12 @@ export default function OutfitHistoryPage() {
   }
 
   function goToDetail(record: Outfit) {
-    Taro.navigateTo({ url: `/pages/outfit-detail/index?id=${encodeURIComponent(record.id)}&source=history` });
+    const ref = createOutfitRef(record, 'history');
+    if (!ref) {
+      Taro.showToast({ title: '这条历史缺少记录标识，暂时无法打开', icon: 'none' });
+      return;
+    }
+    Taro.navigateTo({ url: buildOutfitDetailUrl(ref) });
   }
 
   function goToTodayPage() {

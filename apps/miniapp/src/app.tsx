@@ -2,7 +2,7 @@ import { Component } from 'react';
 import type { PropsWithChildren } from 'react';
 import { useUserStore } from './stores/userStore';
 import { initCloud } from './lib/cloud';
-import { cleanupLegacyUserCaches } from './lib/legacyUserCacheCleanup';
+import { runPostAuthStorageMigration, runPreAuthStorageMigration } from './lib/storageMigration';
 import './app.scss';
 
 class App extends Component<PropsWithChildren> {
@@ -13,11 +13,16 @@ class App extends Component<PropsWithChildren> {
   private async initializeApp() {
     initCloud();
     try {
-      await cleanupLegacyUserCaches();
+      runPreAuthStorageMigration();
     } catch (error) {
-      console.warn('[app] legacy user cache cleanup failed', error);
+      console.warn('[app] pre-auth storage migration failed', error);
     }
-    useUserStore.getState().initializeAuth().catch(console.error);
+    useUserStore.getState().initializeAuth()
+      .then(() => {
+        const userScope = useUserStore.getState().userScope;
+        if (userScope) runPostAuthStorageMigration(userScope);
+      })
+      .catch(console.error);
   }
 
   render() {

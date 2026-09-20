@@ -226,19 +226,21 @@ test('stale stripping is null, array, and malformed-nesting safe', () => {
   });
 });
 
-test('all client cache and storage boundaries include the exact Contract version', () => {
-  const sources = [
-    ['../lib/cloud.ts', /generateOutfit[^\n]*recommendation-copy-contract-v8|recommendation-copy-contract-v8[^\n]*generateOutfit/s],
-    ['outfitSnapshot.ts', /outfitDetailDraft[^\n]*recommendation-copy-contract-v8|recommendation-copy-contract-v8[^\n]*outfitDetailDraft/s],
-    ['../pages/today/index.tsx', /today:outfitReturnSnapshot[^\n]*recommendation-copy-contract-v8|recommendation-copy-contract-v8[^\n]*today:outfitReturnSnapshot/s],
-    ['../pages/outfit-detail/index.tsx', /outfitDetail[\s\S]{0,160}recommendation-copy-contract-v8/],
-    ['../pages/favorite-outfits/index.tsx', /favorites[\s\S]{0,160}recommendation-copy-contract-v8/],
-    ['../pages/outfit-history/index.tsx', /history[\s\S]{0,160}recommendation-copy-contract-v8/],
-  ];
+test('client cache and storage boundaries reject legacy full recommendation snapshots', () => {
+  const cloudSource = fs.readFileSync(path.join(__dirname, '../lib/cloud.ts'), 'utf8');
+  assert.match(cloudSource, /generateOutfit[^\n]*recommendation-copy-contract-v8|recommendation-copy-contract-v8[^\n]*generateOutfit/s);
 
-  for (const [relativePath, expected] of sources) {
+  const snapshotSource = fs.readFileSync(path.join(__dirname, 'outfitSnapshot.ts'), 'utf8');
+  assert.match(snapshotSource, /stripStaleDefaultCopy\(outfit\)/);
+  assert.doesNotMatch(snapshotSource, /outfitDetailDraft|setUserStorageSync|setStorageSync/);
+
+  const todaySource = fs.readFileSync(path.join(__dirname, '../pages/today/index.tsx'), 'utf8');
+  assert.match(todaySource, /writeTodayBootstrapSnapshot\(authContext, snapshot\)/);
+  assert.doesNotMatch(todaySource, /today:outfitReturnSnapshot|outfitDetailDraft/);
+
+  for (const relativePath of ['../pages/favorite-outfits/index.tsx', '../pages/outfit-history/index.tsx']) {
     const source = fs.readFileSync(path.join(__dirname, relativePath), 'utf8');
-    assert.match(source, expected, relativePath);
+    assert.match(source, /getSavedSnapshotDefaultCopy/);
   }
 });
 
@@ -254,10 +256,9 @@ test('Today, Favorites, and History have no local recommendation fallback or unv
   }
 
   const todaySource = fs.readFileSync(path.join(__dirname, '../pages/today/index.tsx'), 'utf8');
-  assert.match(todaySource, /hasCurrentNewRecommendationCopy/);
-  assert.match(todaySource, /data\.outfits\.filter\(hasCurrentNewRecommendationCopy\)/);
-  assert.doesNotMatch(todaySource, /data\.outfits\.filter\(hasCurrentDefaultCopy\)/);
-  assert.match(todaySource, /outfit\.copyContract\.todayReason/);
+  assert.match(todaySource, /readTodayV2Snapshot/);
+  assert.match(todaySource, /card\?\.todayReason \|\| ''/);
+  assert.doesNotMatch(todaySource, /data\.outfits|hasCurrentDefaultCopy|hasCurrentNewRecommendationCopy/);
   assert.doesNotMatch(todaySource, /适合今天|适合\$\{getSceneText/);
 
   for (const relativePath of ['../pages/favorite-outfits/index.tsx', '../pages/outfit-history/index.tsx']) {

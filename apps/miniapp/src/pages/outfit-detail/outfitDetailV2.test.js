@@ -8,11 +8,12 @@ const stateSource = fs.readFileSync(path.join(__dirname, 'outfitDetailV2.ts'), '
 
 test('V2 detail route carries identity and lazy-loads through the V2 client', () => {
   assert.match(source, /getCloudOutfitDetailV2/);
-  assert.match(source, /v2BatchId = router\.params\.batchId/);
-  assert.match(source, /v2OutfitKey = router\.params\.outfitKey/);
-  assert.match(source, /v2ReferenceId = router\.params\.referenceId/);
+  assert.match(source, /readOutfitRefFromRoute\(router\.params\)/);
+  assert.match(source, /outfitRef\.batchId/);
+  assert.match(source, /outfitRef\.outfitKey/);
+  assert.match(source, /outfitRef\.referenceId/);
   assert.match(stateSource, /detailIdentityReady/);
-  assert.doesNotMatch(source.slice(source.indexOf('if (v2Enabled && v2DetailState)'), source.indexOf('if (loading)')), /normalizeOutfitSnapshot/);
+  assert.doesNotMatch(source.slice(source.indexOf('if (v2DetailState)'), source.indexOf('if (loading)')), /normalizeOutfitSnapshot/);
 });
 
 test('V2 detail does not feed Light into Legacy draft storage', () => {

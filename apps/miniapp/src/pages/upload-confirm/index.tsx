@@ -26,11 +26,15 @@ import {
 } from '@/lib/userPageCache';
 import {
   buildUserStorageBusinessKey,
-  getUserStorageSync,
   removeUserStorageSync,
   setUserStorageSync,
 } from '@/lib/userStorage';
 import { buildAuthRuntimeKey } from '@/lib/userRuntimeScope';
+import {
+  readUploadWorkflow,
+  removeTerminalUploadWorkflow,
+  upsertUploadWorkflow,
+} from '@/lib/uploadWorkflowStore';
 import {
   markUploadBatchTerminal,
   removeUploadBatchFromLocalCache,
@@ -253,8 +257,8 @@ export default function UploadConfirmPage() {
     batchRefreshCountRef.current = 0;
     const startedAt = Date.now();
 
-    const uploadImagesKey = buildUserStorageBusinessKey('uploadBatchImages', batchId);
-    const stored = getUserStorageSync<string[]>(uploadImagesKey, { authContext }) ?? undefined;
+    const stored = readUploadWorkflow(authContext).refs
+      .find((ref) => ref.batchId === batchId)?.cloudImageIds;
     const sourceImages = imagesOverride ?? images;
     const imageById = new Map(sourceImages.map((item) => [item.id, item]));
     const candidateIds = Array.isArray(stored) && stored.length > 0
@@ -267,7 +271,12 @@ export default function UploadConfirmPage() {
 
     try {
       if (targetIds.length === 0) {
-        removeUserStorageSync(uploadImagesKey, { authContext });
+        upsertUploadWorkflow(authContext, {
+          batchId,
+          phase: 'confirming',
+          cloudImageIds: [],
+          replaceCloudImageIds: true,
+        });
         if (isFlowCurrent(authContext, flowRuntimeKey)) await refresh();
         return;
       }
@@ -284,7 +293,12 @@ export default function UploadConfirmPage() {
         }
       }
       if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
-      removeUserStorageSync(uploadImagesKey, { authContext });
+      upsertUploadWorkflow(authContext, {
+        batchId,
+        phase: 'confirming',
+        cloudImageIds: [],
+        replaceCloudImageIds: true,
+      });
       await invalidateAfterUploadTaskMutation({ authContext });
     } catch (error) {
       console.error('Process pending upload images failed:', error);
@@ -451,6 +465,7 @@ export default function UploadConfirmPage() {
       if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
       if (shouldEnterTerminalDiscardLeaving(result, batchId)) {
         discardRequestedRef.current = true;
+        removeTerminalUploadWorkflow(authContext, batchId, result.batchStatus || 'discarded');
         await finalizeTerminalDiscard({
           source: 'draft',
           batchId,
@@ -611,6 +626,7 @@ export default function UploadConfirmPage() {
 
       await confirmClothesDrafts(batchId, draftPayload, selectedIds);
       if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
+      removeTerminalUploadWorkflow(authContext, batchId, 'saved');
       await invalidateAfterConfirmDraftsSaved({ authContext });
       if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
       setUserStorageSync(WARDROBE_REFRESH_STORAGE_KEY, true, { authContext });
@@ -654,6 +670,7 @@ export default function UploadConfirmPage() {
       await discardUploadBatch(batchId);
       batchDiscarded = true;
       if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
+      removeTerminalUploadWorkflow(authContext, batchId, 'discarded');
       await finalizeTerminalDiscard({
         source: 'batch',
         batchId,

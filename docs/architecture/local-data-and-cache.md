@@ -6,9 +6,33 @@
 - 平台约束：微信小程序 Local Storage 按用户、按小程序聚合 10 MB；本地文件缓存与 Local Storage 是不同容量域
 - 前置证据：[PB-04 微信本地 Storage 10MB 容量专项审计](../qa/storage-10mb-audit.md)
 
-本文是 PB-04 实施前的数据分层、真源、生命周期和容量合同。后续新增持久化默认拒绝；代码现状与本文冲突时，以本文的目标架构为准，并通过分期迁移收敛。
+本文是 PB-04 的数据分层、真源、生命周期和容量合同；2026-09-20 起 PHASE_1 已进入代码实施状态。后续新增持久化默认拒绝；代码现状与本文冲突时，以本文合同为准，并通过分期迁移收敛。
 
 Miniapp 当前直接调用 Cloud Function，并由服务端 `OPENID` 隔离 CloudBase 数据；`apps/web` 的 BFF/Drizzle/PostgreSQL 是另一条可写数据平面，并没有与 CloudBase 建立同步或映射。本文据此指定 **CloudBase 为 miniapp 业务真源**。在另行完成迁移、同步或退役决策前，PostgreSQL 不能被当作同一用户数据的第二 canonical truth，客户端 cache 更不能掩盖两套后端的语义差异。
+
+## 0. PB-04 Implementation Matrix
+
+以下矩阵是 PB-04 实施前经 Sol 审核的实际迁移清单。实施不得以单 key 修补替代数据族迁移；标为 `PB04_SCOPE=NO` 的事项只记录边界，不在本轮扩张。
+
+| DATA_FAMILY | CURRENT_LAYER | TARGET_LAYER | CURRENT_KEY/PREFIX | TARGET_REPRESENTATION | SOURCE_OF_TRUTH | MIGRATION_REQUIRED | PB04_SCOPE |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| auth resume | L1 direct | L1 allowlist | `userId`、`openid`、`userProfileCache:v1` | `authResume:v2` 最小 session/scope/version；不含完整 profile | 微信身份 + CloudBase runtime identity | YES，写入并读回验证后删旧 key | YES |
+| profile bootstrap | L1 direct + persisted page cache | L1 allowlist | `userProfileCache:v1`、`pageCache:*:profile:*` | `profileBootstrap:v2` 单条 compact display/profile revision | CloudBase `users` | YES | YES |
+| weather bootstrap | L1 direct | L1 allowlist | `d1d:lastWeather` | `weatherLastKnown:v2` 单条 compact record；10m fresh / 24h stale-if-error | weather provider + CloudBase server cache | YES，超过 stale window 物理删除 | YES |
+| Today bootstrap | L1 user storage full/light snapshots | L1 allowlist | `d1d:today:v2:home-light`、`today:outfitReturnSnapshot:*` | `todayBootstrap:v2`：最多 8 个 `OutfitRef` + 必要展示投影 | `recommendation_batches_v2` / canonical Outfit | YES，只迁可验证 ref | YES |
+| Wardrobe bootstrap | dynamic persisted page cache | L0 query + one L1 bootstrap | `pageCache:*:wardrobe:first:*:<filter>:*` | 固定 `wardrobeBootstrap:v2`，最多 20 个 compact refs；动态 filter 仅 L0 | CloudBase `clothes` | YES，删动态 filter cache | YES |
+| outfit detail draft | L1 multi-alias full snapshots | L0 handoff / ref | `userStorage:*:outfitDetailDraft*` | `OutfitRefV1`；无法验证 identity 的遗留项只允许单一有界只读 fallback | source-specific Cloud records | YES，先验证 identity 再删 | YES |
+| outfit state sync | L1 full snapshot | L0 status overlay | `userStorage:*:outfitStateSync` | runtime status patch / cloud mutation result | Favorite relation / History event | YES | YES |
+| Detail page cache | dynamic L1 + L0 | L0 RuntimeQueryCache | `pageCache:*:outfitDetail:*` | session-scoped bounded query entry | Cloud detail resolver | YES，完整删除 persisted payload | YES |
+| Favorite list/cache | L1 full list | L0 query/status | `pageCache:*:favorites:first:*` | runtime pagination；L1 只可随 bootstrap 带 boolean/id | CloudBase `favorite_outfits` | YES | YES |
+| History list/cache | L1 full list | L0 pagination | `pageCache:*:history:first:*` | runtime pagination；合法 wear-time snapshot 只在 Cloud | CloudBase `outfit_history` | YES | YES |
+| upload workflow | L1 dynamic per-batch arrays | L1 bounded ref set + L2 temp | `userStorage:*:uploadBatchImages:*` | 单 `uploadWorkflow:v2` envelope，最多 10 个 batch refs、每 batch 最多 9 个 image IDs | `upload_batches` / `upload_images` / `clothes_drafts` | YES，terminal 即删、24h orphan 核验 | YES |
+| diagnostics | L1 fixed, no TTL | L0 / explicit QA artifact | acceptance/performance/Today ledger keys | production bounded runtime ring；QA evidence 显式导出或固定短 TTL | runtime / QA tooling | YES | YES |
+| migration metadata | L1 boolean marker | L1 allowlist | `d1d:migration:user-cache-isolation:v1:*` | `storageMeta:v2` version/checkpoint/compact size summary | client migration owner | YES | YES |
+| raw behavior events | L0 memory only today | future L3 + optional bounded L1 pending | none | PB-22 guardrail：50 events / 64 KiB / 72h / ack delete | Cloud behavior ingestion | NO，仅登记合同 | NO |
+| Web/PostgreSQL parallel plane | independent L3-like plane | separate architecture decision | Web BFF / PostgreSQL | 明确同步、迁移或退役关系 | 尚未收敛 | NO，独立 Problem | NO |
+
+`SOL_MATRIX_REVIEW=APPROVED`：Today V2 的 `batchId + outfitKey + referenceId`、Favorite/History 的 Cloud `_id` 可作为 PB-04 稳定 source identity；PB-04 不引入 OutfitRevision。迁移必须遵循 `write/resolve -> validate -> delete legacy`，不得先删 snapshot 再尝试恢复。
 
 ## 1. 架构结论
 
@@ -345,9 +369,24 @@ PB-04 仅在以下全部满足时关闭：
 9. 真机记录 `keys/currentSize/limitSize`，覆盖 0/200、200/200、Detail LRU边界、History分页、上传中断、logout/账号切换和 quota 注入。
 10. PB-22 任何 future local queue 必须遵守50条/64KiB/72h/ack-delete 合同，不能重新引入无限行为日志。
 
-## 14. 明确不在本架构定稿实施
+## 14. 实施状态与边界
 
-本文提交不修改业务代码、不执行迁移、不新增 LRU、不改 storage schema、不部署、不启用 PB-22。所有实现动作从后续 PB-04 implementation commit 开始，并按上述分期验收。
+`PB04_IMPLEMENTATION_STATUS=IMPLEMENTED_PARTIAL_DEVTOOLS_SMOKE`
+
+2026-09-20 的 PHASE_1 实现已包含 registry/gateway、L0 runtime cache、固定 bootstrap projections、
+OutfitRef、upload workflow envelope、物理 TTL/选择性 eviction、quota retry once、失败隔离与
+migration namespace v2 / checkpoint v4。
+production-shaped 自动化模型在 20 次 Detail、History 和 10 个 upload refs 后保持 25.52 KiB 以内；
+PB-04 专项 37/37、miniapp Node tests 351/351 通过。
+
+微信开发者工具真实运行中，旧版本首次采集为 3,852 KiB / 46 keys；checkpoint v4 冷启动迁移后为
+20 KiB / 7 keys，第二次 relaunch 保持 20 KiB / 7 keys。Today、Wardrobe、Favorite/Worn 局部操作与
+冷启动重入后为 28-29 KiB / 8 keys，旧 scene/return/userStorage/pageCache families 保持 0。
+
+本实现不部署 CloudBase TTL/index、不重塑 OutfitRevision/Favorite/History 云 schema、不启用 PB-22 durable
+behavior queue，也不决定 Web/PostgreSQL 平行数据面的去留。前两项继续归 PB-11/PB-12/PB-22，数据面关系
+单列 PB-36。当前真实 smoke 仍缺 Upload/Confirm、稳定的 Detail×N，以及 Favorite/History 云端闭环；
+0/200、200/200 与 quota 注入也保留为发布候选门禁，完成前 PB-04 不关闭。
 
 ## 15. 决策摘要
 
@@ -378,8 +417,12 @@ ARCHITECTURE_DOCUMENT=docs/architecture/local-data-and-cache.md
 ## 16. 仓库证据索引
 
 - 当前 Local Storage inventory、增长模型和 fixture 测量：[storage-10mb-audit.md](../qa/storage-10mb-audit.md)
-- 通用 persisted `pageCache` 双写及过期只 miss：[pageCache.ts](../../apps/miniapp/src/lib/pageCache.ts)
-- Outfit normalized snapshot 三数组、多 identity alias：[outfitSnapshot.ts](../../apps/miniapp/src/utils/outfitSnapshot.ts)
+- deny-by-default registry 与容量合同：[registry.ts](../../apps/miniapp/src/lib/localStorage/registry.ts)
+- TTL、bytes/entries、eviction 与 quota retry once：[core.mjs](../../apps/miniapp/src/lib/localStorage/core.mjs)
+- 通用 `pageCache` 已退役为 L0 runtime cache：[pageCache.ts](../../apps/miniapp/src/lib/pageCache.ts)
+- Outfit snapshot 仅保留纯规范化，不再负责本地持久化：[outfitSnapshot.ts](../../apps/miniapp/src/utils/outfitSnapshot.ts)
+- versioned allowlist migration：[storageMigration.ts](../../apps/miniapp/src/lib/storageMigration.ts)
+- production-shaped 容量稳定性测试：[storageCapacitySimulation.test.js](../../apps/miniapp/src/lib/storageCapacitySimulation.test.js)
 - Today V2 compact projection：[todayV2Adapter.ts](../../apps/miniapp/src/pages/today/todayV2Adapter.ts)
 - V2 Detail 通过 recommendation batch reference 回源：[generateOutfit/index.js](../../apps/miniapp/cloudfunctions/generateOutfit/index.js)
 - Candidate Pool 10分钟 TTL 与256KiB记录预算：[candidatePool.js](../../apps/miniapp/cloudfunctions/generateOutfit/services/candidatePool.js)

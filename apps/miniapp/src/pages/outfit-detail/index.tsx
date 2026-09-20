@@ -29,7 +29,10 @@ import {
   createOutfitBehaviorEventId,
   trackOutfitBehaviorEvent,
 } from '@/lib/outfitBehavior';
+import { getOutfitRefResolverId, readOutfitRefFromRoute } from '@/lib/outfitRef';
+import { readTodayBootstrapSnapshot } from '@/lib/todayBootstrapStore';
 import { buildPageCacheKey } from '@/lib/pageCache';
+import { getRuntimeQueryCache, setRuntimeQueryCache } from '@/lib/runtimeQueryCache';
 import {
   captureAuthContext,
   getUserPageCache,
@@ -39,7 +42,7 @@ import {
 } from '@/lib/userPageCache';
 import { getUserStorageSync } from '@/lib/userStorage';
 import { applyOutfitStatus, setOutfitStatus } from '@/stores/outfitStatusStore';
-import { normalizeOutfitSnapshot, readOutfitDetailDraft, storeOutfitDetailDraft, storeOutfitStateSync } from '@/utils/outfitSnapshot';
+import { normalizeOutfitSnapshot } from '@/utils/outfitSnapshot';
 import { hasCurrentDefaultCopy } from '@/utils/recommendationCopyContract';
 import {
   getDateLabel,
@@ -51,12 +54,11 @@ import {
   getTimeLabel,
 } from '@/utils/outfitContextText';
 import { getOutfitDisplayTitle } from '@/utils/outfitTitle';
-import { mergeRecommendationEntryDraft } from './outfitDetailEntryMerge';
 import { buildAiReviewPresentation } from './aiReviewPresentation';
 import { getAiReviewPageState } from './aiReviewPageState';
 import { getAiCommentButtonBlockReason, getAiCommentButtonState, type AiCommentButtonState } from './aiCommentButtonState';
 import type { OutfitStatusPatch } from '@/stores/outfitStatusStore';
-import type { HomeLightCardV2, Outfit, OutfitAiReviewResponse, OutfitItemSummary, OutfitSnapshotItem } from '@starter-template/types';
+import type { Outfit, OutfitAiReviewResponse, OutfitItemSummary, OutfitSnapshotItem, RecommendationDetailResponseV2 } from '@starter-template/types';
 import { readTodayV2Snapshot } from '@/pages/today/todayV2Adapter';
 import { applyOutfitDetailV2Load, beginOutfitDetailV2Load, createOutfitDetailV2State, type OutfitDetailV2State } from './outfitDetailV2';
 import './index.scss';
@@ -405,13 +407,50 @@ function V2OutfitDetailView({ state }: { state: OutfitDetailV2State }) {
   );
 }
 
+function applyRecoveredV2Detail(
+  state: OutfitDetailV2State,
+  response: RecommendationDetailResponseV2,
+): OutfitDetailV2State {
+  const loaded = applyOutfitDetailV2Load(state, response);
+  if (loaded === state) return state;
+  const detail = response.detail;
+  const displayTitle = typeof detail.displayTitle === 'string' && detail.displayTitle.trim()
+    ? detail.displayTitle
+    : loaded.shell.displayTitle;
+  const detailItems = Array.isArray(detail.items) ? detail.items : [];
+  const items = detailItems.flatMap((item) => {
+    if (!item || typeof item !== 'object') return [];
+    const record = item as Record<string, unknown>;
+    const clothingId = String(record._id || record.id || '').trim();
+    if (!clothingId) return [];
+    return [{
+      clothingId,
+      displayImageUrl: getItemDetailImage(record as unknown as OutfitSnapshotItem),
+      isDeleted: Boolean(record.isDeleted || record.deletedAt),
+    }];
+  });
+  const clothingIds = Array.isArray(detail.clothingIds)
+    ? detail.clothingIds.filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+    : items.map((item) => item.clothingId);
+  return {
+    ...loaded,
+    shell: {
+      ...loaded.shell,
+      displayTitle,
+      clothingIds,
+      items,
+    },
+  };
+}
+
 export default function OutfitDetailPage() {
   const router = useRouter();
-  const id = router.params.id;
-  const sourceParam = router.params.source;
-  const v2BatchId = router.params.batchId;
-  const v2OutfitKey = router.params.outfitKey;
-  const v2ReferenceId = router.params.referenceId;
+  const outfitRef = readOutfitRefFromRoute(router.params);
+  const id = router.params.id || (outfitRef ? getOutfitRefResolverId(outfitRef) ?? undefined : undefined);
+  const sourceParam = outfitRef?.source === 'outfit' ? 'recommendation' : outfitRef?.source ?? router.params.source;
+  const v2BatchId = outfitRef?.source === 'recommendation' ? outfitRef.batchId : router.params.batchId;
+  const v2OutfitKey = outfitRef?.source === 'recommendation' ? outfitRef.outfitKey : router.params.outfitKey;
+  const v2ReferenceId = outfitRef?.source === 'recommendation' ? outfitRef.referenceId : router.params.referenceId;
   const { authStatus, runtimeKey, isAuthenticated } = useAuthRuntime();
   const [outfit, setOutfit] = useState<Outfit | null>(null);
   const [detailSource, setDetailSource] = useState<DetailSource>('recommendation');
@@ -483,15 +522,43 @@ export default function OutfitDetailPage() {
     if (!isAuthenticated || !runtimeKey || !v2BatchId || !v2OutfitKey || !v2ReferenceId) return;
     const authContext = captureAuthContext();
     if (!authContext) return;
-    const snapshot = readTodayV2Snapshot((key) => getUserStorageSync(key, { authContext }));
+    const snapshot = readTodayV2Snapshot(
+      () => readTodayBootstrapSnapshot(authContext),
+    );
     const card = snapshot?.cards.find((item) => item.outfitKey === v2OutfitKey
       && item.referenceId === v2ReferenceId);
-    if (!card || snapshot?.batchId !== v2BatchId) return;
-    let state = createOutfitDetailV2State(card);
+    const shell = card && snapshot?.batchId === v2BatchId
+      ? card
+      : {
+          referenceId: v2ReferenceId,
+          outfitKey: v2OutfitKey,
+          position: 0,
+          displayTitle: '穿搭详情',
+          todayReason: '',
+          styleTags: [],
+          clothingIds: [],
+          items: [],
+          isFavorite: false,
+          isWornToday: false,
+        };
+    let state = createOutfitDetailV2State(shell);
+    const cacheNamespace = `outfitDetail:${authContext.userScope}`;
+    const cacheKey = `v2:${v2BatchId}:${v2OutfitKey}:${v2ReferenceId}`;
+    const cached = getRuntimeQueryCache<RecommendationDetailResponseV2>(cacheNamespace, cacheKey);
+    if (cached) {
+      setV2DetailState(applyRecoveredV2Detail(state, cached.data));
+      return;
+    }
     state = beginOutfitDetailV2Load(state, v2BatchId);
     setV2DetailState(state);
     void getCloudOutfitDetailV2({ batchId: v2BatchId, outfitKey: v2OutfitKey, referenceId: v2ReferenceId })
-      .then((detail) => setV2DetailState((current) => current ? applyOutfitDetailV2Load(current, detail) : current))
+      .then((detail) => {
+        setRuntimeQueryCache(cacheNamespace, cacheKey, detail, {
+          ttl: OUTFIT_DETAIL_CACHE_TTL,
+          maxEntries: 16,
+        });
+        setV2DetailState((current) => current ? applyRecoveredV2Detail(current, detail) : current);
+      })
       .catch(() => setV2DetailState((current) => current ? { ...current, loading: false } : current));
   }, [isAuthenticated, runtimeKey, v2BatchId, v2OutfitKey, v2ReferenceId]);
 
@@ -510,25 +577,10 @@ export default function OutfitDetailPage() {
     try {
       const decodedId = decodeURIComponent(outfitId);
       const source = normalizeSource(sourceParam);
-      let recommendationEntryDraft: Outfit | null = null;
       if (requestSeqRef.current !== requestSeq || !isCurrentAuthContext(authContext)) return;
       setDetailSource(source);
 
-      if (source === 'recommendation') {
-        const draft = readOutfitDetailDraft(decodedId, { authContext });
-        if (draft) {
-          recommendationEntryDraft = draft;
-          if (requestSeqRef.current !== requestSeq || !isCurrentAuthContext(authContext)) return;
-          const preparedDraft = prepareOutfitForState({ ...draft, outfitKind: draft.outfitKind || 'recommendation' }, authContext);
-          setOutfit(preparedDraft);
-          setLoading(false);
-          hasDisplayableOutfit = true;
-          trackDetailViewOnce(preparedDraft, source);
-          void loadCanonicalAiComment(preparedDraft, requestSeq, authContext);
-        }
-      }
-
-      const cacheKey = buildOutfitDetailCacheKey(source, decodedId, recommendationEntryDraft?.scene);
+      const cacheKey = buildOutfitDetailCacheKey(source, decodedId);
 
       if (!hasDisplayableOutfit && cacheKey && !hasWardrobeRefreshSignal(authContext)) {
         const cached = await getUserPageCache<Outfit>(cacheKey, { authContext });
@@ -550,10 +602,7 @@ export default function OutfitDetailPage() {
             ? await getOutfitHistoryDetail(decodedId)
             : await getCloudOutfit(decodedId);
       if (requestSeqRef.current !== requestSeq || !isCurrentAuthContext(authContext)) return;
-      const entryConsistentDetail = source === 'recommendation' && recommendationEntryDraft
-        ? mergeRecommendationEntryDraft(detail, recommendationEntryDraft)
-        : detail;
-      const prepared = prepareOutfitForState(entryConsistentDetail, authContext);
+      const prepared = prepareOutfitForState(detail, authContext);
       setOutfit(prepared);
       trackDetailViewOnce(prepared, source);
       void loadCanonicalAiComment(prepared, requestSeq, authContext);
@@ -994,10 +1043,6 @@ export default function OutfitDetailPage() {
 
     const nextWithStatus = applyDetailOutfitStatus(normalized, authContext);
     setOutfit(nextWithStatus);
-    storeOutfitStateSync(nextWithStatus, { authContext });
-    if (detailSource === 'recommendation') {
-      storeOutfitDetailDraft(nextWithStatus, { authContext });
-    }
     void writeOutfitDetailCache(getCurrentOutfitDetailCacheKey(), nextWithStatus, detailSource, authContext);
   }
 

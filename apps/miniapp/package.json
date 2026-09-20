@@ -9,6 +9,7 @@
     "build": "taro build --type weapp",
     "build:weapp": "taro build --type weapp",
     "build:h5": "taro build --type h5",
+    "test:pb04": "node --test src/lib/localStorage/core.test.js src/lib/businessPersistenceContract.test.js src/lib/runtimeQueryCache.test.js src/lib/outfitRef.test.js src/lib/uploadWorkflowCore.test.js src/lib/storageMigrationCore.test.js src/lib/storageCapacitySimulation.test.js src/lib/uploadTaskLocalCache.test.js src/pages/outfit-detail/outfitPlacementArchitecture.test.js src/components/WeatherCard/weatherFailureContract.test.js src/pages/today/weatherModeClient.test.js",
     "lint": "node ../../node_modules/eslint/bin/eslint.js --config eslint.config.mjs .",
     "typecheck": "tsc --noEmit",
     "clean": "rimraf dist"

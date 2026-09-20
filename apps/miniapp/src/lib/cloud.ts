@@ -48,6 +48,7 @@ import {
 } from './recommendationSseCore';
 import { resolveRecommendationHttpTransport } from './recommendationHttpTransport';
 import { buildRecommendationStreamTransportInput } from './recommendationStreamTransportCore';
+import { bootstrapProjectionStore } from './localStorage';
 
 type CloudResult<T> = {
   code: number;
@@ -351,22 +352,11 @@ export function resetUserCloudRuntimeSession() {
 }
 
 export function writeLocalWeatherCache(value: ResolvedWeatherResponse) {
-  if (value.source === 'fallback' || !value.weather.weather) return;
-
-  const cacheValue: ResolvedWeatherResponse = {
-    location: value.location,
-    weather: value.weather,
-    source: 'cache',
-    cacheHit: true,
-    fetchedAt: value.fetchedAt,
-    observedAt: value.observedAt ?? value.weather.reportTime,
-    updatedAt: value.updatedAt,
-  };
-  Taro.setStorageSync(WEATHER_CACHE_KEY, cacheValue);
+  bootstrapProjectionStore.writeWeatherLastKnown(value);
 }
 
 export function clearLocalWeatherCache() {
-  Taro.removeStorageSync(WEATHER_CACHE_KEY);
+  bootstrapProjectionStore.removeWeatherLastKnown();
 }
 
 function getCloudCacheKey(name: string, data: Record<string, unknown>, scope: Exclude<ResolvedCloudCacheScope, { type: 'none' }>) {
@@ -550,7 +540,7 @@ export async function uploadBatchSourceImage(filePath: string) {
 
 export async function uploadFeedbackImage(filePath: string) {
   if (!taroCloud) throw new Error('wx.cloud is not available');
-  const openid = String(Taro.getStorageSync('openid') || 'anonymous').replace(/[^a-zA-Z0-9_-]/g, '');
+  const openid = String(captureAuthContext()?.confirmedOpenid || 'anonymous').replace(/[^a-zA-Z0-9_-]/g, '');
   const cloudPath = `user_feedback/${openid || 'anonymous'}/${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
   const uploadRes = await taroCloud.uploadFile({ cloudPath, filePath });
   return uploadRes.fileID;
@@ -911,15 +901,19 @@ export async function generateCloudOutfitV2(params: RecommendationV2Request = {}
   }
   if (strictAcceptance) {
     const acceptanceTransport = getCloudResponseTransportDiagnostics(result);
-    Taro.setStorageSync(GENERATE_OUTFIT_ACCEPTANCE_TRANSPORT_KEY, {
-      acceptanceRunId: requestParams.acceptanceRunId || params.acceptanceRunId,
-      captureId: requestParams.captureId || params.captureId,
-      ...(acceptanceTransport ?? {}),
-      clientTotalMs: acceptanceTransport?.immediatelyBeforeCallFunction !== undefined
-        && acceptanceTransport.callFunctionPromiseResolved !== undefined
-        ? acceptanceTransport.callFunctionPromiseResolved - acceptanceTransport.immediatelyBeforeCallFunction
-        : undefined,
-    });
+    try {
+      Taro.setStorageSync(GENERATE_OUTFIT_ACCEPTANCE_TRANSPORT_KEY, {
+        acceptanceRunId: requestParams.acceptanceRunId || params.acceptanceRunId,
+        captureId: requestParams.captureId || params.captureId,
+        ...(acceptanceTransport ?? {}),
+        clientTotalMs: acceptanceTransport?.immediatelyBeforeCallFunction !== undefined
+          && acceptanceTransport.callFunctionPromiseResolved !== undefined
+          ? acceptanceTransport.callFunctionPromiseResolved - acceptanceTransport.immediatelyBeforeCallFunction
+          : undefined,
+      });
+    } catch (error) {
+      console.warn('[generateOutfitV2] acceptance artifact persistence skipped:', error);
+    }
   }
   if (strictAcceptance) {
     const performance = (result as RecommendationV2Response & {
@@ -927,7 +921,11 @@ export async function generateCloudOutfitV2(params: RecommendationV2Request = {}
     })?.diagnostics?.performance
       || (result as RecommendationV2Response & { diagnostics?: unknown })?.diagnostics;
     if (performance && typeof performance === 'object') {
-      Taro.setStorageSync(GENERATE_OUTFIT_PERFORMANCE_ARTIFACT_KEY, performance);
+      try {
+        Taro.setStorageSync(GENERATE_OUTFIT_PERFORMANCE_ARTIFACT_KEY, performance);
+      } catch (error) {
+        console.warn('[generateOutfitV2] performance artifact persistence skipped:', error);
+      }
       const acceptanceTransport = getCloudResponseTransportDiagnostics(result);
       if (acceptanceTransport) {
         setCloudResponseTransportDiagnostics(result, { ...acceptanceTransport, performance });
@@ -1335,7 +1333,6 @@ export async function getCloudWeather(
   const payload = options.forceRefresh ? { ...location, forceRefresh: true } : location;
   if (options.forceRefresh) {
     clearCloudCache(['getWeather:'], ['device']);
-    clearLocalWeatherCache();
   }
   const data = options.forceRefresh
     ? await callCloudFunction<ResolvedWeatherResponse>('getWeather', payload)

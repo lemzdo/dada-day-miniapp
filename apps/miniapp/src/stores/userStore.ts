@@ -10,11 +10,14 @@ import { buildUserScope } from '@/lib/userScope';
 import type { RecommendationProfile } from '@starter-template/types';
 import { DEFAULT_RECOMMENDATION_PROFILE } from '@/constants/recommendationProfile';
 import { DEFAULT_WARDROBE_LIMIT } from '@/constants/wardrobeCapacity';
+import {
+  bootstrapProjectionStore,
+  type AuthResumeV2,
+  type ProfileBootstrapV2,
+} from '@/lib/localStorage';
 
-const USER_ID_KEY = 'userId';
 const DEFAULT_NICKNAME = '搭搭新朋友';
 const FREE_WARDROBE_LIMIT = DEFAULT_WARDROBE_LIMIT;
-const USER_PROFILE_CACHE_KEY = 'userProfileCache:v1';
 type AvatarType = 'wechat' | 'preset' | 'default';
 export type AuthStatus = 'initializing' | 'authenticated' | 'anonymous' | 'failed';
 
@@ -25,8 +28,8 @@ export interface ActiveAuthContext {
 }
 
 interface CachedUserIdentity {
-  profile: CloudUserProfile;
-  userScope: string;
+  auth: AuthResumeV2;
+  profile: ProfileBootstrapV2 | null;
 }
 
 interface UserState {
@@ -67,21 +70,21 @@ let initializeAuthPromise: Promise<void> | null = null;
 const cachedIdentity = readCachedUserIdentity();
 
 export const useUserStore = create<UserState>((set, get) => ({
-  userId: Taro.getStorageSync(USER_ID_KEY) || null,
-  openid: Taro.getStorageSync('openid') || null,
+  userId: cachedIdentity?.auth.userId ?? null,
+  openid: cachedIdentity?.auth.confirmedOpenid ?? null,
   authStatus: cachedIdentity ? 'authenticated' : 'initializing',
-  confirmedOpenid: cachedIdentity?.profile.openid ?? null,
-  userScope: cachedIdentity?.userScope ?? null,
+  confirmedOpenid: cachedIdentity?.auth.confirmedOpenid ?? null,
+  userScope: cachedIdentity?.auth.userScope ?? null,
   authEpoch: 0,
-  nickname: cachedIdentity ? normalizeNickname(cachedIdentity.profile.nickname) : DEFAULT_NICKNAME,
-  avatarUrl: cachedIdentity?.profile.avatarUrl ?? '',
-  avatarType: cachedIdentity ? normalizeAvatarType(cachedIdentity.profile.avatarType) : 'default',
-  profileCompleted: Boolean(cachedIdentity?.profile.profileCompleted),
-  preferredStyles: cachedIdentity ? normalizeRecommendationProfile(cachedIdentity.profile.styleProfile).styleTags : [],
-  recommendationProfile: cachedIdentity ? normalizeRecommendationProfile(cachedIdentity.profile.styleProfile) : DEFAULT_RECOMMENDATION_PROFILE,
-  capacityTotal: cachedIdentity ? normalizeCapacityTotal(cachedIdentity.profile.capacity?.limit ?? cachedIdentity.profile.capacityTotal) : FREE_WARDROBE_LIMIT,
-  capacityUsed: cachedIdentity ? normalizeCapacityUsed(cachedIdentity.profile.capacity?.used ?? cachedIdentity.profile.capacityUsed) : 0,
-  membershipTier: cachedIdentity?.profile.membershipTier ?? 'free',
+  nickname: cachedIdentity?.profile ? normalizeNickname(cachedIdentity.profile.nickname) : DEFAULT_NICKNAME,
+  avatarUrl: cachedIdentity?.profile?.avatarUrl ?? '',
+  avatarType: cachedIdentity?.profile ? normalizeAvatarType(cachedIdentity.profile.avatarType) : 'default',
+  profileCompleted: Boolean(cachedIdentity?.profile?.profileCompleted),
+  preferredStyles: cachedIdentity?.profile?.recommendationProfile.styleTags ?? [],
+  recommendationProfile: cachedIdentity?.profile?.recommendationProfile ?? DEFAULT_RECOMMENDATION_PROFILE,
+  capacityTotal: cachedIdentity?.profile ? normalizeCapacityTotal(cachedIdentity.profile.capacityTotal) : FREE_WARDROBE_LIMIT,
+  capacityUsed: cachedIdentity?.profile ? normalizeCapacityUsed(cachedIdentity.profile.capacityUsed) : 0,
+  membershipTier: cachedIdentity?.profile?.membershipTier ?? 'free',
   isLoggedIn: Boolean(cachedIdentity),
 
   login: async () => {
@@ -91,8 +94,9 @@ export const useUserStore = create<UserState>((set, get) => ({
   logout: () => {
     authRequestVersion += 1;
     initializeAuthPromise = null;
-    Taro.removeStorageSync(USER_ID_KEY);
-    Taro.removeStorageSync('openid');
+    clearUserScopedRecovery(get().userScope);
+    bootstrapProjectionStore.removeAuthResume();
+    bootstrapProjectionStore.removeProfileBootstrap();
     set({
       userId: null,
       openid: null,
@@ -146,12 +150,14 @@ export const useUserStore = create<UserState>((set, get) => ({
       avatarType: normalizeAvatarType(updated.avatarType ?? profile.avatarType),
       profileCompleted: Boolean(updated.profileCompleted ?? profile.profileCompleted ?? true),
     });
+    persistCurrentProfileBootstrap(get());
   },
 
   saveRecommendationProfile: async (profile: RecommendationProfile) => {
     const normalized = normalizeRecommendationProfile({ recommendationProfile: profile });
     await updateCloudUserProfile(normalized);
     set({ recommendationProfile: normalized, preferredStyles: normalized.styleTags });
+    persistCurrentProfileBootstrap(get());
   },
 
   fetchProfile: async () => {
@@ -205,6 +211,7 @@ async function runAuthenticatedProfileRequest(
     const previousState = get();
     const ownerChanged = previousState.confirmedOpenid !== confirmedOpenid
       || previousState.userScope !== userScope;
+    if (ownerChanged) clearUserScopedRecovery(previousState.userScope);
     const recommendationProfile = normalizeRecommendationProfile(user.styleProfile);
     set({
       recommendationProfile,
@@ -227,13 +234,15 @@ async function runAuthenticatedProfileRequest(
       membershipTier: user.membershipTier,
       isLoggedIn: true,
     });
-    try {
-      Taro.setStorageSync(USER_PROFILE_CACHE_KEY, user);
-    } catch (error) {
-      console.warn('[userStore] profile cache write failed', error);
-    }
-    Taro.setStorageSync(USER_ID_KEY, user.id);
-    Taro.setStorageSync('openid', confirmedOpenid);
+    // Remote login is the business result. Local persistence is a bounded
+    // recoverability enhancement and never reverses an authenticated runtime.
+    bootstrapProjectionStore.writeAuthResume({
+      userId: user.id,
+      confirmedOpenid,
+      userScope,
+      updatedAt: new Date().toISOString(),
+    });
+    bootstrapProjectionStore.writeProfileBootstrap(toProfileBootstrap(user, userScope));
   } catch (err) {
     if (requestVersion === authRequestVersion) {
       console.error(errorLabel, err);
@@ -244,8 +253,8 @@ async function runAuthenticatedProfileRequest(
 }
 
 function clearFailedAuthState(set: (partial: Partial<UserState>) => void, get: () => UserState) {
-  Taro.removeStorageSync(USER_ID_KEY);
-  Taro.removeStorageSync('openid');
+  bootstrapProjectionStore.removeAuthResume();
+  bootstrapProjectionStore.removeProfileBootstrap();
   set({
     userId: null,
     openid: null,
@@ -323,22 +332,59 @@ function getMiniProgramEnvVersion(): string {
 }
 
 function readCachedUserIdentity(): CachedUserIdentity | null {
-  const openid = Taro.getStorageSync('openid');
-  if (typeof openid !== 'string' || !openid.trim()) return null;
+  const auth = bootstrapProjectionStore.readAuthResume();
+  if (!auth?.confirmedOpenid || !auth.userId) return null;
 
-  let profile: CloudUserProfile | null = null;
-  try {
-    const cached = Taro.getStorageSync(USER_PROFILE_CACHE_KEY) as CloudUserProfile;
-    if (cached?.openid === openid && cached.id && cached.membershipTier) profile = cached;
-  } catch {
-    return null;
-  }
-  if (!profile) return null;
-
-  const userScope = buildUserScope({
+  const expectedScope = buildUserScope({
     envVersion: getMiniProgramEnvVersion(),
     cloudEnvId: CLOUD_ENV_ID,
-    confirmedOpenid: openid,
+    confirmedOpenid: auth.confirmedOpenid,
   });
-  return userScope ? { profile, userScope } : null;
+  if (!expectedScope || auth.userScope !== expectedScope) return null;
+
+  const profile = bootstrapProjectionStore.readProfileBootstrap();
+  return {
+    auth,
+    profile: profile?.userScope === expectedScope && profile.userId === auth.userId ? profile : null,
+  };
+}
+
+function toProfileBootstrap(user: CloudUserProfile, userScope: string): ProfileBootstrapV2 {
+  return {
+    userScope,
+    userId: user.id,
+    nickname: normalizeNickname(user.nickname),
+    avatarUrl: user.avatarUrl ?? '',
+    avatarType: normalizeAvatarType(user.avatarType ?? user.styleProfile?.['avatarType']),
+    profileCompleted: Boolean(user.profileCompleted ?? user.styleProfile?.['profileCompleted']),
+    recommendationProfile: normalizeRecommendationProfile(user.styleProfile),
+    capacityTotal: normalizeCapacityTotal(user.capacity?.limit ?? user.capacityTotal),
+    capacityUsed: normalizeCapacityUsed(user.capacity?.used ?? user.capacityUsed),
+    membershipTier: user.membershipTier,
+    profileRevision: user.updatedAt,
+  };
+}
+
+function persistCurrentProfileBootstrap(state: UserState) {
+  if (!state.userId || !state.userScope || state.authStatus !== 'authenticated') return;
+  bootstrapProjectionStore.writeProfileBootstrap({
+    userScope: state.userScope,
+    userId: state.userId,
+    nickname: state.nickname,
+    avatarUrl: state.avatarUrl,
+    avatarType: state.avatarType,
+    profileCompleted: state.profileCompleted,
+    recommendationProfile: state.recommendationProfile,
+    capacityTotal: state.capacityTotal,
+    capacityUsed: state.capacityUsed,
+    membershipTier: state.membershipTier,
+  });
+}
+
+function clearUserScopedRecovery(userScope: string | null) {
+  if (!userScope) return;
+  const address = { scope: userScope };
+  bootstrapProjectionStore.removeTodayBootstrap(address);
+  bootstrapProjectionStore.removeWardrobeBootstrap(address);
+  bootstrapProjectionStore.removeUploadWorkflow(address);
 }

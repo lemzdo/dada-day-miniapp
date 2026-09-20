@@ -14,15 +14,15 @@ import { createRecommendationCoordinatorCore } from './recommendationCoordinator
 import { buildRecommendationInputIdentity } from './recommendationIdentity';
 import {
   TODAY_PROFILE_INPUT_VERSION_KEY,
-  TODAY_RECOMMENDATION_CONTEXT_KEY,
-  TODAY_RECOMMENDATION_HARD_INVALID_KEY,
-  TODAY_RECOMMENDATION_LATEST_IDENTITY_KEY,
-  TODAY_V2_SNAPSHOT_KEY,
   TODAY_WARDROBE_INPUT_VERSION_KEY,
 } from './recommendationInputKeys';
 import { isAuthContextCurrent, type ActiveAuthContext } from './userPageCache';
-import { getUserStorageSync, setUserStorageSync } from './userStorage';
 import { getRecommendationWeatherFingerprint } from '@/utils/weather';
+import {
+  patchTodayBootstrapControl,
+  readTodayBootstrapEnvelope,
+  writeTodayBootstrapSnapshot,
+} from './todayBootstrapStore';
 
 export type RecommendationMutationSource =
   | 'wardrobe_add'
@@ -89,7 +89,7 @@ export function registerRecommendationInputContext(
   authContext: ActiveAuthContext,
 ): EffectiveRecommendationInput | null {
   if (!isAuthContextCurrent(authContext)) return null;
-  setUserStorageSync(TODAY_RECOMMENDATION_CONTEXT_KEY, context, { authContext });
+  patchTodayBootstrapControl(authContext, { recommendationContext: context });
   const input = buildEffectiveRecommendationInput(authContext, context);
   persistLatestIdentity(input);
   coordinator.setLatestIdentity(input.identity);
@@ -106,7 +106,7 @@ export function buildEffectiveRecommendationInput(
   } = {},
 ): EffectiveRecommendationInput {
   const currentContext = context
-    ?? getUserStorageSync<RecommendationInputContext>(TODAY_RECOMMENDATION_CONTEXT_KEY, { authContext })
+    ?? readTodayBootstrapEnvelope(authContext).control.recommendationContext as RecommendationInputContext | undefined
     ?? DEFAULT_CONTEXT;
   const wardrobeVersion = readInputVersion(TODAY_WARDROBE_INPUT_VERSION_KEY, authContext);
   const profileVersion = readInputVersion(TODAY_PROFILE_INPUT_VERSION_KEY, authContext);
@@ -157,12 +157,12 @@ export function recommendationInputChanged(input: {
   bumpInputVersion(versionKey, authContext);
   const effectiveInput = buildEffectiveRecommendationInput(authContext);
   persistLatestIdentity(effectiveInput);
-  setUserStorageSync<RecommendationHardInvalidMarker>(TODAY_RECOMMENDATION_HARD_INVALID_KEY, {
+  patchTodayBootstrapControl(authContext, { hardInvalid: {
     identity: effectiveInput.identity,
     source,
     createdAt: Date.now(),
-  }, { authContext });
-  setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, null, { authContext });
+  } satisfies RecommendationHardInvalidMarker });
+  writeTodayBootstrapSnapshot(authContext, null);
 
   const prebuild = coordinator.invalidateAndPrebuild({
     identity: effectiveInput.identity,
@@ -270,14 +270,11 @@ export function isRecommendationInputIdentityCurrent(
   authContext: ActiveAuthContext,
 ): boolean {
   if (!isAuthContextCurrent(authContext) || !coordinator.isLatest(identity)) return false;
-  return getUserStorageSync<string>(TODAY_RECOMMENDATION_LATEST_IDENTITY_KEY, { authContext }) === identity;
+  return readTodayBootstrapEnvelope(authContext).control.latestIdentity === identity;
 }
 
 export function hasRecommendationInputHardInvalid(authContext: ActiveAuthContext): boolean {
-  return Boolean(getUserStorageSync<RecommendationHardInvalidMarker>(
-    TODAY_RECOMMENDATION_HARD_INVALID_KEY,
-    { authContext },
-  ));
+  return Boolean(readTodayBootstrapEnvelope(authContext).control.hardInvalid);
 }
 
 export function clearRecommendationInputHardInvalid(
@@ -285,7 +282,7 @@ export function clearRecommendationInputHardInvalid(
   identity?: string,
 ): void {
   if (identity && !isRecommendationInputIdentityCurrent(identity, authContext)) return;
-  setUserStorageSync(TODAY_RECOMMENDATION_HARD_INVALID_KEY, null, { authContext });
+  patchTodayBootstrapControl(authContext, { hardInvalid: undefined });
 }
 
 export function getCurrentRecommendationInputIdentity(authContext: ActiveAuthContext): string {
@@ -309,18 +306,20 @@ function toRecommendationRequest(
 }
 
 function persistLatestIdentity(input: EffectiveRecommendationInput) {
-  setUserStorageSync(TODAY_RECOMMENDATION_LATEST_IDENTITY_KEY, input.identity, {
-    authContext: input.authContext,
-  });
+  patchTodayBootstrapControl(input.authContext, { latestIdentity: input.identity });
 }
 
 function readInputVersion(key: string, authContext: ActiveAuthContext) {
-  return Number(getUserStorageSync<number>(key, { authContext })) || 0;
+  const control = readTodayBootstrapEnvelope(authContext).control;
+  return Number(key === TODAY_PROFILE_INPUT_VERSION_KEY ? control.profileVersion : control.wardrobeVersion) || 0;
 }
 
 function bumpInputVersion(key: string, authContext: ActiveAuthContext) {
   const current = readInputVersion(key, authContext);
-  setUserStorageSync(key, Math.max(Date.now(), current + 1), { authContext });
+  const next = Math.max(Date.now(), current + 1);
+  patchTodayBootstrapControl(authContext, key === TODAY_PROFILE_INPUT_VERSION_KEY
+    ? { profileVersion: next }
+    : { wardrobeVersion: next });
 }
 
 function getToday() {

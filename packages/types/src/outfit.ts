@@ -13,6 +13,19 @@ export type OutfitSource = 'recommend' | 'recommendation' | 'favorite' | 'histor
 
 export type OutfitKind = 'recommendation' | 'favorite' | 'history';
 
+export interface OutfitRefV1 {
+  schemaVersion: 1;
+  outfitKey: string;
+  compositionKeyVersion?: string;
+  outfitId?: string;
+  outfitRevisionId?: string;
+  batchId?: string;
+  referenceId?: string;
+  favoriteId?: string;
+  historyId?: string;
+  source: 'recommendation' | 'outfit' | 'favorite' | 'history';
+}
+
 export interface RecommendationCopyEvidenceCarrier {
   confidence?: number;
   recognitionConfidence?: number;

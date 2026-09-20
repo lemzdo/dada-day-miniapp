@@ -36,9 +36,10 @@ test('prebuild is fire-and-forget and Today uses the same coordinator', () => {
 });
 
 test('snapshot and commit are bound to exact latest input identity', () => {
-  assert.match(todaySource, /readTodayV2Snapshot\([\s\S]*effectiveInput\.identity/);
+  assert.match(todaySource, /readTodayBootstrap\(authContext\)[\s\S]*snapshot\.inputIdentity !== effectiveInput\.identity/);
   assert.match(todaySource, /isRecommendationInputIdentityCurrent\(effectiveInput\.identity, authContext\)/);
-  assert.match(coordinatorSource, /setUserStorageSync\(TODAY_V2_SNAPSHOT_KEY, null/);
+  assert.match(coordinatorSource, /writeTodayBootstrapSnapshot\(authContext, null\)/);
+  assert.doesNotMatch(coordinatorSource, /setUserStorageSync\(TODAY_V2_SNAPSHOT_KEY/);
 });
 
 test('style preference save publishes invalidation after the successful profile write', () => {

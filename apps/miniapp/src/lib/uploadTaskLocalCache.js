@@ -1,5 +1,7 @@
 const TERMINAL_STATUSES = new Set(['saved', 'discarded', 'deleted', 'expired']);
 const DEFAULT_TTL_MS = 5 * 1000;
+const MAX_CACHED_BATCHES = 10;
+const MAX_TERMINAL_MARKERS = 50;
 
 const caches = new Map();
 const terminalBatches = new Map();
@@ -7,7 +9,7 @@ const terminalBatches = new Map();
 function writeUploadTaskLocalCache({ authRuntimeKey, data, createdAt = Date.now(), ttlMs = DEFAULT_TTL_MS }) {
   if (!authRuntimeKey) return;
   caches.set(authRuntimeKey, {
-    data: filterTerminalBatches(authRuntimeKey, Array.isArray(data) ? data : []),
+    data: filterTerminalBatches(authRuntimeKey, Array.isArray(data) ? data : []).slice(0, MAX_CACHED_BATCHES),
     createdAt,
     ttlMs,
   });
@@ -51,7 +53,13 @@ function removeUploadBatchFromLocalCache({ authRuntimeKey, batchId, batchTermina
 function markUploadBatchTerminal({ authRuntimeKey, batchId, status = 'discarded' } = {}) {
   if (!authRuntimeKey || !batchId || !TERMINAL_STATUSES.has(status)) return;
   const set = terminalBatches.get(authRuntimeKey) || new Set();
+  set.delete(batchId);
   set.add(batchId);
+  while (set.size > MAX_TERMINAL_MARKERS) {
+    const oldest = set.values().next().value;
+    if (!oldest) break;
+    set.delete(oldest);
+  }
   terminalBatches.set(authRuntimeKey, set);
   removeUploadBatchFromLocalCache({ authRuntimeKey, batchId, batchTerminal: true });
 }

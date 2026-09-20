@@ -16,6 +16,7 @@ import {
   writeUploadTaskLocalCache,
 } from '@/lib/uploadTaskLocalCache';
 import type { RecoverableUploadBatch } from '@/lib/cloud';
+import { reconcileUploadWorkflow } from '@/lib/uploadWorkflowStore';
 import './index.scss';
 
 type UploadTaskViewStatus = 'processing' | 'ready' | 'partial' | 'failed';
@@ -68,6 +69,11 @@ export default function UploadTasksPage() {
       setErrorState(false);
       const result = await getRecoverableUploadBatches(10);
       if (!isCurrentAuthContext(authContext)) return;
+      reconcileUploadWorkflow(authContext, {
+        cloudAvailable: true,
+        serverBatches: result.list || [],
+        now: Date.now(),
+      });
       const nextBatches = (
         filterTerminalBatches(authRuntimeKey, result.list || []) as RecoverableUploadBatch[]
       ).filter(isActiveUploadBatch);

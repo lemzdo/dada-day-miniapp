@@ -1,4 +1,3 @@
-import Taro from '@tarojs/taro';
 import {
   getActiveAuthContext,
   isAuthContextCurrent,
@@ -12,6 +11,8 @@ interface UserStorageOptions {
 }
 
 const USER_STORAGE_PREFIX = 'd1d:userStorage:v1';
+const MAX_RUNTIME_SIGNAL_ENTRIES = 64;
+const runtimeSignals = new Map<string, unknown>();
 
 export type { ActiveAuthContext };
 
@@ -40,13 +41,7 @@ export function getUserStorageSync<T>(
   const storageKey = buildUserStorageKey(businessKey, options);
   if (!storageKey) return null;
 
-  try {
-    const value = Taro.getStorageSync(storageKey) as T | '';
-    return value === '' ? null : value;
-  } catch (err) {
-    console.warn('[userStorage] get failed:', err);
-    return null;
-  }
+  return runtimeSignals.has(storageKey) ? runtimeSignals.get(storageKey) as T : null;
 }
 
 export function setUserStorageSync<T>(
@@ -57,10 +52,16 @@ export function setUserStorageSync<T>(
   const storageKey = buildUserStorageKey(businessKey, options);
   if (!storageKey) return;
 
-  try {
-    Taro.setStorageSync(storageKey, value);
-  } catch (err) {
-    console.warn('[userStorage] set failed:', err);
+  if (value === null || value === undefined) {
+    runtimeSignals.delete(storageKey);
+    return;
+  }
+  runtimeSignals.delete(storageKey);
+  runtimeSignals.set(storageKey, value);
+  while (runtimeSignals.size > MAX_RUNTIME_SIGNAL_ENTRIES) {
+    const oldest = runtimeSignals.keys().next().value as string | undefined;
+    if (!oldest) break;
+    runtimeSignals.delete(oldest);
   }
 }
 
@@ -71,11 +72,7 @@ export function removeUserStorageSync(
   const storageKey = buildUserStorageKey(businessKey, options);
   if (!storageKey) return;
 
-  try {
-    Taro.removeStorageSync(storageKey);
-  } catch (err) {
-    console.warn('[userStorage] remove failed:', err);
-  }
+  runtimeSignals.delete(storageKey);
 }
 
 export const getUserStorage = getUserStorageSync;

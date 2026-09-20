@@ -23,8 +23,10 @@ export function toTodayV2Snapshot(
   inputIdentity: string,
 ): TodayV2Snapshot {
   response.light.cards.forEach((card) => {
-    if (card.items.length === 0 || card.items.some((item) => item.isDeleted || !item.displayImageUrl.trim())) {
-      throw new Error('V2 home light image contract invalid');
+    if (!card.todayReason.trim()
+      || card.items.length === 0
+      || card.items.some((item) => item.isDeleted || !item.displayImageUrl.trim())) {
+      throw new Error('V2 home light presentation contract invalid');
     }
   });
   return {
@@ -85,7 +87,8 @@ export function readTodayV2Snapshot(
     || snapshot.core.order.some((key, index) => key !== snapshot.cards?.[index]?.outfitKey)
     || !Array.isArray(snapshot.cards)
     || snapshot.cards.length !== snapshot.core.cardCount
-    || snapshot.cards.some((card) => !Array.isArray(card.items) || card.items.length === 0
+    || snapshot.cards.some((card) => typeof card.todayReason !== 'string' || !card.todayReason.trim()
+      || !Array.isArray(card.items) || card.items.length === 0
       || card.items.some((item) => item.isDeleted || typeof item.displayImageUrl !== 'string' || !item.displayImageUrl.trim()))) return null;
   const forbidden = ['snapshotItems', 'itemsSnapshot', 'scores', 'eligibility', 'copyContract', 'debug', 'evidence', 'thumbnailUrl', 'imageUrl'];
   const scan = (entry: unknown): boolean => {

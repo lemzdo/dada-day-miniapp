@@ -1,7 +1,8 @@
 import { View, Text } from '@tarojs/components';
 import Taro from '@tarojs/taro';
 import { useEffect, useRef, useState } from 'react';
-import { getCloudWeather, getFallbackResolvedWeather, WEATHER_CACHE_KEY } from '@/lib/cloud';
+import { getCloudWeather, getFallbackResolvedWeather } from '@/lib/cloud';
+import { bootstrapProjectionStore } from '@/lib/localStorage';
 import { toWeatherSnapshot } from '@/utils/weather';
 import type { ResolvedWeatherResponse, WeatherMode, WeatherSnapshot } from '@starter-template/types';
 import './index.scss';
@@ -226,7 +227,7 @@ export function WeatherCard({ city = '当前位置', onLocationPermissionPrompt,
         return;
       }
 
-      const cached = readCachedWeather();
+      const cached = readCachedWeather(true);
       if (cached) {
         setWeather(cached);
         setFailureReason(failureStage === 'location' ? 'location_unavailable' : 'service_unavailable');
@@ -326,17 +327,10 @@ export function WeatherCard({ city = '当前位置', onLocationPermissionPrompt,
   );
 }
 
-function readCachedWeather(): ResolvedWeatherResponse | null {
-  try {
-    const cached = Taro.getStorageSync(WEATHER_CACHE_KEY) as ResolvedWeatherResponse | '';
-    if (!cached || typeof cached !== 'object') return null;
-    if (cached.source === 'fallback' || !cached.weather?.weather) return null;
-    const cachedAt = Date.parse(cached.fetchedAt || cached.updatedAt || cached.observedAt || '');
-    if (!Number.isFinite(cachedAt) || Date.now() - cachedAt > 10 * 60 * 1000) return null;
-    return { ...cached, source: 'cache', cacheHit: true };
-  } catch {
-    return null;
-  }
+function readCachedWeather(allowStale = false): ResolvedWeatherResponse | null {
+  const cached = bootstrapProjectionStore.readWeatherLastKnown({ allowStale });
+  if (!cached || cached.source === 'fallback' || !cached.weather?.weather) return null;
+  return { ...cached, source: 'cache', cacheHit: true };
 }
 
 function getWeatherSnapshotNotifyKey(snapshot: WeatherSnapshot) {

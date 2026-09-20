@@ -190,24 +190,24 @@ PB-04 是 `TYPE=BUG`，PB-11 是 `TYPE=ENGINEERING_DEBT`，但两者也必须在
 - `PROBLEM_ID=` PB-04
 - `TITLE=` 微信本地 Storage 10MB 容量治理
 - `ORIGINAL_SOURCE=` historical problem list + current repo
-- `STATUS=` OPEN
-- `AUDIT_STATUS=` CONFIRMED_OPEN
+- `STATUS=` PARTIAL
+- `AUDIT_STATUS=` IMPLEMENTED_PARTIAL_DEVTOOLS_SMOKE
 - `TYPE=` BUG
 - `BUG_SEVERITY=` P1
 - `ROADMAP_PRIORITY=` NONE
 - `RELEASE_PRIORITY=` REQUIRED
 - `ROOT_CAUSE=` `UNBOUNDED_CACHE + DUPLICATE_SNAPSHOTS + MISSING_EVICTION + MISSING_QUOTA_ERROR_HANDLING + WRONG_DATA_PLACEMENT`；另有 100 条完整 History 首页 payload 和 current scoped key migration 缺口。
-- `CURRENT_EVIDENCE=` [PB-04 专项审计](qa/storage-10mb-audit.md) 确认问题是微信小程序 `wx/Taro Storage` 同用户同小程序 aggregate 10 MB 配额，不是单 key、图片文件缓存或 Web Storage。`outfitDetailDraft:*` 按 outfit 以 1-4 个 alias 无 TTL 保存完整快照，动态 `pageCache:outfitDetail:*` 过期只 miss 不物理删除，abandoned `uploadBatchImages:<batchId>` 也无 startup sweep；没有统一预算或 LRU。
+- `CURRENT_EVIDENCE=` [PB-04 专项审计](qa/storage-10mb-audit.md) 已记录根因与 2026-09-20 实施证据：L1 steady-state production-shaped 模型 15.65 KiB，连续 20 次 Detail 与 History 后不增长，10 个 upload refs + migration meta 后 25.52 KiB；真实微信开发者工具从 3,852 KiB / 46 keys 迁移到 20 KiB / 7 keys，第二次 relaunch 保持稳定，局部 Favorite/Worn 与页面重入后为 28-29 KiB / 8 keys 且 legacy families=0；PB-04 专项 37/37、miniapp Node tests 351/351 通过。
 - `AFFECTED_STORAGE_FAMILIES=` userStorage outfit detail/upload/Today state；pageCache Wardrobe/Profile/Favorite/History/Detail；direct identity/profile/weather/diagnostic keys。
-- `WHAT_IS_ALREADY_DONE=` 已按用户隔离 key，启动时清理少量旧全局前缀；部分 page cache 记录逻辑 TTL，Today/Favorite/History/ledger 有 entry count 上限，mutation 有定向 invalidation；[Local Data & Cache Architecture V1](architecture/local-data-and-cache.md) 已定稿 CloudBase miniapp 真源、L0-L3 placement、Outfit reference、deny-by-default persistence、512 KiB L1 软预算和分期边界。
-- `WHAT_REMAINS=` 按定稿实施 allowlist registry；退役通用 persisted pageCache 和多 alias full Outfit snapshot；落地 fixed compact projection、物理 TTL、namespace bytes/entries bound、quota retry once、上传 terminal/orphan cleanup、versioned migration、logout/account/environment lifecycle 与真实微信 `currentSize/limitSize` 验证。
-- `USER_IMPACT=` quota 满时多数 wrapper 静默丢弃持久化，Today/Detail/Favorite/History reopen 恢复退化；未捕获的身份 key 写入可把成功远端登录判为失败，天气 cache 写入可把成功天气请求判为服务失败。云端衣物、收藏和历史不应丢失，但短期本地状态可能丢失。
+- `WHAT_IS_ALREADY_DONE=` [Local Data & Cache Architecture V1](architecture/local-data-and-cache.md) 的 PHASE_1 代码已落地：deny-by-default registry、384/512 KiB budget、L0 runtime cache、固定 compact bootstrap、OutfitRef、单 upload workflow envelope、物理 TTL/选择性驱逐、quota retry once、登录/天气 fail-open、按用户 migration namespace v2 / checkpoint v4 与 lifecycle cleanup；真实迁移和冷启动容量稳定性已验证。
+- `WHAT_REMAINS=` 完成真实 Upload/Confirm；消除或澄清 Detail automator 超时并跑 Detail×N；排查本次 Favorite 独立页 error 与 Worn 后 History 空态，再完成同一链路冷启动/重入；发布候选覆盖 0/200、200/200 与 quota 注入。未通过前不得标记 CLOSED。
+- `USER_IMPACT=` 已安装用户的旧重复快照可在冷启动迁移中释放，正常本地投影保持远低于平台上限，且 cache 写失败不再反转登录/天气成功。当前剩余风险是 Upload、Favorite、Worn/History 与 Detail 长链尚无同一 release candidate 的完整真源闭环证据，而不是已观察到的新 Storage 线性增长。
 - `MUST_FIX_BEFORE_NEW_FEATURE=` YES
 - `MUST_FIX_BEFORE_LAUNCH=` YES
 - `BLOCKS_BEHAVIOR_LEARNING=` YES；学习数据本身在云端，但闭环会提高 refresh/detail/favorite/wear/history 和长期使用频率，直接放大当前按已访问 outfit 增长的本地 cache 风险。
 - `DEPENDENCIES=` PB-11 共用 local cache lifecycle 根因；PB-34 的 200 件容量不会一次写满 Storage，但会增加可达筛选/组合/详情，发布 smoke 必须加入 Storage 起止量证据。
 - `TARGET_CONTRACT=` L1 是恢复控制面而非业务数据库；steady state ≤384 KiB、global soft budget 512 KiB；Today/Wardrobe/Profile/Weather 只允许固定 compact projection，Detail/Favorite/History 传 OutfitRef，图片二进制只在 L2/Cloud Storage，Behavior pending queue 未来上限50条/64KiB/72h。
-- `NEXT_ACTION=` 执行架构文档 PHASE_1：先 registry 与 migration harness，再收缩 placement 和修正 failure semantics，最后以 200 件衣橱、长周期 Detail/History、上传中断、账号切换和 quota 注入做真机验证；不得使用 `clearStorage()`。
+- `NEXT_ACTION=` 执行真实 DevTools 集中 smoke 并回写 `currentSize/limitSize`；通过后再将 PB-04 标记 CLOSED。不得用 fixture 结果替代真机证据，也不得使用 `clearStorage()`。
 
 ### PB-05 Today 首卡可见性自动验收
 
@@ -797,6 +797,25 @@ PB-04 是 `TYPE=BUG`，PB-11 是 `TYPE=ENGINEERING_DEBT`，但两者也必须在
 - `MUST_FIX_BEFORE_LAUNCH=` NO
 - `DEPENDENCIES=` 先校准可稳定执行的命令和耗时预算。
 - `NEXT_ACTION=` 在不阻塞 R0 产品开发的前提下建立最小 PR/main quality gate。
+
+### PB-36 Miniapp CloudBase 与 Web/PostgreSQL 数据面关系未收敛
+
+- `PROBLEM_ID=` PB-36
+- `TITLE=` Miniapp CloudBase 与 Web/PostgreSQL 数据面关系未收敛
+- `ORIGINAL_SOURCE=` PB-04 Local Data & Cache Architecture V1 implementation review
+- `STATUS=` NOT_STARTED
+- `TYPE=` ENGINEERING_DEBT
+- `BUG_SEVERITY=` NONE
+- `ROADMAP_PRIORITY=` R1
+- `RELEASE_PRIORITY=` REQUIRED
+- `CURRENT_EVIDENCE=` miniapp 直接调用 Cloud Function，并以 CloudBase 的 OPENID/集合记录作为用户业务真源；`apps/web` 同时通过 BFF、Drizzle 和 PostgreSQL 提供可写 clothes/outfits/history 数据模型。仓库内没有两套数据面的 owner 映射、双写、同步、迁移或退役合同。
+- `WHAT_IS_ALREADY_DONE=` PB-04 明确 L1 不能掩盖两套后端差异，并暂定 CloudBase 为 miniapp canonical truth；Web/PostgreSQL 未纳入 PB-04 客户端 Storage 修复范围。
+- `WHAT_REMAINS=` 决定 Web/PostgreSQL 是管理/镜像、未来迁移目标还是应退役的数据面；定义 user identity mapping、write owner、冲突策略、迁移/回滚、审计和发布顺序。
+- `USER_IMPACT=` 当前 miniapp 主链不依赖 PostgreSQL，短期无直接体验回归；若后续 Web 管理、数据分析或迁移同时写入而无合同，可能出现跨端数据不一致和错误 canonical truth。
+- `MUST_FIX_BEFORE_NEW_FEATURE=` NO
+- `MUST_FIX_BEFORE_LAUNCH=` YES
+- `DEPENDENCIES=` PB-12 CloudBase 控制面、PB-29 全链 E2E；若选择迁移到 PostgreSQL，需单独 migration/rollback 方案。
+- `NEXT_ACTION=` 产出数据面 ADR，逐领域列出 CloudBase/PostgreSQL 表或集合、读写 owner、同步方向和退役条件；未定稿前禁止新增跨数据面双写。
 
 ## 10. 去重与父子关系
 

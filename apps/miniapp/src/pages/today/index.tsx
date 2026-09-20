@@ -40,6 +40,11 @@ import {
   createOutfitBehaviorExposureTracker,
   trackOutfitBehaviorEvent,
 } from '@/lib/outfitBehavior';
+import { buildOutfitDetailUrl, createRecommendationOutfitRef } from '@/lib/outfitRef';
+import {
+  readTodayBootstrapSnapshot,
+  writeTodayBootstrapSnapshot,
+} from '@/lib/todayBootstrapStore';
 import {
   captureAuthContext,
   isAuthContextCurrent,
@@ -47,13 +52,8 @@ import {
 } from '@/lib/userPageCache';
 import {
   getUserStorageSync,
-  setUserStorageSync,
 } from '@/lib/userStorage';
 import { applyOutfitStatuses, setOutfitStatus, setOutfitStatuses } from '@/stores/outfitStatusStore';
-import {
-  COPY_CONTRACT_VERSION,
-  hasCurrentNewRecommendationCopy,
-} from '@/utils/recommendationCopyContract';
 import {
   NO_MORE_NEW_OUTFITS_NOTICE,
   getRecommendationEmptyStateCopy,
@@ -123,7 +123,6 @@ import {
   patchTodayV2CardStatus,
   readTodayV2Snapshot,
   toTodayV2Snapshot,
-  TODAY_V2_SNAPSHOT_KEY,
   type TodayV2Snapshot,
 } from './todayV2Adapter';
 import {
@@ -170,6 +169,18 @@ interface RecommendationRequestContext {
   sceneLabel: SceneTag
   weatherMode: WeatherMode
   requestedAt: number
+}
+
+function persistTodayBootstrap(snapshot: TodayV2Snapshot, authContext: ActiveAuthContext | null) {
+  if (!authContext) return;
+  writeTodayBootstrapSnapshot(authContext, snapshot);
+}
+
+function readTodayBootstrap(authContext: ActiveAuthContext | null) {
+  if (!authContext) return null;
+  return readTodayV2Snapshot(
+    () => readTodayBootstrapSnapshot<TodayV2Snapshot>(authContext),
+  );
 }
 
 function clientMonotonicNow() {
@@ -559,7 +570,7 @@ export default function TodayPage() {
     const nextSnapshot = patched.snapshot as TodayV2Snapshot;
     canonicalSnapshotRef.current = nextSnapshot;
     v2SnapshotRef.current = nextSnapshot;
-    setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, nextSnapshot, { authContext });
+    persistTodayBootstrap(nextSnapshot, authContext);
     setV2Snapshot(nextSnapshot);
   }
 
@@ -756,14 +767,14 @@ export default function TodayPage() {
       apply: (overlay) => {
         const current = v2SnapshotRef.current;
         const patched = applyCanonicalCopyOverlay(current, overlay);
-        if (!current || patched.snapshot === current || patched.applied.length === 0) return;
+        if (!current || !patched.snapshot || patched.snapshot === current || patched.applied.length === 0) return;
         const first = [...patched.applied].sort((left, right) => left.cardIndex - right.cardIndex)[0];
         if (first && !firstCanonicalAppliedRef.current.has(batchId)) {
           pendingCanonicalAppliedRef.current = { batchId, outfitKey: first.outfitKey, cardIndex: first.cardIndex };
         }
         canonicalSnapshotRef.current = patched.snapshot;
         v2SnapshotRef.current = patched.snapshot;
-        setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, patched.snapshot, { authContext });
+        persistTodayBootstrap(patched.snapshot, authContext);
         setV2Snapshot(patched.snapshot);
       },
     });
@@ -785,27 +796,63 @@ export default function TodayPage() {
   }, [v2Snapshot]);
 
   useEffect(() => {
-    if (!isAuthenticated) return;
+    recordTodayRestoreDispatchAttempt();
+    recordTodayRestoreFunctionEntered();
+    if (!isAuthenticated) {
+      recordTodayRestoreReturn('NO_LOCAL_AUTH');
+      return;
+    }
     const authContext = captureAuthContext();
-    if (!authContext) return;
-    const effectiveInput = getEffectiveRecommendationInput({
-      authContext,
-      sceneKey: selectedSceneKeyRef.current,
-      weather: currentWeatherRef.current,
-      weatherMode: currentWeatherModeRef.current,
-    });
-    if (hasTodayRecommendationHardInvalid({ authContext })) return;
-    const snapshot = readTodayV2Snapshot(
-      (key) => getUserStorageSync(key, { authContext }),
-      effectiveInput.identity,
-    );
-    if (!snapshot) return;
-    const restoreGeneration = ++restoreGenerationRef.current;
-    void commitCanonicalSnapshotForRender(snapshot, () => (
-      restoreGeneration === restoreGenerationRef.current && isAuthContextCurrent(authContext)
-    ), undefined, { generation: restoreGeneration, batchId: snapshot.batchId }).then((committed) => {
-      if (committed) prefetchNextBatch(effectiveInput, committed);
-    });
+    if (!authContext) {
+      recordTodayRestoreReturn('NO_LOCAL_AUTH');
+      return;
+    }
+    const authContextCurrent = isAuthContextCurrent(authContext);
+    recordTodayAuthContextCurrentChecked(authContextCurrent);
+    if (!authContextCurrent) {
+      recordTodayRestoreReturn('AUTH_CONTEXT_STALE');
+      return;
+    }
+    try {
+      const effectiveInput = getEffectiveRecommendationInput({
+        authContext,
+        sceneKey: selectedSceneKeyRef.current,
+        weather: currentWeatherRef.current,
+        weatherMode: currentWeatherModeRef.current,
+      });
+      if (hasTodayRecommendationHardInvalid({ authContext })) {
+        recordTodayRestoreReturn('RETURN_INTENT_REQUIRED');
+        return;
+      }
+      const snapshot = readTodayBootstrap(authContext);
+      if (!snapshot) {
+        recordTodayRestoreReturn('SNAPSHOT_EMPTY');
+        return;
+      }
+      if (snapshot.inputIdentity !== effectiveInput.identity) {
+        recordTodayRestoreReturn('SNAPSHOT_INVALID');
+        return;
+      }
+      const restoreGeneration = ++restoreGenerationRef.current;
+      void commitCanonicalSnapshotForRender(snapshot, () => (
+        restoreGeneration === restoreGenerationRef.current && isAuthContextCurrent(authContext)
+      ), undefined, { generation: restoreGeneration, batchId: snapshot.batchId }).then((committed) => {
+        if (!committed) {
+          recordTodayRestoreReturn('AUTH_CONTEXT_STALE');
+          return;
+        }
+        recordTodayRestoreReturn('RESTORE_COMPLETED');
+        prefetchNextBatch(effectiveInput, committed);
+      }).catch((error) => {
+        recordTodayRestoreException(error);
+        recordTodayRestoreReturn('SNAPSHOT_INVALID');
+        console.warn('[Today] bootstrap restore failed', error);
+      });
+    } catch (error) {
+      recordTodayRestoreException(error);
+      recordTodayRestoreReturn('SNAPSHOT_INVALID');
+      console.warn('[Today] bootstrap restore failed', error);
+    }
   }, [isAuthenticated]);
 
   const resetUserState = useCallback((options: { preserveRecommendationLifecycle?: boolean } = {}) => {
@@ -1253,7 +1300,7 @@ export default function TodayPage() {
           () => isRecommendationIntentCurrent(intent)
             && isAuthContextCurrent(authContext)
             && isRecommendationInputIdentityCurrent(effectiveInput.identity, authContext),
-          () => setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, canonicalSnapshot, { authContext }),
+          () => persistTodayBootstrap(canonicalSnapshot, authContext),
           { generation: traceGeneration, batchId: canonicalSnapshot.batchId });
         if (!committed) {
           visibleTimingRecorder.reportFailure(visibleTimingIdentity, 'commit', FAILURE_REASONS.STALE_BATCH);
@@ -1417,7 +1464,7 @@ export default function TodayPage() {
         () => isAuthContextCurrent(authContext)
           && activeRequestSeqRef.current === refreshSeq
           && isRecommendationInputIdentityCurrent(effectiveInput.identity, authContext),
-        () => setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, canonicalSnapshot, { authContext }),
+        () => persistTodayBootstrap(canonicalSnapshot, authContext),
         { generation: traceGeneration, batchId: canonicalSnapshot.batchId });
       if (!committed) {
         visibleTimingRecorder.reportFailure(visibleTimingIdentity, 'commit', FAILURE_REASONS.STALE_BATCH);
@@ -1484,7 +1531,7 @@ export default function TodayPage() {
       if (!assertNoCloudUrlInRenderState(nextRender)) return;
       canonicalSnapshotRef.current = nextCanonical;
       setV2Snapshot(nextRender);
-      setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, nextCanonical, { authContext });
+      persistTodayBootstrap(nextCanonical, authContext);
     } finally {
       setOperation(null);
     }
@@ -1504,7 +1551,7 @@ export default function TodayPage() {
       if (!assertNoCloudUrlInRenderState(nextRender)) return;
       canonicalSnapshotRef.current = nextCanonical;
       setV2Snapshot(nextRender);
-      setUserStorageSync(TODAY_V2_SNAPSHOT_KEY, nextCanonical, { authContext });
+      persistTodayBootstrap(nextCanonical, authContext);
     } finally {
       setOperation(null);
     }
@@ -1512,8 +1559,10 @@ export default function TodayPage() {
 
   function openV2Detail(card: import('@starter-template/types').HomeLightCardV2) {
     if (!v2Snapshot) return;
+    const ref = createRecommendationOutfitRef(v2Snapshot.batchId, card);
+    if (!ref) return;
     void Taro.navigateTo({
-      url: `/pages/outfit-detail/index?runtimeVersion=today-runtime-v2&batchId=${encodeURIComponent(v2Snapshot.batchId)}&outfitKey=${encodeURIComponent(card.outfitKey)}&referenceId=${encodeURIComponent(card.referenceId)}`,
+      url: buildOutfitDetailUrl(ref),
     });
   }
 
