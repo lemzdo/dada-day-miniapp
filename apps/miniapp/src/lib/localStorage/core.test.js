@@ -3,13 +3,15 @@ const assert = require('node:assert/strict');
 
 const corePromise = import('./core.mjs');
 
-function createMemoryAdapter({ failures = 0 } = {}) {
+function createMemoryAdapter({ failures = 0, onFailure } = {}) {
   const values = new Map();
+  const removals = [];
   let writes = 0;
   let remainingFailures = failures;
 
   return {
     values,
+    removals,
     get writes() {
       return writes;
     },
@@ -19,11 +21,16 @@ function createMemoryAdapter({ failures = 0 } = {}) {
       writes += 1;
       if (remainingFailures > 0) {
         remainingFailures -= 1;
+        onFailure?.({ values, writes });
         throw new Error('storage quota exceeded');
       }
       values.set(key, value);
     },
-    remove: (key) => values.delete(key),
+    remove: (key) => {
+      const value = values.get(key);
+      if (value?.namespace) removals.push(value.namespace);
+      return values.delete(key);
+    },
   };
 }
 
@@ -145,6 +152,44 @@ test('quota failure cleans permitted cache and retries exactly once', async () =
   assert.equal(adapter.writes, 2);
 });
 
+test('quota recovery deterministically removes TEMP, then expired data, then permitted cache before one retry', async () => {
+  const { createStorageCore } = await corePromise;
+  const adapter = createMemoryAdapter({
+    failures: 1,
+    onFailure: ({ values, writes }) => {
+      if (writes !== 1) return;
+      values.set(storageKey('temp'), envelope('temp', { updatedAt: 30, expiresAt: null }));
+      values.set(storageKey('expired'), envelope('expired', { updatedAt: 20, expiresAt: 99 }));
+      values.set(storageKey('cache'), envelope('cache', { updatedAt: 10, expiresAt: 1_000 }));
+      values.set(storageKey('protected'), envelope('protected', { updatedAt: 1, expiresAt: null }));
+    },
+  });
+  const storage = createStorageCore({
+    registry: {
+      target: cacheContract(),
+      temp: cacheContract({ classification: 'TEMP', ttlMs: null }),
+      expired: cacheContract(),
+      cache: cacheContract(),
+      protected: cacheContract({
+        classification: 'USER_CRITICAL',
+        ttlMs: null,
+        evictable: false,
+        evictionPolicy: 'PROTECTED',
+      }),
+    },
+    adapter,
+    now: () => 100,
+  });
+
+  const result = storage.write('target', { value: 'remote success' }, { now: 100 });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.attempts, 2);
+  assert.equal(adapter.writes, 2);
+  assert.deepEqual(adapter.removals, ['temp', 'expired', 'cache']);
+  assert.deepEqual(storage.read('protected', { now: 100 })?.payload, { seeded: 'protected' });
+});
+
 test('second quota failure stops after one retry and returns fail-open cache result', async () => {
   const { createStorageCore } = await corePromise;
   const adapter = createMemoryAdapter({ failures: 2 });
@@ -183,3 +228,53 @@ test('protected persistence reports an error without changing the remote busines
   assert.equal(persistence.status, 'persistence-error');
   assert.equal(persistence.attempts, 2);
 });
+
+test('TEMP is fail-open while protected BUSINESS persistence fails explicitly after exactly one retry', async () => {
+  const { createStorageCore } = await corePromise;
+  const tempAdapter = createMemoryAdapter({ failures: 2 });
+  const businessAdapter = createMemoryAdapter({ failures: 2 });
+  const tempStorage = createStorageCore({
+    registry: { temp: cacheContract({ classification: 'TEMP', ttlMs: null }) },
+    adapter: tempAdapter,
+  });
+  const businessStorage = createStorageCore({
+    registry: {
+      business: cacheContract({
+        classification: 'BUSINESS_STATE',
+        ttlMs: null,
+        evictable: false,
+        evictionPolicy: 'PROTECTED',
+      }),
+    },
+    adapter: businessAdapter,
+  });
+
+  const temp = tempStorage.write('temp', { recoverable: true });
+  const business = businessStorage.write('business', { cloudMutationId: 'mutation-1' });
+
+  assert.deepEqual(
+    { ok: temp.ok, status: temp.status, attempts: temp.attempts },
+    { ok: false, status: 'cache-skipped', attempts: 2 },
+  );
+  assert.deepEqual(
+    { ok: business.ok, status: business.status, attempts: business.attempts },
+    { ok: false, status: 'persistence-error', attempts: 2 },
+  );
+});
+
+function storageKey(namespace, entryId = 'current') {
+  return `d1d:l1:${encodeURIComponent(namespace)}:device:${encodeURIComponent(entryId)}`;
+}
+
+function envelope(namespace, { updatedAt, expiresAt }) {
+  return {
+    namespace,
+    schemaVersion: 1,
+    scope: 'device',
+    entryId: 'current',
+    createdAt: updatedAt,
+    updatedAt,
+    expiresAt,
+    payload: { seeded: namespace },
+  };
+}

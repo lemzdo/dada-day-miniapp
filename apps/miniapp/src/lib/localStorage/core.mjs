@@ -204,15 +204,7 @@ export function createStorageCore({
 
   function cleanup(options = {}) {
     const timestamp = options.now ?? now();
-    let removed = 0;
-
-    for (const entry of collectEntries()) {
-      if (typeof entry.envelope.expiresAt === 'number' && entry.envelope.expiresAt <= timestamp) {
-        removeKey(entry.key, entry.envelope.namespace);
-        removed += 1;
-        diagnostic('expired-removed', entry.envelope.namespace, { key: entry.key });
-      }
-    }
+    let removed = removeExpiredEntries(timestamp);
 
     const totalBytes = storageBytes();
     if (options.aggressive || totalBytes > highWaterBytes) {
@@ -223,8 +215,32 @@ export function createStorageCore({
   }
 
   function cleanupForQuota(excludedKey, timestamp) {
-    cleanup({ now: timestamp, aggressive: false });
+    removePermittedTemporaryEntries(excludedKey);
+    removeExpiredEntries(timestamp, excludedKey);
     evictPermittedCaches(0, excludedKey);
+  }
+
+  function removePermittedTemporaryEntries(excludedKey) {
+    let removed = 0;
+    for (const entry of collectEntries()) {
+      if (entry.key === excludedKey || !isEntryTemporary(entry) || !isEntryEvictable(entry)) continue;
+      if (!removeKey(entry.key, entry.envelope.namespace)) continue;
+      removed += 1;
+      diagnostic('temp-removed', entry.envelope.namespace, { key: entry.key });
+    }
+    return removed;
+  }
+
+  function removeExpiredEntries(timestamp, excludedKey) {
+    let removed = 0;
+    for (const entry of collectEntries()) {
+      if (entry.key === excludedKey) continue;
+      if (typeof entry.envelope.expiresAt !== 'number' || entry.envelope.expiresAt > timestamp) continue;
+      if (!removeKey(entry.key, entry.envelope.namespace)) continue;
+      removed += 1;
+      diagnostic('expired-removed', entry.envelope.namespace, { key: entry.key });
+    }
+    return removed;
   }
 
   function evictPermittedCaches(targetBytes, excludedKey) {
@@ -247,6 +263,11 @@ export function createStorageCore({
   function isEntryEvictable(entry) {
     const contract = registry[entry.envelope.namespace];
     return Boolean(contract?.evictable);
+  }
+
+  function isEntryTemporary(entry) {
+    const contract = registry[entry.envelope.namespace];
+    return contract?.classification === 'TEMP';
   }
 
   function collectEntries() {

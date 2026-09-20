@@ -308,11 +308,12 @@ free=200 不会把 200 件衣物一次写入本地：Wardrobe page cache 当前�
 `PB04_STATUS=IMPLEMENTED_PARTIAL_DEVTOOLS_SMOKE`
 
 代码级关闭门槛已完成：registry、容量上限、物理 TTL/驱逐、quota retry once、L0/L1 placement、
-OutfitRef、上传 workflow ref、版本化迁移和失败隔离均已落地并通过自动化检查。真实微信开发者工具已
-取得 migration 与部分页面链路的 `currentSize/limitSize` 证据；PB-04 仍不标记 `CLOSED`，因为完整上传、
-Detail×N、Favorite/History 云端闭环和 0/200、200/200 发布边界尚未全部通过。
+OutfitRef、上传 workflow ref、版本化迁移和失败隔离均已落地并通过自动化检查。Favorite/History 的
+现象已归因到 CloudBase 列表查询/真实发布环境 smoke，而不是移除 L1 snapshot 后的 PB-04 回归；
+0/200、200/200 真实发布边界归 PB-34。PB-04 仍不标记 `CLOSED`，因为真实 Upload/Confirm 和
+Detail×N UI/Storage 集中 smoke 尚未完成。
 
-`CURRENT_REPRODUCIBILITY=代码级确定性增长模型 + 微信开发者工具真实 migration/重启容量采集；没有本次 hard-quota 撞限复现`
+`CURRENT_REPRODUCIBILITY=代码级确定性增长模型 + deterministic quota fault injection + 微信开发者工具真实 migration/重启容量采集；没有物理填满 10 MB 的 hard-quota 撞限复现，也不要求该复现`
 
 `MIGRATION_REQUIRED=YES`：需要白名单迁移/启动 sweep 清理已安装用户的 expired page cache、重复
 detail aliases、abandoned upload keys 和旧诊断 key；不能无差别 clearStorage。
@@ -340,13 +341,15 @@ detail aliases、abandoned upload keys 和旧诊断 key；不能无差别 clearS
 
 - `localStorage/registry.ts` 是生产 L1 deny-by-default 清单；高水位 384 KiB、全局软上限 512 KiB。
 - `localStorage/core.mjs` 对 UTF-8 bytes、namespace entries/bytes、物理 TTL、选择性驱逐和 quota
-  retry exactly once 执行统一合同；`authResume:v2` 与未终态 `uploadWorkflow:v2` 不参与普通 cache 驱逐。
+  retry exactly once 执行统一合同；quota 恢复固定按 TEMP、expired、permitted CACHE 顺序清理，
+  `authResume:v2` 与未终态 `uploadWorkflow:v2` 不参与普通 cache 驱逐。
 - 通用 `pageCache` 与 `userStorage` 已变为进程内 L0；动态 Wardrobe filter、Detail、Favorite、History
   不再向微信 Storage 写完整页面对象。
 - L1 只保留版本化 auth/profile/weather/Today/Wardrobe bootstrap、单个 upload workflow envelope 和
   migration meta。Detail 导航统一使用 `OutfitRefV1`，重启后从 CloudBase source identity 回源。
 - 上传恢复最多 10 个 active refs、每 ref 最多 9 个 cloud image IDs；terminal 立即移除，超过 24h
-  必须先查询云端状态，网络失败保留本地 ref。
+  必须先查询云端状态，网络失败保留本地 ref。Confirm 成功路径会在返回 Wardrobe 前同时清理
+  workflow ref、legacy/runtime batch ref 和短时 upload task cache，避免 terminal 批次回流。
 - migration namespace v2 / checkpoint v4 按 allowlist、用户 scope 和版本执行；Today 快照/控制状态/有效 OutfitRef 与 upload refs
   均先写新 envelope、回读校验，再删除旧 key；不使用 `clearStorage()`。
 - 登录和天气先提交远端业务成功，再尝试本地 projection；本地写失败只影响下次恢复，不反转本次成功。
@@ -367,15 +370,22 @@ production-shaped workload 使用长 cloud URL、中文文案、Today 8 卡、Wa
 | 10 个上传 workflow refs 后 | 25,796 bytes / 25.19 KiB |
 | migration meta 后 | 26,129 bytes / 25.52 KiB |
 
-该模型证明 Detail/History 不再线性增加 L1，并远低于 384 KiB steady-state 目标；它与下一节的微信
-DevTools `currentSize` 采集相互独立，前者验证负载模型，后者验证真实迁移和运行时容量。
+Detail 模型使用生产同形 `outfitDetail:<scope>` namespace 和
+`v2:<batch>:<outfit>:<reference>` key：20 个不同 Detail 后 L0 保持 16-entry cap，随后 20 次同/不同
+Detail 重入仍为 16 项，L1 始终为 16,027 bytes。该模型证明 Detail/History 不再线性增加 L1，并远低于
+384 KiB steady-state 目标；它与下一节的微信 DevTools `currentSize` 采集相互独立，前者验证负载模型，
+后者验证真实迁移和运行时容量。
 
 ### 15.3 已通过检查
 
 - `pnpm --filter @starter-template/miniapp typecheck`：通过。
-- PB-04 专项：37/37 通过，覆盖 deny-by-default、UTF-8 cap、TTL 物理删除、namespace/global budget、
-  quota retry once、登录/天气 fail-open、OutfitRef、上传 orphan、migration 和容量稳定性。
-- miniapp 全部 Node tests：351/351 通过。
+- PB-04 专项：39/39 通过，覆盖 deny-by-default、UTF-8 cap、TTL 物理删除、namespace/global budget、
+  quota retry exactly once、TEMP → expired → permitted CACHE 清理顺序、登录/天气 fail-open、
+  OutfitRef、上传 orphan、migration 和容量稳定性。
+- quota fault injection 同时覆盖首次失败后重试成功、重试仍失败、CACHE/TEMP fail-open、
+  USER_CRITICAL/BUSINESS `persistence-error`、`LOGIN_REMOTE_SUCCESS_LOCAL_FAIL` 和
+  `WEATHER_REMOTE_SUCCESS_CACHE_FAIL`；没有新增 production debug API。
+- miniapp 全部 `*.test.js`：1764/1764 通过。
 
 ### 15.4 微信开发者工具真实证据
 
@@ -393,10 +403,29 @@ DevTools `currentSize` 采集相互独立，前者验证负载模型，后者验
 - Favorite 独立页本次进入 error state，Worn 后 History 仍为空态；因此云端闭环验收未通过，不能用
   Today 的局部按钮状态替代 Favorite/History 真源验证。
 
-### 15.5 尚缺的关闭证据
+### 15.5 Favorite / Worn / History 回归归因
 
-- Upload/Confirm 需要微信原生媒体选择器；当前无可用 GUI 控制会话，未执行真实图片选择与上传确认。
-- 修复/澄清 Detail automator 超时，并完成连续 Detail×N；排查 Favorite error 与 History 空态后重跑
-  Favorite → Worn → History → 冷启动/重入同一链路。
-- 0/200、200/200 衣橱和 quota 注入仍属于发布候选 smoke；未取得这些真实证据前，
-  `PB04_STATUS` 保持 `IMPLEMENTED_PARTIAL_DEVTOOLS_SMOKE`。
+- `FAVORITE_ERROR_REPRODUCIBLE=NO`；页面只在 `listFavoriteOutfits` 抛错时进入 error，发生在
+  OutfitRef 创建和 Detail 跳转之前。9de9760 未修改 Favorite 云函数查询或详情 materialization，
+  `ERROR_LAYER=cloud query/transport`，`REGRESSION_INTRODUCED_BY_9de9760=NO`。
+- `WORN_PERSISTED=YES`、`HISTORY_RECORD_CREATED=YES`：Today 只有在 `confirmWearV2` 等待
+  `addOutfitHistory` 事务成功后才显示“今天穿过”，同日重复记录也会返回既有 history。
+- `HISTORY_QUERY_RETURNS_RECORD=UNPROVEN_IN_OBSERVED_SMOKE`、`UI_RENDER=NO_IN_OBSERVED_SMOKE`；
+  History 首次鉴权、重入和下拉均强制查云端，空态发生在 Detail OutfitRef 之前。实现与专项测试中
+  `OUTFIT_REF_RESOLVES=YES`，且 9de9760 未修改 wear/history 云链，故 `PB04_REGRESSION=NO`。
+- 这两项真实环境异常归 PB-12 的 Cloud collection/index/permission/env 与发布候选查询 smoke；它们
+  不是 PB-19 已知的 Worn → Recommendation 学习缺口，也不通过恢复 L1 完整 snapshot 规避。
+
+### 15.6 尚缺的关闭证据
+
+- Upload/Confirm 仍需用户在微信原生媒体选择器中选择一次真实图片，随后采集 upload start、confirm、
+  terminal cleanup、restart 的 `currentSize/limitSize/key count/namespaces`，并确认 Wardrobe 出现衣物、
+  `uploadWorkflow:v2` terminal ref 消失、`uploadBatchImages:*` 为 0、重启无 orphan。
+- Product Detail 已有页面栈进入证据，自动化 harness 在初始化阶段 timeout；还需一次集中手动 Detail×N
+  确认 UI 正常打开，并复核真实 `currentSize/key count/namespaces` 不随次数增长。工具 timeout 不判产品失败。
+- Favorite/History 需在 PB-12 发布候选 smoke 中复核 Cloud 查询；不再把该环境问题误记为 PB-04
+  未解释 regression。
+- PB-34 的 0/200、200/200 真实容量验收与 PB-04 复用同一组 Storage 采集，但不阻塞当前有界性结论；
+  自动容量模型和 20–29 KiB 真实 steady state 不能冒充 PB-34 发布验收。
+- `PB04_STATUS` 保持 `IMPLEMENTED_PARTIAL_DEVTOOLS_SMOKE`，关闭门槛只剩真实 Upload/Confirm 与
+  Detail×N UI/Storage smoke；quota、Favorite regression attribution、Worn/History attribution 已关闭。

@@ -72,6 +72,20 @@ test('upload-confirm uses the shared terminal discard finalizer for both termina
   assert.equal(/setTimeout\s*\([^)]*600/s.test(source), false);
 });
 
+test('successful confirm removes every local upload recovery surface before cache invalidation', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'index.tsx'), 'utf8');
+  const confirmStart = source.indexOf('await confirmClothesDrafts(batchId, draftPayload, selectedIds);');
+  const invalidateStart = source.indexOf('await invalidateAfterConfirmDraftsSaved({ authContext });', confirmStart);
+  const terminalCleanup = source.slice(confirmStart, invalidateStart);
+
+  assert.ok(confirmStart >= 0);
+  assert.ok(invalidateStart > confirmStart);
+  assert.match(terminalCleanup, /removeTerminalUploadWorkflow\(authContext, batchId, 'saved'\)/);
+  assert.match(terminalCleanup, /removeUserStorageSync\(buildUserStorageBusinessKey\('uploadBatchImages', batchId\)/);
+  assert.match(terminalCleanup, /markUploadBatchTerminal\(\{ authRuntimeKey, batchId, status: 'saved' \}\)/);
+  assert.match(terminalCleanup, /removeUploadBatchFromLocalCache\(\{ authRuntimeKey, batchId, batchTerminal: true \}\)/);
+});
+
 test('terminal discard finalizer updates cache and notice before one immediate navigation', async () => {
   const draftEvents = [];
   const batchEvents = [];

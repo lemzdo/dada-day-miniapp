@@ -627,6 +627,10 @@ export default function UploadConfirmPage() {
       await confirmClothesDrafts(batchId, draftPayload, selectedIds);
       if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
       removeTerminalUploadWorkflow(authContext, batchId, 'saved');
+      removeUserStorageSync(buildUserStorageBusinessKey('uploadBatchImages', batchId), { authContext });
+      const authRuntimeKey = buildAuthRuntimeKey(authContext);
+      markUploadBatchTerminal({ authRuntimeKey, batchId, status: 'saved' });
+      removeUploadBatchFromLocalCache({ authRuntimeKey, batchId, batchTerminal: true });
       await invalidateAfterConfirmDraftsSaved({ authContext });
       if (!isFlowCurrent(authContext, flowRuntimeKey)) return;
       setUserStorageSync(WARDROBE_REFRESH_STORAGE_KEY, true, { authContext });

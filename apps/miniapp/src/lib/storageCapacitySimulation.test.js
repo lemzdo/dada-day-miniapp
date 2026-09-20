@@ -1,10 +1,16 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const Module = require('node:module');
+const path = require('node:path');
 const test = require('node:test');
+const ts = require('typescript');
 
 const KiB = 1024;
 
 test('production-shaped PB-04 workload converges below the stable-state target', async () => {
   const { createStorageCore, serializedByteSize } = await import('./localStorage/core.mjs');
+  const runtimeCache = loadTypeScriptModule(path.join(__dirname, 'runtimeQueryCache.ts'));
+  runtimeCache.clearRuntimeQueryCache();
   const values = new Map();
   const adapter = {
     keys: () => [...values.keys()],
@@ -28,9 +34,36 @@ test('production-shaped PB-04 workload converges below the stable-state target',
   core.write('wardrobeBootstrap:v2', wardrobe(), { scope: 'user-scope', now });
   metrics.NORMAL_STEADY_STATE = measure();
 
-  // Detail and History are L0/cloud flows after PB-04. Repetition must not add L1 keys.
-  for (let index = 0; index < 20; index += 1) now += 100;
+  // Exercise the production Detail L0 adapter and namespace/cap shape. Distinct
+  // Detail visits may fill the bounded runtime cache but must never append L1.
+  const detailNamespace = `outfitDetail:${longId('scope')}`;
+  for (let index = 0; index < 20; index += 1) {
+    now += 100;
+    runtimeCache.setRuntimeQueryCache(
+      detailNamespace,
+      `v2:${longId('batch')}:${longId('outfit', index)}:${longId('reference', index)}`,
+      detailResponse(index),
+      { ttl: 5 * 60 * 1000, maxEntries: 16, now },
+    );
+  }
   metrics.AFTER_20_DETAIL_NAVIGATIONS = measure();
+  assert.equal(runtimeCache.getRuntimeQueryCacheSize(detailNamespace, now), 16);
+
+  // Re-enter the same Details through the same production key form. Replacement
+  // remains in L0, bounded at 16, and still cannot change L1 storage bytes.
+  for (let index = 0; index < 20; index += 1) {
+    now += 100;
+    const repeated = index % 4;
+    runtimeCache.setRuntimeQueryCache(
+      detailNamespace,
+      `v2:${longId('batch')}:${longId('outfit', repeated)}:${longId('reference', repeated)}`,
+      detailResponse(repeated),
+      { ttl: 5 * 60 * 1000, maxEntries: 16, now },
+    );
+  }
+  metrics.AFTER_REPEATED_DETAIL_REENTRY = measure();
+  assert.equal(runtimeCache.getRuntimeQueryCacheSize(detailNamespace, now), 16);
+
   for (let index = 0; index < 50; index += 1) now += 100;
   metrics.AFTER_HISTORY_FLOW = measure();
 
@@ -45,6 +78,7 @@ test('production-shaped PB-04 workload converges below the stable-state target',
   metrics.AFTER_MIGRATION = measure();
 
   assert.equal(metrics.AFTER_20_DETAIL_NAVIGATIONS, metrics.NORMAL_STEADY_STATE);
+  assert.equal(metrics.AFTER_REPEATED_DETAIL_REENTRY, metrics.NORMAL_STEADY_STATE);
   assert.equal(metrics.AFTER_HISTORY_FLOW, metrics.NORMAL_STEADY_STATE);
   assert.ok(metrics.NORMAL_STEADY_STATE <= 384 * KiB);
   assert.ok(metrics.AFTER_UPLOAD_FLOW <= 512 * KiB);
@@ -54,6 +88,18 @@ test('production-shaped PB-04 workload converges below the stable-state target',
     process.stdout.write(`${name}=${bytes} bytes (${(bytes / KiB).toFixed(2)} KiB)\n`);
   }
 });
+
+function loadTypeScriptModule(file) {
+  const source = fs.readFileSync(file, 'utf8');
+  const output = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const loaded = new Module(file, module);
+  loaded.filename = file;
+  loaded.paths = Module._nodeModulePaths(path.dirname(file));
+  loaded._compile(output, file);
+  return loaded.exports;
+}
 
 function createRegistry() {
   const cache = (maxBytes, ttlMs) => ({
@@ -183,5 +229,21 @@ function uploadWorkflow() {
       updatedAt: 2_000,
       needsServerVerification: true,
     })),
+  };
+}
+
+function detailResponse(index) {
+  return {
+    schemaVersion: 2,
+    batchId: longId('batch'),
+    outfitKey: longId('outfit', index),
+    referenceId: longId('reference', index),
+    persistedDetailDocumentReady: true,
+    detail: {
+      title: `第${index + 1}套穿搭详情`,
+      todayReason: '这套组合适合今天的通勤安排。',
+      detailExplanation: '上衣和下装的明暗关系清楚，鞋子保持简洁。',
+      clothingIds: Array.from({ length: 4 }, (_, item) => longId('clothing', index * 10 + item)),
+    },
   };
 }

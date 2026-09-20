@@ -197,17 +197,17 @@ PB-04 是 `TYPE=BUG`，PB-11 是 `TYPE=ENGINEERING_DEBT`，但两者也必须在
 - `ROADMAP_PRIORITY=` NONE
 - `RELEASE_PRIORITY=` REQUIRED
 - `ROOT_CAUSE=` `UNBOUNDED_CACHE + DUPLICATE_SNAPSHOTS + MISSING_EVICTION + MISSING_QUOTA_ERROR_HANDLING + WRONG_DATA_PLACEMENT`；另有 100 条完整 History 首页 payload 和 current scoped key migration 缺口。
-- `CURRENT_EVIDENCE=` [PB-04 专项审计](qa/storage-10mb-audit.md) 已记录根因与 2026-09-20 实施证据：L1 steady-state production-shaped 模型 15.65 KiB，连续 20 次 Detail 与 History 后不增长，10 个 upload refs + migration meta 后 25.52 KiB；真实微信开发者工具从 3,852 KiB / 46 keys 迁移到 20 KiB / 7 keys，第二次 relaunch 保持稳定，局部 Favorite/Worn 与页面重入后为 28-29 KiB / 8 keys 且 legacy families=0；PB-04 专项 37/37、miniapp Node tests 351/351 通过。
+- `CURRENT_EVIDENCE=` [PB-04 专项审计](qa/storage-10mb-audit.md) 已记录根因与 2026-09-20 实施证据：L1 steady-state production-shaped 模型 15.65 KiB，生产同形 Detail L0 cache 连续 20 个不同详情和 20 次重入均受 16 项上限约束且 L1 不增长，10 个 upload refs + migration meta 后 25.52 KiB；真实微信开发者工具从 3,852 KiB / 46 keys 迁移到 20 KiB / 7 keys，第二次 relaunch 保持稳定，局部 Favorite/Worn 与页面重入后为 28-29 KiB / 8 keys 且 legacy families=0；PB-04 专项 39/39 通过，quota 注入覆盖 TEMP → expired → permitted CACHE、exactly-once retry、登录/天气 fail-open。
 - `AFFECTED_STORAGE_FAMILIES=` userStorage outfit detail/upload/Today state；pageCache Wardrobe/Profile/Favorite/History/Detail；direct identity/profile/weather/diagnostic keys。
 - `WHAT_IS_ALREADY_DONE=` [Local Data & Cache Architecture V1](architecture/local-data-and-cache.md) 的 PHASE_1 代码已落地：deny-by-default registry、384/512 KiB budget、L0 runtime cache、固定 compact bootstrap、OutfitRef、单 upload workflow envelope、物理 TTL/选择性驱逐、quota retry once、登录/天气 fail-open、按用户 migration namespace v2 / checkpoint v4 与 lifecycle cleanup；真实迁移和冷启动容量稳定性已验证。
-- `WHAT_REMAINS=` 完成真实 Upload/Confirm；消除或澄清 Detail automator 超时并跑 Detail×N；排查本次 Favorite 独立页 error 与 Worn 后 History 空态，再完成同一链路冷启动/重入；发布候选覆盖 0/200、200/200 与 quota 注入。未通过前不得标记 CLOSED。
-- `USER_IMPACT=` 已安装用户的旧重复快照可在冷启动迁移中释放，正常本地投影保持远低于平台上限，且 cache 写失败不再反转登录/天气成功。当前剩余风险是 Upload、Favorite、Worn/History 与 Detail 长链尚无同一 release candidate 的完整真源闭环证据，而不是已观察到的新 Storage 线性增长。
+- `WHAT_REMAINS=` 完成一次真实 Upload → Digitize → Confirm → Wardrobe → restart，并跑集中手动 Detail×N UI/Storage smoke。Favorite error 与 Worn 后 History 空态已归因到 PB-12 的 Cloud 查询/发布环境 smoke，均发生在 OutfitRef 之前且不是 9de9760 引入的 PB-04 regression；0/200、200/200 真实发布边界由 PB-34 持有并与 PB-04 复用 Storage 采集。
+- `USER_IMPACT=` 已安装用户的旧重复快照可在冷启动迁移中释放，正常本地投影保持远低于平台上限，且 cache 写失败不再反转登录/天气成功。Confirm 成功现在会同步清理全部本地批次恢复面；当前 PB-04 剩余风险是 Upload/Confirm 和 Detail×N 尚无真实 UI/Storage 集中 smoke，而不是已观察到的新 Storage 线性增长。
 - `MUST_FIX_BEFORE_NEW_FEATURE=` YES
 - `MUST_FIX_BEFORE_LAUNCH=` YES
 - `BLOCKS_BEHAVIOR_LEARNING=` YES；学习数据本身在云端，但闭环会提高 refresh/detail/favorite/wear/history 和长期使用频率，直接放大当前按已访问 outfit 增长的本地 cache 风险。
 - `DEPENDENCIES=` PB-11 共用 local cache lifecycle 根因；PB-34 的 200 件容量不会一次写满 Storage，但会增加可达筛选/组合/详情，发布 smoke 必须加入 Storage 起止量证据。
 - `TARGET_CONTRACT=` L1 是恢复控制面而非业务数据库；steady state ≤384 KiB、global soft budget 512 KiB；Today/Wardrobe/Profile/Weather 只允许固定 compact projection，Detail/Favorite/History 传 OutfitRef，图片二进制只在 L2/Cloud Storage，Behavior pending queue 未来上限50条/64KiB/72h。
-- `NEXT_ACTION=` 执行真实 DevTools 集中 smoke 并回写 `currentSize/limitSize`；通过后再将 PB-04 标记 CLOSED。不得用 fixture 结果替代真机证据，也不得使用 `clearStorage()`。
+- `NEXT_ACTION=` 用户只选择一次真实图片，随后自动采集 Upload/Confirm terminal/restart；同次连续进入 Detail 若干次并采 `currentSize/limitSize/key count/namespaces`。两项通过后将 PB-04 标记 CLOSED。不得用 fixture 结果替代真机证据，也不得使用 `clearStorage()`。
 
 ### PB-05 Today 首卡可见性自动验收
 
@@ -352,9 +352,9 @@ PB-04 是 `TYPE=BUG`，PB-11 是 `TYPE=ENGINEERING_DEBT`，但两者也必须在
 - `BUG_SEVERITY=` NONE
 - `ROADMAP_PRIORITY=` NONE
 - `RELEASE_PRIORITY=` REQUIRED
-- `CURRENT_EVIDENCE=` Deployment Contract v2 证明函数 artifact/依赖闭包，不证明业务集合、索引、权限、环境变量或触发器实际值。
+- `CURRENT_EVIDENCE=` Deployment Contract v2 证明函数 artifact/依赖闭包，不证明业务集合、索引、权限、环境变量或触发器实际值。PB-04 closure attribution 中，Favorite 独立页一次 error 只可能由 `listFavoriteOutfits` 云查询/transport 触发；Worn 已在 history 事务成功边界返回，但同次 History 页面为空。两者均未在仓库专项测试复现，且发生在 OutfitRef Detail 恢复之前。
 - `WHAT_IS_ALREADY_DONE=` 2026-09-02 的生产函数 remote artifact verify 为 26/26 PASS，配置要求已有文档。
-- `WHAT_REMAINS=` 核对 `outfit_ai_reviews`、`outfit_behavior_events`、`learned_style_profiles`、相关索引/权限，以及 AMAP/Bailian/Aliyun/OSS 等远端配置。
+- `WHAT_REMAINS=` 核对 `outfit_ai_reviews`、`outfit_behavior_events`、`learned_style_profiles`、Favorite/History 相关 collection/index/permission 与函数部署环境，以及 AMAP/Bailian/Aliyun/OSS 等远端配置；在同一发布候选重跑 Favorite → Worn → History → reopen/reload 并保留云函数错误码/查询结果。
 - `USER_IMPACT=` 配置缺失会使相应业务在真实环境失败，但当前 repo 不能证明远端错误或正确。
 - `MUST_FIX_BEFORE_NEW_FEATURE=` NO
 - `MUST_FIX_BEFORE_LAUNCH=` YES
@@ -770,9 +770,9 @@ PB-04 是 `TYPE=BUG`，PB-11 是 `TYPE=ENGINEERING_DEBT`，但两者也必须在
 - `BUG_SEVERITY=` NONE
 - `ROADMAP_PRIORITY=` NONE
 - `RELEASE_PRIORITY=` REQUIRED
-- `CURRENT_EVIDENCE=` 代码/测试已完成 free=200 强制容量；release checklist 仍要求 Web/BFF、`005_wardrobe_capacity_v1.sql`、相关云函数和并发/边界 smoke。
+- `CURRENT_EVIDENCE=` 代码/测试已完成 free=200 强制容量；自动模型覆盖 0/200 数据结构、199+1、201 拒绝、并发双批不超过 200、删除释放、伪造 premium 无效，但不是生产环境验收。release checklist 仍要求 Web/BFF、`005_wardrobe_capacity_v1.sql`、相关云函数和并发/边界 smoke。
 - `WHAT_IS_ALREADY_DONE=` 容量 resolver、confirm gate、用户锁、Web transaction 和 200+ 件 recommendation pagination 已实现。
-- `WHAT_REMAINS=` 对 release candidate 执行 migration/部署，并验证 199+1、199+2、200、删除释放、并发双批、伪造权益和 Web 第 201 件。
+- `WHAT_REMAINS=` 对 release candidate 执行 migration/部署，并验证 0/200、199+1、199+2、200/200、删除释放、并发双批、伪造权益和 Web 第 201 件；0/200 与 200/200 同时采 `currentSize/limitSize/key count/namespace distribution`，作为 PB-04/PB-34 共用证据，但不得把自动模型写成真实 RC smoke PASS。
 - `USER_IMPACT=` 未正确发布时，代码中的容量合同可能与真实数据库/前后端不一致。
 - `MUST_FIX_BEFORE_NEW_FEATURE=` NO
 - `MUST_FIX_BEFORE_LAUNCH=` YES
