@@ -197,17 +197,17 @@ PB-04 是 `TYPE=BUG`，PB-11 是 `TYPE=ENGINEERING_DEBT`，但两者也必须在
 - `ROADMAP_PRIORITY=` NONE
 - `RELEASE_PRIORITY=` REQUIRED
 - `ROOT_CAUSE=` `UNBOUNDED_CACHE + DUPLICATE_SNAPSHOTS + MISSING_EVICTION + MISSING_QUOTA_ERROR_HANDLING + WRONG_DATA_PLACEMENT`；另有 100 条完整 History 首页 payload 和 current scoped key migration 缺口。
-- `CURRENT_EVIDENCE=` [PB-04 专项审计](qa/storage-10mb-audit.md) 已记录根因与 2026-09-20 实施证据：L1 steady-state production-shaped 模型 15.65 KiB，生产同形 Detail L0 cache 连续 20 个不同详情和 20 次重入均受 16 项上限约束且 L1 不增长，10 个 upload refs + migration meta 后 25.52 KiB；真实微信开发者工具从 3,852 KiB / 46 keys 迁移到 20 KiB / 7 keys，第二次 relaunch 保持稳定，局部 Favorite/Worn 与页面重入后为 28-29 KiB / 8 keys 且 legacy families=0；PB-04 专项 39/39 通过，quota 注入覆盖 TEMP → expired → permitted CACHE、exactly-once retry、登录/天气 fail-open。
+- `CURRENT_EVIDENCE=` [PB-04 专项审计](qa/storage-10mb-audit.md) 已记录根因与 2026-09-20 实施/真实 smoke 证据：L1 steady-state production-shaped 模型 15.65 KiB，生产同形 Detail L0 cache 连续 20 个不同详情和 20 次重入均受 16 项上限约束且 L1 不增长；真实微信开发者工具从 3,852 KiB / 46 keys 迁移到 20 KiB / 7 keys 并稳定重启。最终真实 Upload → Digitize → Confirm → Wardrobe 使衣橱从 34/200 增至 37/200，Storage 为 19/7 → 29/9 → terminal 后 29 KiB / 8 keys，workflow/legacy batch refs 清零；手动 Detail×10 前后均为 29 KiB / 8 keys，legacy Detail families=0。PB-04 专项 39/39 通过，quota 注入覆盖 TEMP → expired → permitted CACHE、exactly-once retry、登录/天气 fail-open。
 - `AFFECTED_STORAGE_FAMILIES=` userStorage outfit detail/upload/Today state；pageCache Wardrobe/Profile/Favorite/History/Detail；direct identity/profile/weather/diagnostic keys。
 - `WHAT_IS_ALREADY_DONE=` [Local Data & Cache Architecture V1](architecture/local-data-and-cache.md) 的 PHASE_1 代码已落地：deny-by-default registry、384/512 KiB budget、L0 runtime cache、固定 compact bootstrap、OutfitRef、单 upload workflow envelope、物理 TTL/选择性驱逐、quota retry once、登录/天气 fail-open、按用户 migration namespace v2 / checkpoint v4 与 lifecycle cleanup；真实迁移和冷启动容量稳定性已验证。
-- `WHAT_REMAINS=` 完成一次真实 Upload → Digitize → Confirm → Wardrobe → restart，并跑集中手动 Detail×N UI/Storage smoke。Favorite error 与 Worn 后 History 空态已归因到 PB-12 的 Cloud 查询/发布环境 smoke，均发生在 OutfitRef 之前且不是 9de9760 引入的 PB-04 regression；0/200、200/200 真实发布边界由 PB-34 持有并与 PB-04 复用 Storage 采集。
-- `USER_IMPACT=` 已安装用户的旧重复快照可在冷启动迁移中释放，正常本地投影保持远低于平台上限，且 cache 写失败不再反转登录/天气成功。Confirm 成功现在会同步清理全部本地批次恢复面；当前 PB-04 剩余风险是 Upload/Confirm 和 Detail×N 尚无真实 UI/Storage 集中 smoke，而不是已观察到的新 Storage 线性增长。
+- `WHAT_REMAINS=` Upload/Confirm 与 Detail Storage 有界性均已真实通过；只剩恢复 V2 Detail 的可用产品详情 UI，并重跑 Detail×10 UI/Storage。当前 V2 renderer 在成功回源后只显示“详情已按需加载”与重复“已加入衣橱”，部分访问仅停留在 shell。该占位实现由 c9532c8 引入，不是 9de9760/fe611276 新增的 Storage regression。Favorite/History 仍归 PB-12；0/200、200/200 仍归 PB-34。
+- `USER_IMPACT=` 已安装用户的旧重复快照可在冷启动迁移中释放，正常本地投影保持远低于平台上限，Upload terminal cleanup 不丢衣物，Detail×10 也不增加 bytes/keys；但用户从 Today 进入详情只能看到 outfitKey、理由、拼图和占位文案，无法获得正式详情内容与操作。
 - `MUST_FIX_BEFORE_NEW_FEATURE=` YES
 - `MUST_FIX_BEFORE_LAUNCH=` YES
-- `BLOCKS_BEHAVIOR_LEARNING=` YES；学习数据本身在云端，但闭环会提高 refresh/detail/favorite/wear/history 和长期使用频率，直接放大当前按已访问 outfit 增长的本地 cache 风险。
+- `BLOCKS_BEHAVIOR_LEARNING=` YES；Storage 线性增长已排除，但学习闭环需要正常 Detail 入口承接可解释内容和行为信号，当前占位 UI 尚不满足产品 gate。
 - `DEPENDENCIES=` PB-11 共用 local cache lifecycle 根因；PB-34 的 200 件容量不会一次写满 Storage，但会增加可达筛选/组合/详情，发布 smoke 必须加入 Storage 起止量证据。
 - `TARGET_CONTRACT=` L1 是恢复控制面而非业务数据库；steady state ≤384 KiB、global soft budget 512 KiB；Today/Wardrobe/Profile/Weather 只允许固定 compact projection，Detail/Favorite/History 传 OutfitRef，图片二进制只在 L2/Cloud Storage，Behavior pending queue 未来上限50条/64KiB/72h。
-- `NEXT_ACTION=` 用户只选择一次真实图片，随后自动采集 Upload/Confirm terminal/restart；同次连续进入 Detail 若干次并采 `currentSize/limitSize/key count/namespaces`。两项通过后将 PB-04 标记 CLOSED。不得用 fixture 结果替代真机证据，也不得使用 `clearStorage()`。
+- `NEXT_ACTION=` 不重复已通过的 Upload/Confirm。仅在不恢复 L1 完整 snapshots、不改变 OutfitRef/L0 bounded cache 架构的前提下，把 `RecommendationDetailResponseV2.detail` 映射到正式详情 UI；随后重跑 Detail×10，要求 `DETAIL_UI=PASS` 且继续保持 29 KiB / 8 keys 附近稳定，才可关闭 PB-04。
 
 ### PB-05 Today 首卡可见性自动验收
 
