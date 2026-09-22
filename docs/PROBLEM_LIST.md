@@ -1,6 +1,6 @@
 # 搭搭day Problem List / Master Backlog
 
-> 最后校准：2026-09-20
+> 最后校准：2026-09-22
 >
 > 本文件是全项目唯一 Master Problem / Backlog 总账。产品主链状态快照见
 > `docs/product/product-main-journey-status.md`；具体发布动作见
@@ -41,23 +41,22 @@ repo、已提交证据和明确的远端验收记录为准。
 
 | 顺序 | 条目 | 为什么现在做 |
 | --- | --- | --- |
-| 1 | PB-18 Detail 正式产品链恢复 | Today → Detail 当前生产路径进入 V2 shell/placeholder，真实用户无法获得正式详情内容与操作。 |
-| 2 | PB-08 / PB-21 / PB-22 Behavior-to-Recommendation Learning Loop V1 | PB-18 恢复后立即进入；学习闭环仍是下一产品能力 Goal。 |
-| 3 | PB-29 全产品真实环境 E2E | 正式发布前验证 Upload 到 reopen/reload 的完整业务链，不能由 artifact contract 替代。 |
-| 4 | PB-12 / PB-30 CloudBase 控制面与资源合同 | 核对集合、索引、权限、环境变量及 1024MB/0.8CPU 等关键资源配置。 |
-| 5 | PB-16 / PB-33 / PB-34 安全、数据治理与容量发布执行 | 属于上线前必须关闭的操作门禁，不阻塞当前普通开发。 |
+| 1 | PB-08 / PB-21 / PB-22 Behavior-to-Recommendation Learning Loop V1 | PB-18 已关闭；学习闭环是当前下一产品能力 Goal。 |
+| 2 | PB-29 全产品真实环境 E2E | 正式发布前验证 Upload 到 reopen/reload 的完整业务链，不能由 artifact contract 替代。 |
+| 3 | PB-12 / PB-30 CloudBase 控制面与资源合同 | 核对集合、索引、权限、环境变量及 1024MB/0.8CPU 等关键资源配置。 |
+| 4 | PB-16 / PB-33 / PB-34 安全、数据治理与容量发布执行 | 属于上线前必须关闭的操作门禁，不阻塞当前普通开发。 |
 
-`BEFORE_NEW_FEATURE=PB-18`
+`BEFORE_NEW_FEATURE=NONE`
 
-`NEXT_PRODUCT_GOAL=PB-18 Detail 正式产品链恢复`
+`NEXT_PRODUCT_GOAL=Behavior-to-Recommendation Learning Loop V1`
 
-`BEHAVIOR_LEARNING_POSITION=AFTER_PB-18`
+`BEHAVIOR_LEARNING_POSITION=NEXT`
 
 ## 2. Release Blockers
 
 当前没有已经进入发布执行并正在阻止发布的独立 `TYPE=RELEASE_BLOCKER` 条目。
 
-PB-11、PB-12、PB-16、PB-17、PB-18、PB-29、PB-30、PB-33、PB-34 的
+PB-11、PB-12、PB-16、PB-17、PB-29、PB-30、PB-33、PB-34 的
 `RELEASE_PRIORITY=REQUIRED`；若正式发布时仍未关闭，它们即成为发布 blocker。
 
 ## 3. Pre-launch Required
@@ -65,20 +64,18 @@ PB-11、PB-12、PB-16、PB-17、PB-18、PB-29、PB-30、PB-33、PB-34 的
 - PB-12：CloudBase 集合、索引、权限、环境变量和生产配置远端核验。
 - PB-16：轮换曾出现在诊断执行记录中的生产凭据，并验证旧凭据失效。
 - PB-17：真实微信 Upload → Digitize → Confirm → Wardrobe E2E。
-- PB-18：恢复 Today 生产路径的正式 Detail 内容与操作，并完成真实 UI smoke。
 - PB-29：全产品主链真实环境 E2E 与 reopen/reload smoke。
 - PB-30：关键 Cloud Function 资源规格进入可验证合同。
 - PB-33：用户数据、行为事件、缓存和图片资产生命周期/隐私治理。
 - PB-34：衣橱容量 V1 的 Web migration、部署和体验版 smoke。
 
-PB-04 已按 Storage 合同关闭；PB-18 是当前新功能前置 P1 Bug。PB-11 是
-`TYPE=ENGINEERING_DEBT`，仍需在发布前关闭。
+PB-04 已按 Storage 合同关闭；PB-18 已按正式 Detail 内容、操作、reload 与真实 UI smoke
+关闭。PB-11 是 `TYPE=ENGINEERING_DEBT`，仍需在发布前关闭。
 
 ## 4. Product Roadmap
 
 ### R0
 
-- PB-18：Today → Detail 正式产品链恢复。
 - PB-08：Behavior-to-Recommendation Learning 父任务。
 - PB-21：Learned Profile 自动更新生命周期。
 - PB-22：Behavior → Recommendation 生产消费闭环。
@@ -113,7 +110,7 @@ PB-04 已按 Storage 合同关闭；PB-18 是当前新功能前置 P1 Bug。PB-1
 - PB-13：用户真人 + 自己衣橱的静态 AI 效果预览。
 - PB-14：严格虚拟试衣 VTON。
 
-这些能力不是当前 Bug 或发布 blocker，不得抢在 PB-18 和后续 R0 学习闭环之前。
+这些能力不是当前 Bug 或发布 blocker，不得抢在当前 R0 学习闭环之前。
 
 ## 7. Process Guardrails
 
@@ -126,6 +123,7 @@ PB-04 已按 Storage 合同关闭；PB-18 是当前新功能前置 P1 Bug。PB-1
 - PB-01：旧 Max vs Plus 原型被真实 Max control vs Flash race 取代。
 - PB-02：Homepage AI Voice 生产化、缓存、HIT/MISS 与 Safe fallback 已关闭。
 - PB-04：Local Storage placement/lifecycle/capacity/quota/migration 已由真实 DevTools smoke 关闭。
+- PB-18：Today → V2 OutfitRef → 正式 Detail、Favorite/Worn、现有 AI 点评与 reload 已由真实 DevTools smoke 关闭。
 - PB-19：旧 Worn PARTIAL 合并项已拆解；功能闭环完成，学习部分由 PB-08/PB-22 管理。
 - PB-25：历史白屏 / SDK timeout 按不可复现环境噪音关闭。
 - PB-26：REFRESH_UI_001 已由真实换批证据关闭。
@@ -205,14 +203,14 @@ PB-04 已按 Storage 合同关闭；PB-18 是当前新功能前置 P1 Bug。PB-1
 - `CURRENT_EVIDENCE=` [PB-04 专项审计](qa/storage-10mb-audit.md) 已记录根因与 2026-09-20 实施/真实 smoke 证据：L1 steady-state production-shaped 模型 15.65 KiB，生产同形 Detail L0 cache 连续 20 个不同详情和 20 次重入均受 16 项上限约束且 L1 不增长；真实微信开发者工具从 3,852 KiB / 46 keys 迁移到 20 KiB / 7 keys 并稳定重启。最终真实 Upload → Digitize → Confirm → Wardrobe 使衣橱从 34/200 增至 37/200，Storage 为 19/7 → 29/9 → terminal 后 29 KiB / 8 keys，workflow/legacy batch refs 清零；手动 Detail×10 前后均为 29 KiB / 8 keys，legacy Detail families=0。PB-04 专项 39/39 通过，quota 注入覆盖 TEMP → expired → permitted CACHE、exactly-once retry、登录/天气 fail-open。
 - `AFFECTED_STORAGE_FAMILIES=` userStorage outfit detail/upload/Today state；pageCache Wardrobe/Profile/Favorite/History/Detail；direct identity/profile/weather/diagnostic keys。
 - `WHAT_IS_ALREADY_DONE=` [Local Data & Cache Architecture V1](architecture/local-data-and-cache.md) 的 PHASE_1 代码已落地：deny-by-default registry、384/512 KiB budget、L0 runtime cache、固定 compact bootstrap、OutfitRef、单 upload workflow envelope、物理 TTL/选择性驱逐、quota retry once、登录/天气 fail-open、按用户 migration namespace v2 / checkpoint v4 与 lifecycle cleanup；真实迁移和冷启动容量稳定性已验证。
-- `WHAT_REMAINS=` PB-04 范围内无剩余事项。V2 Detail renderer 归 PB-18；Favorite/History 归 PB-12；0/200、200/200 归 PB-34。
+- `WHAT_REMAINS=` PB-04 范围内无剩余事项。PB-18 V2 Detail renderer 已关闭；Favorite/History 归 PB-12；0/200、200/200 归 PB-34。
 - `USER_IMPACT=` 已安装用户的旧重复快照可在冷启动迁移中释放，正常本地投影保持 20–29 KiB，Upload terminal cleanup 不丢衣物，Detail×10 不增加 bytes/keys。
 - `MUST_FIX_BEFORE_NEW_FEATURE=` NO
 - `MUST_FIX_BEFORE_LAUNCH=` NO
 - `BLOCKS_BEHAVIOR_LEARNING=` NO；后续本地状态仍必须遵守 PB-04 已冻结的 registry/budget/lifecycle 合同。
-- `DEPENDENCIES=` NONE；PB-11、PB-12、PB-18、PB-34 保持各自独立范围。
+- `DEPENDENCIES=` NONE；PB-11、PB-12、PB-34 保持各自独立范围，PB-18 已关闭。
 - `TARGET_CONTRACT=` L1 是恢复控制面而非业务数据库；steady state ≤384 KiB、global soft budget 512 KiB；Today/Wardrobe/Profile/Weather 只允许固定 compact projection，Detail/Favorite/History 传 OutfitRef，图片二进制只在 L2/Cloud Storage，Behavior pending queue 未来上限50条/64KiB/72h。
-- `NEXT_ACTION=` 作为关闭历史保留；不得用 PB-18 的页面问题重开 PB-04，除非出现新的直接 Storage regression 证据。
+- `NEXT_ACTION=` 作为关闭历史保留；不得用页面问题重开 PB-04，除非出现新的直接 Storage regression 证据。
 
 ### PB-05 Today 首卡可见性自动验收
 
@@ -287,8 +285,8 @@ PB-04 已按 Storage 合同关闭；PB-18 是当前新功能前置 P1 Bug。PB-1
 - `USER_IMPACT=` 系统记录行为，但推荐不会因此更懂用户。
 - `MUST_FIX_BEFORE_NEW_FEATURE=` NO
 - `MUST_FIX_BEFORE_LAUNCH=` NO
-- `DEPENDENCIES=` PB-04 先关闭；子项 PB-21、PB-22，信号增强 PB-20。
-- `NEXT_ACTION=` PB-04 后启动 Behavior-to-Recommendation Learning Loop V1，先 shadow 对照再 gated rollout。
+- `DEPENDENCIES=` PB-04 与 PB-18 已关闭；子项 PB-21、PB-22，信号增强 PB-20。
+- `NEXT_ACTION=` 启动 Behavior-to-Recommendation Learning Loop V1，先 shadow 对照再 gated rollout。
 
 ### PB-09 优秀穿搭组合资产化 / 个人穿搭库
 
@@ -306,7 +304,7 @@ PB-04 已按 Storage 合同关闭；PB-18 是当前新功能前置 P1 Bug。PB-1
 - `USER_IMPACT=` 用户能找回收藏/历史，但不能经营自己的长期穿搭库。
 - `MUST_FIX_BEFORE_NEW_FEATURE=` NO
 - `MUST_FIX_BEFORE_LAUNCH=` NO
-- `DEPENDENCIES=` PB-18 的 detail/identity 恢复合同，PB-08 的行为语义。
+- `DEPENDENCIES=` PB-18 已提供 detail/identity 基础，后续依赖 PB-08 的行为语义。
 - `NEXT_ACTION=` 学习闭环稳定后定义 Personal Outfit Library V1。
 
 ### PB-10 自动部署 / generateOutfit 发布可复现性
@@ -466,26 +464,26 @@ PB-04 已按 Storage 合同关闭；PB-18 是当前新功能前置 P1 Bug。PB-1
 - `PROBLEM_ID=` PB-18
 - `TITLE=` Today → Detail 正式产品链恢复与长期恢复
 - `ORIGINAL_SOURCE=` product journey audit + current repo
-- `STATUS=` OPEN
-- `TYPE=` BUG
-- `BUG_SEVERITY=` P1
-- `ROADMAP_PRIORITY=` R0
-- `RELEASE_PRIORITY=` REQUIRED
-- `CURRENT_EVIDENCE=` 真实 DevTools Detail×10 均无法得到正式详情页。Today 当前固定创建 recommendation `OutfitRefV1` 并导航到 `pages/outfit-detail/index`；页面取得 `v2DetailState` 后立即返回 `V2OutfitDetailView`。该 renderer 只显示标题、原始 outfitKey、Today reason、拼图，以及成功回源后的“详情已按需加载”/重复“已加入衣橱”，并绕过同文件现存的正式 Detail renderer。
-- `DETAIL_ROUTE=` Today `openV2Detail` → `buildOutfitDetailUrl(OutfitRefV1)` → `pages/outfit-detail/index` → `v2DetailState` early return。
-- `DETAIL_DATA=` OutfitRef 与 batch envelope 可解析；`detailV2` 当前返回 `outfitKey/clothingIds/items/displayTitle` 和可选 canonical copy，服务端内部 payload 另有 scene/date/weather/style 等数据，但尚未形成正式 Detail view model。
-- `DETAIL_RENDERER=` 生产路径为 `V2OutfitDetailView` shell/placeholder；同文件旧正式 renderer 存在但在 V2 state 下不可达。
-- `DETAIL_PRODUCT_FUNCTIONS=` 旧 renderer 的命名、天气/评分、AI 点评、单品列表、收藏、穿着代码仍在；V2 Detail early return 未接入这些 UI/handler。V2 favorite/wear API 存在于 shared cloud client，但只在 Today 使用。
-- `IS_PLACEHOLDER_IN_PRODUCTION_PATH=` YES
-- `PB18_ROOT_CAUSE_SCOPE=` 客户端 V2 Detail renderer/view-model/interaction wiring；不是 Local Storage、OutfitRef identity 或 PB-12 远端列表异常。
-- `WHAT_IS_ALREADY_DONE=` OutfitRef、batch envelope resolver、Cloud `detailV2`、L0 16-entry bounded cache 和图片 shell 可用；服务端 `loadV2OutfitPayload` 已能解析衣物、scene、日期、天气和 canonical copy。同文件旧正式 renderer 已包含命名、风格/天气/评分、推荐解释、小搭说衣、单品列表、收藏与穿着操作；仓库也有明确 Detail 文案与交互验收规范。
-- `WHAT_REMAINS=` 在不恢复 L1 完整 snapshots、不改变 OutfitRef/L0 bounded cache 架构的前提下，把 V2 payload 适配到正式 Detail view model，接回基础内容、明确 loading/error/empty、Detail 行为事件，以及 V2 favorite/wear 和 AI commentary。独立 detail document 与跨入口/reload 长期恢复仍保留在本项后续合同中。
-- `USER_IMPACT=` 用户从核心 Today 入口点击“详情”只能看到内部 outfitKey、图片与占位文案；无法查看正式搭配解释、天气/评分、单品详情或使用命名、收藏、穿着、AI 点评等 Detail 操作。
-- `REGRESSION=` YES；c9532c8 在接通推荐 V2 页面链路时新增占位 renderer 和早返回，生产 V2 路径因此绕过原有正式 Detail UI。9de9760/fe611276 未引入该问题，也没有产生 Storage regression。
-- `MUST_FIX_BEFORE_NEW_FEATURE=` YES
-- `MUST_FIX_BEFORE_LAUNCH=` YES
-- `DEPENDENCIES=` 复用现有 OutfitRef、`detailV2`、V2 favorite/wear API、旧正式 renderer 和 PB-24 AI review；Favorite 独立页与 Worn→History 远端异常仍归 PB-12。
-- `NEXT_ACTION=` 当前下一 Goal：恢复 Today → Detail 正式产品链；先形成最小 V2→正式 view model/交互接线，保持 PB-04 Storage 合同，再执行 Detail UI + Storage smoke。禁止顺带修 PB-12 或开始 PB-22。
+- `STATUS=` CLOSED
+- `TYPE=` CLOSED_HISTORY
+- `BUG_SEVERITY=` NONE
+- `ROADMAP_PRIORITY=` NONE
+- `RELEASE_PRIORITY=` NONE
+- `CURRENT_EVIDENCE=` 2026-09-22 真实 DevTools smoke 已从 Today 进入 V2 OutfitRef 正式 Detail，验证 4 个单品、天气/场景/推荐理由、Favorite、Worn、真实 AI 点评、单品详情跳转、Today 回显、Detail 再进入及直接 reload；前后 storage 均为 19 KiB/7 keys，legacy detail keys 为 0。
+- `DETAIL_ROUTE=` Today `openV2Detail` → `buildOutfitDetailUrl(OutfitRefV1)` → `pages/outfit-detail/index` → `detailV2` → V2 正式 view model → 既有正式 renderer。
+- `DETAIL_DATA=` `detailV2` 以 `batchId + outfitKey + referenceId` 三重身份解析 immutable batch envelope，返回正式 items/status/context/copy 与可选 persisted `outfitId`；历史 V2 safe reason 可由服务端确定性恢复。
+- `DETAIL_RENDERER=` V2 shell/placeholder 与生产 early return 已移除；V2 数据适配后复用同文件正式 Detail renderer，并显式覆盖 loading、not-found 与 remote-error。
+- `DETAIL_PRODUCT_FUNCTIONS=` Favorite 与 Worn 使用 V2 canonical action 并同步 Today；现有 AI commentary 可从 immutable V2 envelope 解析，单品可进入 clothing-detail，reload/re-entry 可恢复同一 OutfitRef 状态。
+- `IS_PLACEHOLDER_IN_PRODUCTION_PATH=` NO
+- `PB18_ROOT_CAUSE_SCOPE=` c9532c8 新增的 V2 Detail shell/placeholder 和生产 early return 绕过了仍存在的正式 renderer；根因不在 Local Storage、OutfitRef identity 或 PB-12 远端列表异常。
+- `WHAT_IS_ALREADY_DONE=` 保持 OutfitRef、immutable batch envelope、L0 16-entry bounded cache 与 PB-04 Storage 架构不变，完成 V2 正式 view model、基础内容、状态、交互、AI source resolution、safe-copy 恢复和真实环境验收。
+- `WHAT_REMAINS=` 本项无。独立持久化 detail document 与 learned preference 驱动的更深个性化解释继续由 PB-24 管理；Favorite/History 独立远端查询异常继续由 PB-12 管理。
+- `USER_IMPACT=` 用户从 Today 可获得正式搭配详情并完成收藏、穿着、AI 点评和单品查看；页面重进与直接 reload 均可恢复。
+- `REGRESSION=` FIXED；修复未恢复 L1 完整 snapshots，未引入 Storage 或 HomeLight 回归。
+- `MUST_FIX_BEFORE_NEW_FEATURE=` NO
+- `MUST_FIX_BEFORE_LAUNCH=` NO
+- `DEPENDENCIES=` 无当前阻塞依赖；PB-12 与 PB-24 是独立后续边界。
+- `NEXT_ACTION=` 保持本项关闭；下一产品 Goal 进入 PB-08/PB-21/PB-22 Behavior-to-Recommendation Learning Loop V1。
 
 ### PB-19 Worn PARTIAL（历史合并项拆分）
 
@@ -560,7 +558,7 @@ PB-04 已按 Storage 合同关闭；PB-18 是当前新功能前置 P1 Bug。PB-1
 - `USER_IMPACT=` 收藏、穿过、详情和换一批不会让下一次推荐产生可解释变化。
 - `MUST_FIX_BEFORE_NEW_FEATURE=` NO
 - `MUST_FIX_BEFORE_LAUNCH=` NO
-- `DEPENDENCIES=` PB-04 已关闭；PB-18 先恢复 Detail 产品入口，随后接 PB-21 自动刷新；PB-32 冻结边界。
+- `DEPENDENCIES=` PB-04 与 PB-18 已关闭；接 PB-21 自动刷新，并遵守 PB-32 冻结边界。
 - `NEXT_ACTION=` 作为下一产品 Goal 的最终闭环，先影子对照再小权重启用。
 
 ### PB-23 Personalization Level
@@ -592,14 +590,14 @@ PB-04 已按 Storage 合同关闭；PB-18 是当前新功能前置 P1 Bug。PB-1
 - `BUG_SEVERITY=` NONE
 - `ROADMAP_PRIORITY=` R1
 - `RELEASE_PRIORITY=` OPTIONAL
-- `CURRENT_EVIDENCE=` Detail 有结构化 stylist/aesthetic evidence、主动 AI 点评、validator、rule fallback、版本化 digest、缓存与失效。
-- `WHAT_IS_ALREADY_DONE=` outfit-level analysis 和持久化 AI review 基础已存在，与 Homepage 一句话 reason 已分离。
-- `WHAT_REMAINS=` 真实环境 Detail smoke、独立 detail asset，以及 learned preference 进入个性化解释。
-- `USER_IMPACT=` 用户能获得更深解释，但生产可用性与“为什么适合我”的个性化深度尚未全部证明。
+- `CURRENT_EVIDENCE=` Detail 有结构化 stylist/aesthetic evidence、主动 AI 点评、validator、rule fallback、版本化 digest、缓存与失效；2026-09-22 真实 DevTools smoke 已确认 V2 Detail 可生成并在 reload 后恢复现有 AI 点评。
+- `WHAT_IS_ALREADY_DONE=` outfit-level analysis 和持久化 AI review 基础已存在，与 Homepage 一句话 reason 已分离；基础 Detail 产品链已由 PB-18 关闭。
+- `WHAT_REMAINS=` 独立持久化 detail document，以及 learned preference 进入个性化解释；不再把基础 Detail 可用性计入本项。
+- `USER_IMPACT=` 用户已能获得生产可用的深点评；“为什么适合我”的长期个性化深度仍未完成。
 - `MUST_FIX_BEFORE_NEW_FEATURE=` NO
 - `MUST_FIX_BEFORE_LAUNCH=` NO
-- `DEPENDENCIES=` PB-18、PB-22、`outfit_ai_reviews` 远端配置。
-- `NEXT_ACTION=` 先做窄 smoke 和 persistence contract；保持“解释者不是选择器”，不改推荐分数。
+- `DEPENDENCIES=` PB-22、`outfit_ai_reviews` 远端配置。
+- `NEXT_ACTION=` 设计独立 detail asset 与 personalized explanation contract；保持“解释者不是选择器”，不改推荐分数。
 
 ### PB-25 Homepage White Screen / SDK Timeout
 
@@ -838,15 +836,15 @@ PB-04 已按 Storage 合同关闭；PB-18 是当前新功能前置 P1 Bug。PB-1
 - PB-13 是可接受的静态 AI 效果预览，PB-14 是严格 VTON，绝不合并。
 - PB-10 是可复现/自动部署，PB-12 是云端业务配置验证，PB-30 是函数资源合同；三者相关但成功条件不同。
 - PB-29 是发布前全链 E2E，PB-17 保留 Upload 专项，PB-24 保留 Detail 深点评专项。
-- PB-18 负责当前生产 Today → Detail 的基础产品链恢复；PB-24 只负责基础详情可用之后的 AI 深点评收口。
+- PB-18 已关闭生产 Today → Detail 的基础产品链恢复；PB-24 只负责独立 detail asset 与 learned preference 驱动的深点评收口。
 
 ## 11. 当前总账结论
 
-- `BEFORE_NEW_FEATURE=PB-18`
-- `BEFORE_LAUNCH=PB-11, PB-12, PB-16, PB-17, PB-18, PB-29, PB-30, PB-33, PB-34`
-- `NEXT_PRODUCT_GOAL=PB-18 Detail 正式产品链恢复`
-- `CAN_START_BEHAVIOR_LEARNING_NOW=NO`
-- `BEHAVIOR_LEARNING_POSITION=AFTER_PB-18`
-- `IF_NO_FIRST_TASK=PB-18 Detail 正式产品链恢复`
+- `BEFORE_NEW_FEATURE=NONE`
+- `BEFORE_LAUNCH=PB-11, PB-12, PB-16, PB-17, PB-29, PB-30, PB-33, PB-34`
+- `NEXT_PRODUCT_GOAL=Behavior-to-Recommendation Learning Loop V1`
+- `CAN_START_BEHAVIOR_LEARNING_NOW=YES`
+- `BEHAVIOR_LEARNING_POSITION=NEXT`
+- `IF_NO_FIRST_TASK=PB-08/PB-21/PB-22 Behavior-to-Recommendation Learning Loop V1`
 - `CURRENT_PERSONALIZATION_LEVEL=LEVEL_1_STATIC_PROFILE`
 - `PRODUCTION_RELEASE_READINESS=NOT_READY`

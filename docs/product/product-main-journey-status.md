@@ -1,6 +1,6 @@
 # 搭搭day 产品主链当前状态
 
-> 状态日期：2026-09-13
+> 状态日期：2026-09-22
 >
 > 适用范围：当前 `main` 中从衣物上传到下一次推荐的产品主链。
 >
@@ -39,7 +39,7 @@ Upload
 | E | 衣橱管理 | IMPLEMENTED | NONE | 查看、筛选、编辑、软删除和重新识别可用。 |
 | F | Today 推荐输入 | IMPLEMENTED | NONE | mutation 后 hard-invalid；下一次 Today 重读衣橱，旧 pool identity 不会命中。 |
 | G | Today 用户体验 | IMPLEMENTED | NONE | 初始推荐、场景、换一批、首卡和 AI 理由已经形成稳定入口。 |
-| H | Detail | PARTIAL | P1 | 完整展示和深点评可用，但 V2 尚无独立持久化 detail document。 |
+| H | Detail | IMPLEMENTED | NONE | Today OutfitRef 可按 canonical V2 lazy-load 正式详情；Favorite/Worn、现有 AI 点评、单品跳转与 reload 已通过真实 DevTools smoke。 |
 | I | 收藏 | IMPLEMENTED | NONE | Today、Detail、收藏列表共享 canonical outfit identity 并可持久恢复。 |
 | J | 穿过 | PARTIAL | P1 | 穿着与历史可持久化，但不会直接改变下一次推荐输入或排序。 |
 | K | History | IMPLEMENTED | NONE | 保存 outfit 快照，可在原衣物变化或删除后恢复主要信息。 |
@@ -141,16 +141,16 @@ Upload
 
 ### H. Detail
 
-- `STATUS=PARTIAL`
+- `STATUS=IMPLEMENTED`
 - `USER_ENTRY=` 从 Today 推荐卡进入 outfit-detail。
 - `CORE_FILES=` `apps/miniapp/src/pages/today/index.tsx`；`apps/miniapp/src/pages/outfit-detail/index.tsx`；`apps/miniapp/cloudfunctions/generateOutfit/index.js`。
 - `DATA_SOURCE=` V2 immutable batch envelope、canonical outfit、衣物快照与 copy overlay。
-- `DATA_WRITE=` 本地 detail draft/cache；主动 AI 深点评写入 `outfit_ai_reviews`。
+- `DATA_WRITE=` bounded L0 reference/cache patch；主动 AI 深点评写入 `outfit_ai_reviews`。
 - `DOWNSTREAM_CONSUMER=` 完整搭配展示、AI 深点评、Favorite 和 Worn。
-- `TEST_EVIDENCE=` `outfitDetailV2.test.js`、`aiReviewPageState.test.js`、`aiReviewPresentation.test.js`。
-- `KNOWN_GAP=` V2 返回 `persistedDetailDocumentReady: false`；页面可展示，但 Detail 尚未成为完整、独立持久化的产品资产。
-- `USER_IMPACT=` 用户能看衣物构成和深层点评，但跨入口长期复用仍依赖 batch/snapshot 与兼容路径。
-- `BLOCKING_LEVEL=P1`
+- `TEST_EVIDENCE=` `outfitDetailV2.test.js`、`defaultCopyVisibility.test.js`、`recommendationV2Gating.test.js`；2026-09-22 真实 DevTools smoke 覆盖 Today → Detail、Favorite/Worn、真实 AI、单品跳转、回显、re-entry、direct reload 与 Storage 前后对比。
+- `KNOWN_GAP=` V2 仍返回 `persistedDetailDocumentReady: false`；独立持久化 detail document 是 PB-24 的产品增强，不阻断当前 OutfitRef + immutable batch envelope 的正式详情链。
+- `USER_IMPACT=` 用户能从 Today 查看正式搭配信息、完成收藏/穿着、获得深层点评、查看单品，并在重进或 reload 后恢复同一详情。
+- `BLOCKING_LEVEL=NONE`
 
 ### I. 收藏
 
@@ -250,7 +250,7 @@ Upload
 - Today 的初始推荐、场景切换、换一批、首卡与 AI 一句话理由已经可用，并通过当前冻结的生产验收。
 - 收藏在 Today、Detail、收藏列表之间有统一业务身份和持久化结果。
 - 穿着历史保存 outfit snapshot，不依赖临时页面状态，可恢复主要搭配信息。
-- Detail 已具备结构化审美 evidence、主动深点评、版本化缓存和失效能力，但仍属于 partial product asset。
+- Detail 已具备正式 V2 lazy-load 展示、结构化审美 evidence、Favorite/Worn、主动深点评、单品跳转和 reload 恢复；独立 detail asset 留作后续增强。
 - 行为事件与 learned-profile shadow 聚合已经具备代码和测试基础，为后续闭环提供了起点。
 
 ## 5. 当前产品断点
