@@ -1,6 +1,6 @@
 # 搭搭day 产品主链当前状态
 
-> 状态日期：2026-09-22
+> 状态日期：2026-09-24（发布顺序校准；产品功能状态未重新验收）
 >
 > 适用范围：当前 `main` 中从衣物上传到下一次推荐的产品主链。
 >
@@ -57,7 +57,7 @@ Upload
 - `DATA_WRITE=` 上传 batch、source image 与客户端上传任务缓存。
 - `DOWNSTREAM_CONSUMER=` upload-confirm 页面和 `processUploadImage`。
 - `TEST_EVIDENCE=` upload task 测试、`uploadConfirmState.test.js`。
-- `KNOWN_GAP=` 仓库证据未包含一次新的真实微信端全链 E2E；当前未发现代码主链断点。
+- `KNOWN_GAP=` PB-04 已记录真实图片 Upload → Digitize → Confirm → Wardrobe PASS（34/200 → 37/200）；当前 release candidate 的 Upload → History 全链与异常矩阵仍待 PB-29 验收。
 - `USER_IMPACT=` 用户能够创建识别任务并进入确认流程。
 - `BLOCKING_LEVEL=NONE`
 
@@ -284,7 +284,7 @@ Upload
 - Detail 可展示并生成深点评，但 V2 尚无独立持久化 detail document。
 - Worn 可以持久化并进入 History/行为事件，但不会直接影响下一次推荐。
 - 隐式事件未覆盖全部场景选择、跳过原因和细粒度负反馈。
-- 上传链有单元/合同证据，但本次范围未重新做真实微信端 E2E 或云端部署验证。
+- 上传链除单元/合同证据外，已有 PB-04 真实图片到 Wardrobe 的 DevTools smoke；这不证明当前 release candidate 的全链和失败/重试场景。
 
 ## 6. 当前个性化等级
 
@@ -318,7 +318,7 @@ Upload
 
 Detail 已有结构化 `aestheticEvaluation` / stylist evidence、主动 AI 深点评、版本化 digest、缓存复用与失效。它与 Homepage 一句话 AI Reason 是不同链路。当前缺口是 V2 detail 持久化文档未完成，且 learned preference 未进入个性化 explanation；审美 shadow evidence 也不等于已经改变 recommendation ranking。
 
-## 8. 下一阶段候选 Goal
+## 8. 首次 V1 发布后的产品候选 Goal
 
 ### 1. 行为学习推荐闭环 V1
 
@@ -330,7 +330,7 @@ Detail 已有结构化 `aestheticEvaluation` / stylist evidence、主动 AI 深�
 - `DEPENDENCIES=` 事件生产质量审计、profile quality gate、自动/增量 refresh、InputSnapshot schema/version、ranking guardrail、回滚开关和离线/影子对照。
 - `SCOPE=` 仅接已有高置信信号；先 shadow 对比，再小权重 gated rollout；提供不使用/重置学习偏好的控制；不改 Recommendation Runtime 2.2 的 bounded-search 架构。
 - `RISK=` 错误强化、反馈回路偏置、冷启动误判、输入版本与缓存身份不一致。
-- `WHY_NOW=` 上传、衣橱、推荐、收藏、穿着和历史已经可用，主价值链唯一 P0 正是最后一跳。
+- `WHY_AFTER_RELEASE=` 上传、衣橱、推荐、收藏、穿着和历史已可用；首次 V1 的正确性、规模、配置、安全与 RC 门禁关闭后，主价值链的下一个产品 P0 是行为学习最后一跳。
 - `NOT_INCLUDED=` 衣物知识图谱、群体协同学习、VTO、模型更换、首页性能优化。
 - `ESTIMATED_COMPLEXITY=L`
 
@@ -364,13 +364,11 @@ Detail 已有结构化 `aestheticEvaluation` / stylist evidence、主动 AI 深�
 
 ## 9. 推荐下一 Goal
 
-`RECOMMENDED_NEXT_GOAL=Behavior-to-Recommendation Learning Loop V1`
+`RECOMMENDED_NEXT_GOAL=V1 release readiness`（执行顺序见 `docs/PROBLEM_LIST.md`）
 
-> 2026-09-14 总账校准：该项仍是下一产品 Goal；但开始新产品开发前，必须先关闭
-> `docs/PROBLEM_LIST.md` 的 PB-04 微信本地 Storage 10MB 容量治理。PB-04 是现存 Bug，
-> 不改变产品路线排序。
+PB-04 已关闭；Behavior-to-Recommendation Learning Loop V1 保持产品路线 R0，安排在首次 V1 发布后。这里的产品 P0 描述价值缺口，不表示它是 V1 技术上线 blocker。
 
-- `WHY_THIS_FIRST=` 它直接修复唯一 P0，并把已有事件、收藏、穿着、历史和 learned-profile shadow 投资转化为用户能感知的价值。范围应从已有高置信信号开始，通过 quality gate、shadow 对比、小权重和回滚开关控制风险。
+- `WHY_AFTER_RELEASE=` 该项仍是首次发布后的首个产品能力 Goal，可把已有事件、收藏、穿着、历史和 learned-profile shadow 转化为用户能感知的价值；当前先关闭 V1 的真实正确性、规模、运行时、安全和 RC 验收门禁。
 - `WHY_NOT_GOAL_2=` 显式反馈很重要，但在 learned profile 和 recommendation consumer 尚未连通时先做，只会新增一类无法生效的数据。
 - `WHY_NOT_GOAL_3=` 知识图谱有长期差异化价值，但数据语义和学习消费边界尚未稳定；现在建设会把未验证的行为偏差固化成关系资产。
 

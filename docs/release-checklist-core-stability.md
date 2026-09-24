@@ -1,11 +1,23 @@
 # 搭搭day 近期核心改造部署与人工测试清单
 
-> 状态说明（2026-09-14）：本文件保留发布动作与人工验收历史，不是 Master Backlog。
+> 状态说明（2026-09-24）：本文件保留发布动作与人工验收历史，不是 Master Backlog。
 > `docs/cloudbase-deployment-contract-v2-audit.md` 已记录 2026-09-02 的 26/26 生产函数
 > remote artifact verify；因此下文旧阶段的“需要部署”不能再解释为这些 artifact 从未部署。
 > 但该验收未调用业务函数、未做真人 smoke，也未证明当前 HEAD 的集合、索引、权限、环境变量、
 > 资源规格、Web migration 或体验版状态。所有未关闭任务和最新优先级以
 > `docs/PROBLEM_LIST.md` 为唯一总账。
+
+## V1 release candidate 最小验收门禁（按总账顺序）
+
+- [ ] PB-12/PB-36：只读核 CloudBase collections、真实查询 indexes、permission、env、触发器和高德/百炼/阿里云/OSS 外呼网络；Favorite → Worn → History → reopen/reload 保存查询结果和错误码。确认 Miniapp CloudBase 与 Web/PostgreSQL 的写入 owner，避免未经合同的双写。
+- [ ] PB-34 Level B：按 production schema 构造 0/200、近满和 200/200 衣橱，在同一 RC 经 CloudBase → Wardrobe → Today → Refresh → Detail 验查询、分页、序列化、推荐 identity 与客户端体验；记录 `currentSize/limitSize/key count/namespace distribution`。Level A 的 30/100/300/500 是已完成的算法 synthetic 证据，不能代替此项。
+- [ ] PB-34 Level C 最小闭环：复用 PB-04 一张真实图片识别 3 件、34/200 → 37/200 的入库证据；当前 RC 再核新衣进入推荐输入。完整上传 200 图不要求在 V1 执行。
+- [ ] PB-15/PB-03：复用上述请求做非 Recommendation 关键函数有界冷/暖体检；核服务端 AI secret、Mock/fallback 语义、失败/重试和识别/数字化最小 latency、token、估算成本观测。Recommendation Runtime 2.2 和 Homepage AI First Reason 保持冻结。
+- [ ] PB-11：按真实 mutation/stale/异常场景核 Favorite/History snapshot、媒体 URL 和恢复一致性；不重开 PB-04 Storage 合同。
+- [ ] PB-30/PB-16/PB-33：只读比较部署 manifest 与远端资源规格，发布窗口轮换受影响凭据；把现有 About/Privacy/Agreement 文案与图片/数据用途、保留/删除/注销和实际处理方对齐，核客户端无服务端密钥。
+- [ ] PB-29：同一 RC 走 Login/Auth → 真实 Upload/Digitize/Confirm → Wardrobe → Today/Scene/Refresh → Detail → Favorite/Worn → History → reload/app restart。有限异常 smoke 覆盖 AI timeout/failure 与重试、空衣橱、网络/授权失败、重复点击、状态一致性、History 恢复、五个页面图片连续性及坏图 fallback；留环境/版本/实际结果。PB-17 只缺失败/重试真实证据，随此项关闭。
+
+本清单未勾选表示当前 RC 证据尚未记录，不宣称对应功能故障；最终 `V1_RELEASE_READY` 由 PB-29 汇总判定。PB-08/PB-21/PB-22 Behavior Learning 保持产品 R0，安排首次 V1 发布后。
 
 ## PRE_LAUNCH_SECURITY
 
